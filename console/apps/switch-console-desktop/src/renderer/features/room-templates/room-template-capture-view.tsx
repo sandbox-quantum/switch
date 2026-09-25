@@ -239,10 +239,9 @@ const CapturePanel = observer(function CapturePanel() {
     let cancelled = false;
     void (async () => {
       try {
-        const yaml = await rpc.workspaces.exportRoomYaml({
-          workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
-          roomId,
-        });
+        const workspaceId = workspacesStore.idOnServerInScope(serverId);
+        if (workspaceId === null) throw new Error('This server’s workspace is not known yet.');
+        const yaml = await rpc.workspaces.exportRoomYaml({ workspaceId, roomId });
         if (cancelled) return;
         setOriginalYaml(yaml);
         setCandidates(extractCandidates(yaml));

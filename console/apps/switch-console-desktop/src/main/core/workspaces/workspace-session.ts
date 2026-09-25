@@ -2,8 +2,9 @@ import { decodeJwtTenantId, switchTenant } from '@main/core/switch-servers/gatew
 import { hostUnreachable, requireServer } from '@main/core/switch-servers/require-server';
 import { getSessionCookie } from '@main/core/switch-servers/servers-store';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { isUnmatchedWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { clearAssertedTenant, setAssertedTenant } from './asserted-tenant';
-import { requireWorkspace } from './workspaces-store';
+import { listWorkspacesForServer, requireWorkspace } from './workspaces-store';
 
 /**
  * Calls in flight on a server's current tenant selection, and the queue that
@@ -102,6 +103,33 @@ async function acquire(server: SwitchServer, tenantId: string | null): Promise<S
 }
 
 /**
+ * The workspace, refusing one that names no tenant on a server holding several.
+ *
+ * A row without a tenant asserts nothing, so the call goes out under whatever
+ * the session last selected and the gateway answers for that — another
+ * workspace's rooms and agents, under this one's name, with no error anywhere.
+ * Refusing costs nothing where a server holds one workspace: there is nothing
+ * to confuse it with, and the gateway resolves the account's sole membership to
+ * exactly that row.
+ */
+async function requireAddressableWorkspace(workspaceId: string): Promise<Workspace> {
+  const workspace = await requireWorkspace(workspaceId);
+  if (workspace.tenantId) return workspace;
+  const onServer = await listWorkspacesForServer(workspace.serverId);
+  if (isUnmatchedWorkspace(workspace, onServer.length)) {
+    throw new Error(
+      // Not "sign in again": signing in re-runs the reconcile, which is what
+      // left the row unmatched in the first place and would do so again. The
+      // row only survives because it holds agents, so the way out is to open
+      // one of the workspaces the account does belong to and add those agents
+      // there.
+      `This workspace has not been matched to one of the ${onServer.length} this account belongs to on its Switch server, so there is no way to tell which one to ask. Switch to one of the others on this server; the agents left here have to be added again in the workspace they belong to.`
+    );
+  }
+  return workspace;
+}
+
+/**
  * The server hosting a workspace, with no session work done.
  *
  * For the callers that have to know which server they are about to address
@@ -126,14 +154,15 @@ export async function workspaceServer(workspaceId: string): Promise<SwitchServer
  *
  * A workspace that has not been matched to a tenant yet asserts nothing — there
  * is no id to select, and the call goes out against whatever the session
- * resolves, which is the single membership that produced the row. It still
+ * resolves. That is the right answer only while the server holds one workspace,
+ * which is why the rest are refused; see `requireAddressableWorkspace`. It still
  * takes a lease, so it cannot straddle another workspace's switch.
  */
 export async function withWorkspaceSession<T>(
   workspaceId: string,
   fn: (server: SwitchServer) => Promise<T>
 ): Promise<T> {
-  const workspace = await requireWorkspace(workspaceId);
+  const workspace = await requireAddressableWorkspace(workspaceId);
   const server = await requireServer(workspace.serverId);
   const session = await acquire(server, workspace.tenantId);
   try {
@@ -154,7 +183,7 @@ export async function withReachableWorkspaceSession<T>(
   workspaceId: string,
   fn: (server: SwitchServer) => Promise<T>
 ): Promise<T> {
-  const workspace = await requireWorkspace(workspaceId);
+  const workspace = await requireAddressableWorkspace(workspaceId);
   const server = await requireServer(workspace.serverId);
   const unreachable = hostUnreachable(server);
   if (unreachable) throw unreachable;

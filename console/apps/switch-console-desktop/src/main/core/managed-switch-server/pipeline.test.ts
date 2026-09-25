@@ -66,6 +66,10 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),
   setActiveServerId: setActiveServerIdMock,
 }));
+// Reads this install's own workspace rows, and through them the database client.
+vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
+  reconcileServerWorkspaces: () => Promise.resolve(),
+}));
 vi.mock('@main/core/switch-servers/auth', () => ({
   passwordLogin: () => Promise.resolve({ success: true }),
 }));
