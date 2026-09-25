@@ -80,15 +80,21 @@ export function parkAfterMs(): number | null {
 }
 
 /**
+ * How long a session waiting on a fresh-conversation decision keeps its worker
+ * awake. Past it the decision and the room messages it holds stay recorded,
+ * but no longer count as busy, so the worker may sleep.
+ */
+export const RESET_HOLD_MS = 15 * 60_000;
+
+/** Whether a session waits on a reset decision, and if so whether its hold has ended. */
+export type ResetHold = 'none' | 'holding' | 'ended';
+
+/**
  * Why a session is busy, if it is: what keeps a hosted worker awake and what
  * keeps a host from parking. A session that is stopped or failed with nothing
  * left to decide is not busy.
  */
-export function sessionBusy(
-  snapshot: Snapshot,
-  host: { resetDecisionPending: boolean },
-  roomsPending: number
-): BusyState {
+export function sessionBusy(snapshot: Snapshot, reset: ResetHold, roomsPending: number): BusyState {
   const reasons: BusyReason[] = [];
   const add = (kind: BusyReason['kind'], count: number) => {
     if (count > 0) reasons.push({ kind, count });
@@ -97,8 +103,8 @@ export function sessionBusy(
   add('turn_starting', snapshot.session.status === 'starting' ? 1 : 0);
   add('turn_running', running || (snapshot.session.status === 'running' ? 1 : 0));
   add('approval_open', snapshot.requests.filter((request) => request.state === 'open').length);
-  add('reset_waiting', host.resetDecisionPending ? 1 : 0);
-  add('room_pending', roomsPending);
+  add('reset_waiting', reset === 'holding' ? 1 : 0);
+  add('room_pending', reset === 'ended' ? 0 : roomsPending);
   return { busy: reasons.length > 0, reasons };
 }
 
@@ -499,12 +505,25 @@ export async function runSharedHost(
     };
     /** Tells the parent whenever the session's busy state changes. */
     let announcedBusy = '';
+    let resetHeldSince: number | null = null;
+    const resetHold = (): ResetHold => {
+      if (!host!.resetDecisionPending) {
+        resetHeldSince = null;
+        return 'none';
+      }
+      resetHeldSince ??= Date.now();
+      return Date.now() - resetHeldSince < RESET_HOLD_MS ? 'holding' : 'ended';
+    };
     const busyNow = (): BusyState =>
-      sessionBusy(host!.snapshot(), host!, rooms?.pending().length ?? 0);
+      sessionBusy(host!.snapshot(), resetHold(), rooms?.pending().length ?? 0);
     const announceBusy = () => {
       const state = busyNow();
       const key = JSON.stringify(state);
       if (key === announcedBusy) return;
+      if (resetHold() === 'ended')
+        console.warn(
+          `Session ${options.session.sessionId} has waited ${RESET_HOLD_MS / 60_000} min for a fresh-conversation decision; it no longer keeps its worker awake. The decision and its ${rooms?.pending().length ?? 0} held room message(s) are kept for when it next runs.`
+        );
       announcedBusy = key;
       options.parent?.busy(state, null);
     };
