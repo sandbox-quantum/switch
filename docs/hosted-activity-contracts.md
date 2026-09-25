@@ -116,7 +116,9 @@ response costs nothing.
 **Controller, bundle per revision.** `accept_launch` builds the bundle version
 token as `uuid5(request_id, str(revision))` and adds two columns to the
 controller's agent store (`store.py`, SQLite): `required_bundle_token` and
-`bundle_token`.
+`bundle_token`, plus `required_bundle_revision` so that a job older than the
+required revision is ignored rather than rolling the requirement (and, through
+step 2, `AWSCURRENT`) back to an obsolete bundle.
 
 1. For a job with desired `running`, set `required_bundle_token` to the
    revision's token before anything else. The `instance_launch_issued` early

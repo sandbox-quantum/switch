@@ -69,7 +69,9 @@ class Reconciler:
         if agent.instance_id is None:
             if instance is not None:
                 return self._store.record_instance(agent.agent_id, instance["InstanceId"])
-            if volume["State"] != "available":
+            if volume["State"] != "available" or (
+                not agent.instance_launch_issued and not _bundle_ready(agent)
+            ):
                 return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
             if not agent.instance_launch_intent:
                 agent = self._store.mark_instance_launch_intent(claim)
@@ -104,7 +106,7 @@ class Reconciler:
             )
             return self._store.replace_terminated(terminated)
         if state == "stopped":
-            if self._unchanged(claim, DesiredState.RUNNING):
+            if _bundle_ready(agent) and self._unchanged(claim, DesiredState.RUNNING):
                 self._cloud.start_instance(agent)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if state in {"pending", "stopping", "shutting-down"}:
@@ -230,6 +232,13 @@ class Reconciler:
 
     def _attention(self, claim: Agent, message: str) -> Agent:
         return self._store.set_observed(claim, ObservedState.NEEDS_ATTENTION, message)
+
+
+def _bundle_ready(agent: Agent) -> bool:
+    return (
+        agent.required_bundle_token is not None
+        and agent.bundle_token == agent.required_bundle_token
+    )
 
 
 def _volume_mapping(instance: dict[str, Any], volume_id: str) -> dict[str, Any] | None:
