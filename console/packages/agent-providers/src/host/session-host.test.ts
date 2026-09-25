@@ -505,23 +505,23 @@ it('resumes an ordinary interrupted session without a reset decision', async () 
   await vi.waitFor(() => expect(resumed.snapshot().session.status).toBe('ready'));
 });
 
-it('starts a new conversation on restart when the provider never answered a turn', async () => {
-  const { host, emit, root } = await start('claude');
-  await host.command(message('failed-turn'));
-  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-  emit({
-    type: 'turn.completed',
-    turnId: 'failed-turn',
-    outcome: 'error',
-    message: 'Not signed in',
-  });
-  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+it('starts a new conversation on its own when the saved one is gone and never answered', async () => {
+  const { host, root } = await start('claude');
   await host.shutdown();
   const next = setup('claude');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('claude', 'session', 'No saved conversation')
+  );
   const restarted = await HostedSession.start(root, next.config, next.adapter);
   hosts.push(restarted);
-  expect(vi.mocked(next.adapter.startSession).mock.calls[0][0].resume).toBeUndefined();
   expect(restarted.resetDecisionPending).toBe(false);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+  await vi.waitFor(() =>
+    expect(restarted.replay(0).events.map((e) => e.body)).toContainEqual(
+      expect.objectContaining({ code: 'CONVERSATION_STARTED_FRESH' })
+    )
+  );
 });
 
 it('validates native model choices and persists a confirmed choice across restart', async () => {
@@ -733,7 +733,13 @@ it('rejects unsupported native compaction without faulting the session', async (
 });
 
 it('requires an explicit fresh reset when the provider cannot resume the saved conversation', async () => {
-  const { host, root } = await start('codex');
+  const { host, emit, root } = await start('codex');
+  // The provider has answered, so the lost conversation held something.
+  await host.command(message('answered'));
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  emit({ type: 'turn.completed', turnId: 'answered', outcome: 'completed' });
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
   await host.shutdown();
   const next = setup('codex');
   vi.mocked(next.adapter.startSession).mockRejectedValueOnce(

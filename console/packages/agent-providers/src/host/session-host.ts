@@ -246,28 +246,10 @@ export class HostedSession {
         host.replica = new SessionReplica(next);
       }
       await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
-      // A provider conversation exists only once a turn has run in it. One whose
-      // every turn failed before the provider answered (a CLI not yet signed in,
-      // say) was never created, so resuming it can only fail, and starting a new
-      // one loses nothing.
-      const never = host.nativeId !== null && host.everyTurnFailedUnanswered();
-      const { resume: _savedResume, ...freshInput } = config.input;
-      const native = await host.startProvider(
-        never
-          ? freshInput
-          : {
-              ...config.input,
-              ...(host.nativeId ? { resume: { nativeSessionId: host.nativeId } } : {}),
-            }
-      );
-      if (never)
-        await host.publish({
-          type: 'notice',
-          level: 'info',
-          code: 'CONVERSATION_STARTED_FRESH',
-          message:
-            'Started a new provider conversation: the earlier one never got an answer, so there was nothing to resume.',
-        });
+      const native = await host.startProvider({
+        ...config.input,
+        ...(host.nativeId ? { resume: { nativeSessionId: host.nativeId } } : {}),
+      });
       await host.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
       host.nativeId = native.nativeSessionId;
       await host.eventSerial;
@@ -285,8 +267,24 @@ export class HostedSession {
         .catch((error: unknown) => host.fail(error));
       return host;
     } catch (error) {
-      if (error instanceof ProviderConversationUnavailableError && host.nativeId) {
+      if (
+        error instanceof ProviderConversationUnavailableError &&
+        (host.nativeId || config.input.resume)
+      ) {
         await host.eventSerial;
+        // Nothing the provider said is lost when it never answered (a session
+        // whose turns all failed while its CLI was signed out, say): start a
+        // new conversation rather than ask.
+        if (!host.providerAnswered()) {
+          try {
+            await host.startFresh();
+            return host;
+          } catch (fresh) {
+            await host.fail(fresh);
+            await host.shutdown();
+            throw fresh;
+          }
+        }
         await host.awaitResetDecision('NATIVE_CONVERSATION_UNAVAILABLE', error.message);
         return host;
       }
@@ -296,18 +294,40 @@ export class HostedSession {
     }
   }
 
-  /**
-   * Whether the session has turns and every one of them failed without the
-   * provider ever answering: no agent message, no completed or interrupted
-   * turn. Such a session's provider conversation was never created.
-   */
-  private everyTurnFailedUnanswered(): boolean {
+  /** Whether the provider has ever answered in this session. */
+  private providerAnswered(): boolean {
     const snapshot = this.replica.snapshot();
     return (
-      snapshot.turns.length > 0 &&
-      snapshot.turns.every((turn) => turn.status === 'error') &&
-      !snapshot.items.some((item) => item.kind === 'assistant-message')
+      snapshot.items.some((item) => item.kind === 'assistant-message') ||
+      snapshot.turns.some((turn) => turn.status === 'completed')
     );
+  }
+
+  /** Start a new provider conversation in place of one that cannot be resumed. */
+  private async startFresh(): Promise<void> {
+    const { resume: _resume, ...fresh } = this.config.input;
+    const native = await this.startProvider(fresh);
+    await this.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
+    this.nativeId = native.nativeSessionId;
+    await this.eventSerial;
+    void this.refreshModels()
+      .catch(async (error: unknown) => {
+        if (this.shuttingDown) return;
+        await this.publish({
+          type: 'notice',
+          level: 'warning',
+          code: 'MODEL_CATALOG_UNAVAILABLE',
+          message: `Could not load provider models: ${String(error)}`,
+        });
+      })
+      .catch((error: unknown) => this.fail(error));
+    await this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'CONVERSATION_STARTED_FRESH',
+      message:
+        'Started a new provider conversation: the earlier one was never saved by the provider, so there was nothing to resume.',
+    });
   }
 
   private async startProvider(input: ProviderSessionStartInput) {

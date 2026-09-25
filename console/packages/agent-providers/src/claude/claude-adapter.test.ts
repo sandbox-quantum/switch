@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ProviderSessionStartInput, RuntimeMode } from '../adapter';
+import { ProviderConversationUnavailableError } from '../adapter';
 import { EventRecorder } from '../testing/event-recorder';
 import { ClaudeAdapter, installShadowedWarningFilter } from './claude-adapter';
 import type { FakeSdk } from './fake-sdk';
@@ -55,7 +56,11 @@ describe('ClaudeAdapter session lifecycle', () => {
     'accepts the first message after initialization without a conversation init event: %j',
     async (resume) => {
       const sdk = createFakeSdk(false);
-      const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+      const adapter = new ClaudeAdapter({
+        query: sdk.query,
+        claudeExecutablePath: '/bin/claude',
+        savedConversationExists: async () => true,
+      });
       const recorder = new EventRecorder(adapter);
       await adapter.startSession(startInput({ resume }));
       await recorder.waitFor('session.state.changed', (event) => event.status === 'ready', 1_000);
@@ -282,9 +287,25 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(seen).toEqual(['SOMETHING_ELSE']);
   });
 
+  it('refuses to resume a conversation Claude never saved', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({
+      query: sdk.query,
+      claudeExecutablePath: '/bin/claude',
+      savedConversationExists: async () => false,
+    });
+    await expect(
+      adapter.startSession(startInput({ resume: { nativeSessionId: 'never-saved' } }))
+    ).rejects.toBeInstanceOf(ProviderConversationUnavailableError);
+  });
+
   it('resumes a native session instead of picking a new id', async () => {
     const sdk = createFakeSdk();
-    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const adapter = new ClaudeAdapter({
+      query: sdk.query,
+      claudeExecutablePath: '/bin/claude',
+      savedConversationExists: async (id) => id === 'earlier',
+    });
     const session = await adapter.startSession(
       startInput({ resume: { nativeSessionId: 'earlier' } })
     );
