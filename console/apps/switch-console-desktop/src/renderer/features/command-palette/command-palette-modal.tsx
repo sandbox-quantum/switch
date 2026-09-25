@@ -194,7 +194,7 @@ export function CommandPaletteModal({
   // Search spans every server, but the sidebar only loads the one it is showing
   // — so the others' rooms are pulled here, by the feature that needs them.
   useEffect(() => {
-    void switchRoomsStore.loadRoomsOnAllServers();
+    void switchRoomsStore.loadRoomsInAllWorkspaces();
   }, []);
 
   // Prefetch recents immediately on mount so the empty-query view is instant.
@@ -272,7 +272,7 @@ export function CommandPaletteModal({
   // span every server, not the active one: you search precisely because you do
   // not know where a thing is.
   const roomResults = useObserver(() =>
-    matchRooms(switchRoomsStore.listedRoomsOnAllServers, debouncedQuery)
+    matchRooms(switchRoomsStore.listedRoomsInAllWorkspaces, debouncedQuery)
   );
   const serverResults = useObserver(() => matchServers(switchServersStore.servers, debouncedQuery));
 

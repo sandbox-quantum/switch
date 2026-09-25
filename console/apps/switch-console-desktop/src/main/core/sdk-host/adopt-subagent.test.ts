@@ -4,8 +4,7 @@ import { adoptSubagent } from './adopt-subagent';
 
 const mocks = vi.hoisted(() => ({
   local: vi.fn(),
-  workspace: vi.fn(),
-  server: vi.fn(),
+  session: vi.fn(),
   remote: vi.fn(),
   create: vi.fn(),
   emit: vi.fn(),
@@ -18,8 +17,9 @@ vi.mock('@main/core/agents/remote-session-reconciler', () => ({
   remoteSessionReconciler: { start: mocks.start },
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: mocks.remote }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
-vi.mock('@main/core/workspaces/workspaces-store', () => ({ requireWorkspace: mocks.workspace }));
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: mocks.session,
+}));
 const parent = {
   id: 'parent',
   locationId: 'location',
@@ -33,8 +33,9 @@ const parent = {
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.local.mockResolvedValue([]);
-  mocks.workspace.mockResolvedValue({ id: 'workspace', serverId: 'server' });
-  mocks.server.mockResolvedValue({ id: 'server' });
+  mocks.session.mockImplementation(
+    (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) => fn({ id: 'server' })
+  );
   mocks.remote.mockResolvedValue({ id: 'child', ownerName: 'Owner' });
   mocks.create.mockImplementation(async (value) => ({ ...value, id: 'local-child' }));
 });

@@ -2,7 +2,7 @@ import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { fetchAgents, fetchMe } from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
+import { withWorkspaceSession, workspaceServer } from '@main/core/workspaces/workspace-session';
 import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
@@ -41,7 +41,7 @@ export type LoadableAgent = {
 
 export type DiscoverLoadableAgentsParams = {
   sshHost: string;
-  serverId: string;
+  workspaceId: string;
   /** When true, run a depth-limited `find` over `$HOME` in addition to the
    *  cheap server-assisted discovery. Off by default — the walk can be slow
    *  on large VMs. */
@@ -68,17 +68,22 @@ export type DiscoverLoadableAgentsResult = {
 export async function discoverLoadableAgentsOnHost(
   params: DiscoverLoadableAgentsParams
 ): Promise<DiscoverLoadableAgentsResult> {
-  const server = await getServer(params.serverId);
-  if (!server) throw new Error(`No Switch server with id ${params.serverId}`);
+  const server = await workspaceServer(params.workspaceId);
 
   // Key: "dir\0name" → LoadableAgent. Server entries inserted first win.
   const seen = new Map<string, LoadableAgent>();
 
   // --- Source 1: Server-assisted discovery ---
   try {
-    const remoteAgents = await fetchAgents(server);
-    // Marks rows the signed-in user owns; an auth failure degrades to not-owner.
-    const me = await fetchMe(server).catch(() => null);
+    // Leased together: `GET /agents` answers for the selected tenant, and the
+    // owner marks below are only meaningful against the same one. The on-host
+    // scans that follow are SSH and need no session, so the lease ends here
+    // rather than being held across them.
+    const { remoteAgents, me } = await withWorkspaceSession(params.workspaceId, async () => ({
+      remoteAgents: await fetchAgents(server),
+      // Marks rows the signed-in user owns; an auth failure degrades to not-owner.
+      me: await fetchMe(server).catch(() => null),
+    }));
 
     // Collect distinct repo_dirs from agents whose known_agent_options carry one.
     type ServerAgentInfo = {
@@ -109,7 +114,7 @@ export async function discoverLoadableAgentsOnHost(
         const discovered = await discoverConfiguredAgents({
           sshHost: params.sshHost,
           dir,
-          serverId: params.serverId,
+          serverId: server.id,
         });
         for (const agent of discovered) {
           const key = `${dir}\0${agent.name}`;
@@ -140,7 +145,7 @@ export async function discoverLoadableAgentsOnHost(
     }
   } catch (error) {
     log.warn('discoverLoadableAgentsOnHost: server-assisted discovery failed', {
-      serverId: params.serverId,
+      workspaceId: params.workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -154,7 +159,7 @@ export async function discoverLoadableAgentsOnHost(
         const discovered = await discoverConfiguredAgents({
           sshHost: params.sshHost,
           dir,
-          serverId: params.serverId,
+          serverId: server.id,
         });
         for (const agent of discovered) {
           const key = `${dir}\0${agent.name}`;
@@ -250,15 +255,16 @@ async function findSwitchAgentDirsOnHost(sshHost: string): Promise<string[]> {
 export async function discoverLoadableAgentsInDir(params: {
   sshHost: string;
   dir: string;
-  serverId: string;
+  workspaceId: string;
 }): Promise<{ agents: LoadableAgent[]; serverApiUrl: string }> {
-  const server = await getServer(params.serverId);
-  if (!server) throw new Error(`No Switch server with id ${params.serverId}`);
+  // The server only, with no lease: this path makes no gateway call — the scan
+  // is on-host and the server is here for its API URL.
+  const server = await workspaceServer(params.workspaceId);
 
   const discovered = await discoverConfiguredAgents({
     sshHost: params.sshHost,
     dir: params.dir,
-    serverId: params.serverId,
+    serverId: server.id,
   });
 
   const agents = discovered.map((agent) => ({

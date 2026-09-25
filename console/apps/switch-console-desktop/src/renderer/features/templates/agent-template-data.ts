@@ -4,6 +4,7 @@ import type { TemplateSummary } from '@main/core/agent-templates/template-summar
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { type BundledTemplate, bundledTemplates, findBundledTemplate } from './bundled-templates';
 
@@ -75,8 +76,9 @@ export async function loadAgentTemplateByOrigin(
   }
   if (!origin.serverId)
     throw new Error(`"${origin.name}" came from a server this Console does not know.`);
-  const detail = await rpc.switchServers.getTemplateDetail({
-    serverId: origin.serverId,
+  const workspaceId = workspacesStore.requireSoleIdOnServer(origin.serverId);
+  const detail = await rpc.workspaces.getTemplateDetail({
+    workspaceId,
     templateId: origin.id,
   });
   return agentTemplateFromContent(origin.name, detail.definition, null, origin);
@@ -84,7 +86,7 @@ export async function loadAgentTemplateByOrigin(
 
 /** Resolve a listing entry (bundled or from the server's registry) into the agent it describes. */
 export async function loadAgentTemplate(
-  serverId: string,
+  workspaceId: string,
   template: StoredTemplateSummary
 ): Promise<AgentTemplate> {
   const bundled = findBundledTemplate(template.id);
@@ -95,12 +97,13 @@ export async function loadAgentTemplate(
       source: 'bundled',
     });
   }
-  const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId: template.id });
+  const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId: template.id });
+  const serverId = workspacesStore.serverIdFor(workspaceId);
   return agentTemplateFromContent(detail.name, detail.definition, null, {
     id: detail.id,
     name: detail.name,
     source: 'server',
-    serverId,
+    ...(serverId ? { serverId } : {}),
   });
 }
 
@@ -135,7 +138,7 @@ export type LoadedTemplate = {
  * owner, so someone else's template of the same name is not a copy.
  */
 export async function loadTemplateById(
-  serverId: string,
+  workspaceId: string,
   templateId: string,
   meId: string | null
 ): Promise<LoadedTemplate> {
@@ -148,7 +151,7 @@ export async function loadTemplateById(
   let savedCopy: StoredTemplateSummary | null = null;
   if (bundled) {
     savedCopy =
-      (await rpc.switchServers.listTemplates({ serverId }).catch(() => [])).find(
+      (await rpc.workspaces.listTemplates({ workspaceId }).catch(() => [])).find(
         (t) => t.name === bundled.name && meId !== null && t.ownerId === meId
       ) ?? null;
     name = bundled.name;
@@ -160,7 +163,7 @@ export async function loadTemplateById(
         })
       : bundled.yamlText;
   } else {
-    const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId });
+    const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId });
     const { definition, ...summary } = detail;
     name = detail.name;
     description = detail.description;

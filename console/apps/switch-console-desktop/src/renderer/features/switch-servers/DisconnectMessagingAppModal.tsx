@@ -17,7 +17,7 @@ import { Input } from '@renderer/lib/ui/input';
 import type { DeleteBridgeResult } from '@shared/core/switch-servers/switch-servers';
 
 type DisconnectMessagingAppModalArgs = {
-  serverId: string;
+  workspaceId: string;
   bridgeId: string;
   bridgeDisplayName: string;
 };
@@ -25,7 +25,7 @@ type DisconnectMessagingAppModalArgs = {
 type Props = BaseModalProps<void> & DisconnectMessagingAppModalArgs;
 
 /**
- * Confirm disconnecting a messaging app from a Switch server (CHOO-2137).
+ * Confirm disconnecting a messaging app from a workspace (CHOO-2137).
  *
  * "Disconnect" undersells it: the server deletes every Switch room on the
  * bridge before removing the bridge itself, so this is the most destructive
@@ -40,7 +40,7 @@ type Props = BaseModalProps<void> & DisconnectMessagingAppModalArgs;
 export const DisconnectMessagingAppModal = observer(function DisconnectMessagingAppModal({
   bridgeDisplayName,
   bridgeId,
-  serverId,
+  workspaceId,
   onSuccess,
   onClose,
 }: Props) {
@@ -55,7 +55,7 @@ export const DisconnectMessagingAppModal = observer(function DisconnectMessaging
     setIsDeleting(true);
     setError(null);
     try {
-      const result = await rpc.switchServers.deleteBridge({ serverId, bridgeId });
+      const result = await rpc.workspaces.deleteBridge({ workspaceId, bridgeId });
       if (result.kind !== 'deleted') {
         setError(messageFor(result));
         setIsDeleting(false);
@@ -66,7 +66,7 @@ export const DisconnectMessagingAppModal = observer(function DisconnectMessaging
       setError(failureText(cause, 'Could not disconnect the messaging app.'));
       setIsDeleting(false);
     }
-  }, [typeConfirmed, serverId, bridgeId, onSuccess]);
+  }, [typeConfirmed, workspaceId, bridgeId, onSuccess]);
 
   return (
     <>

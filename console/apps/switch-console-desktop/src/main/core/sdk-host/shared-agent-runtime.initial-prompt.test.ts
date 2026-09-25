@@ -34,7 +34,7 @@ vi.mock('@main/core/switch-rooms/session-room-store', () => ({
   getPersistedRoomConnection: mocks.persistedRoom,
 }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
+vi.mock('@main/core/workspaces/workspace-session', () => ({ workspaceServer: mocks.server }));
 class FakeNotRecorded extends Error {}
 vi.mock('./session-commands', () => ({
   CommandNotRecordedError: FakeNotRecorded,
@@ -107,7 +107,7 @@ beforeEach(() => {
     id: 'agent-1',
     name: 'scout',
     switchAgentId: 'remote-agent',
-    serverId: 'server-1',
+    workspaceId: 'workspace-1',
   });
   mocks.server.mockResolvedValue({ id: 'server-1' });
   mocks.ready.mockResolvedValue(undefined);
@@ -308,7 +308,7 @@ it('reports restart progress through host replacement and authentication until r
         release = resolve;
       })
   );
-  mocks.loadSession.mockResolvedValue({ serverId: 'server-1', row: { config: {} } });
+  mocks.loadSession.mockResolvedValue({ workspaceId: 'workspace-1', row: { config: {} } });
   mocks.snapshot
     .mockResolvedValueOnce({
       session: { epoch: 'old', connectivity: 'online', status: 'ready' },

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { switchRoomsStore } from './switch-rooms-store';
 
@@ -18,12 +19,14 @@ export const ServerStatTiles = observer(function ServerStatTiles({
 }: {
   serverId: string;
 }) {
+  const workspaceId = workspacesStore.soleIdOnServer(serverId);
+
   // Shares the key every other bridge reader uses, so the list is already in
   // cache by the time this renders and the tile never fetches on its own.
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', serverId],
-    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
-    enabled: !!serverId,
+    queryKey: ['remote-bridges', workspaceId],
+    queryFn: () => rpc.workspaces.listBridges(workspaceId as string),
+    enabled: workspaceId !== null,
   });
 
   // The sidebar loads this too, but the page must not depend on the sidebar
@@ -40,7 +43,11 @@ export const ServerStatTiles = observer(function ServerStatTiles({
       />
       <StatTile
         label="Your Rooms"
-        value={switchRoomsStore.readableRoomsOnServer(serverId).length}
+        value={
+          workspaceId === null
+            ? null
+            : switchRoomsStore.readableRoomsInWorkspace(workspaceId).length
+        }
       />
       <StatTile label="Messaging apps" value={bridgesQuery.data?.length ?? null} />
     </div>
