@@ -13,6 +13,7 @@ from switch_core.aliases import (
     check_alias_collisions,
     validate_alias_format,
 )
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -20,7 +21,8 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
 )
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
-from switch_core.db.models import CollaborationBridge, Room
+from switch_core.db.models import CollaborationBridge, HostedLaunch, Room
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
@@ -394,6 +396,43 @@ async def _cmd_help(
     await _reply(client, room, event, "\n".join(lines))
 
 
+async def _reply_hosted_asleep(
+    client: AgentClient,
+    room: RoomRef,
+    event: CommandEvent,
+    agent: Agent,
+    launch_id: str,
+    command: str,
+) -> bool:
+    """Answer an undelivered room control for a hosted agent that is asleep.
+
+    A sleeping worker holds no placement, so this is decided from the launch,
+    not from whether a session was placed. `!reset` wakes the worker but is
+    not queued: a destructive command is never run later than it was asked.
+    Returns False when the worker is awake, so the ordinary reply applies.
+    """
+    async with tenant_session(client.session_factory, client.tenant_id) as session:
+        launch = await session.get(HostedLaunch, (agent.tenant_id, launch_id))
+    if launch is None or not launch.sleeping:
+        return False
+    if command == "reset":
+        await client._note_hosted_addressed(agent)
+        await _reply(
+            client,
+            room,
+            event,
+            f"The cloud worker is waking up. The reset was not queued. Wait until the agent is back (usually about a minute), then send !reset @{agent.name} again to start a fresh conversation.",
+        )
+        return True
+    await _reply(
+        client,
+        room,
+        event,
+        f"@{agent.name} is asleep, so nothing is running. The {command} was not sent.",
+    )
+    return True
+
+
 async def _dispatch_control_command(
     client: AgentClient,
     room: RoomRef,
@@ -426,6 +465,7 @@ async def _dispatch_control_command(
     # its agent's controller. Nothing is queued: with no controller to relay
     # it to, the room is told so.
     placed = client._connections.session_in_room(agent.id, meta.room_id)
+    launch_id = hosted_launch_of(agent.metadata_)
     if placed is not None:
         if not event.message_id:
             await _reply(
@@ -446,20 +486,23 @@ async def _dispatch_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
         )
-        if client._connections.relay_session_command(agent.id, frame):
-            await _reply(
-                client,
-                room,
-                event,
-                ack,
-            )
-        else:
-            await _reply(
-                client,
-                room,
-                event,
-                f"Could not send {command}: the agent's controller is not connected to Switch.",
-            )
+        delivered = client._connections.relay_session_command(
+            agent.id, frame, worker_only=launch_id is not None
+        )
+        if delivered:
+            await _reply(client, room, event, ack)
+            return
+    if launch_id is not None and await _reply_hosted_asleep(
+        client, room, event, agent, launch_id, command
+    ):
+        return
+    if placed is not None:
+        await _reply(
+            client,
+            room,
+            event,
+            f"Could not send {command}: the agent's controller is not connected to Switch.",
+        )
         return
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")

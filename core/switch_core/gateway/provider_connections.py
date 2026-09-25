@@ -3,10 +3,12 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import case, delete, func, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.config import SwitchConfig
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
@@ -22,7 +24,7 @@ from switch_core.db.stores.provider_connection_store import (
     ProviderConnectionStore,
 )
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.providers.claude_verifier import (
     ClaudeVerificationError,
     ClaudeVerifier,
@@ -71,6 +73,7 @@ async def connect_claude(
     store: Annotated[ProviderConnectionStore, Depends(get_connection_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     verifier: Annotated[ClaudeVerifier, Depends(get_verifier)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict:
     body = bytearray()
     async for chunk in request.stream():
@@ -110,12 +113,46 @@ async def connect_claude(
         session, user.id, kind, encrypt_token(credential, config.jwt_secret_key), now
     )
     await session.commit()
+    await ring_credential_change(
+        session, protocol.connections, user.id, "claude", str(now)
+    )
     return {"status": "connected", "kind": kind, "verified_at": str(now)}
+
+
+async def ring_credential_change(
+    session: AsyncSession,
+    registry: ConnectionRegistry,
+    user_id: str,
+    provider: str,
+    revision: str,
+) -> None:
+    """Tell the owner's attached workers on this provider to fetch a new credential.
+
+    A doorbell only: the frame carries the revision, never the secret. A lost
+    one is caught up by the next idle-report response.
+    """
+    agent_ids = await session.scalars(
+        select(HostedLaunch.agent_id).where(
+            HostedLaunch.tenant_id == require_tenant_id(),
+            HostedLaunch.owner_id == user_id,
+            HostedLaunch.desired_state == "running",
+            HostedLaunch.agent_id.is_not(None),
+            func.coalesce(HostedLaunch.spec["provider"].astext, "claude") == provider,
+        )
+    )
+    for agent_id in agent_ids:
+        assert agent_id is not None
+        registry.ring_worker(agent_id, "credential", {"revision": revision})
 
 
 async def mark_disconnected_workers(
     session: AsyncSession, user_id: str, provider: str
-) -> None:
+) -> list[tuple[str, int]]:
+    """Fail the owner's running workers on this provider; the caller commits.
+
+    Returns each bumped launch's agent and new revision, which the caller
+    evicts after the commit.
+    """
     changed = await session.execute(
         update(HostedLaunch)
         .where(
@@ -130,10 +167,21 @@ async def mark_disconnected_workers(
             revision=HostedLaunch.revision + 1,
             updated_at=datetime.now(UTC),
         )
-        .returning(HostedLaunch.id, HostedLaunch.revision)
+        .returning(HostedLaunch.id, HostedLaunch.revision, HostedLaunch.agent_id)
     )
-    for launch_id, revision in changed:
+    bumped = []
+    for launch_id, revision, agent_id in changed.all():
         await HostedLaunchStore().fail_stale_operations(session, launch_id, revision)
+        if agent_id is not None:
+            bumped.append((agent_id, revision))
+    return bumped
+
+
+def supersede_workers(
+    registry: ConnectionRegistry, bumped: list[tuple[str, int]]
+) -> None:
+    for agent_id, revision in bumped:
+        registry.supersede(agent_id, revision)
 
 
 @router.delete("/claude", status_code=204)
@@ -141,14 +189,16 @@ async def disconnect_claude(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     store: Annotated[ProviderConnectionStore, Depends(get_connection_store)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> Response:
     try:
         await store.lock_user(session, user.id)
     except ProviderConnectionBusy as error:
         raise HTTPException(409, str(error)) from None
     await store.delete(session, user.id)
-    await mark_disconnected_workers(session, user.id, "claude")
+    bumped = await mark_disconnected_workers(session, user.id, "claude")
     await session.commit()
+    supersede_workers(protocol.connections, bumped)
     return Response(status_code=204)
 
 
@@ -189,6 +239,7 @@ async def connect_other_provider(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict:
     body = bytearray()
     async for chunk in request.stream():
@@ -248,6 +299,9 @@ async def connect_other_provider(
         )
     )
     await session.commit()
+    await ring_credential_change(
+        session, protocol.connections, user.id, provider, str(now)
+    )
     return {"status": "configured", "kind": payload["kind"], "verified_at": str(now)}
 
 
@@ -256,6 +310,7 @@ async def disconnect_other_provider(
     provider: OtherProvider,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> Response:
     try:
         await ProviderConnectionStore().lock_user(session, user.id)
@@ -288,6 +343,7 @@ async def disconnect_other_provider(
             ),
         )
     )
-    await mark_disconnected_workers(session, user.id, provider)
+    bumped = await mark_disconnected_workers(session, user.id, provider)
     await session.commit()
+    supersede_workers(protocol.connections, bumped)
     return Response(status_code=204)

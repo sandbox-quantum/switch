@@ -12,6 +12,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.config import SwitchConfig
 from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import (
@@ -21,9 +22,14 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
-from switch_core.gateway.dependencies import get_config, get_session_factory
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_protocol,
+    get_session_factory,
+)
 from switch_core.gateway.hosted_controller import controller_session
 from switch_core.gateway.hosted_launches import controller_settings
+from switch_core.gateway.provider_connections import ring_credential_change
 from switch_core.providers.credentials import validate_provider_credential
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.providers.verification import ACTIVE, latest
@@ -172,6 +178,7 @@ async def result(
     request: Request,
     session: Annotated[AsyncSession, Depends(worker_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict:
     raw = bytearray()
     async for chunk in request.stream():
@@ -208,6 +215,7 @@ async def result(
     member = await session.get(TenantMember, (require_tenant_id(), job.user_id))
     if not current or current.id != job.id or not member:
         raise HTTPException(409, "Connection check is no longer current.")
+    verified_at = datetime.now(UTC)
     if job.result is True:
         values = dict(
             tenant_id=require_tenant_id(),
@@ -215,7 +223,7 @@ async def result(
             provider=job.provider,
             kind=job.kind,
             encrypted_credential=job.encrypted_credential,
-            verified_at=datetime.now(UTC),
+            verified_at=verified_at,
             verification_status="verified",
         )
         await session.execute(
@@ -233,4 +241,8 @@ async def result(
     job.encrypted_credential = None
     job.encrypted_token = None
     await session.commit()
+    if job.result is True:
+        await ring_credential_change(
+            session, protocol.connections, job.user_id, job.provider, str(verified_at)
+        )
     return {"received": True}

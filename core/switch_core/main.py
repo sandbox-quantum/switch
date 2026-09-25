@@ -110,6 +110,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
@@ -498,6 +499,7 @@ async def run(config: SwitchConfig) -> None:
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
         external_user_store=external_user_store,
+        hosted_launch_store=HostedLaunchStore(),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )

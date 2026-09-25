@@ -17,6 +17,7 @@ from switch_core.bridges.agent.commands import (
 )
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.presence import (
     agents_present_in,
     rooms_occupied,
@@ -54,7 +55,7 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent
+from switch_core.db.models import Agent, HostedLaunch
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -62,6 +63,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore, is_waking
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -154,6 +156,8 @@ _UNAVAILABLE_MESSAGES = {
 # room where it has no live session but its connector is actively watching:
 # the connector will spin a session up on demand to handle the message.
 _STARTING_SESSION_MESSAGE = "Starting a session to handle this — one moment."
+
+_WAKING_MESSAGE = "Waking up my cloud worker — I'll answer in a minute or two."
 
 
 # Fallback (no known-agent connect command) for a session_addressable agent
@@ -249,6 +253,7 @@ class AgentClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
+        hosted_launch_store: HostedLaunchStore,
         connections: ConnectionRegistry,
         frontend_base_url: str | None,
         **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
@@ -263,6 +268,8 @@ class AgentClient(ClientBase[ClientConfig]):
         self._agent_session_store = agent_session_store
         self._room_role_store = room_role_store
         self._external_user_store = external_user_store
+        self._hosted_launch_store = hosted_launch_store
+        self._waking_notice_revisions: dict[str, int] = {}
         self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
@@ -464,6 +471,13 @@ class AgentClient(ClientBase[ClientConfig]):
                         unavailable = await self._reply_when_unavailable_here(
                             session, agent, meta, self._sender_handle(event)
                         )
+        if is_addressed:
+            launch = await self._note_hosted_addressed(agent)
+            if unavailable is not None and launch is not None and is_waking(launch):
+                unavailable = None
+                if self._waking_notice_revisions.get(meta.room_id) != launch.revision:
+                    self._waking_notice_revisions[meta.room_id] = launch.revision
+                    unavailable = _WAKING_MESSAGE
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
@@ -704,6 +718,8 @@ class AgentClient(ClientBase[ClientConfig]):
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
                 gate = await self._gate_addressed(session, agent, event, meta)
+            if gate.addressed:
+                await self._note_hosted_addressed(agent)
             is_addressed = gate.addressed
             if gate.refusal is not None:
                 await self._post_auto_reply(
@@ -771,6 +787,10 @@ class AgentClient(ClientBase[ClientConfig]):
         handled = await self._handle_command(room, event)
         if handled:
             return
+
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
+            agent = await self._fresh_agent(session)
+        await self._note_hosted_addressed(agent)
 
         self._event_buffer.enqueue(
             self.agent.id,
@@ -895,6 +915,41 @@ class AgentClient(ClientBase[ClientConfig]):
         )
         self._room_meta[matrix_room_id] = meta
         return meta
+
+    async def _note_hosted_addressed(self, agent: Agent) -> HostedLaunch | None:
+        """Keep a hosted agent's cloud worker awake, waking it if it idled out.
+
+        A wake bumps the launch revision, so any worker still bound to the old
+        revision is evicted once the bump is committed.
+        """
+        launch_id = hosted_launch_of(agent.metadata_)
+        if launch_id is None:
+            return None
+        try:
+            async with (
+                asyncio.timeout(5),
+                tenant_session(self.session_factory, self.tenant_id) as session,
+            ):
+                launch = await self._hosted_launch_store.note_addressed(
+                    session, launch_id
+                )
+                await session.commit()
+        except Exception:
+            logger.warning(
+                "Could not wake cloud worker for agent %s; the event remains queued",
+                agent.id,
+                exc_info=True,
+            )
+            return None
+        if launch is None:
+            logger.error(
+                "Agent %s names cloud launch %s, which does not exist",
+                agent.id,
+                launch_id,
+            )
+            return None
+        self._connections.supersede(agent.id, launch.revision)
+        return launch
 
     async def _reply_when_unavailable_here(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
@@ -1135,8 +1190,16 @@ class AgentClient(ClientBase[ClientConfig]):
     async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
+            agent = await self._fresh_agent(session)
+        launch = await self._note_hosted_addressed(agent)
         await self.send_message(
-            room.room_id, "Working on it.", format="markdown", metered=False
+            room.room_id,
+            _WAKING_MESSAGE
+            if launch is not None and is_waking(launch)
+            else "Working on it.",
+            format="markdown",
+            metered=False,
         )
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
