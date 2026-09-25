@@ -335,6 +335,12 @@ takes a `relay_seq` (D2), so a full queue refuses it `worker_busy` (503)
 without consuming a sequence number. A wake entry that does not fit stays
 `pending`. Nothing is dropped silently.
 
+A relay's `deadline_ms` is an absolute deadline in Unix epoch milliseconds
+(Core's wall clock when it sent the relay plus the request's timeout). Core
+fails the relay `relay_timeout` at that moment whatever the worker does; a
+worker may use it to abandon work nobody will read, and must not treat it as
+a duration.
+
 ## D1 — Console ⇄ cloud relay
 
 ### Vocabulary
