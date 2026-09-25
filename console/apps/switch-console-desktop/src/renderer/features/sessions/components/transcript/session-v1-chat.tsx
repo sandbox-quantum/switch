@@ -7,7 +7,7 @@ import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
-import { sessionStatePill } from './session-state';
+import { sessionStatePill, type SessionStateTone } from './session-state';
 import { SessionStatePill } from './session-state-pill';
 import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
@@ -20,8 +20,11 @@ export function SessionV1Chat({
   startup,
   retireHost,
   initialPromptDelivery,
+  hostState,
 }: {
   client: SessionChatClient;
+  /** Overrides the session's status while its host cannot be asked. */
+  hostState: { label: string; tone: SessionStateTone } | null;
   initialPromptDelivery?: InitialPromptDelivery;
   restartHost?: () => Promise<void>;
   stopHost?: () => Promise<void>;
@@ -186,6 +189,7 @@ export function SessionV1Chat({
           {...sessionStatePill({
             action: busy ? (action ?? 'start') : null,
             elapsedSeconds: elapsed,
+            host: hostState,
             failed: Boolean(actionError) || startup?.status === 'error',
             retired: Boolean(session?.retired),
             status: session?.status ?? null,

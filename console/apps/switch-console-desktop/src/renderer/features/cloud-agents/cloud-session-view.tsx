@@ -13,6 +13,7 @@ import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
+import { cloudAgentState } from './cloud-agent-state';
 import { CloudProblem } from './cloud-problem';
 import { useCloudAgents } from './use-cloud-agents';
 
@@ -62,8 +63,10 @@ const CloudWorkerStatus = observer(function CloudWorkerStatus({ agentKey }: { ag
   ) : null;
 });
 
-function CloudSessionPanel() {
+const CloudSessionPanel = observer(function CloudSessionPanel() {
   const { params } = useParams('cloudSession');
+  const agents = useCloudAgents(parseCloudAgentKey(params.agentKey)?.serverId ?? null);
+  const agent = agents.data?.find((each) => each.key === params.agentKey);
   const client = useMemo(
     () => new SessionChatClient(params.sessionId, cloudSessionTransport(params.agentKey)),
     [params.agentKey, params.sessionId]
@@ -74,6 +77,7 @@ function CloudSessionPanel() {
       <SessionV1Chat
         key={`${params.agentKey}:${params.sessionId}`}
         client={client}
+        hostState={agent ? cloudAgentState(agent) : null}
         stopHost={() => rpc.sdkHost.stop(params.agentKey, params.sessionId)}
         restartHost={async () => {
           await rpc.sdkHost.cloudSessionOperation(params.agentKey, params.sessionId, 'restart');
@@ -81,7 +85,7 @@ function CloudSessionPanel() {
       />
     </div>
   );
-}
+});
 
 export const cloudSessionView = {
   WrapView: ({ children }: CloudSessionParams & { children: ReactNode }) => (

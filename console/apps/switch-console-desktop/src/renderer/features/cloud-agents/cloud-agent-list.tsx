@@ -9,8 +9,9 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { type CloudAgent, cloudLaunchPhase } from '@shared/core/cloud-agents/cloud-agents';
+import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
 import { SidebarMenuButton } from '../sidebar/sidebar-primitives';
+import { cloudAgentState } from './cloud-agent-state';
 import { CloudProblem } from './cloud-problem';
 import { useCloudAgents } from './use-cloud-agents';
 
@@ -18,15 +19,6 @@ export function cloudSessionName(session: Session): string {
   const room = session.roomIds?.[0];
   const roomName = room ? switchRoomsStore.roomNameById(room) : null;
   return roomName ?? `Session ${session.sessionId.slice(0, 8)}`;
-}
-
-function launchLabel(agent: CloudAgent): string | null {
-  const phase = cloudLaunchPhase(agent.launch);
-  if (phase === 'sleeping') return 'Sleeping';
-  if (phase === 'waking') return 'Waking…';
-  if (agent.launch.state === 'error') return 'Error';
-  if (agent.problem) return 'Unreachable';
-  return null;
 }
 
 function sessionLabel(session: Session): string {
@@ -64,7 +56,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ agent }: { agent: CloudA
   const { params } = useParams('cloudSession');
   const groupKey = `cloud:${agent.key}`;
   const expanded = sidebarStore.isGroupExpanded(groupKey);
-  const label = launchLabel(agent);
+  const label = cloudAgentState(agent)?.label;
   const start = useMutation({
     mutationFn: async () => {
       const sessionId = crypto.randomUUID();
@@ -94,7 +86,9 @@ const CloudAgentRow = observer(function CloudAgentRow({ agent }: { agent: CloudA
               <AgentIcon id={agent.launch.provider} size={12} className="h-3 w-3 shrink-0" />
             )}
           </span>
-          {label && <span className="ml-auto text-xs text-foreground-muted">{label}</span>}
+          {label && (
+            <span className="ml-auto text-xs text-foreground-muted capitalize">{label}</span>
+          )}
         </SidebarMenuButton>
         {agent.sessions && (
           <button
