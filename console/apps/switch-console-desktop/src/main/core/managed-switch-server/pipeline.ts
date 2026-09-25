@@ -234,7 +234,6 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
       namespace: RELEASE_REPO_OWNER,
       ports,
       secrets,
-      sessionDemo: checkoutRoot !== null,
       telemetryEnabled,
     }),
     0o600
