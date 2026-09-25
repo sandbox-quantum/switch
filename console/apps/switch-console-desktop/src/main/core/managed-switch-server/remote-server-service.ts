@@ -81,6 +81,9 @@ export class RemoteServerService {
   /** The start in flight per host, which an automatic upgrade and a Start click share. */
   private readonly starting = new Map<string, Promise<StartLocalServerResult>>();
   private readonly upgradeListeners = new Set<(serverId: string) => void>();
+  /** Hosts {@link ensureReady} has turned something away for since their last
+   * upgrade finished, so that it can be told when they are ready. */
+  private readonly refused = new Set<string>();
 
   getStatuses(): RemoteServerStatus[] {
     return [...this.statuses.values()];
@@ -172,11 +175,13 @@ export class RemoteServerService {
     if (upgrade.state === 'updating') {
       throw new Error(`${serverName} reports an update in progress, but none is running.`);
     }
+    this.refused.add(sshHost);
     throw new Error(managedServerUpgradeBlockedReason(serverName, upgrade));
   }
 
-  /** Called with the server id when an upgrade that sessions were refused for
-   * (a failed one retried, or a stopped one started) has finished. */
+  /** Called with the server id when an upgrade finishes that sessions or
+   * watchers were turned away for (a failed one retried, or a stopped one
+   * started). Those that waited instead carry on by themselves. */
   onUpgradeFinished(listener: (serverId: string) => void): void {
     this.upgradeListeners.add(listener);
   }
@@ -296,8 +301,6 @@ export class RemoteServerService {
     // Replace any prior live host (and its forward) for this alias.
     this.hosts.get(sshHost)?.dispose();
     this.hosts.delete(sshHost);
-    const current = this.getStatus(sshHost).upgrade;
-    const refused = current !== null && current.state !== 'updating';
     let host: RemoteServerHost | null = null;
     try {
       this.setStatus(sshHost, {
@@ -346,7 +349,6 @@ export class RemoteServerService {
         this.failUpgrade(sshHost, result.message);
         host.dispose();
       } else {
-        const upgraded = this.getStatus(sshHost).upgrade !== null;
         // Keep the host alive — it owns the port-forward.
         this.hosts.set(sshHost, host);
         // The pipeline just converged the containers onto this build's pin, so
@@ -361,7 +363,7 @@ export class RemoteServerService {
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
         });
-        if (upgraded && refused) {
+        if (this.refused.delete(sshHost)) {
           for (const listener of this.upgradeListeners) listener(result.serverId);
         }
       }

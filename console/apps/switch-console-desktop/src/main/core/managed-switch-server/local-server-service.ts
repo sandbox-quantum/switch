@@ -75,6 +75,9 @@ export class LocalServerService {
   /** The start in flight, which an automatic upgrade and a Start click share. */
   private starting: Promise<StartLocalServerResult> | null = null;
   private readonly upgradeListeners = new Set<(serverId: string) => void>();
+  /** Whether {@link ensureReady} has turned anything away since the last
+   * upgrade finished, so that it can be told when the server is ready. */
+  private refused = false;
 
   getStatus(): LocalServerStatus {
     return this.status;
@@ -141,7 +144,8 @@ export class LocalServerService {
    * whatever schema the last version migrated to, which is exactly what makes a
    * downgrade unsafe.
    *
-   * Memoised: {@link ensureReady} awaits the same reconcile. */
+   * Memoised: {@link ensureReady} awaits the same reconcile, then the upgrade
+   * it started. */
   initialize(): Promise<void> {
     this.initialization ??= this.reconcile();
     return this.initialization;
@@ -190,7 +194,9 @@ export class LocalServerService {
     } finally {
       host.dispose();
     }
-    if (upgradeNow) await this.beginStart(false);
+    // Not awaited: the boot check is done once the upgrade is under way, and a
+    // Start click or a session joins the upgrade through `starting`.
+    if (upgradeNow) void this.beginStart(false);
   }
 
   /**
@@ -206,11 +212,13 @@ export class LocalServerService {
     if (upgrade.state === 'updating') {
       throw new Error(`${serverName} reports an update in progress, but none is running.`);
     }
+    this.refused = true;
     throw new Error(managedServerUpgradeBlockedReason(serverName, upgrade));
   }
 
-  /** Called with the server id when an upgrade that sessions were refused for
-   * (a failed one retried, or a stopped one started) has finished. */
+  /** Called with the server id when an upgrade finishes that sessions or
+   * watchers were turned away for (a failed one retried, or a stopped one
+   * started). Those that waited instead carry on by themselves. */
   onUpgradeFinished(listener: (serverId: string) => void): void {
     this.upgradeListeners.add(listener);
   }
@@ -237,7 +245,6 @@ export class LocalServerService {
     this.startAbort = new AbortController();
     const host: ServerHost = new LocalServerHost();
     const checkoutRoot = this.checkoutRootForStart();
-    const refused = this.status.upgrade !== null && this.status.upgrade.state !== 'updating';
     try {
       this.setStatus({ phase: 'starting', error: null, message: 'Checking Docker…' });
       const result = await startStack({
@@ -271,7 +278,6 @@ export class LocalServerService {
         this.setStatus({ phase: 'error', error: result.message });
         this.failUpgrade(result.message);
       } else {
-        const upgraded = this.status.upgrade !== null;
         // The pipeline just wrote this build's pin and converged the containers
         // onto it, so any drift the boot probe found is now resolved.
         this.setStatus({
@@ -284,7 +290,8 @@ export class LocalServerService {
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
         });
-        if (upgraded && refused) {
+        if (this.refused) {
+          this.refused = false;
           for (const listener of this.upgradeListeners) listener(result.serverId);
         }
       }
