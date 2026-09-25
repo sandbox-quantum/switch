@@ -1962,3 +1962,23 @@ it('stops as obsolete when its launch moved to a newer revision', async () => {
   watcher.stream.onEvicted({ code: 'launch_superseded', reason: 'revision 2', roomId: null });
   await expect(watcher.run).rejects.toBeInstanceOf(WorkerObsoleteError);
 });
+
+it('answers an addressed message in the room when auto-start is off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-spawn-off-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await writeFlags(root, { enabled: true, spawn: false });
+  const watcher = await hostedWatcher(root, config, sessionHosts(), { revoked: false });
+  try {
+    await watcher.attach({});
+    await watcher.stream.onEvent!(addressed(1, 'room'));
+    await eventually(() => acks().includes('refused:message-1'));
+    await eventually(() => notices().length === 1);
+    expect(notices()).toEqual(['capacity:message-1']);
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
