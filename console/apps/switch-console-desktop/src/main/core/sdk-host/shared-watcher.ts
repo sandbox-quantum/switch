@@ -5,12 +5,14 @@ import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport, type LocationTransport } from '@main/core/locations/location-transport';
+import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import {
   listAutoSessionAgentIds,
   listStoppedControllerAgentIds,
 } from '@main/core/switch-rooms/auto-session-store';
 import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { adoptSubagent } from './adopt-subagent';
 import { stopLegacySidecar } from './legacy-sidecar';
 import {
@@ -103,6 +105,12 @@ export async function configureSharedWatcher(
   if (!agent.switchAgentId) {
     if (!state.connected) return;
     throw new Error('Link the agent to Switch before it can hold a room connection.');
+  }
+  // Connecting waits for the agent's managed server to be in step with this
+  // build; standing down never does.
+  if (state.connected && agent.serverId) {
+    const server = await getServer(agent.serverId);
+    if (server) await ensureServerSessionReady(server);
   }
   const location = await getAgentLocation(agent);
   const transport = locationTransport(location);

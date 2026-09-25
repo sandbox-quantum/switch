@@ -28,6 +28,7 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { LocationTransport } from '@main/core/locations/location-transport';
+import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { AGENT_ENV_VARS } from '@main/core/sdk-host/agent-env';
 import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
@@ -126,6 +127,9 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       throw new Error('Link this agent to a Switch server before starting a session.');
     this.server = await getServer(agent.serverId);
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
+    this.startupStage = 'Waiting for the Switch server to be ready…';
+    await ensureServerSessionReady(this.server);
+    this.startupStage = 'Preparing the session on its host…';
     const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
     const config = await buildSharedHostConfig(session, this.params, this.transport);
     const previousEpoch = restart ? await journalEpoch(session.agentId, session.id) : null;

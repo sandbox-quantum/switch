@@ -7,8 +7,9 @@ import '@renderer/index.css';
 /**
  * `AlertAction` used to be positioned absolutely over a fixed `pr-18` gutter,
  * which only clears the text while the action stays narrower than that gutter.
- * "Restart to update" is roughly twice as wide, so the drift description ran
- * underneath the button (CHOO-1736).
+ * "Restart to update" was roughly twice as wide, so the drift description ran
+ * underneath the button (CHOO-1736). The failed-update notice's Retry action
+ * shares the layout.
  *
  * These assertions are on measured geometry rather than class strings: the bug
  * was invisible at the markup level — every class was present and correct — and
@@ -28,6 +29,13 @@ async function renderNotice(deployed: string, expected: string): Promise<HTMLDiv
     root.render(
       <VersionDriftNotice
         drift={{ direction: 'upgrade', deployed, expected }}
+        upgrade={{
+          state: 'failed',
+          from: deployed,
+          to: expected,
+          error: 'The server did not become healthy in time.',
+        }}
+        progress={null}
         disabled={false}
         onRestart={() => {}}
       />

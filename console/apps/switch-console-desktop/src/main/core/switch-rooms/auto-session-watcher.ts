@@ -1,11 +1,13 @@
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getAgents } from '@main/core/agents/getAgents';
+import { onManagedServerUpgraded } from '@main/core/managed-switch-server/session-readiness';
 import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reachability-service';
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
 import { disposeLocalHosts } from '@main/core/sdk-host/local-host';
 import { applyControllerState, configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
 import { log } from '@main/lib/logger';
+import type { Agent } from '@shared/core/agents/agents';
 import {
   listAutoSessionAgentIds,
   listAutoSessionSubagents,
@@ -13,8 +15,11 @@ import {
   setAutoSessionSubagent,
 } from './auto-session-store';
 
+type Subagent = { parentAgentId: string; name: string };
+
 class AutoSessionWatcher {
   private watchingHosts = false;
+  private watchingUpgrades = false;
   private readonly recovering = new Map<string, { again: boolean }>();
 
   /**
@@ -22,12 +27,58 @@ class AutoSessionWatcher {
    * may start sessions: an agent is reachable because it exists, and the
    * auto-start setting only decides what its controller does with a message it
    * is addressed in.
+   *
+   * Each server's agents are brought up on their own, because a controller
+   * waits for its managed server to finish upgrading and that must not hold
+   * back the agents of every other server.
    */
   async initialize(): Promise<void> {
     this.watchHostRecovery();
+    this.watchServerUpgrades();
     for (const agentId of await listAutoSessionAgentIds())
       if (!(await getAgentById(agentId))) await setAutoSessionAgent(agentId, false);
-    for (const agent of await getAgents()) {
+    const agents = await getAgents();
+    const subagents: Subagent[] = [];
+    for (const subagent of await listAutoSessionSubagents()) {
+      if (!(await getAgentById(subagent.parentAgentId))) {
+        await setAutoSessionSubagent(subagent.parentAgentId, subagent.name, false);
+        continue;
+      }
+      subagents.push(subagent);
+    }
+    const servers = new Set(agents.map((agent) => agent.serverId));
+    await Promise.all(
+      [...servers].map((serverId) => {
+        const members = agents.filter((agent) => agent.serverId === serverId);
+        return this.startControllers(members, subagentsOf(members, subagents));
+      })
+    );
+  }
+
+  /**
+   * Controllers refused while their managed server owed an upgrade — a failed
+   * one, or a stopped one — are started once it has finished.
+   */
+  private watchServerUpgrades(): void {
+    if (this.watchingUpgrades) return;
+    this.watchingUpgrades = true;
+    onManagedServerUpgraded((serverId) => void this.restoreServer(serverId));
+  }
+
+  private async restoreServer(serverId: string): Promise<void> {
+    try {
+      const members = (await getAgents()).filter((agent) => agent.serverId === serverId);
+      await this.startControllers(members, subagentsOf(members, await listAutoSessionSubagents()));
+    } catch (error) {
+      log.error('Shared SDK watchers could not start after their server updated', {
+        serverId,
+        error: String(error),
+      });
+    }
+  }
+
+  private async startControllers(agents: Agent[], subagents: Subagent[]): Promise<void> {
+    for (const agent of agents) {
       if (!agent.switchAgentId) continue;
       try {
         // Restoring a controller an earlier run was already meant to be
@@ -42,11 +93,7 @@ class AutoSessionWatcher {
         });
       }
     }
-    for (const { parentAgentId, name } of await listAutoSessionSubagents()) {
-      if (!(await getAgentById(parentAgentId))) {
-        await setAutoSessionSubagent(parentAgentId, name, false);
-        continue;
-      }
+    for (const { parentAgentId, name } of subagents) {
       try {
         await this.startForSubagent(parentAgentId, name);
       } catch (error) {
@@ -144,4 +191,9 @@ class AutoSessionWatcher {
     return disposeLocalHosts();
   }
 }
+function subagentsOf(parents: Agent[], subagents: Subagent[]): Subagent[] {
+  const ids = new Set(parents.map((agent) => agent.id));
+  return subagents.filter((subagent) => ids.has(subagent.parentAgentId));
+}
+
 export const autoSessionWatcher = new AutoSessionWatcher();

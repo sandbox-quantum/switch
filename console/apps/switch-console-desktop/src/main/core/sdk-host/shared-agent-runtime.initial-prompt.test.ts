@@ -15,6 +15,11 @@ const mocks = vi.hoisted(() => ({
   readFailure: vi.fn(),
   exec: vi.fn(),
   specialization: vi.fn(),
+  ready: vi.fn(),
+}));
+
+vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
+  ensureServerSessionReady: mocks.ready,
 }));
 
 vi.mock('./transcripts', () => ({ currentSnapshot: mocks.snapshot }));
@@ -105,6 +110,7 @@ beforeEach(() => {
     serverId: 'server-1',
   });
   mocks.server.mockResolvedValue({ id: 'server-1' });
+  mocks.ready.mockResolvedValue(undefined);
   mocks.exec.mockResolvedValue({ stdout: 'null' });
   mocks.readFailure.mockResolvedValue(null);
   // The launch reports an existing host, which is what a retry after a failed
@@ -355,4 +361,36 @@ it('passes the existing conversation room as a guarded migration hint', async ()
     kind: 'local',
   } as LocationTransport);
   expect(other.roomConnection?.restoreRoomId).toBeUndefined();
+});
+
+it('never starts a host or replays the initial prompt while the server is not ready', async () => {
+  mocks.ready.mockRejectedValueOnce(new Error('Updating Local from switch-core 0.1.0 failed'));
+  const agent = runtime();
+
+  await expect(agent.start(session, false, 'Do work')).rejects.toThrow('failed');
+  expect(mocks.ready).toHaveBeenCalledWith({ id: 'server-1' });
+  expect(mocks.runHost).not.toHaveBeenCalled();
+  expect(mocks.submit).not.toHaveBeenCalled();
+  expect(agent.startupStatus()).toMatchObject({ status: 'error' });
+});
+
+it('waits for the server’s update before starting the session', async () => {
+  let ready: () => void = () => {};
+  mocks.ready.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      ready = resolve;
+    })
+  );
+  const agent = runtime();
+  const started = agent.start(session, false, 'Say hello');
+
+  await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalled());
+  expect(agent.startupStatus()).toEqual({
+    status: 'starting',
+    message: 'Waiting for the Switch server to be ready…',
+  });
+  expect(mocks.runHost).not.toHaveBeenCalled();
+  ready();
+  await started;
+  expect(mocks.submit).toHaveBeenCalledTimes(1);
 });

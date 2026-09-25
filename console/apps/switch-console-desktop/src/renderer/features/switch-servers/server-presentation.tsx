@@ -5,6 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { cn } from '@renderer/utils/utils';
 import type {
   DeployedTelemetry,
+  ManagedServerUpgrade,
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -91,6 +92,24 @@ export function serverDrift(server: SwitchServer): SwitchVersionDrift | null {
     return remoteServerStore.driftFor(server.sshHost);
   }
   return localServerStore.drift;
+}
+
+/** The upgrade a managed server's stack owes this build, or null. */
+export function serverUpgrade(server: SwitchServer): ManagedServerUpgrade | null {
+  if (!server.managed) return null;
+  if (server.managementKind === 'remote' && server.sshHost) {
+    return remoteServerStore.upgradeFor(server.sshHost);
+  }
+  return localServerStore.upgrade;
+}
+
+/** The current step of a managed server's lifecycle operation, or null. */
+export function serverProgress(server: SwitchServer): string | null {
+  if (!server.managed) return null;
+  if (server.managementKind === 'remote' && server.sshHost) {
+    return remoteServerStore.statusFor(server.sshHost).message;
+  }
+  return localServerStore.message;
 }
 
 /**
@@ -180,8 +199,8 @@ export const ServerStatusPill = observer(function ServerStatusPill({
 
 /**
  * Flags a managed server whose switch-core no longer matches the version this
- * build pins (CHOO-1736), so an available update is visible from the switcher
- * rather than only on the server's own page.
+ * build pins (CHOO-1736), so an owed update is visible from the switcher rather
+ * than only on the server's own page.
  *
  * Sits beside the connection dot rather than recolouring it: the dot answers
  * "can I reach this server", which stays true of a server running a stale core.
@@ -189,7 +208,7 @@ export const ServerStatusPill = observer(function ServerStatusPill({
 export function ServerDriftIndicator({ drift }: { drift: SwitchVersionDrift }) {
   const upgrade = drift.direction === 'upgrade';
   const label = upgrade
-    ? `switch-core ${drift.expected} is available (running ${drift.deployed})`
+    ? `Needs switch-core ${drift.expected} (running ${drift.deployed}); sessions wait for the update`
     : drift.direction === 'downgrade'
       ? `Runs switch-core ${drift.deployed} — newer than this app expects (${drift.expected})`
       : drift.direction === 'unreadable'

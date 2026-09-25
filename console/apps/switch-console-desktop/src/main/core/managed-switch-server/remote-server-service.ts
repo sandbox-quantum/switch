@@ -16,6 +16,7 @@ import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
   type DockerAvailability,
   type StartLocalServerResult,
+  managedServerUpgradeBlockedReason,
   matrixMigrationFailedMessage,
   switchVersionDowngradeMessage,
 } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -27,6 +28,12 @@ import {
 import { isStackRunning } from './compose';
 import { readVersionStatus } from './deployed-version';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
+import {
+  owedUpgrade,
+  readUpgradeJournal,
+  type UpgradeJournal,
+  upgradeState,
+} from './managed-upgrade';
 import { resetStack, startStack, stopStack } from './pipeline';
 import { readPersistedPorts } from './ports';
 import { readDeployedTelemetry } from './telemetry-consent';
@@ -35,6 +42,7 @@ function initialStatus(sshHost: string): RemoteServerStatus {
   return {
     sshHost,
     phase: 'stopped',
+    upgrade: null,
     serverId: null,
     version: COMPATIBLE_SWITCH_VERSION,
     deployedVersion: null,
@@ -57,12 +65,22 @@ function initialStatus(sshHost: string): RemoteServerStatus {
  * containers themselves run detached, so a remote stack (and its remote-host
  * agents) stays up while Switch Console is closed — only the desktop-side forward
  * goes away.
+ *
+ * A host whose stack is behind this build's switch-core pin is upgraded when it
+ * is reconciled — at boot, and whenever the host becomes reachable again — and
+ * {@link ensureReady} holds sessions for its agents until that has finished.
  */
-class RemoteServerService {
+export class RemoteServerService {
   private readonly statuses = new Map<string, RemoteServerStatus>();
   private readonly hosts = new Map<string, RemoteServerHost>();
   private readonly busy = new Set<string>();
   private readonly startAborts = new Map<string, AbortController>();
+  private initialization: Promise<void> | null = null;
+  /** The reconcile or start in flight per host, which {@link ensureReady} waits out. */
+  private readonly operations = new Map<string, Promise<void>>();
+  /** The start in flight per host, which an automatic upgrade and a Start click share. */
+  private readonly starting = new Map<string, Promise<StartLocalServerResult>>();
+  private readonly upgradeListeners = new Set<(serverId: string) => void>();
 
   getStatuses(): RemoteServerStatus[] {
     return [...this.statuses.values()];
@@ -89,32 +107,88 @@ class RemoteServerService {
   }
 
   /** Re-establish forwards + status for remote stacks that survived the last
-   * quit, so their desktop reachability is restored on launch. Best-effort per
-   * host: an unreachable host is left `stopped` rather than failing boot. */
-  async initialize(): Promise<void> {
+   * quit, so their desktop reachability is restored on launch, and upgrade the
+   * ones that are behind. Hosts reconcile independently and in the background;
+   * an unreachable one is left `stopped` rather than failing boot.
+   *
+   * Memoised: {@link ensureReady} awaits the same call. It resolves once every
+   * host's reconcile is registered, not once they are done. */
+  initialize(): Promise<void> {
+    this.initialization ??= this.startReconciling();
+    return this.initialization;
+  }
+
+  private async startReconciling(): Promise<void> {
+    // Registered before the first await, so the host's reconcile is in flight
+    // before anything else that reacts to the same recovery asks whether the
+    // server is ready.
     hostReachabilityService.on('change', ({ current }: HostReachabilityChange) => {
-      if (current.status === 'reachable') void this.onHostReachable(current.sshHost);
+      if (current.status !== 'reachable') return;
+      void this.track(current.sshHost, () => this.onHostReachable(current.sshHost)).catch(
+        (error: unknown) => {
+          log.warn(`remote-switch-server: reconcile after recovery failed for ${current.sshHost}`, {
+            error,
+          });
+        }
+      );
     });
-    for (const [sshHost, serverId] of await this.remoteHosts()) {
+    for (const [sshHost, server] of await this.remoteHosts()) {
       this.statuses.set(sshHost, initialStatus(sshHost));
-      await this.reconcileHost(sshHost, serverId);
+      void this.track(sshHost, () => this.reconcileHost(sshHost, server));
     }
   }
 
-  private async remoteHosts(): Promise<Map<string, string>> {
+  private async remoteHosts(): Promise<Map<string, { id: string; name: string }>> {
     const remotes = (await listManagedServers()).filter(
       (s) => s.managementKind === 'remote' && s.sshHost
     );
-    return new Map(remotes.map((s) => [s.sshHost!, s.id]));
+    return new Map(remotes.map((s) => [s.sshHost!, { id: s.id, name: s.name }]));
+  }
+
+  /** Remember `run` as the host's operation in flight until it settles. */
+  private track<T>(sshHost: string, run: () => Promise<T>): Promise<T> {
+    const promise = run();
+    const settled = promise.then(
+      () => undefined,
+      () => undefined
+    );
+    this.operations.set(sshHost, settled);
+    void settled.then(() => {
+      if (this.operations.get(sshHost) === settled) this.operations.delete(sshHost);
+    });
+    return promise;
+  }
+
+  /**
+   * Resolves once sessions may run against the stack on `sshHost`, waiting out
+   * its reconcile and any upgrade in flight. Throws when it still owes an
+   * upgrade — stopped, or failed — with the reason to show.
+   */
+  async ensureReady(sshHost: string, serverName: string): Promise<void> {
+    await this.initialize();
+    for (let op = this.operations.get(sshHost); op; op = this.operations.get(sshHost)) await op;
+    const upgrade = this.getStatus(sshHost).upgrade;
+    if (upgrade === null) return;
+    if (upgrade.state === 'updating') {
+      throw new Error(`${serverName} reports an update in progress, but none is running.`);
+    }
+    throw new Error(managedServerUpgradeBlockedReason(serverName, upgrade));
+  }
+
+  /** Called with the server id when an upgrade that sessions were refused for
+   * (a failed one retried, or a stopped one started) has finished. */
+  onUpgradeFinished(listener: (serverId: string) => void): void {
+    this.upgradeListeners.add(listener);
   }
 
   /** Pick a host's stack back up once its host is reachable again, so a
-   * recovered host resumes without the user restarting anything. */
+   * recovered host resumes — and catches up on an owed upgrade — without the
+   * user restarting anything. */
   private async onHostReachable(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost) || this.hosts.has(sshHost)) return;
-    const serverId = (await this.remoteHosts()).get(sshHost);
-    if (!serverId) return;
-    await this.reconcileHost(sshHost, serverId);
+    const server = (await this.remoteHosts()).get(sshHost);
+    if (!server) return;
+    await this.reconcileHost(sshHost, server);
   }
 
   /** Adopt an already-running remote stack: re-open its forward and mark it
@@ -122,23 +196,47 @@ class RemoteServerService {
    * call back through {@link onHostReachable} when it recovers.
    *
    * Also records how the host's deployed switch-core compares to this build's
-   * pin, so an app update that moved the pin surfaces as drift rather than
-   * leaving the host on a stale core (CHOO-1736). That check runs even when the
-   * stack is down: its data volumes still hold the schema the last version
-   * migrated to, which is what makes a downgrade unsafe. */
-  private async reconcileHost(sshHost: string, serverId: string): Promise<void> {
+   * pin (CHOO-1736). A running stack that is behind, or one whose last upgrade
+   * was interrupted, is upgraded instead of adopted; a stopped one that is
+   * behind is marked to be upgraded at its next start. The check runs even
+   * when the stack is down: its data volumes still hold the schema the last
+   * version migrated to, which is what makes a downgrade unsafe. */
+  private async reconcileHost(
+    sshHost: string,
+    server: { id: string; name: string }
+  ): Promise<void> {
     if (hostReachabilityService.isBlocked(sshHost)) return;
     let host: RemoteServerHost | null = null;
     let adopted = false;
+    let upgradeNow = false;
     try {
       host = await createRemoteServerHost(sshHost);
-      if (await isStackRunning(host)) {
+      const running = await isStackRunning(host);
+      const version = await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
+      let journal: UpgradeJournal | null;
+      try {
+        journal = await readUpgradeJournal(host);
+      } catch (error) {
+        this.setStatus(sshHost, {
+          ...version,
+          upgrade: {
+            state: 'failed',
+            from: version.deployedVersion ?? 'an unknown version',
+            to: COMPATIBLE_SWITCH_VERSION,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+        return;
+      }
+      const owed = owedUpgrade(version.drift, journal);
+      upgradeNow = owed !== null && (running || journal !== null);
+      if (running && !upgradeNow) {
         const ports = await readPersistedPorts(host);
         if (ports) {
           await host.establishNetworking(ports);
           this.hosts.set(sshHost, host);
           adopted = true;
-          this.setStatus(sshHost, { phase: 'running', serverId });
+          this.setStatus(sshHost, { phase: 'running', serverId: server.id });
           // Only for a running stack: a stopped one sends nothing, so it
           // cannot be out of step with the user's answer.
           this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
@@ -146,16 +244,48 @@ class RemoteServerService {
         // Running but we don't know its ports — leave it stopped; the user can
         // restart to re-derive them rather than forward to the wrong ports.
       }
-      this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
+      this.setStatus(sshHost, { ...version, upgrade: owed && upgradeState(owed, upgradeNow) });
     } catch (error) {
       log.warn(`remote-switch-server: boot reconcile failed for ${sshHost}`, { error });
     } finally {
       // The adopted host owns the live port-forward; anything else is throwaway.
       if (!adopted) host?.dispose();
     }
+    if (!upgradeNow) return;
+    try {
+      await this.beginStart(sshHost, server.name, false);
+    } catch (error) {
+      // Only the reachability check throws rather than reporting a result.
+      log.warn(`remote-switch-server: could not upgrade ${sshHost}`, { error });
+      this.failUpgrade(sshHost, error instanceof Error ? error.message : String(error));
+    }
   }
 
-  async start(sshHost: string, serverName: string): Promise<StartLocalServerResult> {
+  /** Start (or restart) the host's stack at this build's pin, upgrading it
+   * first if it is behind. Joins a start already in flight for the host. */
+  start(sshHost: string, serverName: string): Promise<StartLocalServerResult> {
+    return this.track(sshHost, () => this.beginStart(sshHost, serverName, true));
+  }
+
+  private beginStart(
+    sshHost: string,
+    serverName: string,
+    activate: boolean
+  ): Promise<StartLocalServerResult> {
+    const inFlight = this.starting.get(sshHost);
+    if (inFlight) return inFlight;
+    const run = this.runStart(sshHost, serverName, activate).finally(() => {
+      this.starting.delete(sshHost);
+    });
+    this.starting.set(sshHost, run);
+    return run;
+  }
+
+  private async runStart(
+    sshHost: string,
+    serverName: string,
+    activate: boolean
+  ): Promise<StartLocalServerResult> {
     if (this.busy.has(sshHost)) {
       return { kind: 'error', message: `An operation is already in progress for ${sshHost}.` };
     }
@@ -166,6 +296,8 @@ class RemoteServerService {
     // Replace any prior live host (and its forward) for this alias.
     this.hosts.get(sshHost)?.dispose();
     this.hosts.delete(sshHost);
+    const current = this.getStatus(sshHost).upgrade;
+    const refused = current !== null && current.state !== 'updating';
     let host: RemoteServerHost | null = null;
     try {
       this.setStatus(sshHost, {
@@ -179,13 +311,16 @@ class RemoteServerService {
         host,
         ref: { kind: 'remote', sshHost },
         serverName,
+        activate,
         onMessage: (message) => this.setStatus(sshHost, { message }),
         onLog: (line) => events.emit(remoteServerLogChannel, { sshHost, line }),
+        onUpgrade: (owed) => this.setStatus(sshHost, { upgrade: upgradeState(owed, true) }),
         signal: abort.signal,
         checkoutRoot: null,
       });
       if (result.kind === 'docker-unavailable') {
         this.setStatus(sshHost, { phase: 'error', error: result.detail });
+        this.failUpgrade(sshHost, result.detail);
         host.dispose();
       } else if (result.kind === 'version-downgrade') {
         this.setStatus(sshHost, {
@@ -194,19 +329,24 @@ class RemoteServerService {
           error: switchVersionDowngradeMessage(result.deployed, result.expected),
           deployedVersion: result.deployed,
           drift: { deployed: result.deployed, expected: result.expected, direction: 'downgrade' },
+          upgrade: null,
         });
         host.dispose();
       } else if (result.kind === 'matrix-migration-failed') {
+        const error = matrixMigrationFailedMessage(result.deployed, result.expected);
         this.setStatus(sshHost, {
           phase: 'error',
           message: null,
-          error: matrixMigrationFailedMessage(result.deployed, result.expected),
+          error,
           deployedVersion: result.deployed,
         });
+        this.failUpgrade(sshHost, error);
       } else if (result.kind === 'error') {
         this.setStatus(sshHost, { phase: 'error', error: result.message });
+        this.failUpgrade(sshHost, result.message);
         host.dispose();
       } else {
+        const upgraded = this.getStatus(sshHost).upgrade !== null;
         // Keep the host alive — it owns the port-forward.
         this.hosts.set(sshHost, host);
         // The pipeline just converged the containers onto this build's pin, so
@@ -218,8 +358,12 @@ class RemoteServerService {
           error: null,
           deployedVersion: COMPATIBLE_SWITCH_VERSION,
           drift: null,
+          upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
         });
+        if (upgraded && refused) {
+          for (const listener of this.upgradeListeners) listener(result.serverId);
+        }
       }
       reportManagedServerStart('remote', result);
       return result;
@@ -228,12 +372,23 @@ class RemoteServerService {
       const message = error instanceof Error ? error.message : String(error);
       log.error(`remote-switch-server: start failed for ${sshHost}`, { error });
       this.setStatus(sshHost, { phase: 'error', error: message });
+      this.failUpgrade(sshHost, message);
       reportManagedServerStartThrew('remote');
       return { kind: 'error', message };
     } finally {
       this.busy.delete(sshHost);
       this.startAborts.delete(sshHost);
     }
+  }
+
+  /** Record why a host's upgrade did not finish. A start that was not an
+   * upgrade has nothing to record here; its error is on the status already. */
+  private failUpgrade(sshHost: string, error: string): void {
+    const upgrade = this.getStatus(sshHost).upgrade;
+    if (!upgrade) return;
+    this.setStatus(sshHost, {
+      upgrade: { state: 'failed', from: upgrade.from, to: upgrade.to, error },
+    });
   }
 
   async stop(sshHost: string): Promise<void> {
@@ -250,11 +405,13 @@ class RemoteServerService {
       host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
       this.setStatus(sshHost, { phase: 'stopping', message: 'Stopping containers…' });
       await stopStack(host);
+      const upgrade = this.getStatus(sshHost).upgrade;
       this.setStatus(sshHost, {
         phase: 'stopped',
         message: null,
         error: null,
         deployedTelemetry: null,
+        upgrade: upgrade && upgradeState(upgrade, false),
       });
       reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
@@ -295,6 +452,9 @@ class RemoteServerService {
         message: null,
         error: null,
         deployedTelemetry: null,
+        deployedVersion: null,
+        drift: null,
+        upgrade: null,
       });
       reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
