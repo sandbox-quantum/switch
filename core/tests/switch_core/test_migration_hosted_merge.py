@@ -113,7 +113,9 @@ async def _assert_merged_schema(connection: AsyncConnection) -> None:
     _, script = _script_directory()
     heads = script.get_heads()
     assert len(heads) == 1
-    ancestry = {revision.revision for revision in script.walk_revisions("base", heads[0])}
+    ancestry = {
+        revision.revision for revision in script.walk_revisions("base", heads[0])
+    }
     assert _MERGE_REVISION in ancestry
     versions = (
         (await connection.execute(text("SELECT version_num FROM alembic_version")))

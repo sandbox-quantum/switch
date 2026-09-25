@@ -25,7 +25,9 @@ def upgrade() -> None:
         "hosted_launches",
         sa.Column("relay_seq", sa.BigInteger(), server_default="0", nullable=False),
     )
-    op.add_column("hosted_operations", sa.Column("claimed_by", sa.Text(), nullable=True))
+    op.add_column(
+        "hosted_operations", sa.Column("claimed_by", sa.Text(), nullable=True)
+    )
     op.add_column(
         "hosted_operations", sa.Column("claimed_boot_id", sa.Text(), nullable=True)
     )

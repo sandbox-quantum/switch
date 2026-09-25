@@ -377,9 +377,7 @@ class HostedLaunch(TenantScoped, Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     worker_capability_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    worker_capability_encrypted: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )
+    worker_capability_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     worker_capability_revision: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
