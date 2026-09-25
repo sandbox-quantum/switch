@@ -11,9 +11,14 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy.exc import TimeoutError as PoolCheckoutTimeout
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from switch_core.observability.catalogue import HTTP_REQUEST_DURATION, HTTP_REQUESTS
+from switch_core.observability.catalogue import (
+    DB_POOL_TIMEOUTS,
+    HTTP_REQUEST_DURATION,
+    HTTP_REQUESTS,
+)
 from switch_core.observability.metrics import metrics
 
 # Every request the router could not place. The path is discarded: on a public
@@ -99,6 +104,14 @@ class MetricsMiddleware:
             await self.app(scope, receive, send_wrapper)
             if seen_status:
                 outcome = status_class(seen_status[0])
+        except PoolCheckoutTimeout:
+            # The pool queued this request and no connection came free within
+            # the timeout. It surfaces as a 5xx like anything else, but the
+            # cause is scarcity rather than a handler fault, so it is counted on
+            # its own — the signal a peak at the pool ceiling only implies.
+            outcome = "5xx"
+            registry.increment(DB_POOL_TIMEOUTS, {})
+            raise
         except Exception:
             outcome = "5xx"
             raise

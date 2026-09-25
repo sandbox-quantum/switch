@@ -1,8 +1,13 @@
 import pytest
 from fastapi import FastAPI
+from sqlalchemy.exc import TimeoutError as PoolCheckoutTimeout
 from starlette.testclient import TestClient
 
-from switch_core.observability.catalogue import HTTP_REQUEST_DURATION, HTTP_REQUESTS
+from switch_core.observability.catalogue import (
+    DB_POOL_TIMEOUTS,
+    HTTP_REQUEST_DURATION,
+    HTTP_REQUESTS,
+)
 from switch_core.observability.http import MetricsMiddleware
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
@@ -26,6 +31,12 @@ def _app() -> FastAPI:
     @app.get("/boom")
     async def boom() -> None:
         raise RuntimeError("boom")
+
+    @app.get("/pool-timeout")
+    async def pool_timeout() -> None:
+        # What a saturated pool raises when auth (or a handler) asks for a
+        # connection and none comes free within `db_pool_timeout`.
+        raise PoolCheckoutTimeout("QueuePool limit reached")
 
     @inner.get("/rooms")
     async def gateway_rooms() -> list[str]:
@@ -91,6 +102,33 @@ def test_an_unhandled_exception_is_still_counted(registry):
     attributes = dict(next(iter(counts)))
     assert attributes["route"] == "/boom"
     assert attributes["status_class"] == "5xx"
+
+
+def _timeout_count(registry: MetricsRegistry) -> float:
+    payloads = [p for p in registry.collect() if p.name == DB_POOL_TIMEOUTS.name]
+    if not payloads:
+        return 0.0
+    return sum(point.value for point in payloads[0].numbers)
+
+
+def test_a_pool_checkout_timeout_is_counted(registry):
+    client = TestClient(_app(), raise_server_exceptions=False)
+    client.get("/pool-timeout")
+
+    # Counted as a 5xx like any failure, and separately as the pool timeout it
+    # was — the signal a peak at the pool ceiling only implies.
+    counts = _counts(registry)
+    attributes = dict(next(iter(counts)))
+    assert attributes["route"] == "/pool-timeout"
+    assert attributes["status_class"] == "5xx"
+    assert _timeout_count(registry) == 1.0
+
+
+def test_an_ordinary_error_is_not_counted_as_a_pool_timeout(registry):
+    client = TestClient(_app(), raise_server_exceptions=False)
+    client.get("/boom")
+
+    assert _timeout_count(registry) == 0.0
 
 
 def test_duration_is_recorded_per_route(registry):
