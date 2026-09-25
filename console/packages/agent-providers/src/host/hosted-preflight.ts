@@ -767,15 +767,13 @@ async function checkCandidate(root: string): Promise<PreflightPlan | null> {
  * stopped worker's retained disk before Switch drops the tables its
  * dispositions need.
  */
-export async function checkHostedPreflight(
-  root: string,
-  scratch: string
-): Promise<PreflightCheck> {
+export async function checkHostedPreflight(root: string, scratch: string): Promise<PreflightCheck> {
   if (isWithin(root, scratch) || isWithin(scratch, root))
     throw new Error('The scratch directory must be outside the volume it checks.');
   await mkdir(scratch, { mode: 0o700 });
   const copy = join(scratch, 'state');
-  const original = (file: string) => (isWithin(copy, file) ? join(root, relative(copy, file)) : file);
+  const original = (file: string) =>
+    isWithin(copy, file) ? join(root, relative(copy, file)) : file;
   try {
     await cp(root, copy, {
       recursive: true,

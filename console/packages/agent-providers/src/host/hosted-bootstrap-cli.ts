@@ -2,8 +2,8 @@
 import { fileURLToPath } from 'node:url';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { runHostedBootstrap } from './hosted-bootstrap';
-import { checkHostedPreflight } from './hosted-preflight';
 import { runGitHubCli, runGitHubCredentialHelper } from './hosted-github';
+import { checkHostedPreflight } from './hosted-preflight';
 import { superviseSharedHost } from './supervisor';
 import { runCredentialVerification } from './verify-credential';
 
