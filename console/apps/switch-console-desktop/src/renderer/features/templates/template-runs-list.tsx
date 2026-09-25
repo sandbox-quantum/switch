@@ -1,4 +1,4 @@
-import { Boxes, ChevronRight, DoorOpen, Play, Square } from 'lucide-react';
+import { Boxes, DoorOpen, Play, Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TemplateRun } from '@main/core/switch-servers/gateway-client';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
@@ -7,7 +7,6 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
-import { cn } from '@renderer/utils/utils';
 import { formatTimeAgo, isLiveRun, runAuthor, runLabel } from './template-runs';
 
 /** How often shown runs are asked for again while one of them can still change. */
@@ -67,6 +66,14 @@ export function useTemplateRuns(serverId: string): {
   return { runs, replace };
 }
 
+/** The columns every row of Recently used shares, runs and documents alike:
+ * name, status, size, when, and one action slot. */
+export const RECENT_ROW =
+  'grid grid-cols-[minmax(0,1fr)_6.5rem_4.5rem_4.5rem_11rem] items-center gap-x-3 px-3 py-1.5 min-h-10 text-sm';
+
+/** The one button style of the action column. */
+export const RECENT_ACTION = 'h-7 px-2.5 text-xs';
+
 function RunState({ run }: { run: TemplateRun }) {
   if (run.state === 'paused')
     return (
@@ -77,7 +84,7 @@ function RunState({ run }: { run: TemplateRun }) {
   if (run.state === 'stopped') return <StatusBadge tone="neutral">Stopped</StatusBadge>;
   if (!run.working) return null;
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-foreground-muted">
+    <span className="inline-flex items-center gap-1.5 text-xs text-foreground-muted">
       <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
       Working
     </span>
@@ -85,10 +92,10 @@ function RunState({ run }: { run: TemplateRun }) {
 }
 
 /**
- * One run in "Recently used": what it came from, who made its rooms and when
- * it last moved. Continue shows while it is paused and Stop while something
- * can still happen in it: an agent is working, or it is paused. Opening it
- * lists the rooms it made.
+ * One run in "Recently used", in the shared columns: what it came from and
+ * who made its rooms, its state, how many rooms, when it last moved, and
+ * Continue or Stop when something can still happen in it. The name opens the
+ * room the run started from.
  */
 export function TemplateRunRow({
   serverId,
@@ -99,7 +106,6 @@ export function TemplateRunRow({
   run: TemplateRun;
   onChanged: (run: TemplateRun) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<'stop' | 'continue' | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
   const Icon = run.rooms.length > 1 ? Boxes : DoorOpen;
@@ -132,95 +138,59 @@ export function TemplateRunRow({
   };
 
   return (
-    <div className="rounded-md border border-border">
-      <div className="flex items-center transition-colors hover:bg-[var(--sel-soft)]">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((o) => !o)}
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-2 pl-3 text-left text-sm"
-        >
-          <ChevronRight
-            className={cn(
-              'size-3.5 shrink-0 text-foreground-muted transition-transform',
-              open && 'rotate-90'
-            )}
-          />
-          <Icon className="size-3.5 shrink-0 text-foreground-muted" />
-          <span className="truncate">{runLabel(run)}</span>
-          <span className="shrink-0 text-xs text-foreground-passive">by {runAuthor(run)}</span>
-          <RunState run={run} />
-        </button>
-        <span className="flex shrink-0 items-center gap-3 pr-3 pl-3 text-xs text-foreground-passive">
-          {run.canControl && paused && (
-            <Button
-              type="button"
-              size="sm"
-              className="h-7 text-xs"
-              disabled={busy !== null}
-              onClick={() => void change('continue')}
-            >
-              <Play className="size-3.5" />
-              {busy === 'continue' ? 'Continuing…' : 'Continue'}
-            </Button>
-          )}
-          {canStop && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-              disabled={busy !== null}
-              title="Agents can no longer create rooms in this run. The rooms stay."
-              onClick={() => {
-                // A stopped run cannot be started again, so the first click asks.
-                if (confirmStop) void change('stop');
-                else setConfirmStop(true);
-              }}
-              onBlur={() => setConfirmStop(false)}
-            >
-              <Square className="size-3.5" />
-              {busy === 'stop' ? 'Stopping…' : confirmStop ? 'Click again to stop' : 'Stop'}
-            </Button>
-          )}
-          <span>
-            {rooms} {rooms === 1 ? 'room' : 'rooms'}
-          </span>
-          <span>{formatTimeAgo(Date.parse(run.lastActivityAt))}</span>
-        </span>
-      </div>
-      {open && (
-        <div className="flex flex-col gap-1.5 border-t border-border px-3 py-2">
-          {paused && run.reason && <p className="text-xs text-foreground-warning">{run.reason}</p>}
-          {run.state === 'stopped' && (
-            <p className="text-xs text-foreground-muted">
-              {run.changedByName ? `Stopped by ${run.changedByName}.` : 'Stopped.'}
-            </p>
-          )}
-          <ul className="flex flex-col">
-            {run.rooms.map((room) => (
-              <li key={room.id} className="flex items-center gap-2 py-0.5 text-sm">
-                <DoorOpen className="size-3.5 shrink-0 text-foreground-muted" />
-                {room.archived ? (
-                  <span className="truncate text-foreground-muted">{room.name}</span>
-                ) : (
-                  <button
-                    type="button"
-                    className="cursor-pointer truncate text-left hover:underline"
-                    onClick={() => void openRoom(room.id)}
-                  >
-                    {room.name}
-                  </button>
-                )}
-                <span className="shrink-0 text-xs text-foreground-passive">
-                  {formatTimeAgo(Date.parse(room.createdAt))}
-                  {room.archived ? ' · archived' : ''}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+    <div className={RECENT_ROW}>
+      <button
+        type="button"
+        onClick={() => void openRoom(run.rootRoomId)}
+        className="flex min-w-0 cursor-pointer items-center gap-2 text-left hover:underline"
+      >
+        <Icon className="size-3.5 shrink-0 text-foreground-muted" />
+        <span className="truncate">{runLabel(run)}</span>
+        <span className="shrink-0 text-xs text-foreground-passive">{runAuthor(run)}</span>
+      </button>
+      <span>
+        <RunState run={run} />
+      </span>
+      <span className="text-xs text-foreground-passive">
+        {rooms} {rooms === 1 ? 'room' : 'rooms'}
+      </span>
+      <span className="text-xs text-foreground-passive">
+        {formatTimeAgo(Date.parse(run.lastActivityAt))}
+      </span>
+      <span className="flex justify-end gap-1.5">
+        {run.canControl && paused && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className={RECENT_ACTION}
+            disabled={busy !== null}
+            onClick={() => void change('continue')}
+          >
+            <Play className="size-3.5" />
+            {busy === 'continue' ? 'Continuing…' : 'Continue'}
+          </Button>
+        )}
+        {canStop && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className={RECENT_ACTION}
+            disabled={busy !== null}
+            title="Agents can no longer create rooms in this run. The rooms stay."
+            onClick={() => {
+              // A stopped run cannot be started again, so the first click asks.
+              if (confirmStop) void change('stop');
+              else setConfirmStop(true);
+            }}
+            onBlur={() => setConfirmStop(false)}
+          >
+            <Square className="size-3.5" />
+            {busy === 'stop' ? 'Stopping…' : confirmStop ? 'Sure?' : 'Stop'}
+          </Button>
+        )}
+      </span>
     </div>
   );
 }

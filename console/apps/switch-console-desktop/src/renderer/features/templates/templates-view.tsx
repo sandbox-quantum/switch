@@ -33,11 +33,12 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
+import { cn } from '@renderer/utils/utils';
 import { AgentRefusalsRow } from './agent-refusals-list';
 import { prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
 import { formatTimeAgo, runMatches } from './template-runs';
-import { TemplateRunRow, useTemplateRuns } from './template-runs-list';
+import { RECENT_ACTION, RECENT_ROW, TemplateRunRow, useTemplateRuns } from './template-runs-list';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -349,11 +350,17 @@ function RecentsSection({
         Recently used
       </h3>
       <p className="mt-0.5 mb-3 text-xs text-foreground-muted">
-        Template runs on this workspace, and documents you used from this Console. Open a run to see
-        the rooms it made. Documents are kept here only; Save to workspace makes one a template
-        everyone on the workspace can find.
+        Template runs on this workspace, and documents you used from this Console. Documents are
+        kept here only; Save to workspace makes one a template everyone on the workspace can find.
       </p>
-      <div className="flex flex-col gap-1">
+      <div className="divide-y divide-border rounded-md border border-border">
+        <div className={cn(RECENT_ROW, 'text-[11px] font-medium text-foreground-passive')}>
+          <span>Name</span>
+          <span>Status</span>
+          <span>Size</span>
+          <span>When</span>
+          <span />
+        </div>
         {shownRuns.map((run) => (
           <TemplateRunRow
             key={run.rootRoomId}
@@ -362,53 +369,47 @@ function RecentsSection({
             onChanged={replaceRun}
           />
         ))}
-        {shown.map((r) => (
-          // The same box as a run above, ending in the time like a run does.
-          <div
-            key={r.yamlText}
-            className="flex items-center rounded-md border border-border transition-colors hover:bg-[var(--sel-soft)]"
-          >
-            <button
-              type="button"
-              onClick={() =>
-                navigate('templateImport', {
-                  serverId,
-                  yamlText: r.yamlText,
-                  sourceName: r.name,
-                })
-              }
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-2 pl-3 text-left text-sm"
-            >
-              <span className="flex min-w-0 items-center gap-2">
-                <span className="size-3.5 shrink-0" aria-hidden />
-                {(() => {
-                  const Icon = KIND_ICON[r.kind];
-                  return <Icon className="size-3.5 shrink-0 text-foreground-muted" />;
-                })()}
+        {shown.map((r) => {
+          const Icon = KIND_ICON[r.kind];
+          const saved = onWorkspace.has(r.name);
+          return (
+            <div key={r.yamlText} className={RECENT_ROW}>
+              <button
+                type="button"
+                onClick={() =>
+                  navigate('templateImport', {
+                    serverId,
+                    yamlText: r.yamlText,
+                    sourceName: r.name,
+                  })
+                }
+                className="flex min-w-0 cursor-pointer items-center gap-2 text-left hover:underline"
+              >
+                <Icon className="size-3.5 shrink-0 text-foreground-muted" />
                 <span className="truncate">{r.name}</span>
-              </span>
-            </button>
-            <span className="flex shrink-0 items-center gap-3 pr-3 pl-3">
-              {onWorkspace.has(r.name) ? (
-                <span className="text-xs text-foreground-passive">On the workspace</span>
-              ) : (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-xs"
-                  title="Save to the workspace, so everyone on it can use it"
-                  disabled={saving === r.yamlText}
-                  onClick={() => void saveToWorkspace(r)}
-                >
-                  <Save className="size-3.5" />
-                  Save to workspace
-                </Button>
-              )}
+              </button>
+              <span className="text-xs text-foreground-passive">{saved ? 'Saved' : ''}</span>
+              <span />
               <span className="text-xs text-foreground-passive">{formatTimeAgo(r.usedAt)}</span>
-            </span>
-          </div>
-        ))}
+              <span className="flex justify-end">
+                {!saved && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={RECENT_ACTION}
+                    title="Save to the workspace, so everyone on it can use it"
+                    disabled={saving === r.yamlText}
+                    onClick={() => void saveToWorkspace(r)}
+                  >
+                    <Save className="size-3.5" />
+                    Save to workspace
+                  </Button>
+                )}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
