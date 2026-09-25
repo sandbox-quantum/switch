@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  type HostStartSource,
   SessionHostFailedError,
   sharedConfigSchema,
   sharedSessionRoot,
@@ -101,7 +102,12 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     announceSessionIssue(this.params.sessionId);
   }
 
-  async start(session: Session, isResuming?: boolean, initialPrompt?: string): Promise<void> {
+  async start(
+    session: Session,
+    isResuming?: boolean,
+    initialPrompt?: string,
+    startSource: HostStartSource | null = null
+  ): Promise<void> {
     if (this.starting) return this.opened ?? this.starting;
     this.setStartupError(null);
     let connected!: () => void;
@@ -110,7 +116,14 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       connected = resolve;
       failed = reject;
     });
-    this.starting = this.open(session, initialPrompt, isResuming ?? false, false, connected);
+    this.starting = this.open(
+      session,
+      initialPrompt,
+      isResuming ?? false,
+      false,
+      startSource,
+      connected
+    );
     void this.starting
       .then(connected, (error: unknown) => {
         this.setStartupError(error instanceof Error ? error.message : String(error));
@@ -131,6 +144,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     initialPrompt: string | undefined,
     isResuming: boolean,
     restart: boolean,
+    startSource: HostStartSource | null,
     connected: () => void
   ): Promise<void> {
     this.startupStage = 'Preparing the session on its host…';
@@ -175,13 +189,13 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       // Started by the agent's sidecar, which is then its parent: it talks to
       // the session over IPC, and Console reaches it through the sidecar.
       await withSidecar(session.agentId, (client) =>
-        client.ensure({ config, resuming: isResuming, restart })
+        client.ensure({ config, resuming: isResuming, restart, startSource })
       );
     } else {
       // A local session is supervised by Console, so it ends when Console does.
       root = sharedSessionRoot(session.id);
       readFailure = () => readLocalHostFailure(root);
-      await startLocalSession(root, config, { resuming: isResuming, restart });
+      await startLocalSession(root, config, { resuming: isResuming, restart, startSource });
     }
     this.startupStage = 'Connecting to the session host…';
     let roomBound = false;
@@ -341,7 +355,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     await this.resolveServer();
     if (this.starting) await this.starting;
     this.setStartupError(null);
-    this.starting = this.open(session, undefined, true, true, () => {});
+    this.starting = this.open(session, undefined, true, true, null, () => {});
     try {
       await this.starting;
     } catch (error) {

@@ -303,6 +303,9 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         initialPrompt,
         agentName: effectiveAgentName || undefined,
         entryPoint,
+        // A person pressed Create. Reported by this app's own telemetry and,
+        // by the session's host, to Switch.
+        startSource: 'user',
         // Whether a room was asked for, never which one. Declared here because
         // the record `noteIntendedRoom` just wrote is consumed while this
         // session launches, so nothing downstream can read the answer back.

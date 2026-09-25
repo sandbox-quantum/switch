@@ -119,9 +119,24 @@ describe('createSession', () => {
     expect(mocks.startSession).toHaveBeenCalledWith(
       expect.not.objectContaining({ autoApprove: stale }),
       false,
-      undefined
+      undefined,
+      null
     );
   });
+
+  it.each([
+    ['user', 'user'],
+    ['auto', 'automation'],
+    ['unknown', null],
+    [undefined, null],
+  ] as const)(
+    'tells the host a session started by %s was started by %s',
+    async (startSource, reported) => {
+      const result = await createSession({ ...baseParams, startSource });
+      expect(result.success).toBe(true);
+      expect(mocks.startSession.mock.calls[0]![3]).toBe(reported);
+    }
+  );
 
   it('adopts a session at a closed location without provisioning or launching it', async () => {
     mocks.getLocation.mockReturnValue(undefined);

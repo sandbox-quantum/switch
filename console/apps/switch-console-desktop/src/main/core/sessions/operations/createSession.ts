@@ -1,3 +1,4 @@
+import type { HostStartSource } from '@switch-console/agent-providers';
 import { err, ok, type Result } from '@switch-console/shared';
 import { eq, sql } from 'drizzle-orm';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
@@ -11,9 +12,21 @@ import type {
   CreateSessionSuccess,
   CreateSessionParams,
 } from '@shared/core/sessions/sessions';
+import type { SessionStartSource } from '@shared/core/telemetry/reporting';
 import { provisionSessionRuntime } from '../session-builder';
 import { sessionRuntimeManager } from '../session-runtime-manager';
 import { mapSessionRowToSession } from '../utils/utils';
+
+/**
+ * What the session's host tells Switch about how it started. `adopted` never
+ * gets here with a launch, and a caller that said nothing is reported as
+ * `unknown` by the host rather than guessed at.
+ */
+function hostStartSource(source: SessionStartSource | undefined): HostStartSource | null {
+  if (source === 'user') return 'user';
+  if (source === 'auto') return 'automation';
+  return null;
+}
 
 export async function createSession(
   params: CreateSessionParams
@@ -72,7 +85,12 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    await built.agent.start(session, params.attach === false, params.initialPrompt);
+    await built.agent.start(
+      session,
+      params.attach === false,
+      params.initialPrompt,
+      hostStartSource(params.startSource)
+    );
   } catch (e) {
     await db.update(sessions).set({ status: 'review' }).where(eq(sessions.id, session.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });

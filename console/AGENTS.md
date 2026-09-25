@@ -483,9 +483,12 @@ pnpm run lint
   distribution. Note also that `satisfies { [K in Name]: readonly (keyof T[K])[] }`
   constrains what an array *may* contain, never what it *must* — that is why
   `_everyPropertyIsAllowListed` is a separate check.
-- **The sidecar sends nothing.** It runs headless on a user's VM with no consent prompt
-  and no access to this setting, so sessions it starts are not counted. Do not "fix" that
-  by having it report; the gate is not reachable from there.
+- **The sidecar sends nothing to the relay.** It runs headless on a user's VM with no
+  consent prompt and no access to this setting, so sessions it starts are not counted in
+  this app's telemetry. Do not "fix" that by having it report; the gate is not reachable
+  from there. What a session host does tell is the Switch server it already works for:
+  that a new session started and how (`host/session-start.ts`), as ordinary traffic to
+  that server. Whether that leaves the server as telemetry is the server's own setting.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.

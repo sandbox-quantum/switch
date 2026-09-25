@@ -614,6 +614,9 @@ export async function runSharedWatcher(
         watcher: false,
         restart: false,
         supervision,
+        // Every session this watcher starts answers a room message. Recorded
+        // only if this launch creates the session, so a relaunch is not a start.
+        startSource: 'room',
       });
     };
     const superseded = await supersededSessions(template.session.agentId, supervision);

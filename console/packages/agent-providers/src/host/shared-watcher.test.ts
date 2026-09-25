@@ -1054,6 +1054,8 @@ it('hands a session it has just created the event that created it', async () => 
   expect(started[0]!.parked).toMatchObject([
     { sequence: 1, roomId: 'room', messageId: 'message-1' },
   ]);
+  // Started because the room addressed the agent, which its host reports.
+  expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].startSource).toBe('room');
   expect(hosts.to(join(root, assigned!.session.sessionId))).toMatchObject([
     {
       type: 'room',

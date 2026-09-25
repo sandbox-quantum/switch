@@ -90,10 +90,17 @@ it('relays requests to a session host and its events back', async () => {
   await vi.waitFor(() => expect(heard).toEqual([1]));
   unsubscribe();
 
-  expect(await console.ensure({ config: {}, resuming: false, restart: false })).toEqual({
+  expect(
+    await console.ensure({ config: {}, resuming: false, restart: false, startSource: 'room' })
+  ).toEqual({
     created: true,
   });
-  expect(ensure).toHaveBeenCalledWith({ config: {}, resuming: false, restart: false });
+  expect(ensure).toHaveBeenCalledWith({
+    config: {},
+    resuming: false,
+    restart: false,
+    startSource: 'room',
+  });
 
   console.close();
   stop.abort();
