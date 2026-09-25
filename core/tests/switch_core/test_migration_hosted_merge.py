@@ -174,13 +174,11 @@ async def _assert_runtime_grants(connection: AsyncConnection) -> None:
     try:
         await grant_runtime_role(connection, role)
         for table in _HOSTED_TABLES:
-            assert await connection.scalar(
-                text(
-                    "SELECT has_table_privilege(:role, :table, "
-                    "'SELECT, INSERT, UPDATE, DELETE')"
-                ),
-                {"role": role, "table": table},
-            ), table
+            for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                assert await connection.scalar(
+                    text("SELECT has_table_privilege(:role, :table, :privilege)"),
+                    {"role": role, "table": table, "privilege": privilege},
+                ), (table, privilege)
             assert not await connection.scalar(
                 text(
                     "SELECT pg_has_role(:role, t.tableowner, 'USAGE') FROM pg_tables t WHERE t.tablename = :table"
