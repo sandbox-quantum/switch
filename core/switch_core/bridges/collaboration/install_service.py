@@ -255,6 +255,9 @@ class MessagingInstallService:
                 # app create channels in a customer's workspace is a decision
                 # someone should make rather than inherit.
                 channel_creation_enabled=False,
+                # A person installed the app: this is them connecting their
+                # platform, which is exactly what onboarding measures.
+                preconfigured=False,
             )
 
             async with tenant_session(

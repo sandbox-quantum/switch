@@ -162,6 +162,7 @@ async def test_registering_telegram_cannot_grant_channel_creation() -> None:
             display_name="Acme Telegram",
             connection_config={"bot_token": "t", "bot_username": "b"},
             channel_creation_enabled=True,
+            preconfigured=False,
         )
 
 
