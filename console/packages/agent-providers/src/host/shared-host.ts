@@ -19,6 +19,7 @@ import {
 import { connectParent, type ParentChannel, type ParentPort } from './session-channel';
 import { HostedSession } from './session-host';
 import { startSessionMcp } from './session-mcp';
+import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
 import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
 import { SharedState } from './shared-state';
 
@@ -31,8 +32,9 @@ import { SharedState } from './shared-state';
  * agent's sidecar for a remote one) and takes everything over that IPC
  * channel: room messages the agent's controller routed to it, commands from
  * Console, room controls and approval wakes. What it reports goes to the
- * `/agent-sessions` routes: a row per turn step, the requests a person can
- * answer, and the acknowledgement of answers it has applied.
+ * `/agent-sessions` routes: that a new session started and how, a row per
+ * turn step, the requests a person can answer, and the acknowledgement of
+ * answers it has applied.
  *
  * A host with a parent parks itself after `parkAfterMs` with nothing to do:
  * it records `parked` and exits, and its parent starts it again when the
@@ -598,10 +600,45 @@ export async function runSharedHost(
         );
       if (applied) await sendFollowup(owed);
     }
+    /**
+     * Tells the server, once, that this session is new and how it started —
+     * what its launcher recorded when it created the state root. Owed until
+     * the server answers, so a host stopped before then reports it next time;
+     * the server counts a repeat once.
+     *
+     * Its own failures stay its own. A server that predates the route answers
+     * a bare 404, which says nothing about the activity routes, so it is not
+     * taken as the `unsupported` that switches all reporting off.
+     */
+    const reportStart = async (): Promise<void> => {
+      let owed: OwedSessionStart | null;
+      try {
+        owed = await owedSessionStart(options.root);
+      } catch (error) {
+        console.warn(
+          `Could not read how this session started, so it is not reported: ${String(error)}`
+        );
+        await settleSessionStart(options.root);
+        return;
+      }
+      if (!owed) return;
+      try {
+        await agentSessions(`${sessionPath}/started`, 'POST', { start_source: owed });
+      } catch (error) {
+        if (!(error instanceof RequestError)) throw error;
+        if (error.status === 404 && !error.code)
+          console.warn(
+            'This Switch server does not accept session start reports, so how this session started is not reported.'
+          );
+        else console.warn(`Switch refused this session's start report: ${error.message}`);
+      }
+      await settleSessionStart(options.root);
+    };
     // Reporting runs beside the session rather than in its way: while Switch
     // is unreachable the reports wait and retry, and the session keeps working.
     let reportingFailure: unknown = null;
     reporting = (async () => {
+      await reportStart();
       let force = true;
       while (!executionSignal.aborted) {
         await report();

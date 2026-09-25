@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import type { SessionLinks } from './session-channel';
+import { recordSessionStart, type HostStartSource } from './session-start';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { superviseSharedHost } from './supervisor';
 
@@ -49,6 +50,12 @@ type LaunchInput = {
   watcher: boolean;
   restart: boolean;
   supervision: Supervision;
+  /**
+   * How the session came to start, recorded only when this launch creates
+   * its state root. Null when the caller cannot say; it is reported as
+   * `unknown` rather than not at all.
+   */
+  startSource: HostStartSource | null;
 };
 
 export function detachedSupervision(entrypoint: string): Supervision {
@@ -172,6 +179,9 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
     } finally {
       await unlink(temporary);
     }
+    // Only the launch that created the root: every later one — a resume, a
+    // restart, a relaunch after parking — is the same session going on.
+    if (created && !input.watcher) await recordSessionStart(input.root, input.startSource);
     if (process.platform !== 'win32') {
       const directory = await open(input.root, 'r');
       try {

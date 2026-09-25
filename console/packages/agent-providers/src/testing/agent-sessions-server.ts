@@ -13,10 +13,12 @@ export type AgentSessionsCall = { method: string; path: string; body: unknown };
  * Setting `state.unavailable` answers every such call with 503, as an
  * unreachable Switch would, and `state.refusesUsage` refuses an activity row
  * carrying usage with 422, as a server that predates it does.
+ * `state.startUnknown` answers a session start report with a bare 404, as a
+ * server that predates that route does.
  */
 export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
   const calls: AgentSessionsCall[] = [];
-  const state = { outcomes, unavailable: false, refusesUsage: false };
+  const state = { outcomes, unavailable: false, refusesUsage: false, startUnknown: false };
   vi.stubGlobal('fetch', async (url: string, options: RequestInit = {}) => {
     const path = new URL(url).pathname;
     if (!path.includes('/agent-sessions/')) return server(url, options);
@@ -30,6 +32,10 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
     if (path.endsWith('/approvals/outcomes')) {
       const listed = state.outcomes;
       return Response.json(listed);
+    }
+    if (path.endsWith('/started')) {
+      if (state.startUnknown) return Response.json({ detail: 'Not Found' }, { status: 404 });
+      return Response.json({ reported: true });
     }
     if (path.endsWith('/activity')) {
       const body = calls.at(-1)!.body as Record<string, unknown>;
