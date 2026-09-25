@@ -68,7 +68,12 @@ export function useTemplateRuns(serverId: string): {
 }
 
 function RunState({ run }: { run: TemplateRun }) {
-  if (run.state === 'paused') return <StatusBadge tone="warning">Paused</StatusBadge>;
+  if (run.state === 'paused')
+    return (
+      <span title={run.reason ?? undefined}>
+        <StatusBadge tone="warning">Paused</StatusBadge>
+      </span>
+    );
   if (run.state === 'stopped') return <StatusBadge tone="neutral">Stopped</StatusBadge>;
   if (!run.working) return null;
   return (
