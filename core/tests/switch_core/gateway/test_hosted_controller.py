@@ -369,15 +369,20 @@ async def test_worker_claim_is_durable_and_stale_claim_is_not_replayed(controlle
         )
         await session.commit()
     claim_path = f"/hosted/operations/{operation_id}/claim"
+    claimed_by = f"1:{conn.id}:{conn.stream_generation}"
     claim = await client.post(claim_path, json=fence(conn))
     assert claim.status_code == 200, claim.text
     assert claim.json()["id"] == operation_id
     assert claim.json()["state"] == "claimed"
-    second = await client.post(claim_path, json=fence(conn))
+    other_boot = attach_worker(
+        service, agent_id, request_id, connection_id=conn.id, boot_id="boot-b"
+    )
+    second = await client.post(claim_path, json=fence(other_boot))
     assert second.status_code == 409
+    conn = attach_worker(service, agent_id, request_id, connection_id=conn.id)
     async with factory() as session:
         row = await session.get(HostedOperation, (require_tenant_id(), operation_id))
-        assert row.claimed_by == f"1:{conn.id}:{conn.stream_generation}"
+        assert row.claimed_by == claimed_by
         assert row.claimed_boot_id == "boot-a"
         row.updated_at = datetime.now(UTC) - timedelta(minutes=6)
         await session.commit()
@@ -437,6 +442,47 @@ async def test_operation_claim_is_refused_to_a_non_worker(controller_app):
     refused = await client.post(f"/hosted/operations/{operation_id}/claim", json=stale)
     assert refused.status_code == 409
     assert refused.json()["detail"]["code"] == "generation_changed"
+
+
+async def test_a_lost_claim_reply_is_offered_again_and_claimed_once(controller_app):
+    client, request_id, agent_id, service, factory, _ = controller_app
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    operation_id = await _queued_operation(factory, request_id)
+    conn = attach_worker(service, agent_id, request_id)
+    claim_path = f"/hosted/operations/{operation_id}/claim"
+    assert (await client.post(claim_path, json=fence(conn))).status_code == 200
+
+    idle = {
+        "report_seq": 1,
+        "relays_through": 0,
+        "busy": False,
+        "reasons": [],
+        "sessions": {"total": 0, "live": 0, "parked": 0, "failed": 0},
+    }
+    report = await client.post(
+        f"/agents/{agent_id}/connection/idle", json={**fence(conn), **idle}
+    )
+    assert report.status_code == 200, report.text
+    assert report.json()["queued_operations"] == [operation_id]
+
+    reattached = attach_worker(service, agent_id, request_id, connection_id=conn.id)
+    again = await client.post(claim_path, json=fence(reattached))
+    assert again.status_code == 200, again.text
+    assert again.json()["state"] == "claimed"
+    result = await client.post(
+        f"/hosted/operations/{operation_id}/result",
+        json={**fence(reattached), "state": "applied", "error": None},
+    )
+    assert result.status_code == 200
+    report = await client.post(
+        f"/agents/{agent_id}/connection/idle",
+        json={**fence(reattached), **idle, "report_seq": 2},
+    )
+    assert report.json()["queued_operations"] == []
+    assert (await client.post(claim_path, json=fence(reattached))).status_code == 409
 
 
 async def test_lost_result_is_reposted_from_a_later_generation(controller_app):

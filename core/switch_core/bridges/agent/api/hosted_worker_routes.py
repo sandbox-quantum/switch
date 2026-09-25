@@ -196,7 +196,9 @@ async def admit_worker(
                 "fresh_for_s": IDLE_FRESH_FOR_SECONDS,
             },
             "credential_revision": await store.credential_revision(session, launch),
-            "queued_operations": await store.queued_operation_ids(session, launch),
+            "queued_operations": await store.queued_operation_ids(
+                session, launch, boot_id
+            ),
             "relay_fence": launch.relay_seq,
             "cancelled": await HostedMailboxStore().cancelled_entries(
                 session, agent.id
@@ -367,7 +369,9 @@ async def idle_report(
     if launch is None or launch.revision != conn.worker.launch_revision:
         return {"queued_operations": [], "credential_revision": None}
     return {
-        "queued_operations": await store.queued_operation_ids(session, launch),
+        "queued_operations": await store.queued_operation_ids(
+            session, launch, conn.worker.boot_id
+        ),
         "credential_revision": await store.credential_revision(session, launch),
     }
 

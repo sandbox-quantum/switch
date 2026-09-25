@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import case, exists, select, text, update
+from sqlalchemy import and_, case, exists, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.crypto import decrypt_token, encrypt_token
@@ -216,8 +216,14 @@ class HostedLaunchStore:
         )
 
     async def queued_operation_ids(
-        self, session: AsyncSession, launch: HostedLaunch
+        self, session: AsyncSession, launch: HostedLaunch, boot_id: str
     ) -> list[str]:
+        """The operations the worker on `boot_id` should claim.
+
+        Includes those that boot already claimed without a result: the claim
+        reply may have been lost, and the worker runs an operation only after
+        journaling its claim, so claiming again never runs it twice.
+        """
         return list(
             await session.scalars(
                 select(HostedOperation.id)
@@ -225,7 +231,13 @@ class HostedLaunchStore:
                     HostedOperation.tenant_id == require_tenant_id(),
                     HostedOperation.launch_id == launch.id,
                     HostedOperation.launch_revision == launch.revision,
-                    HostedOperation.state == "queued",
+                    or_(
+                        HostedOperation.state == "queued",
+                        and_(
+                            HostedOperation.state == "claimed",
+                            HostedOperation.claimed_boot_id == boot_id,
+                        ),
+                    ),
                 )
                 .order_by(HostedOperation.created_at)
             )

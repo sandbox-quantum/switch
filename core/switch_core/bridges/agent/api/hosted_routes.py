@@ -185,8 +185,12 @@ async def claim_operation(
     launch = await operation_launch(session, agent)
     operation = await locked_operation(session, launch, operation_id)
     assert conn.worker is not None
+    reclaim = (
+        operation.state == "claimed"
+        and operation.claimed_boot_id == conn.worker.boot_id
+    )
     if (
-        operation.state != "queued"
+        (operation.state != "queued" and not reclaim)
         or operation.launch_revision != launch.revision
         or conn.worker.launch_revision != launch.revision
     ):

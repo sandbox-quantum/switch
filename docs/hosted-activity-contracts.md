@@ -973,8 +973,13 @@ other session actions go through the relay.
   `/operations/claim`. It moves `queued → claimed` only for the attached
   worker at `operation.launch_revision`, storing `claimed_by =
   core_boot:connection_id:generation` and `claimed_boot_id` (new columns).
-  Anything else is 409, including a second claim. A doorbell for a claimed or
-  finished id is ignored.
+  The host boot that claimed may claim again while the row is still `claimed`
+  (`claimed_boot_id` matches): its claim reply may have been lost, and the
+  watcher runs an operation only after journaling its claim, so a repeat claim
+  never runs it twice. `worker_attached.queued_operations` and the idle-report
+  response list those ids for that boot alongside the `queued` ones. Anything
+  else is 409, including a claim from another boot. A doorbell for a claimed
+  or finished id is ignored.
 - **Result**: `POST /hosted/operations/{id}/result` as today, plus
   `{connection_id, generation}`. The watcher writes the outcome to
   `operations.jsonl` before posting and re-posts every unconfirmed outcome on
