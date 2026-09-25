@@ -2894,6 +2894,16 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.8.0] - 2026-09-25
+
+#### Added
+- Attaches as a hosted worker on agent-protocol 7: the event stream opens with
+  the worker capability and host identity, hands the protocol-7 frames to the
+  worker, stops for good on a terminal worker refusal or a superseded launch,
+  and fences hosted up-calls by the connection and incarnation it holds.
+- States a retained volume's layout version on open and uploads its cutover
+  manifest until Switch confirms it.
+
 ### [0.7.0] - 2026-09-25
 
 #### Changed

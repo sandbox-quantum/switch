@@ -84,7 +84,7 @@ artifacts:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.7.0
+    version: 0.8.0
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
