@@ -1975,7 +1975,7 @@ it('answers an addressed message in the room when auto-start is off', async () =
     await watcher.stream.onEvent!(addressed(1, 'room'));
     await eventually(() => acks().includes('refused:message-1'));
     await eventually(() => notices().length === 1);
-    expect(notices()).toEqual(['capacity:message-1']);
+    expect(notices()).toEqual(['auto_start_off:message-1']);
     expect(ensureSharedProcess).not.toHaveBeenCalled();
   } finally {
     watcher.abort.abort();

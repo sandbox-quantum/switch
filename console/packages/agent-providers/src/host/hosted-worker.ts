@@ -101,6 +101,7 @@ export type NoticeReason =
   | 'delivery'
   | 'conversation'
   | 'capacity'
+  | 'auto_start_off'
   | 'stopped'
   | 'expired'
   | 'cancelled'
@@ -420,6 +421,7 @@ const noticeRecordSchema = z.union([
         'delivery',
         'conversation',
         'capacity',
+        'auto_start_off',
         'stopped',
         'expired',
         'cancelled',

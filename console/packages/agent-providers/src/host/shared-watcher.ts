@@ -933,12 +933,11 @@ export async function runSharedWatcher(
     const refuse = async (event: Handoff, reason: 'capacity' | 'revoked' | 'auto_start_off') => {
       await assignments.released(event, reason);
       await ack(event, 'refused', reason);
-      // The notice reasons have none for auto-start being off; it is refused like capacity.
       await hosted?.notice({
         roomId: event.roomId,
         messageId: event.messageId,
         threadId: threadOf(event.event),
-        reason: reason === 'revoked' ? 'revoked' : 'capacity',
+        reason,
       });
     };
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
