@@ -1183,6 +1183,8 @@ export type TemplateRun = {
   startedAt: string;
   lastActivityAt: string;
   state: TemplateRunState;
+  /** An agent is mid-turn in one of the run's rooms right now. */
+  working: boolean;
   /** Why the run is paused or stopped, as a sentence. */
   reason: string | null;
   /** Who stopped or continued it. Null when the server paused it. */
@@ -1214,6 +1216,7 @@ type TemplateRunJson = {
   started_at: string;
   last_activity_at: string;
   state: TemplateRunState;
+  working?: boolean;
   reason: string | null;
   changed_by_name: string | null;
   paused_repeat_of: string | null;
@@ -1230,6 +1233,7 @@ function toTemplateRun(json: TemplateRunJson): TemplateRun {
     startedAt: json.started_at,
     lastActivityAt: json.last_activity_at,
     state: json.state,
+    working: json.working ?? false,
     reason: json.reason,
     changedByName: json.changed_by_name,
     pausedRepeatOf: json.paused_repeat_of,

@@ -12,13 +12,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_runs import RunRefused, RunState, run_control
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.db.models import Room, User
+from switch_core.db.models import Room, SessionActivityItem, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -26,6 +28,7 @@ from switch_core.gateway.dependencies import (
     get_room_store,
     get_session,
 )
+from switch_core.sessions.contract import TURN_ENDED
 
 router = APIRouter()
 
@@ -54,6 +57,8 @@ class TemplateRun(BaseModel):
     started_at: datetime
     last_activity_at: datetime
     state: RunState
+    # An agent is mid-turn in one of the run's rooms right now.
+    working: bool
     reason: str | None
     changed_by_name: str | None
     paused_repeat_of: str | None
@@ -107,6 +112,7 @@ async def _run(
         started_at=root.created_at,  # type: ignore[arg-type]
         last_activity_at=max(r.created_at for r in rooms),  # type: ignore[type-var]
         state=control.state if control else "running",
+        working=await _working(session, protocol, [r.id for r in rooms]),
         reason=control.reason if control else None,
         changed_by_name=control.by_name if control else None,
         paused_repeat_of=(
@@ -117,6 +123,27 @@ async def _run(
         ),
         rooms=[entry(r) for r in rooms],
     )
+
+
+async def _working(
+    session: AsyncSession, protocol: ProtocolService, room_ids: list[str]
+) -> bool:
+    """Whether a turn is open in any of these rooms, for an agent that is
+    still connected: a turn whose session died never records its end."""
+    live = protocol.connections.live_agent_ids()
+    if not live or not room_ids:
+        return False
+    open_turn = await session.execute(
+        select(SessionActivityItem.agent_id)
+        .where(
+            SessionActivityItem.room_id.in_(room_ids),
+            SessionActivityItem.item_id == TURN_ITEM_ID,
+            SessionActivityItem.status.not_in(TURN_ENDED),
+            SessionActivityItem.agent_id.in_(live),
+        )
+        .limit(1)
+    )
+    return open_turn.first() is not None
 
 
 @router.get("/template-runs")
