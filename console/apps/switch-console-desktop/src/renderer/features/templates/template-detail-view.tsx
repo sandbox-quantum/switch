@@ -15,7 +15,6 @@ import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -156,7 +155,6 @@ const KIND_LABEL: Record<LoadedTemplate['kind'], string> = {
 
 const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const { serverId, templateId } = useViewParams();
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const { navigate } = useNavigate();
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const me = switchServersStore.statusFor(serverId)?.user ?? null;
@@ -169,18 +167,10 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const [showInstructions, setShowInstructions] = useState(false);
 
   useEffect(() => {
-    // No workspace is an answer, not a wait. Returning with neither a template
-    // nor an error leaves the spinner below up forever, claiming something is
-    // on its way that nobody is fetching.
-    if (workspaceId === null) {
-      setLoaded(null);
-      setError('This server has no workspace yet, so its templates cannot be read.');
-      return;
-    }
     let cancelled = false;
     setLoaded(null);
     setError(null);
-    loadTemplateById(workspaceId, templateId, me?.id ?? null)
+    loadTemplateById(serverId, templateId, me?.id ?? null)
       .then((t) => {
         if (cancelled) return;
         setLoaded(t);
@@ -193,7 +183,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
       cancelled = true;
       setCurrentName(null);
     };
-  }, [workspaceId, templateId, me?.id]);
+  }, [serverId, templateId, me?.id]);
 
   const back = (
     <Button
@@ -242,11 +232,11 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const use = () => navigate('templateUse', { serverId, templateId });
 
   const saveToServer = async () => {
-    if (!loaded.bundled || workspaceId === null) return;
+    if (!loaded.bundled) return;
     setBusy('save');
     try {
-      const saved = await rpc.workspaces.saveTemplate({
-        workspaceId,
+      const saved = await rpc.switchServers.saveTemplate({
+        serverId,
         name: loaded.bundled.name,
         description: loaded.bundled.description,
         kind: loaded.bundled.kind,
@@ -266,10 +256,10 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   };
 
   const remove = async () => {
-    if (!loaded.server || workspaceId === null) return;
+    if (!loaded.server) return;
     setBusy('delete');
     try {
-      await rpc.workspaces.deleteTemplate({ workspaceId, templateId: loaded.server.id });
+      await rpc.switchServers.deleteTemplate({ serverId, templateId: loaded.server.id });
       toast({ title: `"${loaded.name}" removed from ${server?.name ?? 'the workspace'}` });
       navigate('templates', { serverId });
     } catch (e) {

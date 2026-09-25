@@ -12,7 +12,7 @@ vi.mock('./local-host', () => ({ stopLocalSession: mocks.stopLocal }));
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.agent.mockResolvedValue({ switchAgentId: 'remote-agent', workspaceId: 'workspace' });
+  mocks.agent.mockResolvedValue({ switchAgentId: 'remote-agent', serverId: 'server' });
   mocks.stop.mockResolvedValue(undefined);
   mocks.stopLocal.mockResolvedValue(undefined);
 });

@@ -83,27 +83,28 @@ function useDefaultLocationId(propLocationId?: string): string | undefined {
  */
 function useRoomMemberAgents(roomId: string | undefined): {
   agents: Agent[];
-  workspaceId: string | null;
+  serverId: string | null;
   loading: boolean;
 } {
-  const workspaceId = roomId ? switchRoomsStore.roomWorkspaceId(roomId) : null;
+  const serverId = roomId ? switchRoomsStore.roomServerId(roomId) : null;
 
   useEffect(() => {
     if (roomId) void agentsStore.load();
   }, [roomId]);
 
   const membersQuery = useQuery({
-    queryKey: ['roomAgentIds', workspaceId, roomId],
-    queryFn: () => rpc.workspaces.listRoomAgentIds({ workspaceId: workspaceId!, roomId: roomId! }),
-    enabled: !!workspaceId && !!roomId,
+    queryKey: ['roomAgentIds', serverId, roomId],
+    queryFn: () => rpc.switchServers.listRoomAgentIds({ serverId: serverId!, roomId: roomId! }),
+    enabled: !!serverId && !!roomId,
   });
 
   const memberIds = useMemo(() => new Set(membersQuery.data ?? []), [membersQuery.data]);
-  const agents = (workspaceId ? agentsStore.agentsInWorkspace(workspaceId) : []).filter(
-    (a) => a.switchAgentId && memberIds.has(a.switchAgentId)
-  );
+  const agents = [...agentsStore.byLocation.values()]
+    .flat()
+    .filter((a) => a.serverId === serverId && a.switchAgentId && memberIds.has(a.switchAgentId))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
-  return { agents, workspaceId, loading: membersQuery.isLoading || !agentsStore.loaded };
+  return { agents, serverId, loading: membersQuery.isLoading || !agentsStore.loaded };
 }
 
 /**
@@ -210,30 +211,24 @@ export const CreateSessionModal = observer(function CreateSessionModal({
     ? (locationAgents.find((a) => a.name === effectiveAgentName) ?? null)
     : null;
 
-  const agentWorkspaceId = effectiveAgentName
-    ? (subagent?.workspaceId ?? null)
-    : (agent?.workspaceId ?? null);
+  const serverId = effectiveAgentName ? (subagent?.serverId ?? null) : (agent?.serverId ?? null);
   const switchAgentId = effectiveAgentName
     ? (subagent?.switchAgentId ?? null)
     : (agent?.switchAgentId ?? null);
 
   useEffect(() => {
-    if (!roomFirst && agentWorkspaceId && switchAgentId) {
-      void switchRoomsStore.fetchAgentRooms(agentWorkspaceId, switchAgentId);
+    if (!roomFirst && serverId && switchAgentId) {
+      void switchRoomsStore.fetchAgentRooms(serverId, switchAgentId);
     }
-  }, [roomFirst, agentWorkspaceId, switchAgentId]);
+  }, [roomFirst, serverId, switchAgentId]);
 
   const rooms =
-    agentWorkspaceId && switchAgentId
-      ? (switchRoomsStore.roomsFor(agentWorkspaceId, switchAgentId) ?? []).filter(
-          (r) => !r.archived
-        )
+    serverId && switchAgentId
+      ? (switchRoomsStore.roomsFor(serverId, switchAgentId) ?? []).filter((r) => !r.archived)
       : [];
   const roomsLoading =
-    !!agentWorkspaceId &&
-    !!switchAgentId &&
-    switchRoomsStore.isLoading(agentWorkspaceId, switchAgentId);
-  const canConnectRoom = !roomFirst && !!agentWorkspaceId && !!switchAgentId;
+    !!serverId && !!switchAgentId && switchRoomsStore.isLoading(serverId, switchAgentId);
+  const canConnectRoom = !roomFirst && !!serverId && !!switchAgentId;
 
   // In room-first mode the room is given, not chosen; everything downstream
   // (roles, the connect prompt) keys off the same value either way.
@@ -248,15 +243,15 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         }
       : null
     : room;
-  const roleWorkspaceId = roomFirst ? roomMembers.workspaceId : agentWorkspaceId;
+  const roleServerId = roomFirst ? roomMembers.serverId : serverId;
 
   // Roles are room-scoped, so only fetch once a room is chosen. The set is small
   // and changes rarely, so a plain per-room query (no shared cache) is enough.
   const rolesQuery = useQuery({
-    queryKey: ['roomRoles', roleWorkspaceId, activeRoom?.roomId],
+    queryKey: ['roomRoles', roleServerId, activeRoom?.roomId],
     queryFn: () =>
-      rpc.workspaces.listRoomRoles({ workspaceId: roleWorkspaceId!, roomId: activeRoom!.roomId }),
-    enabled: !!roleWorkspaceId && !!activeRoom,
+      rpc.switchServers.listRoomRoles({ serverId: roleServerId!, roomId: activeRoom!.roomId }),
+    enabled: !!roleServerId && !!activeRoom,
   });
   const roles = rolesQuery.data ?? [];
 

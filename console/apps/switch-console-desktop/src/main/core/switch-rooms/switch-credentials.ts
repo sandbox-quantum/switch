@@ -102,12 +102,12 @@ export async function readAgentSwitchEnv(
  * the agent, so the miss is warned about here rather than at each call site.
  */
 export async function readAgentSwitchEnvFromFs(
-  workdirFs: PluginFs,
+  workspaceFs: PluginFs,
   slug: string,
   log: CredentialsLogger
 ): Promise<Record<string, string>> {
   const relPath = agentSettingsRelativePath(slug);
-  const env = credentialsAsEnv(parseSwitchAgentCredentials(await workdirFs.read(relPath), log));
+  const env = credentialsAsEnv(parseSwitchAgentCredentials(await workspaceFs.read(relPath), log));
   if (Object.keys(env).length === 0) {
     log.warn(
       'readAgentSwitchEnvFromFs: no Switch identity for agent; session will not authenticate as it',

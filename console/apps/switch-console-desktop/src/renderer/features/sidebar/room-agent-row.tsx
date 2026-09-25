@@ -14,7 +14,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -62,7 +62,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
   // This is a Switch room's member list, so the Switch identity is what matters
   // — and that is the stored name: it is what was registered on the server.
   const label = agent.name || 'Unnamed agent';
-  const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
+  const iconUrl = useAgentIconUrl(agent.serverId, agent.switchAgentId);
 
   const expandKey = roomAgentGroupKey(roomId, agent.id);
   const expanded = sidebarStore.isGroupExpanded(expandKey);
@@ -82,12 +82,12 @@ export const RoomAgentRow = observer(function RoomAgentRow({
   if (!location) return null;
 
   const removeFromRoom = () => {
-    const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
-    if (!workspaceId || !agent.switchAgentId) return;
+    const serverId = switchRoomsStore.roomServerId(roomId);
+    if (!serverId || !agent.switchAgentId) return;
     const roomLabel = switchRoomsStore.roomNameById(roomId) ?? 'the room';
     void toastPromise(
-      rpc.workspaces
-        .removeRoomAgent({ workspaceId, roomId, agentId: agent.switchAgentId })
+      rpc.switchServers
+        .removeRoomAgent({ serverId, roomId, agentId: agent.switchAgentId })
         .then(() => switchRoomsStore.refreshRoomState()),
       {
         loading: `Removing ${label} from ${roomLabel}…`,

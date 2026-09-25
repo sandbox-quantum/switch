@@ -6,7 +6,6 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { bundledTemplates } from '@renderer/features/templates/bundled-templates';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { AgentPickerRow, ChosenAgentTile } from '@renderer/lib/components/agent-picker';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
@@ -15,7 +14,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
-import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
+import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -43,10 +42,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
 }: Props) {
   const { setCloseGuard } = useModalContext();
   const { navigate } = useNavigate();
-  const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
-  // The template pages are still routed by server, so the Use page is reached
-  // through the workspace's host.
-  const serverId = workspaceId === null ? null : workspacesStore.serverIdFor(workspaceId);
+  const serverId = switchRoomsStore.roomServerId(roomId);
   const roomName = switchRoomsStore.roomNameById(roomId);
 
   // Templates can create an agent straight into this room. The bundled
@@ -54,10 +50,10 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   // returns.
   const [serverTemplates, setServerTemplates] = useState<StoredTemplateSummary[]>([]);
   useEffect(() => {
-    if (workspaceId === null) return;
+    if (!serverId) return;
     let cancelled = false;
-    rpc.workspaces
-      .listTemplates({ workspaceId, kind: 'agent' })
+    rpc.switchServers
+      .listTemplates({ serverId, kind: 'agent' })
       .then((list) => {
         if (!cancelled) setServerTemplates(list);
       })
@@ -73,7 +69,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [serverId]);
   // A built-in template the signed-in user saved to the workspace is listed
   // once, as their copy. Names are unique only per owner, so someone else's
   // template of the same name is not a copy.
@@ -120,14 +116,14 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   const members = new Set(switchRoomsStore.localMemberIds(roomId));
   // The agents' own icons live on the server, not in the local row, so the
   // list is joined against the server's summary to draw them.
-  const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
+  const { data: remoteAgents } = useRemoteAgents(serverId);
   const remoteById = new Map((remoteAgents ?? []).map((agent) => [agent.id, agent]));
   // Only this install's agents are offered. An agent registered on another
   // Switch Console could be added server-side but could never be shown or driven
   // from here, so it is not ours to offer.
-  const candidates: Candidate[] = workspaceId
+  const candidates: Candidate[] = serverId
     ? agentsStore
-        .agentsInWorkspace(workspaceId)
+        .agentsOnServer(serverId)
         .map((agent) => ({
           id: agent.switchAgentId as string,
           name: agent.name,
@@ -139,13 +135,13 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   const nothingToAdd = candidates.length === 0 && selected.length === 0;
 
   const handleSubmit = useCallback(async () => {
-    if (!workspaceId || selected.length === 0) return;
+    if (!serverId || selected.length === 0) return;
     setIsSubmitting(true);
     setCloseGuard(true);
     setError(null);
     try {
-      await rpc.workspaces.addRoomAgents({
-        workspaceId,
+      await rpc.switchServers.addRoomAgents({
+        serverId,
         roomId,
         agentIds: selected.map((a) => a.id),
         direction: 'agents_to_room',
@@ -158,7 +154,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       setIsSubmitting(false);
       setCloseGuard(false);
     }
-  }, [workspaceId, roomId, selected, onSuccess, setCloseGuard]);
+  }, [serverId, roomId, selected, onSuccess, setCloseGuard]);
 
   return (
     <>
@@ -167,9 +163,9 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <div className="flex w-full flex-col gap-4">
-          {!workspaceId && (
+          {!serverId && (
             <p className="text-xs text-destructive">
-              This room&apos;s workspace is not known yet, so its members cannot be changed.
+              This room&apos;s server is not known yet, so its members cannot be changed.
             </p>
           )}
 
@@ -251,7 +247,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
         </Button>
         <ConfirmButton
           onClick={() => void handleSubmit()}
-          disabled={!workspaceId || selected.length === 0 || isSubmitting}
+          disabled={!serverId || selected.length === 0 || isSubmitting}
         >
           {isSubmitting ? 'Adding…' : 'Add to room'}
         </ConfirmButton>

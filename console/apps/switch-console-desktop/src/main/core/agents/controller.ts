@@ -82,7 +82,7 @@ export const agentsController = createRPCController({
   onboardAgent: (params: OnboardAgentParams) => onboardAgent(params),
   discoverLoadableAgentsOnHost: (params: DiscoverLoadableAgentsParams) =>
     discoverLoadableAgentsOnHost(params),
-  discoverLoadableAgentsInDir: (params: { sshHost: string; dir: string; workspaceId: string }) =>
+  discoverLoadableAgentsInDir: (params: { sshHost: string; dir: string; serverId: string }) =>
     discoverLoadableAgentsInDir(params),
   attachConfiguredAgents: (params: AttachConfiguredAgentsParams) => attachConfiguredAgents(params),
   removeLoadableAgentConfig: (params: RemoveLoadableAgentConfigParams) =>

@@ -1,6 +1,6 @@
+import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { passwordLogin } from '@main/core/switch-servers/auth';
 import { ensureManagedServer, setActiveServerId } from '@main/core/switch-servers/servers-store';
-import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
@@ -270,18 +270,9 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     log.warn('managed-switch-server: auto sign-in failed; server will show a sign-in prompt', {
       error: login.error,
     });
-  } else {
-    // The user never sees a login form for a managed stack, so this is the only
-    // sign-in it will ever have — without matching the workspaces here, its
-    // placeholder one would stay unmatched until some later launch happened to.
-    await reconcileServerWorkspaces(server.id).catch((error: unknown) => {
-      log.warn('managed-switch-server: signed in, but could not read the account’s workspaces', {
-        server: server.id,
-        error: String(error),
-      });
-    });
   }
 
+  await resolveAgentServers();
   if (upgrade) await finishUpgrade(host);
   return { kind: 'started', serverId: server.id, telemetryEnabled };
 }

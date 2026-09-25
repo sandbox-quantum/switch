@@ -259,15 +259,19 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
 
   it('reports the owning server through foreignCredentialsOwnerFs, for a caller checking before it registers', async () => {
     await seed('shared-name', otherInstall);
-    const workdirFs = createPluginFs(dir);
+    const workspaceFs = createPluginFs(dir);
 
     expect(
-      await foreignCredentialsOwnerFs(workdirFs, 'shared-name', 'https://switch.example.com')
+      await foreignCredentialsOwnerFs(workspaceFs, 'shared-name', 'https://switch.example.com')
     ).toBe('https://other-switch.example.com');
     expect(
-      await foreignCredentialsOwnerFs(workdirFs, 'shared-name', 'https://other-switch.example.com')
+      await foreignCredentialsOwnerFs(
+        workspaceFs,
+        'shared-name',
+        'https://other-switch.example.com'
+      )
     ).toBeNull();
-    expect(await foreignCredentialsOwnerFs(workdirFs, 'absent', 'https://switch.example.com')) //
+    expect(await foreignCredentialsOwnerFs(workspaceFs, 'absent', 'https://switch.example.com')) //
       .toBeNull();
   });
 });

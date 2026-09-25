@@ -27,10 +27,10 @@ vi.hoisted(() => {
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn() },
   rpc: {
-    workspaces: {
+    switchServers: {
       updateRoom,
       getRoomDetail,
-      listAgents: vi.fn(() => Promise.resolve([])),
+      listRemoteAgents: vi.fn(() => Promise.resolve([])),
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
   },
@@ -38,8 +38,7 @@ vi.mock('@renderer/lib/ipc', () => ({
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: {
-    roomWorkspaceId: () => 'ws-1',
-    roomServerId: () => 'server-1',
+    roomServerId: () => 'srv-1',
     canDeleteRoom: () => false,
   },
 }));
@@ -157,7 +156,7 @@ describe('a room’s description and instructions', () => {
 
     expect(updateRoom).toHaveBeenCalledTimes(1);
     expect(updateRoom).toHaveBeenCalledWith({
-      workspaceId: 'ws-1',
+      serverId: 'srv-1',
       roomId: 'room-1',
       description: 'The original description',
       instructions: 'Be brief',

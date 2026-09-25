@@ -9,7 +9,6 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { rpc } from '@renderer/lib/ipc';
-import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
@@ -30,12 +29,12 @@ import type { ConfigureAgentFormState } from './modes';
  */
 export const AgentSettingsSection = observer(function AgentSettingsSection({
   form,
-  workspaceId,
+  serverId,
   onAddServer,
   onOpenMessagingApps,
 }: {
   form: ConfigureAgentFormState;
-  workspaceId: string | null;
+  serverId: string | null;
   onAddServer: () => void;
   onOpenMessagingApps: () => void;
 }) {
@@ -49,24 +48,27 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
 
   const servers = switchServersStore.servers;
 
-  // Selector data for the addressing-policy editor, scoped to the workspace the
-  // chosen server is in scope for.
+  // Selector data for the addressing-policy editor, scoped to the chosen server.
   const roomsQuery = useQuery({
-    queryKey: ['remote-rooms', workspaceId],
-    queryFn: () => rpc.workspaces.listRooms(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-rooms', serverId],
+    queryFn: () => rpc.switchServers.listRemoteRooms(serverId as string),
+    enabled: serverId !== null,
   });
   const groupsQuery = useQuery({
-    queryKey: ['remote-room-groups', workspaceId],
-    queryFn: () => rpc.workspaces.listRoomGroups(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-room-groups', serverId],
+    queryFn: () => rpc.switchServers.listRemoteRoomGroups(serverId as string),
+    enabled: serverId !== null,
   });
   const usersQuery = useQuery({
-    queryKey: ['remote-external-users', workspaceId],
-    queryFn: () => rpc.workspaces.listExternalUsers(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-external-users', serverId],
+    queryFn: () => rpc.switchServers.listRemoteExternalUsers(serverId as string),
+    enabled: serverId !== null,
   });
-  const agentsQuery = useWorkspaceAgents(workspaceId);
+  const agentsQuery = useQuery({
+    queryKey: ['remote-agents', serverId],
+    queryFn: () => rpc.switchServers.listRemoteAgents(serverId as string),
+    enabled: serverId !== null,
+  });
   const roomOptions: OptionItem[] = (roomsQuery.data ?? []).map((r) => ({
     id: r.id,
     label: r.name,
@@ -86,11 +88,11 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
 
   // Read here rather than inside the editor so the owner-only default can be
   // questioned before the agent exists, not after it has gone quiet.
-  const { identities } = useMyIdentities(workspaceId);
+  const { identities } = useMyIdentities(serverId);
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', workspaceId],
-    queryFn: () => rpc.workspaces.listBridges(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-bridges', serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridges(serverId as string),
+    enabled: serverId !== null,
   });
   const unlinkedApps =
     identities === null || bridgesQuery.data === undefined

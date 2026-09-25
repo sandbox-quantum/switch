@@ -4,18 +4,14 @@ import { versionedJsonColumn } from '@main/db/versioned-column';
 import { agentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sessionConfig } from '@shared/core/sessions/session-config';
-import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 
 // ---------------------------------------------------------------------------
 // Data model (Switch Console rework — diverges from upstream; see
 // agents/architecture/data-model.md for the full map):
 //
-//   switch_servers — a registered Switch gateway
-//     └─ workspaces — what the window is scoped to; one active at a time
-//
 //   locations — a working directory on a host (this machine or an SSH host)
 //     └─ agents    — a Switch agent identity (one provider each; many per
-//          │         location; belongs to one workspace)
+//          │         location)
 //          └─ sessions  — an instantiation/run of an agent (was "conversation";
 //          │              one session == one terminal, folded in)
 //               └─ messages
@@ -86,11 +82,10 @@ export const appSettings = sqliteTable(
 /**
  * A Switch server: a gateway Switch Console can connect to. Switch Console is
  * multi-server — many gateways (a local dev one, a deployed pilot one) can be
- * registered. What the window is scoped to is a workspace on one of them, not
- * the server itself, so the active selection names a workspace (`kv`,
- * `activeWorkspaceId`) and the server is read from it. The session JWT minted
- * by the gateway is NOT stored here — it lives in the encrypted secrets store
- * keyed by server id — so this table holds only non-secret connection
+ * registered, and the UI works against one "active" server at a time (the
+ * active id is tracked in `kv` under `activeSwitchServerId`). The session JWT
+ * minted by the gateway is NOT stored here — it lives in the encrypted secrets
+ * store keyed by server id — so this table holds only non-secret connection
  * metadata.
  */
 export const switchServers = sqliteTable(
@@ -131,76 +126,17 @@ export const switchServers = sqliteTable(
 );
 
 /**
- * A workspace: the unit everything in the window is scoped to. A server hosts
- * one or more of them, and exactly one workspace is active at a time (tracked
- * in `kv` under `activeWorkspaceId`). Switching workspace swaps the whole
- * window — agents, rooms, sidebar — the way switching server used to.
- *
- * `tenantId` is the workspace's id on the gateway. It is null only until the
- * gateway has been asked: a workspace is created locally the moment a server is
- * registered, because the app has to be usable before the answer arrives, and
- * the upgrade to workspaces created one per already-registered server the same
- * way. Every deployed Switch server has tenancy — the backend migration that
- * introduced it puts every existing user in a tenant — so a tenant-less row is
- * a workspace that has not reconciled yet, not a server without tenants.
- *
- * Reconcile therefore has to *match* that row to a tenant rather than insert
- * the real workspace beside it: the row's id is what every agent points at, and
- * the (server, tenant) unique index cannot catch a duplicate here because
- * SQLite treats NULLs as distinct.
- *
- * `slug` is the gateway's handle for the workspace; null alongside a null
- * `tenantId`.
- */
-export const workspaces = sqliteTable(
-  'workspaces',
-  {
-    id: text('id').primaryKey(),
-    serverId: text('server_id')
-      .notNull()
-      .references(() => switchServers.id, { onDelete: 'cascade' }),
-    name: text('name').notNull(),
-    /** The workspace's id on the gateway; null when the server has no tenancy. */
-    tenantId: text('tenant_id'),
-    /** The gateway's slug for the workspace; null when it has no tenancy. */
-    slug: text('slug'),
-    /**
-     * The caller's role in the workspace as the gateway last reported it
-     * (`owner` / `admin` / `member`). Null for a tenant-less workspace, where
-     * the notion does not apply.
-     */
-    role: text('role').$type<WorkspaceRole>(),
-    createdAt: text('created_at')
-      .notNull()
-      .default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: text('updated_at')
-      .notNull()
-      .default(sql`CURRENT_TIMESTAMP`),
-  },
-  (table) => ({
-    serverIdIdx: index('idx_workspaces_server_id').on(table.serverId),
-    serverTenantIdx: uniqueIndex('idx_workspaces_server_tenant').on(table.serverId, table.tenantId),
-    // A server has at most one unreconciled row. The index above cannot say so,
-    // because SQLite treats NULLs as distinct, so two registrations racing on
-    // the same server would each insert a placeholder and reconcile would only
-    // ever repair the first one it found.
-    serverPlaceholderIdx: uniqueIndex('idx_workspaces_server_placeholder')
-      .on(table.serverId)
-      .where(sql`tenant_id IS NULL`),
-  })
-);
-
-/**
  * A Switch agent: an agent identity bound to a single provider, living at a
  * location. Many agents may share a location (e.g. a Claude Code and a Codex
  * agent in the same repo). `switchAgentId` / `apiEndpoint` are populated when
  * the location dir is configured as a Switch agent (detected from
  * `.claude/settings.local.json`); they are null for a plain local agent.
  *
- * `workspaceId` binds the agent to the one workspace it belongs to, chosen and
- * verified at onboarding rather than inferred. It is nullable: an agent whose
- * workspace is gone is shown as "unlinked" rather than guessed, and removing a
- * server sets its workspaces' agents to null instead of deleting them.
+ * `serverId` binds the agent to the one registered Switch server it belongs to.
+ * It is resolved by matching the detected `apiEndpoint` against the registered
+ * servers' origins. It is nullable: an agent whose server is not (or no longer)
+ * registered is shown as "unlinked" rather than guessed, and removing a server
+ * sets its agents' `serverId` to null instead of deleting them.
  */
 export const agents = sqliteTable(
   'agents',
@@ -217,7 +153,7 @@ export const agents = sqliteTable(
     providerId: text('provider_id').$type<AgentProviderId>().notNull(),
     switchAgentId: text('switch_agent_id'),
     apiEndpoint: text('api_endpoint'),
-    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+    serverId: text('server_id').references(() => switchServers.id, { onDelete: 'set null' }),
     status: text('status'),
     // When set, Switch Console launches this agent's CLI with its auto-approve /
     // "bypass permissions" flag (e.g. `--dangerously-skip-permissions`).
@@ -239,7 +175,7 @@ export const agents = sqliteTable(
   },
   (table) => ({
     locationIdIdx: index('idx_agents_location_id').on(table.locationId),
-    workspaceIdIdx: index('idx_agents_workspace_id').on(table.workspaceId),
+    serverIdIdx: index('idx_agents_server_id').on(table.serverId),
   })
 );
 
@@ -443,8 +379,6 @@ export type AppSecretRow = typeof appSecrets.$inferSelect;
 export type AppSecretInsert = typeof appSecrets.$inferInsert;
 export type SwitchServerRow = typeof switchServers.$inferSelect;
 export type SwitchServerInsert = typeof switchServers.$inferInsert;
-export type WorkspaceRow = typeof workspaces.$inferSelect;
-export type WorkspaceInsert = typeof workspaces.$inferInsert;
 export type RemoteHostRow = typeof remoteHosts.$inferSelect;
 export type RemoteHostInsert = typeof remoteHosts.$inferInsert;
 export type RemoteHostReachabilityRow = typeof remoteHostReachability.$inferSelect;

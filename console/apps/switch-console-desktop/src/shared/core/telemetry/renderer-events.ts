@@ -46,15 +46,8 @@ export type RendererTelemetryEvents = {
   onboarding_checklist_dismissed: Record<never, never>;
   /** Every step of the checklist is done. */
   onboarding_completed: Record<never, never>;
-  /**
-   * The add-server wizard reached a step. Where people stop is the question.
-   *
-   * `first_run` separates the two places the same steps are drawn: the wizard
-   * in a dialog, and the full-window pages a fresh install opens on. Giving up
-   * before you have any server at all is a different answer from giving up
-   * adding your second, and one funnel covering both could not tell them apart.
-   */
-  add_server_step: { step: AddServerStepName; choice: AddServerChoiceName; first_run: boolean };
+  /** The add-server wizard reached a step. Where people stop is the question. */
+  add_server_step: { step: AddServerStepName; choice: AddServerChoiceName };
   /** A screen failed and the error boundary caught it. */
   renderer_crashed: Record<never, never>;
 };

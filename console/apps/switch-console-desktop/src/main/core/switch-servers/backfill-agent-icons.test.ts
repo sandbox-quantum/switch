@@ -55,25 +55,20 @@ function server(id: string): SwitchServer {
 }
 
 /**
- * Set up a workspace's agent list and which of them this install manages
- * locally. `managed` defaults to all of them — the ordinary case of a machine
- * looking at its own agents.
+ * Set up a server's agent list and which of them this install manages locally.
+ * `managed` defaults to all of them — the ordinary case of a machine looking at
+ * its own agents.
  */
 function given(remote: RemoteAgentSummary[], managed?: string[]) {
   const ids = managed ?? remote.map((a) => a.id);
   fetchAgents.mockResolvedValue(remote);
   getAgents.mockResolvedValue(
-    ids.map((switchAgentId) => ({
-      id: `local-${switchAgentId}`,
-      switchAgentId,
-      workspaceId: 'ws-1',
-    }))
+    ids.map((switchAgentId) => ({ id: `local-${switchAgentId}`, switchAgentId, serverId: 's-1' }))
   );
 }
 
-/** Re-imported per test: the module remembers which workspaces it has done,
- * which is the behaviour under test in one case and interference in every
- * other. */
+/** Re-imported per test: the module remembers which servers it has done, which
+ * is the behaviour under test in one case and interference in every other. */
 async function loadFresh() {
   vi.resetModules();
   return (await import('./backfill-agent-icons')).backfillAgentIcons;
@@ -90,7 +85,7 @@ describe('backfillAgentIcons', () => {
     given([agent({ id: 'a-1', name: 'switch_worker' })]);
     const backfill = await loadFresh();
 
-    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'written', written: 1 });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'written', written: 1 });
     expect(updateAgentIcon).toHaveBeenCalledWith(
       expect.anything(),
       'a-1',
@@ -106,7 +101,7 @@ describe('backfillAgentIcons', () => {
     given([agent({ id: 'a-1', name: 'ancient', ownerId: null })]);
     const backfill = await loadFresh();
 
-    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'written', written: 1 });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'written', written: 1 });
     expect(updateAgentIcon).toHaveBeenCalledOnce();
   });
 
@@ -116,7 +111,7 @@ describe('backfillAgentIcons', () => {
     given([agent({ iconUrl: 'https://example.com/mine.png' })]);
     const backfill = await loadFresh();
 
-    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'written', written: 0 });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'written', written: 0 });
     expect(updateAgentIcon).not.toHaveBeenCalled();
   });
 
@@ -126,18 +121,18 @@ describe('backfillAgentIcons', () => {
     given([agent({ id: 'a-1' }), agent({ id: 'someone-elses' })], ['a-1']);
     const backfill = await loadFresh();
 
-    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'written', written: 1 });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'written', written: 1 });
     expect(updateAgentIcon).toHaveBeenCalledWith(expect.anything(), 'a-1', expect.any(String));
   });
 
-  it('ignores a local agent belonging to a different workspace', async () => {
+  it('ignores a local agent belonging to a different server', async () => {
     fetchAgents.mockResolvedValue([agent({ id: 'a-1' })]);
     getAgents.mockResolvedValue([
-      { id: 'local-1', switchAgentId: 'a-1', workspaceId: 'another-workspace' },
+      { id: 'local-1', switchAgentId: 'a-1', serverId: 'another-server' },
     ]);
     const backfill = await loadFresh();
 
-    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'written', written: 0 });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'written', written: 0 });
     expect(updateAgentIcon).not.toHaveBeenCalled();
   });
 
@@ -146,7 +141,7 @@ describe('backfillAgentIcons', () => {
     updateAgentIcon.mockRejectedValueOnce(new FakeGatewayError('http', 'forbidden', 403));
     const backfill = await loadFresh();
 
-    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'written', written: 0 });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'written', written: 0 });
   });
 
   it('reports a server with no icon endpoint', async () => {
@@ -157,7 +152,7 @@ describe('backfillAgentIcons', () => {
     updateAgentIcon.mockRejectedValue(new FakeGatewayError('http', 'not found', 404));
     const backfill = await loadFresh();
 
-    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'unsupported' });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'unsupported' });
   });
 
   it('reports the agents that kept the old icon', async () => {
@@ -165,21 +160,17 @@ describe('backfillAgentIcons', () => {
     updateAgentIcon.mockRejectedValueOnce(new Error('boom'));
     const backfill = await loadFresh();
 
-    expect(await backfill('ws-1', server('s-1'))).toEqual({
-      kind: 'partial',
-      written: 2,
-      failed: 1,
-    });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'partial', written: 2, failed: 1 });
     expect(updateAgentIcon).toHaveBeenCalledTimes(3);
   });
 
-  it('asks the gateway once per workspace however often it is called', async () => {
+  it('asks the gateway once per server however often it is called', async () => {
     given([agent({})]);
     const backfill = await loadFresh();
 
-    await backfill('ws-1', server('s-1'));
-    await backfill('ws-1', server('s-1'));
-    await backfill('ws-1', server('s-1'));
+    await backfill(server('s-1'));
+    await backfill(server('s-1'));
+    await backfill(server('s-1'));
 
     expect(updateAgentIcon).toHaveBeenCalledTimes(1);
     expect(fetchAgents).toHaveBeenCalledTimes(1);
@@ -189,7 +180,7 @@ describe('backfillAgentIcons', () => {
     // Two sidebar refreshes can land together on startup; without this each
     // would see no icons yet and write every agent twice.
     let release = (_: RemoteAgentSummary[]) => {};
-    getAgents.mockResolvedValue([{ id: 'local-1', switchAgentId: 'a-1', workspaceId: 'ws-1' }]);
+    getAgents.mockResolvedValue([{ id: 'local-1', switchAgentId: 'a-1', serverId: 's-1' }]);
     fetchAgents.mockReturnValue(
       new Promise<RemoteAgentSummary[]>((resolve) => {
         release = resolve;
@@ -197,8 +188,8 @@ describe('backfillAgentIcons', () => {
     );
     const backfill = await loadFresh();
 
-    const first = backfill('ws-1', server('s-1'));
-    const second = backfill('ws-1', server('s-1'));
+    const first = backfill(server('s-1'));
+    const second = backfill(server('s-1'));
     release([agent({ id: 'a-1' })]);
     await Promise.all([first, second]);
 
@@ -212,45 +203,23 @@ describe('backfillAgentIcons', () => {
     fetchAgents.mockRejectedValueOnce(new Error('offline'));
     const backfill = await loadFresh();
 
-    await expect(backfill('ws-1', server('s-1'))).rejects.toThrow('offline');
+    await expect(backfill(server('s-1'))).rejects.toThrow('offline');
 
     given([agent({})]);
-    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'written', written: 1 });
+    expect(await backfill(server('s-1'))).toEqual({ kind: 'written', written: 1 });
   });
 
-  it('handles each workspace separately', async () => {
+  it('handles each server separately', async () => {
     fetchAgents.mockResolvedValue([agent({ id: 'a-1' })]);
     getAgents.mockResolvedValue([
-      { id: 'local-1', switchAgentId: 'a-1', workspaceId: 'ws-1' },
-      { id: 'local-2', switchAgentId: 'a-1', workspaceId: 'ws-2' },
+      { id: 'local-1', switchAgentId: 'a-1', serverId: 's-1' },
+      { id: 'local-2', switchAgentId: 'a-1', serverId: 's-2' },
     ]);
     const backfill = await loadFresh();
 
-    await backfill('ws-1', server('s-1'));
-    await backfill('ws-2', server('s-2'));
+    await backfill(server('s-1'));
+    await backfill(server('s-2'));
 
-    expect(updateAgentIcon).toHaveBeenCalledTimes(2);
-  });
-
-  /**
-   * Two workspaces on one server are two different agent lists: `GET /agents`
-   * answers for whichever tenant the session has selected. Remembering the pass
-   * against the server would have the first workspace's result stand in for the
-   * second's — its agents never written, and its report describing a pass that
-   * never looked at them.
-   */
-  it('does a second workspace on the same server rather than reusing the first', async () => {
-    fetchAgents.mockResolvedValue([agent({ id: 'a-1' })]);
-    getAgents.mockResolvedValue([
-      { id: 'local-1', switchAgentId: 'a-1', workspaceId: 'ws-1' },
-      { id: 'local-2', switchAgentId: 'a-1', workspaceId: 'ws-2' },
-    ]);
-    const backfill = await loadFresh();
-
-    await backfill('ws-1', server('s-1'));
-    await backfill('ws-2', server('s-1'));
-
-    expect(fetchAgents).toHaveBeenCalledTimes(2);
     expect(updateAgentIcon).toHaveBeenCalledTimes(2);
   });
 });

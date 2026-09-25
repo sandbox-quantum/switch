@@ -5,7 +5,7 @@ import type { Agent } from '@shared/core/agents/agents';
 import type { AgentConfigFile } from './agent-config-file';
 import { writeAgentConfigFile, type AgentTemplateOrigin } from './agent-config-file';
 import { syncAgentConfig } from './agent-config-sync';
-import { withAgentWorkdir } from './agent-launch-config';
+import { withAgentWorkspace } from './agent-launch-config';
 import { getAgentById } from './getAgentById';
 import { setAgentProviderConfig } from './setAgentProviderConfig';
 
@@ -31,7 +31,7 @@ import { setAgentProviderConfig } from './setAgentProviderConfig';
  * that is not what the agent will actually launch with.
  */
 export async function readAgentConfig(agentId: string): Promise<AgentConfigFile> {
-  return withAgentWorkdir(agentId, (agent, fs) => reconcile(agent, fs));
+  return withAgentWorkspace(agentId, (agent, fs) => reconcile(agent, fs));
 }
 
 /**
@@ -46,7 +46,7 @@ export async function writeAgentConfig(params: {
   agentId: string;
   config: AgentConfigFile;
 }): Promise<AgentConfigFile> {
-  return withAgentWorkdir(params.agentId, async (agent, fs) => {
+  return withAgentWorkspace(params.agentId, async (agent, fs) => {
     await writeAgentConfigFile(fs, agent.name, params.config);
     return reconcile(agent, fs);
   });
@@ -92,7 +92,7 @@ export async function setAgentSettings(params: {
 }
 
 /**
- * Read, change, write — in one workdir session.
+ * Read, change, write — in one workspace session.
  *
  * Not read-then-write through the public helpers: over SSH that opens the
  * working directory twice, and it would reconcile twice for one edit.
@@ -101,7 +101,7 @@ async function updateAgentConfig(
   agentId: string,
   change: (config: AgentConfigFile) => AgentConfigFile
 ): Promise<AgentConfigFile> {
-  const config = await withAgentWorkdir(agentId, async (agent, fs) => {
+  const config = await withAgentWorkspace(agentId, async (agent, fs) => {
     const current = await reconcile(agent, fs);
     await writeAgentConfigFile(fs, agent.name, change(current));
     return reconcile(agent, fs);
@@ -158,7 +158,7 @@ async function reconcile(agent: Agent, fs: PluginFs): Promise<AgentConfigFile> {
   const description = typeof existing?.description === 'string' ? existing.description : '';
 
   const { config } = await syncAgentConfig({
-    workdirFs: fs,
+    workspaceFs: fs,
     repoAgents,
     name: agent.name,
     description,

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * The agent-icon backfill notice must be said once per workspace per run,
- * however many times the sidebar refreshes (CHOO-2344).
+ * The agent-icon backfill notice must be said once per server per run, however
+ * many times the sidebar refreshes (CHOO-2344).
  *
  * `refreshSidebarRoomState` runs on first paint, window focus, sign-in, the
  * background reconcile, the retry button and every membership-changing
@@ -20,20 +20,19 @@ const AGENT = {
   id: 'agent-1',
   name: 'agent one',
   serverId: 'server-1',
-  workspaceId: 'workspace-1',
   switchAgentId: 'switch-agent-1',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
 vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { workspaces: { backfillAgentIcons } },
+  rpc: { switchServers: { backfillAgentIcons } },
 }));
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
   agentsStore: {
     load: vi.fn().mockResolvedValue(undefined),
     byLocation: new Map([[LOCATION.id, [AGENT]]]),
-    agentsInWorkspaceAtLocation: () => [AGENT],
+    agentsOnServerAtLocation: () => [AGENT],
   },
 }));
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
@@ -42,8 +41,8 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     loadRoomNames: vi.fn().mockResolvedValue(undefined),
   },
 }));
-vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { activeId: 'workspace-1' },
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { activeServerId: 'server-1' },
 }));
 vi.mock('@renderer/lib/stores/app-state', () => ({
   sidebarStore: {
@@ -69,7 +68,7 @@ describe('agent icon backfill reporting', () => {
     backfillAgentIcons.mockReset();
   });
 
-  it('reports a workspace without the icon endpoint once, not on every refresh', async () => {
+  it('reports a server without the icon endpoint once, not on every refresh', async () => {
     backfillAgentIcons.mockResolvedValue({ kind: 'unsupported' });
     const { refreshSidebarRoomState } = await loadSubject();
 

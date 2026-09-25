@@ -8,7 +8,7 @@ import {
   GatewayError,
   setAutoSession,
 } from '@main/core/switch-servers/gateway-client';
-import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import { getRemoteAgentLocation } from './agent-location';
@@ -54,19 +54,18 @@ async function applyLocalAutoSessionState(agent: Agent, enabled: boolean): Promi
 export async function setAgentAutoSession(params: AgentAutoSessionParams): Promise<void> {
   const agent = await getAgentById(params.agentId);
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
-  const { workspaceId, switchAgentId } = agent;
-  if (!workspaceId || !switchAgentId) {
-    throw new Error('Agent is not linked to a Switch workspace; cannot set auto_session.');
+  if (!agent.serverId || !agent.switchAgentId) {
+    throw new Error('Agent is not linked to a Switch server; cannot set auto_session.');
   }
+  const server = await getServer(agent.serverId);
+  if (!server) throw new Error(`No Switch server with id ${agent.serverId}`);
 
   if (params.enabled) {
     await applyLocalAutoSessionState(agent, true);
-    await withWorkspaceSession(workspaceId, (server) =>
-      setAutoSession(server, switchAgentId, true)
-    );
+    await setAutoSession(server, agent.switchAgentId, true);
     return;
   }
-  await withWorkspaceSession(workspaceId, (server) => setAutoSession(server, switchAgentId, false));
+  await setAutoSession(server, agent.switchAgentId, false);
   await applyLocalAutoSessionState(agent, false);
 }
 
@@ -76,17 +75,15 @@ export async function setAgentAutoSession(params: AgentAutoSessionParams): Promi
  * after an agent is created so a fresh agent registered with `auto_session: true`
  * starts watching immediately, without the operator having to toggle it off→on.
  * Returns whether auto_session is enabled. No-ops for agents not linked to a
- * Switch workspace.
+ * Switch server.
  */
 export async function reconcileAgentAutoSessionFromGateway(agentId: string): Promise<boolean> {
   const agent = await getAgentById(agentId);
-  if (!agent) return false;
-  const { workspaceId, switchAgentId } = agent;
-  if (!workspaceId || !switchAgentId) return false;
+  if (!agent?.serverId || !agent.switchAgentId) return false;
+  const server = await getServer(agent.serverId);
+  if (!server) return false;
 
-  const { connectionModel } = await withWorkspaceSession(workspaceId, (server) =>
-    fetchAgentOptions(server, switchAgentId)
-  );
+  const { connectionModel } = await fetchAgentOptions(server, agent.switchAgentId);
   const enabled = connectionModel === 'auto_session';
   await applyLocalAutoSessionState(agent, enabled);
   return enabled;
@@ -100,7 +97,7 @@ export async function reconcileAgentAutoSessionFromGateway(agentId: string): Pro
  */
 export async function getAgentAutoSession(params: { agentId: string }): Promise<boolean> {
   const agent = await getAgentById(params.agentId);
-  if (!agent?.workspaceId || !agent.switchAgentId) return false;
+  if (!agent?.serverId || !agent.switchAgentId) return false;
 
   try {
     return await reconcileAgentAutoSessionFromGateway(params.agentId);

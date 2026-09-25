@@ -44,8 +44,8 @@ vi.mock('./agent-location', () => ({
   getAgentLocation: vi.fn(async () => ({ sshHost: null, dir: '/repo' })),
   getRemoteAgentLocation: vi.fn(async () => null),
 }));
-vi.mock('./agent-workdir-fs', () => ({
-  resolveWorkdirFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
+vi.mock('./agent-workspace-fs', () => ({
+  resolveWorkspaceFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
 }));
 vi.mock('./getAgentById', () => ({
   getAgentById: vi.fn(async () => ({
@@ -74,7 +74,6 @@ vi.mock('@main/db/client', () => ({
 vi.mock('@main/db/schema', () => ({ agents: {} }));
 vi.mock('./utils', () => ({
   mapAgentRowToAgent: (row: Record<string, unknown>) => row,
-  mapAgentRow: async (row: Record<string, unknown>) => row,
 }));
 
 const { renameAgent } = await import('./renameAgent');
