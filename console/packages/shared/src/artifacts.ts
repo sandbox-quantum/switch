@@ -20,14 +20,14 @@ export interface ContractRange {
  * `CONTRACTS` below. The two must never be derived from one another.
  */
 export const ARTIFACT_VERSIONS = {
-  'switch-core': '0.27.0',
+  'switch-core': '0.28.0',
   'switch-console': '0.35.0',
   'agent-runtime': '0.7.0',
   sidecar: '1.9.8',
-  gateway: '0.27.0',
-  setup: '0.27.0',
-  'helm-chart': '0.27.0',
-  compose: '0.27.0',
+  gateway: '0.28.0',
+  setup: '0.28.0',
+  'helm-chart': '0.28.0',
+  compose: '0.28.0',
 } as const satisfies Record<string, string>;
 
 export type ArtifactName = keyof typeof ARTIFACT_VERSIONS;
