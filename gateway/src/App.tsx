@@ -19,6 +19,7 @@ import RoomDetailPage from "./pages/rooms/RoomDetailPage";
 import RoomScopedDocumentView from "./pages/rooms/RoomScopedDocumentView";
 import RoomsGraphPage from "./pages/rooms/RoomsGraphPage";
 import RoomsPage from "./pages/rooms/RoomsPage";
+import UsagePage from "./pages/usage/UsagePage";
 import UsersPage from "./pages/users/UsersPage";
 
 function AppRoutes() {
@@ -83,6 +84,7 @@ function AppRoutes() {
         <Route path="agents/:agentId" element={<AgentDetailPage />} />
         <Route path="collaborations" element={<CollaborationsPage />} />
         <Route path="registration-keys" element={<RegistrationKeysPage />} />
+        <Route path="usage" element={<UsagePage />} />
         <Route path="users" element={<UsersPage />} />
       </Route>
       <Route path="/login" element={<Navigate to="/" replace />} />
