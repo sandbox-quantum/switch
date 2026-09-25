@@ -679,14 +679,6 @@ class TenantMembershipResponse(BaseModel):
     role: str
 
 
-class CurrentTenantResponse(TenantMembershipResponse):
-    """The tenant this request is bound to. `administers` is whether the
-    caller may manage it — an `owner` or `admin` membership, or the operator
-    bit, which no membership role shows."""
-
-    administers: bool
-
-
 class TenantCreateRequest(BaseModel):
     name: str
 

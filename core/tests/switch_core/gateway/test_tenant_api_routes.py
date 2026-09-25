@@ -1136,59 +1136,6 @@ def _window() -> dict[str, str]:
     }
 
 
-class TestCurrentTenantRoute:
-    async def test_a_member_is_told_the_workspace_they_are_bound_to(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        await _make_tenant(session_factory, TENANT_A)
-        await _make_tenant(session_factory, TENANT_B)
-        user_id = await _make_member(
-            session_factory, name="current-member", tenant_id=TENANT_A, role="member"
-        )
-        async with session_factory() as session:
-            session.add(TenantMember(tenant_id=TENANT_B, user_id=user_id, role="owner"))
-            await session.commit()
-        token = _token(user_id, "current-member@example.invalid", TENANT_A)
-
-        async with _client(_app(session_factory), token) as client:
-            response = await client.get("/tenants/current")
-
-        assert response.status_code == 200
-        assert response.json() == {
-            "id": TENANT_A,
-            "slug": TENANT_A,
-            "name": TENANT_A,
-            "role": "member",
-            "administers": False,
-        }
-
-    @pytest.mark.parametrize(
-        ("role", "user_role"),
-        [("admin", "user"), ("owner", "user"), ("member", "admin")],
-    )
-    async def test_an_admin_owner_or_operator_is_told_they_administer_it(
-        self,
-        session_factory: async_sessionmaker[AsyncSession],
-        role: str,
-        user_role: str,
-    ) -> None:
-        await _make_tenant(session_factory, TENANT_A)
-        user_id = await _make_member(
-            session_factory,
-            name="current-admin",
-            tenant_id=TENANT_A,
-            role=role,
-            user_role=user_role,
-        )
-        token = _token(user_id, "current-admin@example.invalid", TENANT_A)
-
-        async with _client(_app(session_factory), token) as client:
-            response = await client.get("/tenants/current")
-
-        assert response.status_code == 200
-        assert response.json()["administers"] is True
-
-
 class TestUsageRoute:
     async def _spend(
         self,
