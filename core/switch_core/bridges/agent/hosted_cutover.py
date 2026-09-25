@@ -1,14 +1,17 @@
 """Merging a retained worker volume's pre-cutover work with what Core captured.
 
 The cutover-manifest revision copied the old server-side session tables into
-`hosted_cutover_items`; the worker's preflight lists what its journals hold.
-Every record for one room message is merged by `(agent, room, message)` and
-decided once, strongest evidence first, so a message runs at most once: only
-an `import` becomes a mailbox row, under `origin = cutover`.
+`hosted_cutover_items`; a preflight check of the stopped volume lists what its
+journals hold, and `hosted-cutover-upgrade record` applies it before the old
+tables are dropped. Every record for one room message is merged by
+`(agent, room, message)` and decided once, strongest evidence first, so a
+message runs at most once: only an `import` becomes a mailbox row, under
+`origin = cutover`, queued once the mailbox exists.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -17,11 +20,13 @@ from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import or_, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import distinct, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.attachments import parse_attachment_group
+from switch_core.bridges.agent.api.hosted_worker_routes import post_notice_once
+from switch_core.bridges.agent.protocol.hosted_workers import NOTICE_MESSAGES
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
@@ -33,6 +38,7 @@ from switch_core.clients.admin_messages import (
     platform_replies_in_channel,
 )
 from switch_core.db.models import (
+    Agent,
     HostedCutoverItem,
     HostedCutoverVolume,
     MediaBlob,
@@ -41,6 +47,7 @@ from switch_core.db.models import (
     Room,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore, MailboxEntry
 from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import InboundMedia, InboundMessage
@@ -127,6 +134,10 @@ class CutoverManifest(BaseModel):
 
 class CutoverConflict(Exception):
     """The volume's manifest was already applied with a different digest."""
+
+
+class CutoverUnrecorded(Exception):
+    """The volume has no recorded manifest to confirm."""
 
 
 @dataclass(frozen=True)
@@ -320,11 +331,6 @@ def _item(
 
 async def _locked_volume(session: AsyncSession, launch_id: str) -> HostedCutoverVolume:
     tenant_id = require_tenant_id()
-    await session.execute(
-        insert(HostedCutoverVolume)
-        .values(tenant_id=tenant_id, launch_id=launch_id)
-        .on_conflict_do_nothing()
-    )
     volume = await session.scalar(
         select(HostedCutoverVolume)
         .where(
@@ -334,8 +340,24 @@ async def _locked_volume(session: AsyncSession, launch_id: str) -> HostedCutover
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    assert volume is not None
+    if volume is None:
+        raise CutoverUnrecorded(
+            f"launch {launch_id} has no cutover volume; the cutover-manifest "
+            "revision creates one for each hosted agent's latest launch"
+        )
     return volume
+
+
+async def record_blocked(session: AsyncSession, launch_id: str, reason: str) -> None:
+    """Record that the volume's preflight check failed; a later `apply_manifest` clears it."""
+    volume = await _locked_volume(session, launch_id)
+    if volume.preflight_state == "complete":
+        raise CutoverConflict(
+            f"launch {launch_id} already applied manifest {volume.manifest_sha256}"
+        )
+    volume.preflight_state = "blocked"
+    volume.blocked_reason = reason
+    await session.flush()
 
 
 async def apply_manifest(
@@ -345,7 +367,7 @@ async def apply_manifest(
     launch_id: str,
     manifest: CutoverManifest,
 ) -> None:
-    """Decide every pre-cutover item of the agent once, and queue the imports.
+    """Decide every pre-cutover item of the agent once, keeping each import's event.
 
     Idempotent by digest: the same manifest again changes nothing, a different
     one for a completed volume raises `CutoverConflict`. The caller commits.
@@ -441,21 +463,6 @@ async def apply_manifest(
         }
         existing.disposition = disposition
         existing.payload = event
-        if event is not None:
-            thread_id = event["payload"].get("thread_id")
-            await HostedMailboxStore().write(
-                session,
-                agent_id=agent_id,
-                launch_id=launch_id,
-                entry=MailboxEntry(
-                    room_id=room_id,
-                    message_id=message_id,
-                    thread_id=thread_id if isinstance(thread_id, str) else None,
-                    event=event,
-                    origin="cutover",
-                ),
-                offered_to=None,
-            )
 
     for item in core:
         if item.kind == "console_command":
@@ -514,7 +521,72 @@ async def apply_manifest(
     volume.preflight_state = "complete"
     volume.manifest_sha256 = manifest.manifest_sha256
     volume.completed_at = datetime.now(UTC)
+    volume.blocked_reason = None
     await session.flush()
+
+
+async def confirm_manifest(
+    session: AsyncSession, launch_id: str, manifest_sha256: str
+) -> None:
+    """Check the worker's manifest is the one recorded for its volume before the upgrade."""
+    volume = await _locked_volume(session, launch_id)
+    if volume.preflight_state != "complete":
+        raise CutoverUnrecorded(
+            f"launch {launch_id} has no recorded cutover manifest (preflight "
+            f"{volume.preflight_state}); record the volume's preflight check first"
+        )
+    if volume.manifest_sha256 != manifest_sha256:
+        raise CutoverConflict(
+            f"launch {launch_id} recorded manifest {volume.manifest_sha256}, "
+            f"not {manifest_sha256}; the volume changed after its preflight check"
+        )
+
+
+async def queue_imports(session: AsyncSession, launch_id: str) -> int:
+    """Write the volume's imports to the mailbox once; the caller holds the launch lock.
+
+    Returns how many rows were written. Raises `CutoverUnrecorded` for a
+    volume that is not complete, and `MailboxFull` at the mailbox limit.
+    """
+    volume = await _locked_volume(session, launch_id)
+    if volume.preflight_state != "complete":
+        raise CutoverUnrecorded(
+            f"launch {launch_id} cannot queue its imports: preflight "
+            f"{volume.preflight_state}"
+        )
+    if volume.imports_queued_at is not None:
+        return 0
+    imports = await session.scalars(
+        select(HostedCutoverItem)
+        .where(
+            HostedCutoverItem.tenant_id == require_tenant_id(),
+            HostedCutoverItem.launch_id == launch_id,
+            HostedCutoverItem.disposition == "import",
+        )
+        .order_by(HostedCutoverItem.created_at, HostedCutoverItem.id)
+    )
+    written = 0
+    for item in imports:
+        if item.payload is None or item.room_id is None or item.message_id is None:
+            raise ValueError(f"cutover import {item.id} has no event to queue")
+        thread_id = item.payload["payload"].get("thread_id")
+        if await HostedMailboxStore().write(
+            session,
+            agent_id=item.agent_id,
+            launch_id=launch_id,
+            entry=MailboxEntry(
+                room_id=item.room_id,
+                message_id=item.message_id,
+                thread_id=thread_id if isinstance(thread_id, str) else None,
+                event=item.payload,
+                origin="cutover",
+            ),
+            offered_to=None,
+        ):
+            written += 1
+    volume.imports_queued_at = datetime.now(UTC)
+    await session.flush()
+    return written
 
 
 _NOTICE_REASONS: dict[str, CutoverNoticeReason] = {
@@ -591,3 +663,72 @@ async def mark_notice_posted(session: AsyncSession, item_id: str) -> None:
     item = await session.get(HostedCutoverItem, (require_tenant_id(), item_id))
     assert item is not None
     item.notice_posted_at = datetime.now(UTC)
+
+
+async def post_cutover_notices(
+    protocol: ProtocolService, agent: Agent, notices: list[CutoverNotice]
+) -> int:
+    """Post each owed notice once, and record it; one that fails stays owed for the next pass."""
+    unposted = 0
+    for notice in notices:
+        subject = (
+            notice.message_id
+            if notice.request_id is None
+            else f"request:{notice.request_id}"
+        )
+        try:
+            await post_notice_once(
+                protocol,
+                agent,
+                notice.room_id,
+                key=json.dumps([agent.id, notice.room_id, subject, notice.reason]),
+                body=NOTICE_MESSAGES[notice.reason].format(name=agent.name),
+                thread_id=notice.thread_id,
+                anchor=None,
+            )
+        except Exception:
+            logger.error(
+                "Could not post the %s cutover notice for %s in room %s",
+                notice.reason,
+                subject,
+                notice.room_id,
+                exc_info=True,
+            )
+            unposted += 1
+            continue
+        async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
+            await mark_notice_posted(db, notice.item_id)
+            await db.commit()
+    return unposted
+
+
+async def post_owed_cutover_notices(protocol: ProtocolService) -> int:
+    """Post every cutover notice the bound tenant still owes; returns how many stay owed."""
+    async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
+        agent_ids = list(
+            await db.scalars(
+                select(distinct(HostedCutoverItem.agent_id)).where(
+                    HostedCutoverItem.tenant_id == require_tenant_id(),
+                    HostedCutoverItem.notice_posted_at.is_(None),
+                    HostedCutoverItem.room_id.is_not(None),
+                    HostedCutoverItem.disposition.in_(_NOTICE_REASONS),
+                )
+            )
+        )
+        owed: list[tuple[Agent | None, str, list[CutoverNotice]]] = []
+        for agent_id in agent_ids:
+            notices = await owed_notices(db, agent_id)
+            if notices:
+                owed.append((await db.get(Agent, agent_id), agent_id, notices))
+    unposted = 0
+    for agent, agent_id, notices in owed:
+        if agent is None:
+            logger.warning(
+                "%d cutover notice(s) for agent %s stay owed: the agent is gone",
+                len(notices),
+                agent_id,
+            )
+            unposted += len(notices)
+            continue
+        unposted += await post_cutover_notices(protocol, agent, notices)
+    return unposted

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  cp,
   lstat,
   mkdir,
   open,
@@ -10,14 +11,16 @@ import {
   rm,
   unlink,
 } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { type Command, serverEventSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import {
   type CutoverItem,
+  type CutoverManifest,
   HOSTED_STATE_VERSION,
   PREFLIGHT_BLOCKED_FILE,
+  readCutoverManifest,
   readStateVersion,
   writeCutoverManifest,
   writeJsonAtomically,
@@ -710,4 +713,106 @@ export async function runHostedPreflight(root: string, candidate: PreflightPlan)
   await writeStateVersion(root);
   if (await exists(blockedPath)) await unlink(blockedPath);
   return migrated;
+}
+
+export type PreflightCheck =
+  | { manifest: CutoverManifest }
+  | { blocked: { step: string; file: string; line: number | null; error: string } };
+
+const blockedFileSchema = z.object({
+  step: z.string(),
+  file: z.string(),
+  line: z.number().int().nullable(),
+  error: z.string(),
+});
+
+function emptyManifest(): CutoverManifest {
+  return { manifest_sha256: createHash('sha256').update('[]').digest('hex'), items: [] };
+}
+
+function isWithin(parent: string, path: string): boolean {
+  const child = relative(parent, path);
+  return child === '' || (child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child));
+}
+
+/**
+ * The plan a check migrates a copy with. The manifest does not depend on it:
+ * it only has to name the agent the saved deployment belongs to and parse as
+ * the watcher's configuration, which the saved one's own does.
+ */
+async function checkCandidate(root: string): Promise<PreflightPlan | null> {
+  const planPath = join(root, PLAN_FILE);
+  if ((await optionalText(planPath)) === null) return null;
+  const raw = await readJsonFile('plan', planPath);
+  const parsed = z
+    .object({
+      spec: z.object({
+        session: z.object({ sessionId: z.string().min(1), agentId: z.string().min(1) }),
+      }),
+      config: z.unknown(),
+    })
+    .safeParse(raw);
+  if (!parsed.success) throw new Blocked('plan', planPath, null, z.prettifyError(parsed.error));
+  return {
+    version: 1,
+    spec: { session: parsed.data.spec.session },
+    config: currentConfig('plan', planPath, null, parsed.data.config, {}),
+  };
+}
+
+/**
+ * Runs the preflight on a copy of the volume at `root` under `scratch`, and
+ * answers the manifest the first boot of this image will upload, or where it
+ * would stop. The volume itself is only read, so this can run against a
+ * stopped worker's retained disk before Switch drops the tables its
+ * dispositions need.
+ */
+export async function checkHostedPreflight(
+  root: string,
+  scratch: string
+): Promise<PreflightCheck> {
+  if (isWithin(root, scratch) || isWithin(scratch, root))
+    throw new Error('The scratch directory must be outside the volume it checks.');
+  await mkdir(scratch, { mode: 0o700 });
+  const copy = join(scratch, 'state');
+  const original = (file: string) => (isWithin(copy, file) ? join(root, relative(copy, file)) : file);
+  try {
+    await cp(root, copy, {
+      recursive: true,
+      errorOnExist: true,
+      force: false,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
+    await rm(join(copy, PREFLIGHT_BLOCKED_FILE), { force: true });
+    let candidate: PreflightPlan | null;
+    try {
+      candidate = await checkCandidate(copy);
+    } catch (error) {
+      if (!(error instanceof Blocked)) throw error;
+      return {
+        blocked: {
+          step: error.step,
+          file: original(error.file),
+          line: error.line,
+          error: error.message,
+        },
+      };
+    }
+    try {
+      if (candidate) await runHostedPreflight(copy, candidate);
+    } catch (error) {
+      if (!(error instanceof PreflightBlockedError)) throw error;
+      const text = await optionalText(join(copy, PREFLIGHT_BLOCKED_FILE));
+      const saved = text === null ? null : blockedFileSchema.parse(JSON.parse(text));
+      return {
+        blocked: saved
+          ? { ...saved, file: original(saved.file) }
+          : { step: 'plan', file: root, line: null, error: error.message },
+      };
+    }
+    return { manifest: (await readCutoverManifest(copy)) ?? emptyManifest() };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }

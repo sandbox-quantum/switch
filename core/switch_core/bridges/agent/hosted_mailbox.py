@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.api.hosted_worker_routes import post_mailbox_notices
+from switch_core.bridges.agent.hosted_cutover import post_owed_cutover_notices
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.hosted_workers import (
     FrameSlot,
@@ -119,7 +120,7 @@ async def deliver_on_attach(
 
 
 async def mailbox_upkeep(protocol: ProtocolService, since: datetime) -> None:
-    """One pass over the bound tenant: reclaim, expire, prune, post owed notices, re-offer and log the backlog."""
+    """One pass over the bound tenant: reclaim, expire, prune, post owed notices, re-offer, log the backlog and post owed cutover notices."""
     store = HostedMailboxStore()
     registry = protocol.connections
     boot = protocol.event_buffer.boot
@@ -187,3 +188,4 @@ async def mailbox_upkeep(protocol: ProtocolService, since: datetime) -> None:
             current = await HostedLaunchStore().locked(session, launch_id)
             if current is not None:
                 await offer_pending(session, registry, boot, current)
+    await post_owed_cutover_notices(protocol)

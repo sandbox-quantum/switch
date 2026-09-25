@@ -2,8 +2,9 @@
 
 A database with hosted launches still has #538's `sdk_*` tables here. What
 they hold for hosted agents is copied into `hosted_cutover_items`, and each
-launch gets a `hosted_cutover_volumes` row the worker completes with its own
-manifest. `b9e4d2a71c05` must run after this revision on such a database, so
+launch gets a `hosted_cutover_volumes` row that `hosted-cutover-upgrade
+record` completes with the manifest a preflight check of its stopped volume
+answered. `b9e4d2a71c05` must run after this revision on such a database, so
 a database whose launches outlived those tables is refused rather than
 recorded as having nothing to carry over.
 """
@@ -47,6 +48,8 @@ def upgrade() -> None:
         ),
         sa.Column("manifest_sha256", sa.Text(), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("blocked_reason", sa.Text(), nullable=True),
+        sa.Column("imports_queued_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("tenant_id", "launch_id"),
         sa.ForeignKeyConstraint(
             ["tenant_id", "launch_id"],
@@ -54,7 +57,7 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.CheckConstraint(
-            "preflight_state IN ('pending', 'complete')",
+            "preflight_state IN ('pending', 'blocked', 'complete')",
             name="ck_hosted_cutover_volumes_state",
         ),
     )
@@ -165,7 +168,7 @@ def upgrade() -> None:
           AND c.command->'origin'->>'roomId' IS NOT NULL
           AND c.command->'origin'->>'messageId' IS NOT NULL
         ORDER BY c.tenant_id, s.agent_id, c.command->'origin'->>'roomId',
-                 c.command->'origin'->>'messageId', c.accepted_sequence DESC
+                 c.command->'origin'->>'messageId', c.accepted_sequence DESC, c.command_id DESC
         """
     )
     op.execute(

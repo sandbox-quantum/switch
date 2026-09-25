@@ -118,10 +118,12 @@ migrate:
 
 
 # ── Upgrade a database that ran hosted agents on the old session tables ─────────
-# Refuses unless every hosted launch is stopped, then captures the cutover
-# manifest before main's revisions drop those tables.
-hosted-cutover-upgrade:
-    uv run --project core python -m switch_core.hosted_cutover_upgrade
+# Steps: prepare, record <launch-id> <check.json>, status, upgrade (default).
+# Refuses the drop of the old session tables until every retained volume's
+# preflight check is recorded; see the cutover steps in
+# docs/hosted-activity-contracts.md.
+hosted-cutover-upgrade *args:
+    uv run --project core python -m switch_core.hosted_cutover_upgrade {{args}}
 
 
 # ── Generate a new alembic migration ──────────────────────────────────────────
