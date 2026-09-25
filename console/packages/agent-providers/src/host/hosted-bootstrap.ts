@@ -27,6 +27,7 @@ import {
   validateGitHubCredential,
 } from './hosted-github';
 import { redactHostedText } from './hosted-log';
+import { runHostedPreflight } from './hosted-preflight';
 import { fetchHostedProvider, hostedRequest, materializeHostedProvider } from './hosted-provider';
 import { checkProviderReadiness } from './provider-readiness';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
@@ -506,6 +507,7 @@ export async function prepareHostedDeployment(
       })
     )
   );
+  if (await runHostedPreflight(root, candidate)) await writeDefinition(spec, true);
   const planPath = join(root, PLAN_FILE);
   let plan: HostedDeploymentPlan;
   try {

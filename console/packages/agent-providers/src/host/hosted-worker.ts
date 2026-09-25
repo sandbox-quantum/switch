@@ -17,6 +17,7 @@ import {
   type ControlPush,
   handleControlMessage,
 } from './control';
+import { confirmCutoverManifest, unconfirmedCutoverManifest } from './cutover-manifest';
 import { WorkerObsoleteError } from './exit-codes';
 import { Journal } from './journal';
 import { sharedSessionRoot } from './launch';
@@ -80,6 +81,7 @@ const wakeEntrySchema = z.object({
   message_id: z.string().min(1),
   thread_id: z.string().nullable(),
   event: z.unknown(),
+  origin: z.enum(['live', 'cutover']),
 });
 const deliverySchema = z.object({ room_id: z.string().min(1), message_id: z.string().min(1) });
 const operationSummarySchema = z.object({
@@ -684,11 +686,25 @@ export class HostedWorker {
   /** What a reattach owes Switch: claims, the credential, and every unconfirmed notice, result and ack. */
   private async catchUp(queued: string[]): Promise<void> {
     await this.refreshCredential();
+    await this.uploadCutoverManifest();
     for (const id of queued) await this.claim(id);
     await this.postResults();
     await this.sendNotices();
     await this.flushAcks();
     this.report(true);
+  }
+
+  /** Hands Switch what this volume held before the cutover, until Switch confirms it once. */
+  private async uploadCutoverManifest(): Promise<void> {
+    const manifest = await unconfirmedCutoverManifest(this.root);
+    if (!manifest) return;
+    try {
+      await this.call(`/agents/${this.agentId}/connection/cutover-manifest`, manifest);
+    } catch (error) {
+      this.background(error, 'cutover manifest upload; it is retried on reattach');
+      return;
+    }
+    await confirmCutoverManifest(this.root, manifest.manifest_sha256);
   }
 
   private async relay(frame: z.infer<typeof relaySchema>): Promise<void> {

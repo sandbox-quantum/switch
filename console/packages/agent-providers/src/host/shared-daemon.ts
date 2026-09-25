@@ -4,6 +4,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { AttachmentTransfers } from './attachment-transfers';
 import { type ControlContext, type EnsureSession, serveControl } from './control';
+import { HOSTED_STATE_VERSION, readStateVersion } from './cutover-manifest';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { fetchHostedProvider, materializeHostedProvider } from './hosted-provider';
 import { type HostedCredentials, HostedWorker } from './hosted-worker';
@@ -71,9 +72,14 @@ async function hostedWorker(
     throw new Error(
       'A hosted watcher requires SWITCH_HOST_BOOT_ID and SWITCH_HOST_INSTANCE_ID from its bootstrap.'
     );
+  const stateVersion = await readStateVersion(stateRoot);
+  if (stateVersion !== HOSTED_STATE_VERSION)
+    throw new Error(
+      `This volume is at layout version ${stateVersion ?? 'none'}, not ${HOSTED_STATE_VERSION}; the hosted bootstrap's preflight must finish before the watcher starts.`
+    );
   const worker = new HostedWorker(
     stateRoot,
-    { capability: await readWorkerCapability(stateRoot), bootId, instanceId },
+    { capability: await readWorkerCapability(stateRoot), bootId, instanceId, stateVersion },
     context,
     hostedCredentials(config, stateRoot)
   );

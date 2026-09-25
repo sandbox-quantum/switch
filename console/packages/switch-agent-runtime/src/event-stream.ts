@@ -127,6 +127,8 @@ export interface WorkerIdentity {
   capability: string;
   bootId: string;
   instanceId: string;
+  /** The layout version of the worker's volume; Switch refuses one older than it requires. */
+  stateVersion: number;
 }
 
 /** A hosted up-call Switch answered with anything but success. */
@@ -756,6 +758,7 @@ export class SwitchEventStream {
                   'X-Switch-Worker-Capability': worker.capability,
                   'X-Switch-Host-Boot-Id': worker.bootId,
                   'X-Switch-Host-Instance-Id': worker.instanceId,
+                  'X-Switch-Worker-State-Version': String(worker.stateVersion),
                 }
               : {}),
           },

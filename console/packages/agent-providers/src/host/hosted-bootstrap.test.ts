@@ -615,3 +615,24 @@ it('does not invalidate credentials when provider readiness is inconclusive', as
   );
   expect(supervise).not.toHaveBeenCalled();
 });
+
+it('migrates a saved deployment from before the cutover and keeps its identity', async () => {
+  const input = await fixture();
+  const first = await prepareHostedDeployment(input.state, input.spec);
+  expect(JSON.parse(await readFile(join(input.state, 'state-version.json'), 'utf8'))).toEqual({
+    version: 1,
+  });
+  const planPath = join(input.state, 'hosted-deployment.json');
+  const plan = JSON.parse(await readFile(planPath, 'utf8'));
+  delete plan.spec.revision;
+  delete plan.spec.workerCapabilityPath;
+  plan.config.roomConnection.rooms = [];
+  await writeFile(planPath, JSON.stringify(plan));
+  await rm(join(input.state, 'state-version.json'));
+  const second = await prepareHostedDeployment(input.state, input.spec);
+  expect(second.config).toEqual(first.config);
+  expect(JSON.parse(await readFile(planPath, 'utf8')).spec).toEqual(input.spec);
+  expect(
+    JSON.parse(await readFile(join(input.state, 'cutover', 'manifest.json'), 'utf8')).items
+  ).toEqual([]);
+});

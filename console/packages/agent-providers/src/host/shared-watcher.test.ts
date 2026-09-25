@@ -1747,7 +1747,12 @@ async function hostedWatcher(
   const control = new WatcherControl();
   const hosted = new HostedWorker(
     root,
-    { capability: 'capability-placeholder', bootId: 'boot', instanceId: 'instance' },
+    {
+      capability: 'capability-placeholder',
+      bootId: 'boot',
+      instanceId: 'instance',
+      stateVersion: 1,
+    },
     {
       agentId: config.session.agentId,
       links: hosts.links,
@@ -1800,10 +1805,11 @@ function notices(): string[] {
     .map((call) => `${call.body.reason}:${call.body.message_id}`);
 }
 
-const wakeEntry = (messageId: string, roomId: string) => ({
+const wakeEntry = (messageId: string, roomId: string, origin: 'live' | 'cutover' = 'live') => ({
   room_id: roomId,
   message_id: messageId,
   thread_id: null,
+  origin,
   event: {
     type: 'message',
     payload: { addressed: true, sender: '@owner:example.test', message_id: messageId, body: 'hi' },
@@ -1831,6 +1837,29 @@ it('journals a hosted delivery, acks it through admission and answers a second c
     expect(
       hosts.to(join(root, sessionId)).map((request) => (request as { handoff: Handoff }).handoff)
     ).toMatchObject([{ messageId: 'woken' }, { messageId: 'message-1' }]);
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('hands a message imported at the cutover to its session marked as such', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-cutover-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await watcher.attach({});
+    await watcher.stream.onWorkerFrame!('wake', {
+      entries: [wakeEntry('carried', 'room', 'cutover')],
+    });
+    await eventually(() => acks().includes('admitted:carried'));
+    const sessionId = placementsOf(published).room!;
+    expect(
+      hosts.to(join(root, sessionId)).map((request) => (request as { handoff: Handoff }).handoff)
+    ).toMatchObject([{ messageId: 'carried', event: { cutover: true } }]);
   } finally {
     watcher.abort.abort();
     await watcher.run;

@@ -120,7 +120,7 @@ const mailboxAckSchema = z.strictObject({
 /** A hosted worker's mailbox ack, owed to Switch until it is confirmed. */
 const ackOwedSchema = z.strictObject({ mailboxAck: mailboxAckSchema });
 const ackConfirmedSchema = z.strictObject({ mailboxAcked: mailboxAckSchema });
-const recordSchema = z.union([
+export const assignmentRecordSchema = z.union([
   assignmentSchema,
   restartSchema,
   handledSchema,
@@ -132,7 +132,7 @@ const recordSchema = z.union([
 
 type Assignment = z.infer<typeof assignmentSchema>;
 type Held = Handoff & { spawning: boolean };
-type WatchRecord = z.infer<typeof recordSchema>;
+type WatchRecord = z.infer<typeof assignmentRecordSchema>;
 
 function restarted(record: WatchRecord): record is z.infer<typeof restartSchema> {
   return 'restarted' in record;
@@ -308,7 +308,9 @@ export class SharedWatchAssignments {
 
   static async open(root: string): Promise<SharedWatchAssignments> {
     return new SharedWatchAssignments(
-      await Journal.load(join(root, 'assignments.jsonl'), (value) => recordSchema.parse(value))
+      await Journal.load(join(root, 'assignments.jsonl'), (value) =>
+        assignmentRecordSchema.parse(value)
+      )
     );
   }
 
@@ -1133,7 +1135,12 @@ export async function runSharedWatcher(
             sequence: WAKE_SEQUENCE,
             roomId: entry.room_id,
             messageId: entry.message_id,
-            event: { type: event.type, payload: event.payload, missed: event.missed ?? null },
+            event: {
+              type: event.type,
+              payload: event.payload,
+              missed: event.missed ?? null,
+              ...(entry.origin === 'cutover' ? { cutover: true } : {}),
+            },
           },
           spawn,
           true

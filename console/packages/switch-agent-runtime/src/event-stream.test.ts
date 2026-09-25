@@ -1432,7 +1432,7 @@ it('states placements on the attached incarnation, and raises on a refusal', asy
 });
 
 describe('a hosted worker', () => {
-  const worker = { capability: 'cap-1', bootId: 'boot-1', instanceId: 'i-1' };
+  const worker = { capability: 'cap-1', bootId: 'boot-1', instanceId: 'i-1', stateVersion: 1 };
 
   function refused(status: number, code: string) {
     return {
@@ -1457,6 +1457,7 @@ describe('a hosted worker', () => {
       'X-Switch-Worker-Capability': 'cap-1',
       'X-Switch-Host-Boot-Id': 'boot-1',
       'X-Switch-Host-Instance-Id': 'i-1',
+      'X-Switch-Worker-State-Version': '1',
     });
     abort.abort();
   });

@@ -27,7 +27,7 @@ import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 
-const recordSchema = z.discriminatedUnion('type', [
+export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
   z.object({
@@ -53,7 +53,7 @@ const recordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('reset-completed') }),
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
 ]);
-type RecordEntry = z.infer<typeof recordSchema>;
+type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
   session: Session;
   resumeOperationId?: string;
@@ -192,7 +192,7 @@ export class HostedSession {
       serverEventSchema.parse(input)
     );
     const inbox = await Journal.load(join(root, 'inbox.jsonl'), (input) =>
-      recordSchema.parse(input)
+      hostInboxRecordSchema.parse(input)
     );
     const host = new HostedSession(config, adapter, events, inbox);
     try {

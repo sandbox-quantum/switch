@@ -8,6 +8,7 @@ import { WorkerCallError } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AttachmentTransfers } from './attachment-transfers';
 import type { ControlContext } from './control';
+import { unconfirmedCutoverManifest, writeCutoverManifest } from './cutover-manifest';
 import {
   CONSOLE_RECENT_MS,
   type HostedPort,
@@ -124,7 +125,12 @@ async function worker(
   };
   const hosted = new HostedWorker(
     root,
-    { capability: 'capability-placeholder', bootId: 'boot', instanceId: 'instance' },
+    {
+      capability: 'capability-placeholder',
+      bootId: 'boot',
+      instanceId: 'instance',
+      stateVersion: 1,
+    },
     context,
     { fetch: async () => ({ revoked: false, revision: 'r1', apply: async () => {} }) }
   );
@@ -420,4 +426,29 @@ it('posts each notice once, keeps an unsent one for the next attach and drops a 
   await attach(hosted, calls);
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(posted()).toHaveLength(3);
+});
+
+it('uploads the cutover manifest on attach until Switch confirms it, then never again', async () => {
+  let refuse = true;
+  const { hosted, calls } = await worker((path) => {
+    if (path.endsWith('/cutover-manifest') && refuse) throw new WorkerCallError(503, null, path);
+    return {};
+  });
+  const manifest = {
+    manifest_sha256: 'a'.repeat(64),
+    items: [{ kind: 'reset_pending' as const, session_id: 'session-placeholder' }],
+  };
+  await writeCutoverManifest(root, manifest);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const uploads = () => calls.filter((call) => call.path.endsWith('/connection/cutover-manifest'));
+  await attach(hosted, calls);
+  expect(uploads()).toHaveLength(1);
+  expect(await unconfirmedCutoverManifest(root)).toEqual(manifest);
+  refuse = false;
+  await attach(hosted, calls);
+  expect(uploads()).toHaveLength(2);
+  expect(uploads()[1]!.body).toEqual(manifest);
+  expect(await unconfirmedCutoverManifest(root)).toBeNull();
+  await attach(hosted, calls);
+  expect(uploads()).toHaveLength(2);
 });
