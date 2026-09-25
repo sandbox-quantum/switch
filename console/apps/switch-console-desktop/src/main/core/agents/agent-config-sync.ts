@@ -37,7 +37,7 @@ export type AgentConfigSyncResult = {
 };
 
 export async function syncAgentConfig(params: {
-  workdirFs: PluginFs;
+  workspaceFs: PluginFs;
   /** Null for a provider with no repository definitions (Codex, OpenCode). */
   repoAgents: IRepoAgentsBehavior | null;
   /** The agent's name, which is both its config-file key and its definition stem. */
@@ -45,16 +45,16 @@ export async function syncAgentConfig(params: {
   /** The agent's description, which the definition carries in its frontmatter. */
   description: string;
 }): Promise<AgentConfigSyncResult> {
-  const { workdirFs, repoAgents, name, description } = params;
+  const { workspaceFs, repoAgents, name, description } = params;
 
-  const config = (await readAgentConfigFile(workdirFs, name)) ?? {};
+  const config = (await readAgentConfigFile(workspaceFs, name)) ?? {};
   if (!repoAgents) return { config, action: 'not-applicable' };
 
   const definitionPath = repoAgents.definitionPath(name);
   const generated = repoAgents.renderDefinition(
     definitionAttributes({ config, name, description })
   );
-  const current = await workdirFs.read(definitionPath);
+  const current = await workspaceFs.read(definitionPath);
 
   const action = decideArtifactSync({
     current,
@@ -65,16 +65,16 @@ export async function syncAgentConfig(params: {
   if (action === 'in-sync') return { config, action };
 
   if (action === 'adopt') {
-    const adopted = await adoptDefinition({ workdirFs, repoAgents, name, config });
+    const adopted = await adoptDefinition({ workspaceFs, repoAgents, name, config });
     return { config: adopted, action: 'adopted' };
   }
 
-  await workdirFs.write(definitionPath, generated);
+  await workspaceFs.write(definitionPath, generated);
   const written: AgentConfigFile = {
     ...config,
     rendered: { ...config.rendered, [definitionPath]: fingerprintArtifact(generated) },
   };
-  await writeAgentConfigFile(workdirFs, name, written);
+  await writeAgentConfigFile(workspaceFs, name, written);
   return { config: written, action: 'written' };
 }
 
@@ -88,14 +88,14 @@ export async function syncAgentConfig(params: {
  * meaningful instead of reporting a hand edit forever.
  */
 async function adoptDefinition(params: {
-  workdirFs: PluginFs;
+  workspaceFs: PluginFs;
   repoAgents: IRepoAgentsBehavior;
   name: string;
   config: AgentConfigFile;
 }): Promise<AgentConfigFile> {
-  const { workdirFs, repoAgents, name, config } = params;
+  const { workspaceFs, repoAgents, name, config } = params;
 
-  const attributes = await repoAgents.readDefinition(workdirFs, name);
+  const attributes = await repoAgents.readDefinition(workspaceFs, name);
   if (attributes === null) {
     throw new Error(`Agent ${name} has a definition that could not be read back.`);
   }
@@ -115,13 +115,13 @@ async function adoptDefinition(params: {
       description: typeof description === 'string' ? description : '',
     })
   );
-  await workdirFs.write(definitionPath, generated);
+  await workspaceFs.write(definitionPath, generated);
 
   const result: AgentConfigFile = {
     ...adopted,
     rendered: { ...config.rendered, [definitionPath]: fingerprintArtifact(generated) },
   };
-  await writeAgentConfigFile(workdirFs, name, result);
+  await writeAgentConfigFile(workspaceFs, name, result);
   return result;
 }
 

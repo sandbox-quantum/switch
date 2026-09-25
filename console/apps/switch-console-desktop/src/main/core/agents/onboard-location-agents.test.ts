@@ -9,7 +9,7 @@ const h = vi.hoisted(() => {
   }
   const state: {
     /** Agent-row names already in the directory, per Switch server. */
-    agentNamesByWorkspace: Record<string, string[]>;
+    agentNamesByServer: Record<string, string[]>;
     definitions: Array<{
       name: string;
       description: string | null;
@@ -20,7 +20,7 @@ const h = vi.hoisted(() => {
     local: Array<{ name: string; switchAgentId: string | null; apiEndpoint: string | null }>;
     /** Switch agent ids the target server admits to having. */
     idsOnServer: string[];
-  } = { agentNamesByWorkspace: {}, definitions: [], local: [], idsOnServer: [] };
+  } = { agentNamesByServer: {}, definitions: [], local: [], idsOnServer: [] };
   return {
     state,
     GatewayError,
@@ -44,15 +44,12 @@ vi.mock('@main/core/locations/store', () => ({
   ensureLocation: vi.fn(async () => ({ id: 'loc-1' })),
 }));
 vi.mock('./getAgents', () => ({
-  getLocationAgentsInWorkspace: vi.fn(async (_locationId: string, workspaceId: string) =>
-    (h.state.agentNamesByWorkspace[workspaceId] ?? []).map((name) => ({ name }))
+  getLocationAgentsOnServer: vi.fn(async (_locationId: string, serverId: string) =>
+    (h.state.agentNamesByServer[serverId] ?? []).map((name) => ({ name }))
   ),
 }));
-vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
-}));
-vi.mock('./agent-workdir-fs', () => ({
-  resolveWorkdirFsFor: vi.fn(async () => ({
+vi.mock('./agent-workspace-fs', () => ({
+  resolveWorkspaceFsFor: vi.fn(async () => ({
     fs: {} as PluginFs,
     homeFs: {} as PluginFs,
     close: vi.fn(),
@@ -118,7 +115,7 @@ function definition(name: string, registered: boolean) {
 describe('onboardLocationAgents identity resolution', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    h.state.agentNamesByWorkspace = {};
+    h.state.agentNamesByServer = {};
     h.state.definitions = [];
     h.state.local = [];
     h.state.idsOnServer = [];
@@ -177,11 +174,7 @@ describe('onboardLocationAgents identity resolution', () => {
   it('imports an identity the target server does have', async () => {
     h.state.definitions = [definition('mine', true)];
     h.state.local = [
-      {
-        name: 'mine',
-        switchAgentId: 'sw-on-b',
-        apiEndpoint: 'https://b.example.com',
-      },
+      { name: 'mine', switchAgentId: 'sw-on-b', apiEndpoint: 'https://b.example.com' },
     ];
     h.state.idsOnServer = ['sw-on-b'];
 
@@ -191,7 +184,7 @@ describe('onboardLocationAgents identity resolution', () => {
     expect(h.registerAgentIdentity).not.toHaveBeenCalled();
     expect(h.writeNeutralAgentSettings).not.toHaveBeenCalled();
     expect(h.createAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'mine', switchAgentId: 'sw-on-b', workspaceId: 'ws-srv-b' })
+      expect.objectContaining({ name: 'mine', switchAgentId: 'sw-on-b', serverId: 'srv-b' })
     );
   });
 
@@ -229,7 +222,7 @@ describe('onboardLocationAgents identity resolution', () => {
 
   it('offers a definition already onboarded onto another server', async () => {
     // Same directory, same name, different server — a separate agent.
-    h.state.agentNamesByWorkspace = { 'ws-srv-a': ['shared'] };
+    h.state.agentNamesByServer = { 'srv-a': ['shared'] };
     h.state.definitions = [definition('shared', false)];
     h.state.local = [{ name: 'shared', switchAgentId: null, apiEndpoint: null }];
 
@@ -237,7 +230,7 @@ describe('onboardLocationAgents identity resolution', () => {
 
     expect(result.success).toBe(true);
     expect(h.createAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'shared', workspaceId: 'ws-srv-b' })
+      expect.objectContaining({ name: 'shared', serverId: 'srv-b' })
     );
   });
 });

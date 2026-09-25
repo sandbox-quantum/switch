@@ -33,7 +33,6 @@ const AGENT: Agent = {
   providerId: 'claude',
   switchAgentId: SWITCH_AGENT_ID,
   apiEndpoint: 'https://switch.example',
-  workspaceId: 'workspace-1',
   serverId: SERVER_ID,
   status: null,
   autoApprove: false,

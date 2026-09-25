@@ -1,6 +1,5 @@
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
-import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
 import { getAgentById } from './getAgentById';
 import { updateAgent } from './updateAgent';
@@ -39,8 +38,7 @@ export async function assignAgentServer(params: {
   }
 
   if (result === 'found') {
-    const workspace = await requireSoleWorkspaceForServer(params.serverId);
-    await updateAgent({ agentId: params.agentId, workspaceId: workspace.id });
+    await updateAgent({ agentId: params.agentId, serverId: params.serverId });
   }
   return result;
 }

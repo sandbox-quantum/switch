@@ -10,12 +10,12 @@ import type { Agent, RenameAgentParams } from '@shared/core/agents/agents';
 import { agentEvents } from './agent-events';
 import { getAgentLocation } from './agent-location';
 import { agentNameTaken } from './agent-name-taken';
-import { resolveWorkdirFsFor } from './agent-workdir-fs';
+import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getAgentById } from './getAgentById';
 import { ensureRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { agentSettingsRelativePath } from './switch-settings-paths';
-import { mapAgentRow } from './utils';
+import { mapAgentRowToAgent } from './utils';
 import { foreignCredentialsEndpoint } from './write-switch-settings';
 
 async function moveSidecarToNewName(_previous: Agent, renamed: Agent): Promise<void> {
@@ -32,14 +32,14 @@ async function moveSidecarToNewName(_previous: Agent, renamed: Agent): Promise<v
  * is using.
  */
 async function foreignCredentialsOwnerForMove(
-  workdirFs: PluginFs,
+  workspaceFs: PluginFs,
   credsRaw: string,
   to: string
 ): Promise<string | null> {
   const source = parseSwitchAgentCredentials(credsRaw, log);
   if (!source) return null;
   return foreignCredentialsEndpoint(
-    await workdirFs.read(agentSettingsRelativePath(to)),
+    await workspaceFs.read(agentSettingsRelativePath(to)),
     source.apiEndpoint
   );
 }
@@ -58,7 +58,7 @@ async function foreignCredentialsAtNewName(agent: Agent, to: string): Promise<st
   if ((agent.name ?? agent.id) === to) return null;
   try {
     const location = await getAgentLocation(agent);
-    const ctx = await resolveWorkdirFsFor(location.sshHost, location.dir);
+    const ctx = await resolveWorkspaceFsFor(location.sshHost, location.dir);
     try {
       const creds = await ctx.fs.read(agentSettingsRelativePath(agent.name ?? agent.id));
       return creds === null ? null : await foreignCredentialsOwnerForMove(ctx.fs, creds, to);
@@ -100,7 +100,7 @@ async function moveProvisionedFiles(previous: Agent, renamed: Agent): Promise<vo
 
   try {
     const location = await getAgentLocation(previous);
-    const ctx = await resolveWorkdirFsFor(location.sshHost, location.dir);
+    const ctx = await resolveWorkspaceFsFor(location.sshHost, location.dir);
     try {
       const creds = await ctx.fs.read(agentSettingsRelativePath(from));
       if (creds !== null) {
@@ -134,7 +134,7 @@ async function moveProvisionedFiles(previous: Agent, renamed: Agent): Promise<vo
     // A launch profile (Codex) is keyed on the agent name, so the rename orphans
     // the old-named one; it is rewritten under the new name on the next launch,
     // so just drop the stale file. Reached through its own home filesystem (the
-    // repo-dir workdir fs above has no writable home for a remote agent).
+    // repo-dir workspace fs above has no writable home for a remote agent).
     await removeAgentLaunchProfile(previous, location, from);
   } catch (error) {
     log.warn('renameAgent: failed to move the agent files to the new name', {
@@ -187,7 +187,7 @@ export async function renameAgent(
     .returning();
   if (!row) return err({ type: 'agent-not-found' });
 
-  const renamed = await mapAgentRow(row);
+  const renamed = mapAgentRowToAgent(row);
   if (previous.name !== renamed.name) {
     await moveProvisionedFiles(previous, renamed);
     await moveSidecarToNewName(previous, renamed);

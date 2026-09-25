@@ -1,5 +1,6 @@
 import type { Result } from '@switch-console/shared';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
+import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { appService } from '@main/core/app/service';
 import {
   isManagedServerRunning,
@@ -18,6 +19,7 @@ import type {
 } from '@main/core/telemetry/events';
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { log } from '@main/lib/logger';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type {
   AddressingPolicy,
@@ -285,12 +287,23 @@ export const switchServersController = createRPCController({
       throw error;
     }
     trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+    // The row has landed, so the server is added whatever happens next — this
+    // reconciliation only unlinks agents pointing at servers that are gone.
+    // Rejecting for it would tell the user their add failed while the store has
+    // already reported it as done, and leave them to press Add again, which
+    // registers the same server a second time rather than retrying the first.
+    try {
+      await resolveAgentServers();
+    } catch (error) {
+      log.warn('switch-servers: could not reconcile agent links after adding a server', { error });
+    }
     return server;
   },
 
   updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
     const previous = await requireServer(params.id);
     const server = await updateServer(params);
+    await resolveAgentServers();
 
     // The API URL is what an agent's SWITCH_API_ENDPOINT points at. When it
     // changes, cascade it to every member agent's stored config so they don't
@@ -672,7 +685,7 @@ export const switchServersController = createRPCController({
 
   /**
    * Search a bridge's own user directory so the signed-in user can find
-   * themselves before they have ever posted in the chat workspace (CHOO-2137).
+   * themselves before they have ever posted in the workspace (CHOO-2137).
    */
   searchBridgeDirectory: async (params: {
     serverId: string;

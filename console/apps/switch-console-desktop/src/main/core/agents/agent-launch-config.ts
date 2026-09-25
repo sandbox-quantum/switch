@@ -3,7 +3,7 @@ import type { Agent } from '@shared/core/agents/agents';
 import type { AgentConfigFile } from './agent-config-file';
 import { readAgentConfigFile } from './agent-config-file';
 import { getAgentLocation } from './agent-location';
-import { resolveWorkdirFsFor } from './agent-workdir-fs';
+import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getAgentById } from './getAgentById';
 
 /**
@@ -18,7 +18,7 @@ import { getAgentById } from './getAgentById';
 
 /** Read launch settings from the execution host; transport failures must stop launch. */
 export async function readAgentConfigForLaunch(agentId: string): Promise<AgentConfigFile> {
-  return withAgentWorkdir(
+  return withAgentWorkspace(
     agentId,
     async (agent, fs) => (await readAgentConfigFile(fs, agent.name)) ?? {}
   );
@@ -46,7 +46,7 @@ export async function agentLaunchSpecialization(
 }
 
 /** Run `run` against the agent's working directory, local or over SFTP. */
-export async function withAgentWorkdir<T>(
+export async function withAgentWorkspace<T>(
   agentId: string,
   run: (agent: Agent, fs: PluginFs) => Promise<T>
 ): Promise<T> {
@@ -54,10 +54,10 @@ export async function withAgentWorkdir<T>(
   if (!agent) throw new Error(`No agent with id ${agentId}`);
 
   const location = await getAgentLocation(agent);
-  const workdir = await resolveWorkdirFsFor(location.sshHost, location.dir);
+  const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
   try {
-    return await run(agent, workdir.fs);
+    return await run(agent, workspace.fs);
   } finally {
-    workdir.close();
+    workspace.close();
   }
 }

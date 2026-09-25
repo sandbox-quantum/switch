@@ -44,9 +44,6 @@ vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: vi.fn(async () => h.server),
 }));
-vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
-}));
 vi.mock('@main/core/switch-servers/gateway-client', () => {
   class GatewayError extends Error {
     constructor(readonly kind: string) {

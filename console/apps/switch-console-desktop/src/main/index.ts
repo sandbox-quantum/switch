@@ -13,6 +13,7 @@ import { createMainWindow, getMainWindow } from './app/window';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
+import { resolveAgentServers } from './core/agents/resolve-servers';
 import { appService } from './core/app/service';
 import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
@@ -142,6 +143,12 @@ void app.whenReady().then(async () => {
   // before it is sent, and never before the database it is read from.
   registerTelemetryListeners();
   trackEvent('app_launched', {});
+
+  try {
+    await resolveAgentServers();
+  } catch (e) {
+    log.warn('switch-agents: failed to reconcile agent → server links at boot', { error: e });
+  }
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below

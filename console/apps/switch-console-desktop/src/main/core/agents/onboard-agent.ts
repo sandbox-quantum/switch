@@ -9,7 +9,6 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
-import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type {
   OnboardAgentError,
@@ -186,8 +185,6 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     }
   }
 
-  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
-
   const location = await ensureLocation({ sshHost, dir: params.dir, name: params.name });
 
   const agent = await createAgent({
@@ -197,7 +194,7 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     providerId: params.providerId,
     switchAgentId: switchAgent.agentId,
     apiEndpoint: switchAgent.apiEndpoint,
-    workspaceId: targetWorkspace.id,
+    serverId: params.serverId,
     // Honor an explicit choice from the add-agent modal; otherwise default by
     // run location — remote agents run unattended on their VM with no operator
     // to answer permission prompts, so default them to bypass, local off.

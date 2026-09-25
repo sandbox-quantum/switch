@@ -127,19 +127,19 @@ export type RepoAgentAttributes = Record<string, RepoAgentAttributeValue>;
  * provider's business and lives behind this behavior; the main process supplies a
  * `PluginFs` for the IO and owns the provider-neutral gateway reconciliation.
  *
- * `workdirFs` is rooted at the agent's working directory; `homeFs` at the user's
+ * `workspaceFs` is rooted at the agent's working directory; `homeFs` at the user's
  * home — definitions may resolve in either scope.
  */
 export type IRepoAgentsBehavior = {
   /** Runnable agents, from the working dir's on-disk credentials + definitions. */
-  discoverLocal(workdirFs: PluginFs, homeFs: PluginFs): Promise<LocalRepoAgent[]>;
+  discoverLocal(workspaceFs: PluginFs, homeFs: PluginFs): Promise<LocalRepoAgent[]>;
   /** Agent definitions in the working dir, for onboarding (project scope). */
-  discoverDefinitions(workdirFs: PluginFs): Promise<RepoAgentDefinition[]>;
+  discoverDefinitions(workspaceFs: PluginFs): Promise<RepoAgentDefinition[]>;
   /** Provider-specific CLI args that run the CLI as the named agent. Pure — the
    * caller passes them to `buildCommand` as `agentArgs` (not user extra args). */
   launchArgs(workingDir: string, agentName: string): string[];
   /** The named agent's Switch credentials as env vars, for the launched session. */
-  readLaunchEnv(workdirFs: PluginFs, agentName: string): Promise<Record<string, string>>;
+  readLaunchEnv(workspaceFs: PluginFs, agentName: string): Promise<Record<string, string>>;
   /** The attribute fields this provider supports, in display order. Drives the
    * create/edit form; the first two are always `name` and `description`. */
   attributeFields(): RepoAgentField[];
@@ -155,16 +155,16 @@ export type IRepoAgentsBehavior = {
   /** The definition file's path, relative to the working directory. */
   definitionPath(name: string): string;
   /** Create or overwrite a named agent's on-disk definition from its attributes
-   * (workdir scope). `attributes.name` selects the agent. */
-  writeDefinition(workdirFs: PluginFs, attributes: RepoAgentAttributes): Promise<void>;
+   * (workspace scope). `attributes.name` selects the agent. */
+  writeDefinition(workspaceFs: PluginFs, attributes: RepoAgentAttributes): Promise<void>;
   /** The current attribute values for an existing agent definition, keyed to
    * {@link attributeFields}, or null if no definition exists. */
-  readDefinition(workdirFs: PluginFs, name: string): Promise<RepoAgentAttributes | null>;
+  readDefinition(workspaceFs: PluginFs, name: string): Promise<RepoAgentAttributes | null>;
   /** Remove a named agent's provider-specific files — its definition and any
-   * legacy per-agent settings (workdir scope). The provider-neutral Switch
+   * legacy per-agent settings (workspace scope). The provider-neutral Switch
    * credentials are not this hook's to remove: they are written for every
    * provider, so they are torn down by the caller for every provider too. */
-  removeLocal(workdirFs: PluginFs, name: string): Promise<void>;
+  removeLocal(workspaceFs: PluginFs, name: string): Promise<void>;
 };
 
 /**

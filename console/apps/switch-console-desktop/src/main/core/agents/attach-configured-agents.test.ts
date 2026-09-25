@@ -10,8 +10,8 @@ function readOnlyFs(seed: Record<string, string>): PluginFs {
   const files = new Map<string, string>(Object.entries(seed));
   return {
     read: (p) => Promise.resolve(files.get(p) ?? null),
-    write: (p) => Promise.reject(new Error(`attach wrote to the workdir: ${p}`)),
-    delete: (p) => Promise.reject(new Error(`attach deleted from the workdir: ${p}`)),
+    write: (p) => Promise.reject(new Error(`attach wrote to the workspace: ${p}`)),
+    delete: (p) => Promise.reject(new Error(`attach deleted from the workspace: ${p}`)),
     exists: (p) => Promise.resolve(files.has(p)),
     list: (dir) => {
       const prefix = `${dir}/`;
@@ -44,12 +44,12 @@ const h = vi.hoisted(() => {
     }
   }
   const state: {
-    workdir: PluginFs | null;
+    workspace: PluginFs | null;
     /** Agent-row names already in the directory, per Switch server. */
-    agentNamesByWorkspace: Record<string, string[]>;
+    agentNamesByServer: Record<string, string[]>;
     existsOnServer: boolean;
     existsThrows: Error | null;
-  } = { workdir: null, agentNamesByWorkspace: {}, existsOnServer: true, existsThrows: null };
+  } = { workspace: null, agentNamesByServer: {}, existsOnServer: true, existsThrows: null };
   return {
     state,
     GatewayError,
@@ -69,16 +69,13 @@ vi.mock('@main/core/locations/store', () => ({
   ensureLocation: vi.fn(async () => ({ id: 'loc-1' })),
 }));
 vi.mock('./getAgents', () => ({
-  getLocationAgentsInWorkspace: vi.fn(async (_locationId: string, workspaceId: string) =>
-    (h.state.agentNamesByWorkspace[workspaceId] ?? []).map((name) => ({ name }))
+  getLocationAgentsOnServer: vi.fn(async (_locationId: string, serverId: string) =>
+    (h.state.agentNamesByServer[serverId] ?? []).map((name) => ({ name }))
   ),
 }));
-vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
-}));
-vi.mock('./agent-workdir-fs', () => ({
-  resolveWorkdirFsFor: vi.fn(async () => ({
-    fs: h.state.workdir as PluginFs,
+vi.mock('./agent-workspace-fs', () => ({
+  resolveWorkspaceFsFor: vi.fn(async () => ({
+    fs: h.state.workspace as PluginFs,
     homeFs: null,
     close: vi.fn(),
   })),
@@ -118,10 +115,10 @@ function params(agents: Array<{ name: string; providerId: 'codex' | 'claude' }>)
 describe('attachConfiguredAgents', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    h.state.agentNamesByWorkspace = {};
+    h.state.agentNamesByServer = {};
     h.state.existsOnServer = true;
     h.state.existsThrows = null;
-    h.state.workdir = readOnlyFs({ '.switch/agents/theirs.json': creds('sw-theirs') });
+    h.state.workspace = readOnlyFs({ '.switch/agents/theirs.json': creds('sw-theirs') });
   });
 
   it('adopts the existing Switch identity instead of minting a new one', async () => {
@@ -140,7 +137,7 @@ describe('attachConfiguredAgents', () => {
   });
 
   it('writes nothing to the working directory', async () => {
-    // The workdir belongs to whichever install set the agent up. Any write
+    // The workspace belongs to whichever install set the agent up. Any write
     // here rejects, so this passing means attach touched none of their state.
     await expect(
       attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]))
@@ -178,7 +175,7 @@ describe('attachConfiguredAgents', () => {
   });
 
   it('skips an agent this Switch Console already has', async () => {
-    h.state.agentNamesByWorkspace = { 'ws-srv-1': ['theirs'] };
+    h.state.agentNamesByServer = { 'srv-1': ['theirs'] };
 
     const result = await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
 
@@ -188,13 +185,13 @@ describe('attachConfiguredAgents', () => {
 
   it('attaches an agent already attached to a different server (CHOO-2044)', async () => {
     // Same directory, same name, other server — a separate agent, not a duplicate.
-    h.state.agentNamesByWorkspace = { 'ws-srv-other': ['theirs'] };
+    h.state.agentNamesByServer = { 'srv-other': ['theirs'] };
 
     const result = await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
 
     expect(result.success).toBe(true);
     expect(h.createAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'theirs', workspaceId: 'ws-srv-1' })
+      expect.objectContaining({ name: 'theirs', serverId: 'srv-1' })
     );
   });
 
@@ -202,7 +199,7 @@ describe('attachConfiguredAgents', () => {
     // One Switch server can be reachable at two URLs. The launch path reads the
     // endpoint from the same file as the token, so the directory's value is what
     // the session will really use — surfaced, never corrected.
-    h.state.workdir = readOnlyFs({
+    h.state.workspace = readOnlyFs({
       '.switch/agents/theirs.json': creds('sw-theirs', 'https://switch.internal:8443'),
     });
 

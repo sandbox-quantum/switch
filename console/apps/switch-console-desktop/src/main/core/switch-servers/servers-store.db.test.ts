@@ -2,7 +2,7 @@ import { openFixture } from '@tooling/utils/db';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
-import { agents, kv, locations, switchServers, workspaces } from '@main/db/schema';
+import { agents, kv, locations, switchServers } from '@main/db/schema';
 
 const mocks = vi.hoisted(() => ({
   db: undefined as AppDb | undefined,
@@ -225,10 +225,6 @@ describe('servers-store: rename & delete', () => {
     });
 
     it('unlinks the server’s agents (keeps them), deletes the row, and clears the active pointer', async () => {
-      // The unlink is two foreign keys deep — the server's workspaces cascade,
-      // and their agents are set null — so this one test needs the engine to be
-      // enforcing them.
-      fixture.sqlite.pragma('foreign_keys = ON');
       await fixture.db
         .insert(locations)
         .values({ id: 'loc-1', name: 'Loc', sshHost: '', dir: '/repo/loc-1' });
@@ -238,41 +234,25 @@ describe('servers-store: rename & delete', () => {
         gatewayUrl: 'https://gw.example.com',
         apiUrl: 'https://api.example.com',
       });
-      await fixture.db.insert(workspaces).values({ id: 'ws-1', serverId: 'srv-1', name: 'Server' });
       await fixture.db.insert(agents).values([
-        {
-          id: 'agent-1',
-          locationId: 'loc-1',
-          name: 'A',
-          providerId: 'claude',
-          workspaceId: 'ws-1',
-        },
-        {
-          id: 'agent-2',
-          locationId: 'loc-1',
-          name: 'B',
-          providerId: 'claude',
-          workspaceId: 'ws-1',
-        },
+        { id: 'agent-1', locationId: 'loc-1', name: 'A', providerId: 'claude', serverId: 'srv-1' },
+        { id: 'agent-2', locationId: 'loc-1', name: 'B', providerId: 'claude', serverId: 'srv-1' },
       ]);
-      await fixture.db.insert(kv).values({ key: 'activeWorkspaceId', value: 'ws-1' });
+      await fixture.db.insert(kv).values({ key: 'activeSwitchServerId', value: 'srv-1' });
 
       await removeServer('srv-1');
 
       const remainingServers = await fixture.db.select().from(switchServers);
       expect(remainingServers).toHaveLength(0);
 
-      const remainingWorkspaces = await fixture.db.select().from(workspaces);
-      expect(remainingWorkspaces).toHaveLength(0);
-
       const remainingAgents = await fixture.db.select().from(agents);
       expect(remainingAgents).toHaveLength(2);
-      expect(remainingAgents.every((a) => a.workspaceId === null)).toBe(true);
+      expect(remainingAgents.every((a) => a.serverId === null)).toBe(true);
 
       const [activePointer] = await fixture.db
         .select()
         .from(kv)
-        .where(eq(kv.key, 'activeWorkspaceId'));
+        .where(eq(kv.key, 'activeSwitchServerId'));
       expect(activePointer).toBeUndefined();
 
       expect(secretMocks.deleteSecret).toHaveBeenCalledWith('switch-server-cookie:srv-1');
