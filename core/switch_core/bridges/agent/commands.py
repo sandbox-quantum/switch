@@ -416,7 +416,10 @@ async def _reply_hosted_asleep(
     if launch is None or not launch.sleeping:
         return False
     if command == "reset":
-        await client._note_hosted_addressed(agent)
+        hosted = await client._note_hosted_addressed(agent, None)
+        if hosted is not None and hosted.refusal is not None:
+            await _reply(client, room, event, hosted.refusal)
+            return True
         await _reply(
             client,
             room,

@@ -16,7 +16,14 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from switch_core.bridges.agent.protocol.connections import (
+        Connection,
+        ConnectionRegistry,
+    )
+    from switch_core.db.models import HostedLaunch
 
 #: The protocol revision that carries the hosted worker frames.
 HOSTED_PROTOCOL_REVISION = 7
@@ -40,6 +47,23 @@ RELAY_RESOLVED_RETENTION_SECONDS = 60.0
 #: Bound on one Console relay stream's undelivered frames.
 CONSOLE_VIEW_FRAMES = 1000
 CONSOLE_VIEW_BYTES = 4 * 1024 * 1024
+
+#: What a room is told, by notice reason, when a message was not processed.
+NOTICE_MESSAGES = {
+    "startup": "I could not start the provider, so I could not process your request. Open this session in Switch Console to check the error and restart it.",
+    "delivery": "I could not verify your earlier message after reconnecting, so I did not process it. Please send the message and any attachments again.",
+    "conversation": "This saved conversation cannot continue. Send !reset @{name} here, or choose Start a fresh conversation in Switch Console. Your pending messages will be delivered after you make that choice.",
+    "capacity": "I am already running as many sessions as my cloud worker allows, so I could not start one for this message. Stop a session in Switch Console, then send the message again.",
+    "auto_start_off": "I have no session for this room and I am not set to start one automatically, so I did not process this message. Start a session for this room in Switch Console, then send the message again.",
+    "stopped": "My cloud worker was stopped before I processed this message, so I did not process it. Start me again in Switch Console, then send it again.",
+    "expired": "I could not process this message in time, so I did not process it. Please send it again.",
+    "cancelled": "Processing of this message was cancelled before it ran. Please send it again if it is still needed.",
+    "revoked": "My owner's provider connection was removed, so I cannot process messages. Ask my owner to reconnect the provider in Switch.",
+    "upgrade": "My cloud worker is being upgraded and could not process this message. Please send it again in a few minutes.",
+    "started_before_stop": "I had already started processing this message before my cloud worker was stopped, so it may have been processed in part. Check the conversation before sending it again.",
+    "started_before_expiry": "I had already started processing this message before it expired, so it may have been processed in part. Check the conversation before sending it again.",
+    "expired_uncertain": "I could not confirm whether my cloud worker received this message in time, so it may or may not have been processed. Check the conversation before sending it again.",
+}
 
 #: The subscription name a watcher pushes health under.
 HEALTH_SUBSCRIPTION = "health"
@@ -513,3 +537,25 @@ class RelayViews:
                     for view in sub.views:
                         view.push(key, frame)
         return unsubscribe
+
+
+def offer_key(boot: int, conn: Connection) -> str:
+    """Who holds a wake mailbox offer: this Core boot, the worker's connection and its generation."""
+    return f"{boot}:{conn.id}:{conn.stream_generation}"
+
+
+def attached_worker_for(
+    registry: ConnectionRegistry, launch: HostedLaunch
+) -> Connection | None:
+    """The launch's attached worker, if it is bound to the launch's current revision."""
+    if launch.agent_id is None:
+        return None
+    conn = registry.attached_worker(launch.agent_id)
+    if (
+        conn is None
+        or conn.worker is None
+        or conn.worker.launch_id != launch.id
+        or conn.worker.launch_revision != launch.revision
+    ):
+        return None
+    return conn

@@ -8,6 +8,7 @@ import signal
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 
 import httpx
@@ -24,6 +25,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
+from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
     ConnectionRegistry,
@@ -749,7 +751,9 @@ async def run(config: SwitchConfig) -> None:
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             session_activity_task = asyncio.create_task(
-                session_activity_maintenance_loop(session_factory)
+                session_activity_maintenance_loop(
+                    session_factory, partial(mailbox_upkeep, protocol)
+                )
             )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)

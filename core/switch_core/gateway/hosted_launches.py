@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.addressing import AddressingPolicy
 from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url
+from switch_core.bridges.agent.api.hosted_worker_routes import post_mailbox_notices
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.config import SwitchConfig
 from switch_core.crypto import decrypt_token
@@ -29,6 +30,7 @@ from switch_core.db.stores.hosted_launch_store import (
     HostedLaunchStore,
     lock_launch,
 )
+from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore
 from switch_core.db.stores.provider_connection_store import (
     ProviderConnectionBusy,
     ProviderConnectionStore,
@@ -189,9 +191,26 @@ async def lifecycle(
     await HostedLaunchStore().fail_stale_operations(session, launch.id, launch.revision)
     launch.updated_at = datetime.now(UTC)
     await queue_revocation(session, (GitHubIssuedToken.launch_id == launch.id,))
+    mailbox = HostedMailboxStore()
+    split = await mailbox.stop(session, launch.id) if body.action == "stop" else None
+    if body.action == "remove":
+        await mailbox.delete_launch(session, launch.id)
     await session.commit()
     if launch.agent_id:
+        if split is not None and split.cancel_requested:
+            protocol.connections.ring_worker(
+                launch.agent_id,
+                "mailbox_cancel",
+                {
+                    "entries": [
+                        {"room_id": room_id, "message_id": message_id}
+                        for room_id, message_id in split.cancel_requested
+                    ]
+                },
+            )
         protocol.connections.supersede(launch.agent_id, launch.revision)
+    if split is not None:
+        await post_mailbox_notices(protocol, split.cancelled)
     response = summary(launch)
     remaining = await revoke_pending(
         session, config, (GitHubIssuedToken.launch_id == launch.id,)

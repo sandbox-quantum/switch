@@ -39,6 +39,7 @@ _HOSTED_TABLES = (
     "hosted_launches",
     "hosted_operations",
     "github_issued_tokens",
+    "hosted_wake_mailbox",
 )
 
 _PREDICATE = (

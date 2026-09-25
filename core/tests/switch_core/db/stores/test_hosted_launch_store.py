@@ -3,11 +3,20 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from switch_core.db.models import HostedLaunch, Tenant, User, require_tenant_id
+from switch_core.crypto import encrypt_token
+from switch_core.db.models import (
+    HostedLaunch,
+    ProviderConnection,
+    Tenant,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.hosted_launch_store import (
     HostedLaunchConflict,
     HostedLaunchStore,
+    ProviderDisconnected,
 )
+from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.tenant_context import tenant_scope
 
 
@@ -32,6 +41,14 @@ async def launches(session_factory):
                 ),
                 Tenant(id="launch-other-tenant", slug="launch-other", name="Other"),
             ]
+        )
+        await session.flush()
+        await ProviderConnectionStore().save(
+            session,
+            "launch-owner",
+            "setup-token",
+            encrypt_token("SYNTHETIC-CLAUDE", "test-secret"),
+            datetime.now(UTC),
         )
         await session.commit()
     return HostedLaunchStore(), session_factory
@@ -119,6 +136,32 @@ async def test_addressing_a_sleeping_launch_wakes_it(launches):
     assert woken.sleeping is True
     assert woken.error is None
     assert datetime.now(UTC) - woken.active_at < timedelta(minutes=1)
+
+
+async def test_addressing_a_sleeping_launch_without_provider_does_not_wake_it(
+    launches,
+):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    async with factory() as session:
+        connection = await session.get(
+            ProviderConnection, (require_tenant_id(), "launch-owner", "claude")
+        )
+        await session.delete(connection)
+        await session.commit()
+    with pytest.raises(ProviderDisconnected):
+        await address(
+            store,
+            factory,
+            "request-1",
+            desired_state="stopped",
+            state="stopped",
+            sleeping=True,
+        )
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), "request-1"))
+        assert launch is not None
+        assert (launch.desired_state, launch.revision) == ("stopped", 1)
 
 
 async def test_addressing_a_ready_launch_only_marks_it_active(launches):

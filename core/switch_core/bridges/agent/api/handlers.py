@@ -84,6 +84,7 @@ from switch_core.bridges.agent.dependencies import (
     get_protocol,
     get_session,
 )
+from switch_core.bridges.agent.hosted_mailbox import deliver_on_attach
 from switch_core.bridges.agent.protocol.connections import (
     TAKEN_OVER,
     ClientDeclaration,
@@ -114,7 +115,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.budgets import BudgetExceeded
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Agent, Task, require_tenant_id
+from switch_core.db.models import Agent, HostedLaunch, Task, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
@@ -930,7 +931,9 @@ async def _open_event_stream(
             if attach.takes_over is not None and attach.takes_over.id != conn.id:
                 protocol.connections.close(attach.takes_over.id, TAKEN_OVER)
             protocol.connections.bind_worker(conn, attach.binding, attach.attached)
-            await db.commit()
+            launch = await db.get(HostedLaunch, (require_tenant_id(), launch_id))
+            assert launch is not None
+            await deliver_on_attach(db, protocol, launch)
 
     # Built before anything below can yield, so it holds the generation this
     # open produced; a reconnect during the bookkeeping supersedes it rather

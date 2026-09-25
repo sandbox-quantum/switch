@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -36,6 +37,7 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     HOSTED_WORKER_ONLY_MESSAGE,
     IDLE_FRESH_FOR_SECONDS,
     IDLE_REPORT_EVERY_SECONDS,
+    NOTICE_MESSAGES,
     RELAY_REPLY_ENVELOPE_BYTES,
     RELAY_REPLY_LIMIT_BYTES,
     IdleReport,
@@ -53,7 +55,14 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore, lock_launch
+from switch_core.db.stores.hosted_mailbox_store import (
+    ACKS_PER_CALL,
+    HostedMailboxStore,
+    MailboxNotice,
+    MailboxOutcome,
+    one_per_room,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +189,9 @@ async def admit_worker(
             "credential_revision": await store.credential_revision(session, launch),
             "queued_operations": await store.queued_operation_ids(session, launch),
             "relay_fence": launch.relay_seq,
-            # The wake mailbox's settled entries go here once it exists.
-            "cancelled": [],
+            "cancelled": await HostedMailboxStore().cancelled_entries(
+                session, agent.id
+            ),
         },
         takes_over=takes_over,
     )
@@ -353,19 +363,6 @@ async def idle_report(
     }
 
 
-NOTICE_MESSAGES = {
-    "startup": "I could not start the provider, so I could not process your request. Open this session in Switch Console to check the error and restart it.",
-    "delivery": "I could not verify your earlier message after reconnecting, so I did not process it. Please send the message and any attachments again.",
-    "conversation": "This saved conversation cannot continue. Send !reset @{name} here, or choose Start a fresh conversation in Switch Console. Your pending messages will be delivered after you make that choice.",
-    "capacity": "I am already running as many sessions as my cloud worker allows, so I could not start one for this message. Stop a session in Switch Console, then send the message again.",
-    "auto_start_off": "I have no session for this room and I am not set to start one automatically, so I did not process this message. Start a session for this room in Switch Console, then send the message again.",
-    "stopped": "My cloud worker was stopped before I processed this message, so I did not process it. Start me again in Switch Console, then send it again.",
-    "expired": "I could not process this message in time, so I did not process it. Please send it again.",
-    "cancelled": "Processing of this message was cancelled before it ran. Please send it again if it is still needed.",
-    "revoked": "My owner's provider connection was removed, so I cannot process messages. Ask my owner to reconnect the provider in Switch.",
-    "upgrade": "My cloud worker is being upgraded and could not process this message. Please send it again in a few minutes.",
-}
-
 NoticeReason = Literal[
     "startup",
     "delivery",
@@ -377,6 +374,12 @@ NoticeReason = Literal[
     "cancelled",
     "revoked",
     "upgrade",
+]
+
+
+#: Reasons only Core posts, for outcomes only the wake mailbox knows.
+CoreNoticeReason = Literal[
+    "started_before_stop", "started_before_expiry", "expired_uncertain"
 ]
 
 
@@ -396,7 +399,7 @@ async def post_room_notice(
     room_id: str,
     message_id: str,
     thread_id: str | None,
-    reason: NoticeReason,
+    reason: NoticeReason | CoreNoticeReason,
 ) -> bool:
     """Tell a room why a message was not processed, once per message and reason.
 
@@ -462,3 +465,107 @@ async def room_notice(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"room_id": body.room_id, "message_id": body.message_id, "posted": posted}
+
+
+async def post_mailbox_notices(
+    protocol: ProtocolService, notices: Sequence[MailboxNotice]
+) -> None:
+    """Post what the mailbox owes rooms, one notice per room and reason, after the commit.
+
+    A notice that cannot be posted is logged, not raised: the row has already
+    moved, and the caller's work must not be undone by a room it cannot reach.
+    """
+    agents: dict[str, Agent | None] = {}
+    for notice in one_per_room(notices):
+        if notice.agent_id not in agents:
+            async with tenant_session(
+                protocol.session_factory, require_tenant_id()
+            ) as db:
+                agents[notice.agent_id] = await db.get(Agent, notice.agent_id)
+        agent = agents[notice.agent_id]
+        if agent is None:
+            logger.warning(
+                "Mailbox notice %s for room %s dropped: agent %s is gone",
+                notice.reason,
+                notice.room_id,
+                notice.agent_id,
+            )
+            continue
+        try:
+            await post_room_notice(
+                protocol,
+                agent,
+                notice.room_id,
+                notice.message_id,
+                notice.thread_id,
+                cast(NoticeReason | CoreNoticeReason, notice.reason),
+            )
+        except Exception:
+            logger.error(
+                "Could not post the %s notice for message %s in room %s",
+                notice.reason,
+                notice.message_id,
+                notice.room_id,
+                exc_info=True,
+            )
+
+
+class MailboxAckEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    room_id: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+    outcome: MailboxOutcome
+    reason: str | None = Field(default=None, max_length=64)
+
+
+class MailboxAcks(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_id: str
+    generation: int
+    entries: list[MailboxAckEntry] = Field(max_length=ACKS_PER_CALL)
+
+
+@router.post("/{agent_id}/connection/mailbox/ack")
+async def mailbox_ack(
+    agent_id: str,
+    body: MailboxAcks,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """The attached worker says how far each delivered row has got; forward moves only."""
+    require_self(agent_id, agent)
+    conn = require_worker(
+        protocol.connections, agent, body.connection_id, body.generation
+    )
+    assert conn.worker is not None
+    await lock_launch(session, conn.worker.launch_id)
+    launch = await session.get(
+        HostedLaunch,
+        (require_tenant_id(), conn.worker.launch_id),
+        populate_existing=True,
+    )
+    if launch is None or launch.revision != conn.worker.launch_revision:
+        raise refusal(
+            409,
+            "generation_changed",
+            "The launch moved to a newer revision; acknowledge again after "
+            "reattaching.",
+        )
+    states, notices = await HostedMailboxStore().ack(
+        session,
+        agent.id,
+        [(entry.room_id, entry.message_id, entry.outcome) for entry in body.entries],
+    )
+    await session.commit()
+    await post_mailbox_notices(protocol, notices)
+    return {
+        "entries": [
+            {
+                "room_id": entry.room_id,
+                "message_id": entry.message_id,
+                "state": states.get((entry.room_id, entry.message_id)),
+            }
+            for entry in body.entries
+        ]
+    }

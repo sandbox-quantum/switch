@@ -270,6 +270,11 @@ async def _event_stream(
                 yield _frame("evicted", _eviction(TAKEN_OVER))
                 return
             if conn.closure is not None:
+                # A Stop's cancel is sent ahead of the eviction it causes, so
+                # the worker can release what it had not started yet.
+                for event, data in conn.worker_frames.drain():
+                    if event == "mailbox_cancel":
+                        yield _frame(event, data)
                 yield _frame("evicted", _eviction(conn.closure))
                 return
             if not conn.is_alive(time.monotonic()):

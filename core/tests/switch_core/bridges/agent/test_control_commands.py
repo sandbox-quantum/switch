@@ -62,7 +62,8 @@ def _client(
         },
     )
 
-    async def _note_hosted_addressed(noted: Any) -> None:
+    async def _note_hosted_addressed(noted: Any, event: Any) -> None:
+        assert event is None
         assert woke is not None
         woke.append(noted.id)
 

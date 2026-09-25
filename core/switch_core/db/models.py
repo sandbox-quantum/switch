@@ -440,6 +440,61 @@ class HostedOperation(TenantScoped, Base):
     )
 
 
+class HostedWakeMailbox(TenantScoped, Base):
+    """An addressed event for a hosted agent, kept until its worker has admitted it."""
+
+    __tablename__ = "hosted_wake_mailbox"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "agent_id", "room_id", "message_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'offered', 'accepted', 'admitted', 'held', 'cancelled', 'cancel_requested', 'refused', 'duplicate', 'expired', 'expired_uncertain')",
+            name="ck_hosted_wake_mailbox_state",
+        ),
+        CheckConstraint(
+            "cancel_reason IS NULL OR cancel_reason IN ('stopped', 'expired')",
+            name="ck_hosted_wake_mailbox_cancel_reason",
+        ),
+        CheckConstraint(
+            "origin IN ('live', 'cutover')", name="ck_hosted_wake_mailbox_origin"
+        ),
+        Index(
+            "ix_hosted_wake_mailbox_agent_state",
+            "tenant_id",
+            "agent_id",
+            "state",
+            "addressed_at",
+        ),
+    )
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    thread_id: Mapped[str | None] = mapped_column(Text)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    ever_offered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    offered_to: Mapped[str | None] = mapped_column(Text)
+    offered_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    origin: Mapped[str] = mapped_column(Text, nullable=False, server_default="live")
+    addressed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 # ── Invitations ────────────────────────────────────────────────────────────────
 
 

@@ -19,6 +19,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
@@ -255,7 +256,7 @@ class HostedLaunchStore:
 
         Read under the launch lock. Busy wins on any single signal, and a
         missing or stale report is a signal: the controller stops a VM only on
-        evidence. The wake mailbox (D3) joins these conditions with its table.
+        evidence.
         """
         reasons: list[str] = []
         report = (
@@ -285,6 +286,8 @@ class HostedLaunchStore:
             )
         ):
             reasons.append("operation_pending")
+        if await HostedMailboxStore().busy(session, launch.id):
+            reasons.append("mailbox_pending")
         if launch.agent_id and await session.scalar(
             select(
                 exists().where(
@@ -303,7 +306,8 @@ class HostedLaunchStore:
         """Record that the launch's agent was addressed, waking it if idle-stopped.
 
         Takes the same lock as the lifecycle and controller routes. The caller
-        commits.
+        commits. Raises `ProviderDisconnected` rather than wake a launch whose
+        owner has no provider connection: the VM would only fail to start.
         """
         launch = await self.locked(session, launch_id)
         if launch is None:
@@ -314,6 +318,10 @@ class HostedLaunchStore:
             and launch.desired_state == "stopped"
             and launch.state != "error"
         ):
+            if await self.credential_revision(session, launch) is None:
+                raise ProviderDisconnected(
+                    f"launch {launch.id} is asleep and its owner's provider connection is gone"
+                )
             launch.desired_state = "running"
             launch.state = "queued"
             launch.revision += 1
@@ -324,6 +332,10 @@ class HostedLaunchStore:
         elif launch.desired_state not in {"stopped", "deleted"}:
             launch.active_at = now
         return launch
+
+
+class ProviderDisconnected(Exception):
+    """A sleeping launch was addressed, but its owner's provider connection is gone."""
 
 
 def is_waking(launch: HostedLaunch) -> bool:
