@@ -8,6 +8,7 @@ const updateAgent = vi.fn(
 );
 const getRemoteAgentLocation = vi.fn();
 const listAutoSessionAgentIds = vi.fn();
+const listStoppedControllerAgentIds = vi.fn(async (): Promise<string[]> => []);
 const pushRemoteAutoApprove = vi.fn(async (_id: string) => {});
 const recordAutoApproveOnHost = vi.fn(async (_id: string) => {});
 
@@ -24,6 +25,7 @@ vi.mock('./agent-location', () => ({
 }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
   listAutoSessionAgentIds: () => listAutoSessionAgentIds(),
+  listStoppedControllerAgentIds: () => listStoppedControllerAgentIds(),
 }));
 vi.mock('./remote-watcher', () => ({
   pushRemoteAutoApprove: (id: string) => pushRemoteAutoApprove(id),
@@ -39,6 +41,8 @@ describe('setAgentAutoApprove', () => {
     updateAgent.mockClear();
     getRemoteAgentLocation.mockReset();
     listAutoSessionAgentIds.mockReset();
+    listStoppedControllerAgentIds.mockReset();
+    listStoppedControllerAgentIds.mockResolvedValue([]);
     pushRemoteAutoApprove.mockClear();
     recordAutoApproveOnHost.mockClear();
   });
@@ -70,6 +74,20 @@ describe('setAgentAutoApprove', () => {
     // watcher — this Console's or another's — takes its setting from.
     getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1' });
     listAutoSessionAgentIds.mockResolvedValue([]);
+
+    await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
+
+    expect(recordAutoApproveOnHost).toHaveBeenCalledWith('agent-1');
+    expect(pushRemoteAutoApprove).not.toHaveBeenCalled();
+  });
+
+  it('records the value on the host for a stopped watcher, which nothing rewrites until it starts', async () => {
+    // Pushing goes through the watcher's own write, which a stopped one skips —
+    // and its next start takes the host's value, so a value left only in this
+    // row would be put back.
+    getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1' });
+    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
+    listStoppedControllerAgentIds.mockResolvedValue(['agent-1']);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
 

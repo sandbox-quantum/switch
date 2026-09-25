@@ -105,11 +105,12 @@ async function adoptHostAutoApprove(
 }
 
 /**
- * Write an agent's auto-approve into its watcher's saved spec on the host
- * while the watcher is not running, so turning automatic sessions on later —
- * from this Console or another — starts with the value just chosen rather than
- * the one saved before. Nothing to do when the agent has no saved spec: the
- * first watcher is written from the row.
+ * Write an agent's auto-approve into its watcher's saved spec on the host when
+ * the watcher is not starting sessions — stopped, or connected with automatic
+ * sessions off — so the next time it does, from this Console or another, it
+ * starts with the value just chosen rather than the one saved before. Nothing
+ * to do when the agent has no saved spec: the first watcher is written from
+ * the row.
  */
 export async function recordAutoApproveOnHost(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
