@@ -5,11 +5,13 @@ const mocks = vi.hoisted(() => ({
   deleteWhere: vi.fn(),
   selectLimit: vi.fn(),
   stopSaved: vi.fn(),
+  forget: vi.fn(),
   teardownSession: vi.fn(),
   viewStateDel: vi.fn(),
 }));
 
 vi.mock('@main/core/sdk-host/stop-saved-session', () => ({ stopSavedSession: mocks.stopSaved }));
+vi.mock('@main/core/sdk-host/forget-session', () => ({ forgetSession: mocks.forget }));
 vi.mock('@main/db/client', () => ({
   db: {
     select: () => ({
@@ -57,6 +59,8 @@ describe('deleteSession', () => {
     await deleteSession('session-1');
     expect(mocks.teardownSession).toHaveBeenCalledWith('session-1', 'detach');
     expect(mocks.deleteWhere).toHaveBeenCalledTimes(1);
+    // The agent's room watcher stops routing its rooms to the deleted session.
+    expect(mocks.forget).toHaveBeenCalledWith('agent-1', 'session-1');
   });
 });
 

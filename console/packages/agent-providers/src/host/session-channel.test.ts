@@ -1,7 +1,15 @@
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { connectParent, SessionLinks, SessionUnavailableError } from './session-channel';
+import {
+  connectParent,
+  SessionHostFailedError,
+  SessionLinks,
+  SessionUnavailableError,
+} from './session-channel';
 
 /** A child process as far as the parent's end can tell: messages both ways, and an exit. */
 function fakeChild() {
@@ -54,9 +62,59 @@ it('refuses when no host comes, and when the host goes before answering', async 
   child.emit('message', { kind: 'ready' });
   const answer = links.request('root', { type: 'snapshot' }, 1000);
   await vi.waitFor(() => expect(child.sent).toHaveLength(1));
-  child.emit('exit', 1, null);
+  child.emit('exit', null, 'SIGKILL');
   await expect(answer).rejects.toThrow('stopped before it answered');
   expect(links.ready('root')).toBe(false);
+});
+
+it('refuses a waiting request as soon as the host stops on a failure it recorded', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'session-channel-'));
+  try {
+    await mkdir(join(root, 'supervisor'));
+    const links = new SessionLinks();
+    const failures: string[] = [];
+    links.onFailure((failed, failure) => failures.push(`${failed === root}:${failure}`));
+    const child = fakeChild();
+    links.attach(root, child as unknown as ChildProcess);
+    const started = Date.now();
+    const answer = links.request(root, { type: 'snapshot' }, 60000);
+    await writeFile(
+      join(root, 'supervisor', 'failure.json'),
+      JSON.stringify({ message: 'Sign in on the execution machine with claude auth login.' })
+    );
+    child.emit('exit', 1, null);
+    await expect(answer).rejects.toThrow(SessionHostFailedError);
+    await expect(answer).rejects.toMatchObject({
+      failure: 'Sign in on the execution machine with claude auth login.',
+    });
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(failures).toEqual(['true:Sign in on the execution machine with claude auth login.']);
+    // Asked again, it is refused at once rather than after the wait.
+    await expect(links.request(root, { type: 'snapshot' }, 60000)).rejects.toThrow(
+      SessionHostFailedError
+    );
+    expect(links.failure(root)).toBe('Sign in on the execution machine with claude auth login.');
+
+    // Cleared once something starts it again, and by the next host.
+    links.clearFailure(root);
+    expect(links.failure(root)).toBeNull();
+    const again = fakeChild();
+    links.attach(root, again as unknown as ChildProcess);
+    again.emit('exit', 3, null);
+    expect(links.failure(root)).toBe('Sign in on the execution machine with claude auth login.');
+    links.attach(root, fakeChild() as unknown as ChildProcess);
+    expect(links.failure(root)).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('says why when a failed host left no record of it', () => {
+  const links = new SessionLinks();
+  const child = fakeChild();
+  links.attach('/nonexistent-session-root', child as unknown as ChildProcess);
+  child.emit('exit', 2, null);
+  expect(links.failure('/nonexistent-session-root')).toBe('The session host exited with code 2.');
 });
 
 it('passes a refusal on as an error, and every pushed event to subscribers', async () => {

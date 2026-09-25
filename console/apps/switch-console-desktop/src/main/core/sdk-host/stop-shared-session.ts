@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { SessionHostFailedError } from '@switch-console/agent-providers';
 import { JournalUnavailableError } from './host-journal';
 import {
   CommandNotRecordedError,
@@ -11,15 +12,16 @@ import { currentSnapshot } from './transcripts';
  * Ask a session's host to stop, and wait until it says it has.
  *
  * The stop goes straight to the host (Console's child, or the agent sidecar's
- * over SSH). A session no host is running, or whose host is offline or already
- * stopped, has nothing to stop and returns without sending anything.
+ * over SSH). A session no host is running, whose host failed to start, or
+ * whose host is offline or already stopped, has nothing to stop and returns
+ * without sending anything.
  */
 export async function stopSharedSession(agentId: string, sessionId: string): Promise<void> {
   let snapshot;
   try {
     snapshot = await currentSnapshot(agentId, sessionId);
   } catch (error) {
-    if (error instanceof JournalUnavailableError) return;
+    if (error instanceof JournalUnavailableError || error instanceof SessionHostFailedError) return;
     throw error;
   }
   if (snapshot.session.status === 'stopped' || snapshot.session.connectivity !== 'online') return;

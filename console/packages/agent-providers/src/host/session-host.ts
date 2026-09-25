@@ -120,6 +120,7 @@ export class HostedSession {
       items: [],
       requests: [],
       commandStatuses: [],
+      notices: [],
       nextPageToken: null,
     };
     // Replay old history before announcing the recovered generation.
@@ -285,8 +286,24 @@ export class HostedSession {
         .catch((error: unknown) => host.fail(error));
       return host;
     } catch (error) {
-      if (error instanceof ProviderConversationUnavailableError && host.nativeId) {
+      if (
+        error instanceof ProviderConversationUnavailableError &&
+        (host.nativeId || config.input.resume)
+      ) {
         await host.eventSerial;
+        // Nothing the provider said is lost when it never answered (a session
+        // whose turns all failed while its CLI was signed out, say): start a
+        // new conversation rather than ask.
+        if (!host.providerAnswered()) {
+          try {
+            await host.startFresh();
+            return host;
+          } catch (fresh) {
+            await host.fail(fresh);
+            await host.shutdown();
+            throw fresh;
+          }
+        }
         await host.awaitResetDecision('NATIVE_CONVERSATION_UNAVAILABLE', error.message);
         return host;
       }
@@ -294,6 +311,42 @@ export class HostedSession {
       await host.shutdown();
       throw error;
     }
+  }
+
+  /** Whether the provider has ever answered in this session. */
+  private providerAnswered(): boolean {
+    const snapshot = this.replica.snapshot();
+    return (
+      snapshot.items.some((item) => item.kind === 'assistant-message') ||
+      snapshot.turns.some((turn) => turn.status === 'completed')
+    );
+  }
+
+  /** Start a new provider conversation in place of one that cannot be resumed. */
+  private async startFresh(): Promise<void> {
+    const { resume: _resume, ...fresh } = this.config.input;
+    const native = await this.startProvider(fresh);
+    await this.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
+    this.nativeId = native.nativeSessionId;
+    await this.eventSerial;
+    void this.refreshModels()
+      .catch(async (error: unknown) => {
+        if (this.shuttingDown) return;
+        await this.publish({
+          type: 'notice',
+          level: 'warning',
+          code: 'MODEL_CATALOG_UNAVAILABLE',
+          message: `Could not load provider models: ${String(error)}`,
+        });
+      })
+      .catch((error: unknown) => this.fail(error));
+    await this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'CONVERSATION_STARTED_FRESH',
+      message:
+        'Started a new provider conversation: the earlier one was never saved by the provider, so there was nothing to resume.',
+    });
   }
 
   private async startProvider(input: ProviderSessionStartInput) {

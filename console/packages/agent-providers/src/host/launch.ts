@@ -205,6 +205,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
     if (running.build === input.supervision.build) return { created };
     await input.supervision.stop(input.root);
   }
+  input.supervision.links?.clearFailure(input.root);
   await unlink(join(input.root, 'supervisor', 'failure.json')).catch(
     (error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;

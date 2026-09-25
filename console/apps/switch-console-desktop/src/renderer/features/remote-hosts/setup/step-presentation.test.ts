@@ -8,6 +8,7 @@ import {
   canUpdate,
   dependenciesMet,
   groupPlanSteps,
+  needsFirstCheck,
   outcomeLabel,
   stepBadge,
   versionSubtitle,
@@ -348,5 +349,14 @@ describe('versionSubtitle', () => {
     expect(
       versionSubtitle(step({ state: 'pending', outcome: 'missing', version: '0.146.0' }))
     ).toBeNull();
+  });
+});
+
+describe('needsFirstCheck', () => {
+  it('asks for a first look while any step has never been observed', () => {
+    const observed = step({ id: 'git', state: 'satisfied', outcome: 'satisfied' });
+    expect(needsFirstCheck(plan([observed, step({ id: 'node' })]))).toBe(true);
+    expect(needsFirstCheck(plan([observed]))).toBe(false);
+    expect(needsFirstCheck(null)).toBe(false);
   });
 });

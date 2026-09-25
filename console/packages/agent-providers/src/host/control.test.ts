@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CONTROL_FILE, ControlClient, serveControl } from './control';
-import { SessionLinks } from './session-channel';
+import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
 
 const paths = vi.hoisted(() => ({ base: '' }));
@@ -81,7 +81,11 @@ it('relays requests to a session host and its events back', async () => {
   expect(await console.request('session', { type: 'snapshot' })).toBe('snapshot');
 
   const heard: number[] = [];
-  const unsubscribe = await console.subscribe('session', (pushed) => heard.push(pushed.sequence));
+  const unsubscribe = await console.subscribe(
+    'session',
+    (pushed) => heard.push(pushed.sequence),
+    () => {}
+  );
   child.emit('message', { kind: 'event', event: event(1) });
   await vi.waitFor(() => expect(heard).toEqual([1]));
   unsubscribe();
@@ -95,6 +99,58 @@ it('relays requests to a session host and its events back', async () => {
   stop.abort();
   await serving;
   await expect(readFile(join(base, CONTROL_FILE))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('passes on why a session host failed, to a waiting request and to subscribers', async () => {
+  const { base, links, stop, serving, client } = await started();
+  const sessionRoot = join(base, 'session');
+  await mkdir(join(sessionRoot, 'supervisor'), { recursive: true });
+  await writeFile(join(sessionRoot, 'running'), 'yes');
+  const child = host();
+  links.attach(sessionRoot, child as unknown as ChildProcess);
+
+  const console = client();
+  await console.ready;
+  const failures: (string | null)[] = [];
+  const unsubscribe = await console.subscribe(
+    'session',
+    () => {},
+    (failure) => failures.push(failure)
+  );
+  expect(failures).toEqual([null]);
+  const request = console.request('session', { type: 'snapshot' });
+  const refused = expect(request).rejects.toBeInstanceOf(SessionHostFailedError);
+  await writeFile(
+    join(sessionRoot, 'supervisor', 'failure.json'),
+    JSON.stringify({ message: 'Sign in on the execution machine with claude auth login.' })
+  );
+  child.emit('exit', 1, null);
+  await refused;
+  await vi.waitFor(() =>
+    expect(failures).toEqual([null, 'Sign in on the execution machine with claude auth login.'])
+  );
+  unsubscribe();
+
+  // A subscriber arriving after the failure hears it too.
+  const late: (string | null)[] = [];
+  const unsubscribeLate = await console.subscribe(
+    'session',
+    () => {},
+    (failure) => late.push(failure)
+  );
+  expect(late).toEqual(['Sign in on the execution machine with claude auth login.']);
+  // And hears it cleared once a host comes up again.
+  const next = host();
+  links.attach(sessionRoot, next as unknown as ChildProcess);
+  next.emit('message', { kind: 'ready' });
+  await vi.waitFor(() =>
+    expect(late).toEqual(['Sign in on the execution machine with claude auth login.', null])
+  );
+  unsubscribeLate();
+
+  console.close();
+  stop.abort();
+  await serving;
 });
 
 it('answers at once for a session nothing is running', async () => {
@@ -125,7 +181,10 @@ it('moves a room to a session through the watcher, and says why when it cannot',
     previous: null,
     displaced: 'other',
   }));
-  const unbind = watcher.bind(placed);
+  const forgot = vi.fn(async () => {});
+  const unbind = watcher.bind({ place: placed, forget: forgot });
+  await console.forget('gone');
+  expect(forgot).toHaveBeenCalledWith('gone');
   expect(await console.place('session', 'room')).toEqual({
     sessionId: 'session',
     roomId: 'room',

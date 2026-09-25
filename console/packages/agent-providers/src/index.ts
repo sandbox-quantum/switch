@@ -64,7 +64,12 @@ export {
   watchFlagsSchema,
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
-export { SessionLinks, SessionUnavailableError, type SessionRequest } from './host/session-channel';
+export {
+  SessionHostFailedError,
+  SessionLinks,
+  SessionUnavailableError,
+  type SessionRequest,
+} from './host/session-channel';
 export {
   WatcherControl,
   type PlaceOutcome,

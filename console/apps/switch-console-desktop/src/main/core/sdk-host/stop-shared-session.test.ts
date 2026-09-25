@@ -9,9 +9,13 @@ const mocks = vi.hoisted(() => ({
   sshHost: null as string | null,
   hydrate: vi.fn(async () => {}),
 }));
-const { Unavailable } = vi.hoisted(() => ({ Unavailable: class extends Error {} }));
+const { Unavailable, HostFailed } = vi.hoisted(() => ({
+  Unavailable: class extends Error {},
+  HostFailed: class extends Error {},
+}));
 vi.mock('@switch-console/agent-providers', () => ({
   SessionUnavailableError: Unavailable,
+  SessionHostFailedError: HostFailed,
   sharedSessionRoot: (id: string) => `/roots/${id}`,
   liveSupervisor: async () => ({ build: 'b' }),
 }));
@@ -140,4 +144,12 @@ it('fails when the host refuses the stop', async () => {
 it('fails when the host cannot say whether the stop happened', async () => {
   mocks.local.request.mockImplementation(host({}, [[receipt('unknown')]]));
   await expect(stopSharedSession('agent', 'session-1')).rejects.toThrow('Stop unknown.');
+});
+
+it('treats a session whose host failed to start as having nothing to stop', async () => {
+  mocks.local.request.mockRejectedValue(new HostFailed('Sign in with claude auth login.'));
+  await expect(stopSharedSession('agent', 'session')).resolves.toBeUndefined();
+  expect(mocks.local.request.mock.calls.every(([, request]) => request.type !== 'command')).toBe(
+    true
+  );
 });

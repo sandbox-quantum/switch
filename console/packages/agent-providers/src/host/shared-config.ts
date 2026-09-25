@@ -88,9 +88,8 @@ export async function prepareSharedConfig(
         sessionId: config.session.sessionId,
         sourceHome: input.env.CODEX_HOME || join(homedir(), '.codex'),
         config: execution.codexConfig,
-        skill: execution.skill,
       });
-    if (config.start.provider !== 'codex') input.systemContext = execution.context;
+    input.systemContext = execution.context;
   }
   input.mcpServers.switch = runtime;
   if (!agentApiUrl || !token)

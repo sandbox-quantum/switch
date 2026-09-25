@@ -1,3 +1,4 @@
+import { SessionHostFailedError } from '@switch-console/agent-providers';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import type { Session } from '@shared/core/sessions/sessions';
@@ -290,6 +291,23 @@ it('keeps a background authentication failure visible without sending the first 
   );
   expect(mocks.submit).not.toHaveBeenCalled();
   await expect(agent.stop()).resolves.toBeUndefined();
+});
+
+it('fails as soon as the host stops on a recorded failure, without waiting to poll for it', async () => {
+  mocks.snapshot.mockRejectedValue(
+    new SessionHostFailedError('Sign in on the execution machine with claude auth login.')
+  );
+  const agent = runtime();
+  const started = Date.now();
+  await expect(agent.start(session, false, 'Say hello')).rejects.toThrow(
+    'Shared SDK host failed: Sign in on the execution machine with claude auth login.'
+  );
+  expect(Date.now() - started).toBeLessThan(1000);
+  expect(agent.startupStatus()).toEqual({
+    status: 'error',
+    message: 'Shared SDK host failed: Sign in on the execution machine with claude auth login.',
+  });
+  expect(mocks.submit).not.toHaveBeenCalled();
 });
 
 it('still rejects deployment failures before a host connects', async () => {

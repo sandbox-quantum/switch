@@ -1,6 +1,9 @@
 import type { ChildProcess } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 
 /**
  * The pipe between a session host and the process that started it.
@@ -111,6 +114,37 @@ export class SessionUnavailableError extends Error {
   }
 }
 
+/**
+ * Raised when a session host stopped on a failure it recorded, and nothing has
+ * started it again since. Starting it again without changing anything would
+ * fail the same way, so the caller decides whether to.
+ */
+export class SessionHostFailedError extends Error {
+  constructor(readonly failure: string) {
+    super(`The session host failed: ${failure}`);
+    this.name = 'SessionHostFailedError';
+  }
+}
+
+/**
+ * Why the host at this root stopped, from the `supervisor/failure.json` it
+ * writes before exiting on an error; a plain account of the exit when it
+ * wrote none.
+ */
+function recordedFailure(root: string, code: number): string {
+  try {
+    const recorded = z
+      .object({ message: z.string().min(1) })
+      .safeParse(JSON.parse(readFileSync(join(root, 'supervisor', 'failure.json'), 'utf8')));
+    if (recorded.success) return recorded.data.message;
+    console.warn(`The failure the session host at ${root} recorded is unreadable.`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+      console.warn(`Could not read why the session host at ${root} failed: ${String(error)}`);
+  }
+  return `The session host exited with code ${code}.`;
+}
+
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -121,6 +155,8 @@ type Link = {
   child: ChildProcess | null;
   ready: boolean;
   identity: HostIdentity | null;
+  /** Why the last host here stopped on an error, until another is started. */
+  failure: string | null;
   nextId: number;
   pending: Map<number, Pending>;
   waiting: (() => void)[];
@@ -135,6 +171,8 @@ export class SessionLinks {
   private readonly links = new Map<string, Link>();
   private readonly answerers = new Map<string, AskHandler>();
   private readonly exitListeners = new Set<(root: string, identity: HostIdentity | null) => void>();
+  private readonly readyListeners = new Set<(root: string) => void>();
+  private readonly failureListeners = new Set<(root: string, failure: string) => void>();
 
   private link(root: string): Link {
     let link = this.links.get(root);
@@ -143,6 +181,7 @@ export class SessionLinks {
         child: null,
         ready: false,
         identity: null,
+        failure: null,
         nextId: 0,
         pending: new Map(),
         waiting: [],
@@ -159,6 +198,7 @@ export class SessionLinks {
     link.child = child;
     link.ready = false;
     link.identity = null;
+    link.failure = null;
     child.on('message', (raw) => {
       const parsed = fromChildSchema.safeParse(raw);
       if (!parsed.success) {
@@ -169,6 +209,7 @@ export class SessionLinks {
       if (message.kind === 'ready') {
         link.ready = true;
         for (const wake of link.waiting.splice(0)) wake();
+        for (const listener of this.readyListeners) listener(root);
       } else if (message.kind === 'event') {
         for (const subscriber of link.subscribers) subscriber(message.event);
       } else if (message.kind === 'identity') {
@@ -194,18 +235,30 @@ export class SessionLinks {
         else pending.reject(new Error(message.error ?? 'The session host refused the request.'));
       }
     });
-    child.once('exit', () => {
+    child.once('exit', (code) => {
       if (link.child !== child) return;
       const identity = link.identity;
       link.child = null;
       link.ready = false;
       link.identity = null;
+      // A non-zero exit other than a lapsed lease is one the supervisor does
+      // not recover from: the host has already written why.
+      if (code !== null && code !== 0 && code !== LEASE_EXPIRED_EXIT_CODE)
+        link.failure = recordedFailure(root, code);
+      const failure = link.failure;
       for (const [id, pending] of link.pending) {
         clearTimeout(pending.timer);
-        pending.reject(new SessionUnavailableError('The session host stopped before it answered.'));
+        pending.reject(
+          failure !== null
+            ? new SessionHostFailedError(failure)
+            : new SessionUnavailableError('The session host stopped before it answered.')
+        );
         link.pending.delete(id);
       }
+      // A request waiting for this host to come up learns now that it will not.
+      for (const wake of link.waiting.splice(0)) wake();
       for (const listener of this.exitListeners) listener(root, identity);
+      if (failure !== null) for (const listener of this.failureListeners) listener(root, failure);
     });
   }
 
@@ -249,6 +302,29 @@ export class SessionLinks {
     return () => this.exitListeners.delete(listener);
   }
 
+  /** Hear each host say it is ready for requests. */
+  onReady(listener: (root: string) => void): () => void {
+    this.readyListeners.add(listener);
+    return () => this.readyListeners.delete(listener);
+  }
+
+  /** Hear each host stop on a failure, with the failure it recorded. */
+  onFailure(listener: (root: string, failure: string) => void): () => void {
+    this.failureListeners.add(listener);
+    return () => this.failureListeners.delete(listener);
+  }
+
+  /** Why the last host at this root stopped on an error, or null if it did not. */
+  failure(root: string): string | null {
+    return this.links.get(root)?.failure ?? null;
+  }
+
+  /** Forgets a recorded failure: something is about to start the host again. */
+  clearFailure(root: string): void {
+    const link = this.links.get(root);
+    if (link) link.failure = null;
+  }
+
   /** Whether a host is running at this root and ready for requests. */
   ready(root: string): boolean {
     return this.links.get(root)?.ready === true;
@@ -256,12 +332,14 @@ export class SessionLinks {
 
   /**
    * Ask the host, waiting up to `timeoutMs` for one to be ready if it is
-   * still starting. Refused with `SessionUnavailableError` when none comes.
+   * still starting. Refused with `SessionUnavailableError` when none comes,
+   * and with `SessionHostFailedError` as soon as the host stops on a failure.
    */
   async request(root: string, request: SessionRequest, timeoutMs: number): Promise<unknown> {
     const link = this.link(root);
     const deadline = Date.now() + timeoutMs;
     while (!link.ready || !link.child) {
+      if (link.failure !== null) throw new SessionHostFailedError(link.failure);
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new SessionUnavailableError('The session host is not running.');
       await new Promise<void>((resolve) => {

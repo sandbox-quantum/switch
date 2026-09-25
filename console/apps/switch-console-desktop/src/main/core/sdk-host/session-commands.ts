@@ -1,5 +1,6 @@
 import {
   liveSupervisor,
+  SessionHostFailedError,
   SessionUnavailableError,
   sharedSessionRoot,
   type SessionRequest,
@@ -78,7 +79,10 @@ export async function submitSessionCommand(
   try {
     return commandStatusSchema.parse(await askHost(agentId, command.sessionId, request));
   } catch (error) {
-    if (!(error instanceof SessionUnavailableError)) throw error;
+    // A host that failed is started again too: sending it something is the
+    // user asking for it, and whatever stopped it may have been fixed.
+    if (!(error instanceof SessionUnavailableError || error instanceof SessionHostFailedError))
+      throw error;
   }
   try {
     await hydrateSession(command.sessionId);

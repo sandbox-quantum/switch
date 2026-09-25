@@ -5,6 +5,7 @@ import {
 } from './session-commands';
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
+import { announceSessionIssue, recordRemoteHostFailure } from './host-failures';
 import { reconcileInitialPrompt } from './initial-prompt';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
@@ -15,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  SessionHostFailedError,
   sharedConfigSchema,
   sharedSessionRoot,
   type SharedHostConfig,
@@ -88,9 +90,19 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     }
   ) {}
 
+  hostCameUp(): void {
+    if (!this.starting) this.setStartupError(null);
+  }
+
+  private setStartupError(error: string | null): void {
+    if (this.startupError === error) return;
+    this.startupError = error;
+    announceSessionIssue(this.params.sessionId);
+  }
+
   async start(session: Session, isResuming?: boolean, initialPrompt?: string): Promise<void> {
     if (this.starting) return this.opened ?? this.starting;
-    this.startupError = null;
+    this.setStartupError(null);
     let connected!: () => void;
     let failed!: (error: unknown) => void;
     this.opened = new Promise<void>((resolve, reject) => {
@@ -100,7 +112,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     this.starting = this.open(session, initialPrompt, isResuming ?? false, false, connected);
     void this.starting
       .then(connected, (error: unknown) => {
-        this.startupError = error instanceof Error ? error.message : String(error);
+        this.setStartupError(error instanceof Error ? error.message : String(error));
         log.error('Background session startup failed', {
           sessionId: session.id,
           error: this.startupError,
@@ -133,6 +145,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     const previousEpoch = restart ? await journalEpoch(session.agentId, session.id) : null;
     let root: string;
     let readFailure: () => Promise<unknown>;
+    recordRemoteHostFailure(session.id, null);
     this.startupStage = restart
       ? 'Stopping the previous process and starting its replacement…'
       : 'Starting the session process…';
@@ -216,6 +229,8 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         )
           break;
       } catch (error) {
+        if (error instanceof SessionHostFailedError)
+          throw new Error(`Shared SDK host failed: ${error.failure}`);
         if (Date.now() + 500 >= deadline) throw error;
         // No journal yet is the host not having started, which is the wait itself.
         const notYet = error instanceof JournalUnavailableError;
@@ -323,12 +338,12 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   async restart(session: Session): Promise<void> {
     await this.resolveWorkspace();
     if (this.starting) await this.starting;
-    this.startupError = null;
+    this.setStartupError(null);
     this.starting = this.open(session, undefined, true, true, () => {});
     try {
       await this.starting;
     } catch (error) {
-      this.startupError = error instanceof Error ? error.message : String(error);
+      this.setStartupError(error instanceof Error ? error.message : String(error));
       throw error;
     } finally {
       this.starting = null;
@@ -475,13 +490,11 @@ export async function buildSharedHostConfig(
           }
         : {}),
       codexConfig: profile?.files.map((file) => file.content).join('\n') ?? '',
-      // Codex and OpenCode load the skill as a file; the others take it as
-      // system context.
-      skill: provider === 'codex' || provider === 'opencode' ? SWITCH_SKILL_FILE : '',
-      context: [
-        provider === 'codex' || provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT,
-        specialization.instructions,
-      ]
+      // OpenCode loads the skill as a file through its own skill tool; the
+      // others take it as system context. Codex has no skill tool, so a skill
+      // file would be read with a shell command that needs approval.
+      skill: provider === 'opencode' ? SWITCH_SKILL_FILE : '',
+      context: [provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT, specialization.instructions]
         .filter(Boolean)
         .join('\n\n'),
     },

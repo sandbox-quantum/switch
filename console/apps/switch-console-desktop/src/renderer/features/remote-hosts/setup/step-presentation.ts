@@ -211,3 +211,8 @@ export function groupPlanSteps(plan: HostSetupPlan | null): GroupedPlan {
 
   return { prerequisites, agentTypes };
 }
+
+/** Whether any step has never been observed on the host, so the page should look once on its own. */
+export function needsFirstCheck(plan: HostSetupPlan | null): boolean {
+  return plan?.steps.some((step) => step.outcome === null) ?? false;
+}

@@ -8,6 +8,7 @@ import {
   getSessionStore,
 } from '@renderer/features/sessions/stores/session-selectors';
 import { useSessionActionProps } from '@renderer/features/sessions/use-session-actions';
+import { SessionIssueIndicator } from '@renderer/features/sidebar/session-issue-indicator';
 import { SessionSidebarTrailingSlot } from '@renderer/features/sidebar/session-sidebar-agent-status';
 import { SessionRoomConnection } from '@renderer/features/switch-rooms/session-room-connection';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -89,6 +90,7 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
               {sessionName}
             </span>
           </SidebarMenuAction>
+          <SessionIssueIndicator sessionId={sessionId} />
           {'agentId' in session.data && (
             <SessionRoomConnection compact sessionId={sessionId} agentId={session.data.agentId} />
           )}

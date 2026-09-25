@@ -7,6 +7,7 @@ import { serverEventSchema, type ServerEvent } from '@switch-console/shared/sess
 import { z } from 'zod';
 import { liveSupervisor, sharedSessionRoot } from './launch';
 import {
+  SessionHostFailedError,
   sessionRequestSchema,
   SessionUnavailableError,
   type SessionLinks,
@@ -44,6 +45,10 @@ const clientMessageSchema = z.union([
   z.object({
     id: z.number().int(),
     place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }),
+  }),
+  z.object({
+    id: z.number().int(),
+    forget: z.string().min(1),
   }),
   /** The room watcher's connection state and placements, as it holds them now. */
   z.object({ id: z.number().int(), health: z.literal(true) }),
@@ -127,6 +132,7 @@ export async function serveControl(
               ok: false,
               error: error instanceof Error ? error.message : String(error),
               unavailable: error instanceof SessionUnavailableError,
+              ...(error instanceof SessionHostFailedError ? { failure: error.failure } : {}),
             })
         );
       if ('request' in parsed) {
@@ -139,18 +145,32 @@ export async function serveControl(
         );
       } else if ('subscribe' in parsed) {
         const sessionId = parsed.subscribe;
-        if (!subscriptions.has(sessionId))
-          subscriptions.set(
-            sessionId,
-            links.subscribe(sharedSessionRoot(sessionId), (event) => send({ sessionId, event }))
-          );
-        void reply(Promise.resolve(null));
+        const sessionRoot = sharedSessionRoot(sessionId);
+        if (!subscriptions.has(sessionId)) {
+          const offEvents = links.subscribe(sessionRoot, (event) => send({ sessionId, event }));
+          const offFailure = links.onFailure((failed, failure) => {
+            if (failed === sessionRoot) send({ sessionId, failure });
+          });
+          // A host that comes up again has put its failure behind it.
+          const offReady = links.onReady((ready) => {
+            if (ready === sessionRoot) send({ sessionId, failure: null });
+          });
+          subscriptions.set(sessionId, () => {
+            offEvents();
+            offFailure();
+            offReady();
+          });
+        }
+        // Answered with the failure already recorded, so a subscriber that
+        // arrives after the host stopped still hears why.
+        void reply(Promise.resolve({ failure: links.failure(sessionRoot) }));
       } else if ('unsubscribe' in parsed) {
         subscriptions.get(parsed.unsubscribe)?.();
         subscriptions.delete(parsed.unsubscribe);
         void reply(Promise.resolve(null));
       } else if ('place' in parsed)
         void reply(watcher.place(parsed.place.sessionId, parsed.place.roomId));
+      else if ('forget' in parsed) void reply(watcher.forget(parsed.forget));
       else if ('health' in parsed) void reply(Promise.resolve(watcher.health()));
       else if ('watchHealth' in parsed) {
         if (parsed.watchHealth) unwatchHealth ??= watcher.onHealth((health) => send({ health }));
@@ -194,8 +214,10 @@ const serverMessageSchema = z.union([
     value: z.unknown().optional(),
     error: z.string().optional(),
     unavailable: z.boolean().optional(),
+    failure: z.string().optional(),
   }),
   z.object({ sessionId: z.string(), event: serverEventSchema }),
+  z.object({ sessionId: z.string(), failure: z.string().nullable() }),
   z.object({ health: watcherHealthSchema }),
 ]);
 
@@ -222,6 +244,7 @@ export class ControlClient {
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
   private readonly listeners = new Map<string, Set<(event: ServerEvent) => void>>();
+  private readonly failureListeners = new Map<string, Set<(failure: string | null) => void>>();
   private readonly healthListeners = new Set<(health: WatcherHealth) => void>();
   private readonly closeListeners = new Set<(error: Error) => void>();
   private closed: Error | null = null;
@@ -256,6 +279,9 @@ export class ControlClient {
       if ('authenticated' in data) authenticate();
       else if ('event' in data)
         for (const listener of this.listeners.get(data.sessionId) ?? []) listener(data.event);
+      else if ('sessionId' in data)
+        for (const listener of this.failureListeners.get(data.sessionId) ?? [])
+          listener(data.failure);
       else if ('health' in data) for (const listener of this.healthListeners) listener(data.health);
       else {
         const pending = this.pending.get(data.id);
@@ -263,6 +289,8 @@ export class ControlClient {
         this.pending.delete(data.id);
         const message = data.error ?? 'The sidecar refused the request.';
         if (data.ok) pending.resolve(data.value);
+        else if (data.failure !== undefined)
+          pending.reject(new SessionHostFailedError(data.failure));
         else if (data.unavailable) pending.reject(new SessionUnavailableError(message));
         else pending.reject(new Error(message));
       }
@@ -294,6 +322,11 @@ export class ControlClient {
   /** Move a room's messages to this session, through the sidecar's room watcher. */
   async place(sessionId: string, roomId: string): Promise<PlaceOutcome> {
     return placeOutcomeSchema.parse(await this.call({ place: { sessionId, roomId } }));
+  }
+
+  /** Tell the sidecar's room watcher a session was deleted. */
+  async forget(sessionId: string): Promise<void> {
+    await this.call({ forget: sessionId });
   }
 
   /** The sidecar's room watcher: its connection state and placements. */
@@ -332,16 +365,38 @@ export class ControlClient {
     return () => this.closeListeners.delete(listener);
   }
 
-  async subscribe(sessionId: string, listener: (event: ServerEvent) => void): Promise<() => void> {
+  /**
+   * Hear every event the session's host records, and `onFailure` with why it
+   * stopped each time it stops on a failure, and with null when a host comes
+   * up again. The first subscriber also hears the failure standing when it
+   * subscribed, null if there is none.
+   */
+  async subscribe(
+    sessionId: string,
+    listener: (event: ServerEvent) => void,
+    onFailure: (failure: string | null) => void
+  ): Promise<() => void> {
     let set = this.listeners.get(sessionId);
+    let failures = this.failureListeners.get(sessionId);
+    if (!failures) {
+      failures = new Set();
+      this.failureListeners.set(sessionId, failures);
+    }
+    failures.add(onFailure);
     if (!set) {
       set = new Set();
       this.listeners.set(sessionId, set);
-      await this.call({ subscribe: sessionId });
+      const answer = z
+        .object({ failure: z.string().nullable() })
+        .nullable()
+        .parse(await this.call({ subscribe: sessionId }));
+      onFailure(answer?.failure ?? null);
     }
     set.add(listener);
     return () => {
       set.delete(listener);
+      failures.delete(onFailure);
+      if (!failures.size) this.failureListeners.delete(sessionId);
       if (set.size) return;
       this.listeners.delete(sessionId);
       if (!this.closed) void this.call({ unsubscribe: sessionId }).catch(() => {});

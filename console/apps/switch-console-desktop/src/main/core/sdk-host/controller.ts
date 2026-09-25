@@ -2,10 +2,10 @@ import type { ClientCommand } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
-import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
+import { sessionIssue, sessionStartupStatus } from './host-failures';
 import { transcriptSource } from './host-journal';
 import { placeSession } from './place-session';
 import {
@@ -18,8 +18,8 @@ import { stopSharedSession } from './stop-shared-session';
 import { closeTranscript, openTranscript } from './transcripts';
 export const sdkHostController = createRPCController({
   stop: (agentId: string, sessionId: string) => stopSharedSession(agentId, sessionId),
-  startupStatus: (sessionId: string) =>
-    sessionRuntimeManager.getAgent(sessionId)?.startupStatus?.() ?? null,
+  startupStatus: (sessionId: string) => sessionStartupStatus(sessionId),
+  sessionIssue: (sessionId: string) => sessionIssue(sessionId),
   discoveryErrors: () => remoteSessionReconciler.errors(),
   retryDiscovery: (agentId: string) => remoteSessionReconciler.refresh(agentId),
   connectionHealth,
