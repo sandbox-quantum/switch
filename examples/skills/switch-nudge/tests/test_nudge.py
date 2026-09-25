@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/nudge.py'
 spec = importlib.util.spec_from_file_location('nudge', SCRIPT)
@@ -188,6 +188,30 @@ class NudgeTests(unittest.TestCase):
                 client.tool('connect_to_room', {})
         self.assertIn('403: sender is not a room member', str(caught.exception))
         self.assertNotIn('PLACEHOLDER_', str(caught.exception))
+
+    def test_connect_retries_only_owned_lapsed_connection(self):
+        client = Mock(room=None)
+        transient = w.NudgeError('connection had lapsed. This process owns that connection')
+        roster = {'participants': [
+            {'id': 'nudge-id', 'name': 'nudge', 'type': 'agent'},
+            {'id': 'foreman-id', 'name': 'foreman', 'type': 'agent', 'status': 'live'}]}
+        config = w.read_json(self.root / 'config.json')
+        client.tool.side_effect = [transient, roster]
+        with patch.object(w.time, 'sleep') as sleep:
+            self.assertEqual(w.connect(client, config, 'room-1', 'foreman'), 'live')
+        sleep.assert_called_once_with(2)
+        client.room = None
+        client.tool.reset_mock()
+        client.tool.side_effect = transient
+        with patch.object(w.time, 'sleep'), self.assertRaises(w.NudgeError):
+            w.connect(client, config, 'room-1', 'foreman')
+        self.assertEqual(client.tool.call_count, 4)
+        client.tool.reset_mock()
+        client.tool.side_effect = w.NudgeError('403: not permitted')
+        with patch.object(w.time, 'sleep') as sleep, self.assertRaises(w.NudgeError):
+            w.connect(client, config, 'room-1', 'foreman')
+        sleep.assert_not_called()
+        self.assertEqual(client.tool.call_count, 1)
 
     def test_refused_target_blocks_without_retry(self):
         ident = self.schedule()

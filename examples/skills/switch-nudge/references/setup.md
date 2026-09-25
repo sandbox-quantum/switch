@@ -152,3 +152,7 @@ and with the same state directory to reproduce the connection error without
 posting. Check the reported cause, sender identity, server endpoint, and room
 membership. After fixing the cause and checking the room, reschedule with
 `nudge schedule ID --in 60s --retry-after-check`.
+
+When the runtime reports that its own connection has lapsed, the helper retries
+room connection up to three times, two seconds apart, on the same runtime.
+Other connection errors fail immediately. Message sends are never retried.

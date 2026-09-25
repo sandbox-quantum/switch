@@ -218,7 +218,16 @@ def connect(client, config, room, target):
     if target == config["sender"]:
         raise NudgeError("Nudge sender cannot target itself.")
     if client.room != room:
-        result = client.tool("connect_to_room", {"room_id": room, "include_general_instructions": False})
+        for attempt in range(4):
+            try:
+                result = client.tool("connect_to_room", {"room_id": room, "include_general_instructions": False})
+                break
+            except NudgeError as exc:
+                detail = str(exc)
+                recovering = "had lapsed" in detail and "This process owns that connection" in detail
+                if not recovering or attempt == 3:
+                    raise
+                time.sleep(2)
         if result.get("warning"):
             raise NudgeError("Nudge sender identity is in use by another session; use a dedicated identity on one host.")
         client.room = room
