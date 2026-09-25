@@ -44,9 +44,28 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
-### [0.27.0] - 2026-09-23
+### [0.28.0] - 2026-09-25
 
 #### Added
+- **Sessions live with the host; switch-core only relays (#543).** Session
+  ownership moves to Console and its sidecar — switch-core relays the agent
+  connection rather than owning session lifecycle. The agent bridge API is
+  reworked accordingly (activity routes replace the old session routes, with
+  the operation and command surfaces updated to match).
+- **Publish, edit, share and search room templates (#501).** Server-side
+  template visibility, a room-YAML export endpoint, and parameterized export
+  (values replaced with `{key}` placeholders), backing the Console's
+  capture-as-template flow and the gateway template management UI.
+- **Bound workspace creation per person (#458, CHOO-2722).**
+  `GATEWAY_MAX_WORKSPACES_PER_USER` (default 3) caps self-service workspace
+  creation; the check, creation and count run under a NOWAIT lock on the
+  caller so concurrent requests cannot slip past, and the bound counts
+  workspaces *created* (`users.workspaces_created`) so handing one over does
+  not free the allowance. `0` closes self-service; deployment operators are
+  exempt.
+- **Richer connector-event telemetry, plus DB and bridge timing (#488).**
+  Connector events gain a failure reason and a `duration_ms`, and server-side
+  DB/bridge lifecycle timing is recorded.
 - **Multi-tenancy phase 1 — tenant isolation enforced in the database.** Every
   request and every unit of background work now binds a tenant onto its session,
   the schema is scoped to a tenant, and row-level security enforces the boundary
@@ -70,6 +89,9 @@ version of their own to them without also giving them a release of their own.
 - Index on `rooms.group_id` (#404).
 
 #### Fixed
+- Removing a bridge or agent now deletes its clients and their room memberships
+  in one transaction, so client rows are no longer orphaned when a client had
+  ever joined a room (#525, CHOO-1492).
 - Removing an agent from a room no longer stops message delivery to the rest of
   the room (#412).
 - A failed bridge read is no longer mistaken for an empty bridge list (#515).
