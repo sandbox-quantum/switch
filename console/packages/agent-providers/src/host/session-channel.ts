@@ -331,13 +331,14 @@ export class SessionLinks {
   }
 
   /**
-   * Ask the host, waiting up to `timeoutMs` for one to be ready if it is
-   * still starting. Refused with `SessionUnavailableError` when none comes,
-   * and with `SessionHostFailedError` as soon as the host stops on a failure.
+   * Waits up to `timeoutMs` for a host at this root to be ready. Refused as
+   * `request` is when none comes.
    */
-  async request(root: string, request: SessionRequest, timeoutMs: number): Promise<unknown> {
-    const link = this.link(root);
-    const deadline = Date.now() + timeoutMs;
+  async awaitReady(root: string, timeoutMs: number): Promise<void> {
+    await this.untilReady(this.link(root), Date.now() + timeoutMs);
+  }
+
+  private async untilReady(link: Link, deadline: number): Promise<void> {
     while (!link.ready || !link.child) {
       if (link.failure !== null) throw new SessionHostFailedError(link.failure);
       const remaining = deadline - Date.now();
@@ -353,7 +354,18 @@ export class SessionLinks {
         link.waiting.push(done);
       });
     }
-    const child = link.child;
+  }
+
+  /**
+   * Ask the host, waiting up to `timeoutMs` for one to be ready if it is
+   * still starting. Refused with `SessionUnavailableError` when none comes,
+   * and with `SessionHostFailedError` as soon as the host stops on a failure.
+   */
+  async request(root: string, request: SessionRequest, timeoutMs: number): Promise<unknown> {
+    const link = this.link(root);
+    const deadline = Date.now() + timeoutMs;
+    await this.untilReady(link, deadline);
+    const child = link.child!;
     const id = link.nextId++;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(

@@ -213,11 +213,12 @@ export async function announceStartFailure(input: {
 
 /**
  * Tells a room that a control typed in it (`!reset`, `!interrupt`) was not
- * carried out, and why: Switch answered the room when it relayed the control,
- * before the session had it. Addressed to whoever asked when the room named
- * them. Raises when the room could not be told.
+ * carried out, or that whether it was is not known: Switch answered the room
+ * when it relayed the control, before the session had it. Addressed to
+ * whoever asked when the room named them. Raises when the room could not be
+ * told.
  */
-export async function announceCommandFailure(input: {
+export async function announceCommandOutcome(input: {
   identity: SwitchIdentity;
   connectionId: string;
   session: { sessionId: string; hostId: string; epoch: string };
@@ -225,12 +226,11 @@ export async function announceCommandFailure(input: {
   cwd: string;
   threadId: string | null;
   requesterName: string | null;
-  action: string;
-  failure: string;
+  body: string;
 }): Promise<void> {
   const ctx = asSession(input);
   const thread = input.threadId ? { thread_id: input.threadId } : {};
-  const body = `I couldn't ${input.action}: ${input.failure}`;
+  const body = input.body;
   if (input.requesterName) {
     const targeted = await callOperation(ctx, 'send_targeted_message', {
       body,

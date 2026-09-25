@@ -30,7 +30,7 @@ import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
 import {
-  announceCommandFailure,
+  announceCommandOutcome,
   announceStartFailure,
   type PlaceOutcome,
   sessionToolAnswerer,
@@ -123,6 +123,12 @@ const OWNERSHIP_RETRY_MS = 5000;
 /** How long a message waits for its session's host to start and take it. */
 const HOST_START_MS = 120000;
 
+/**
+ * How long a room control may run once its host has it: past native
+ * compaction's own 180-second limit, and a reset's provider restart.
+ */
+const COMMAND_MS = 300000;
+
 /** How often a room still waiting for an owner says so again. */
 const HELD_DISCLOSURE_MS = 30000;
 
@@ -180,6 +186,41 @@ function controlOf(command: SessionCommand): {
     interrupt: type === 'turn.interrupt',
     threadId: parsed.success ? (parsed.data.origin?.threadId ?? null) : null,
   };
+}
+
+const commandStatusSchema = z.object({
+  status: z.enum(['accepted', 'dispatched', 'applied', 'rejected', 'unknown']),
+  code: z.string().nullable(),
+  message: z.string().nullable(),
+});
+type RecordedStatus = z.infer<typeof commandStatusSchema>;
+
+/**
+ * The last status the session's host recorded for a command, from its event
+ * journal; null when it recorded none. Read when the host's answer was lost,
+ * since the host may have carried the command out before it went.
+ */
+async function recordedStatus(
+  sessionId: string,
+  commandId: string
+): Promise<RecordedStatus | null> {
+  let text: string;
+  try {
+    text = await readFile(join(sharedSessionRoot(sessionId), 'events.jsonl'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  const record = z.object({
+    body: commandStatusSchema.extend({ type: z.literal('command.status'), commandId: z.string() }),
+  });
+  let found: RecordedStatus | null = null;
+  // The last line may still be being written by a host that is running.
+  for (const line of text.split('\n').slice(0, -1)) {
+    const parsed = record.safeParse(JSON.parse(line));
+    if (parsed.success && parsed.data.body.commandId === commandId) found = parsed.data.body;
+  }
+  return found;
 }
 
 async function stopped(sessionId: string): Promise<boolean> {
@@ -686,8 +727,10 @@ export async function runSharedWatcher(
     /**
      * Hands a room control to its session's host, starting a host that parked
      * or went away: the session still holds the room. Switch told the room the
-     * control was sent before the session had it, so one that is not carried
-     * out is answered in the room, as the session.
+     * control was sent before the session had it, so the room is told when it
+     * was not carried out, or when that cannot be confirmed. An answer lost
+     * after the host had the control is never read as a refusal: the host may
+     * have carried it out.
      */
     const relayCommand = async (relayed: SessionCommand) => {
       const { requesterName, ...command } = relayed;
@@ -702,33 +745,62 @@ export async function runSharedWatcher(
       const sessionRoot = sharedSessionRoot(sessionId);
       const requester = typeof requesterName === 'string' ? requesterName : null;
       const { action, interrupt, threadId } = controlOf(relayed);
-      let failure: string;
-      if (await stopped(sessionId)) failure = 'The session was stopped.';
+      const reason = (error: unknown) =>
+        error instanceof SessionHostFailedError
+          ? error.failure
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      const refused = (why: string) => `I couldn't ${action}: ${why}`;
+      const unconfirmed = (why: string) =>
+        `I couldn't confirm whether I managed to ${action}: ${why} Check my session in Switch Console before asking again.`;
+      const fromStatus = (recorded: RecordedStatus): string | null =>
+        recorded.status === 'applied'
+          ? null
+          : recorded.status === 'rejected'
+            ? refused(recorded.message ?? recorded.code ?? 'The session refused it.')
+            : recorded.status === 'unknown'
+              ? unconfirmed(recorded.message ?? recorded.code ?? 'The session did not say.')
+              : unconfirmed('It is still running.');
+      let answer: string | null = null;
+      if (await stopped(sessionId)) answer = refused('The session was stopped.');
       else if (!links.ready(sessionRoot) && interrupt)
-        failure = 'There is no turn running to interrupt.';
+        answer = refused('There is no turn running to interrupt.');
       else {
         try {
           if (!links.ready(sessionRoot)) await launch(config);
-          await links.request(
-            sessionRoot,
-            { type: 'command', command, requesterName: requester },
-            HOST_START_MS
-          );
-          return;
+          await links.awaitReady(sessionRoot, HOST_START_MS);
         } catch (error) {
-          failure =
-            error instanceof SessionHostFailedError
-              ? error.failure
-              : error instanceof Error
-                ? error.message
-                : String(error);
+          answer = refused(reason(error));
+        }
+        if (answer === null) {
+          try {
+            const reply = commandStatusSchema.safeParse(
+              await links.request(
+                sessionRoot,
+                { type: 'command', command, requesterName: requester },
+                COMMAND_MS
+              )
+            );
+            answer = reply.success
+              ? fromStatus(reply.data)
+              : unconfirmed('The session answered with a status this build cannot read.');
+          } catch (error) {
+            // What the host recorded is the outcome. Without a record, the
+            // host answering no is a refusal; the host going quiet is not.
+            const recorded = await recordedStatus(sessionId, command.commandId);
+            answer = recorded
+              ? fromStatus(recorded)
+              : error instanceof SessionUnavailableError || error instanceof SessionHostFailedError
+                ? unconfirmed(`Its answer was lost (${reason(error)}).`)
+                : refused(reason(error));
+          }
         }
       }
-      console.warn(
-        `Session ${sessionId} did not carry out command ${command.commandId}: ${failure}`
-      );
+      if (answer === null) return;
+      console.warn(`Session ${sessionId}, command ${command.commandId}: ${answer}`);
       try {
-        await announceCommandFailure({
+        await announceCommandOutcome({
           identity,
           connectionId,
           session: config.session,
@@ -736,12 +808,11 @@ export async function runSharedWatcher(
           cwd: config.start.input.cwd,
           threadId,
           requesterName: requester,
-          action,
-          failure,
+          body: answer,
         });
       } catch (error) {
         console.error(
-          `Could not tell the room that session ${sessionId} did not carry out command ${command.commandId} (${failure}): ${
+          `Could not tell the room about command ${command.commandId} for session ${sessionId} (${answer}): ${
             error instanceof Error ? error.message : String(error)
           }`
         );
