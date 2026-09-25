@@ -4,8 +4,6 @@ import {
   listStoppedControllerAgentIds,
 } from '@main/core/switch-rooms/auto-session-store';
 import { getRemoteAgentLocation } from './agent-location';
-import { getAgentById } from './getAgentById';
-import { locationWhereAgentRuns } from './observed-guard';
 import { pushRemoteAutoApprove } from './remote-watcher';
 import { updateAgent } from './updateAgent';
 
@@ -31,11 +29,6 @@ export type AgentAutoApproveParams = { agentId: string; enabled: boolean };
  * take effect live, and the caller should surface that rather than pretend it did.
  */
 export async function setAgentAutoApprove(params: AgentAutoApproveParams): Promise<void> {
-  // Whether an observed agent's sessions approve on their own is decided where
-  // they run, by its owner's Console (CHOO-2893).
-  const existing = await getAgentById(params.agentId);
-  if (!existing) throw new Error(`No agent with id ${params.agentId}`);
-  await locationWhereAgentRuns(existing);
   const agent = await updateAgent({ agentId: params.agentId, autoApprove: params.enabled });
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
 

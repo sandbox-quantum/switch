@@ -134,30 +134,6 @@ it('still deploys the shared host for an agent on an SSH host', async () => {
   expect(mocks.startLocal).not.toHaveBeenCalled();
 });
 
-it.each([true, false])(
-  'leaves the watcher of an agent another account runs alone (connected: %s)',
-  async (connected) => {
-    // It runs under the account that owns the agent (CHOO-2893): starting one
-    // here would run it as the wrong person, and stopping it would switch off
-    // someone else's automatic sessions.
-    mocks.location.mockResolvedValue({
-      id: 'observed',
-      dir: '/home/alice/reviewer',
-      sshHost: 'builder',
-      observed: true,
-      observedOwner: 'alice',
-    });
-
-    await configureSharedWatcher('agent-1', { connected, spawning: connected }, 'explicit');
-
-    expect(mocks.deploy).not.toHaveBeenCalled();
-    expect(mocks.runCommand).not.toHaveBeenCalled();
-    expect(mocks.exec).not.toHaveBeenCalled();
-    expect(mocks.startLocal).not.toHaveBeenCalled();
-    expect(mocks.stopLocal).not.toHaveBeenCalled();
-  }
-);
-
 it.each([
   // A restore is nobody asking for this watcher back, so a host that stood down
   // after a takeover stays down across a Console restart. An explicit start is

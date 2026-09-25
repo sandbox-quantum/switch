@@ -36,7 +36,6 @@ const h = vi.hoisted(() => {
     removeSwitchCredentials: vi.fn(async () => {}),
     sessionHookEmit: vi.fn(),
     trackEvent: vi.fn(),
-    forgetObservedLocationIfUnused: vi.fn(async () => {}),
     discardControllerState: vi.fn(async () => {}),
     deleteRow: vi.fn(async () => {}),
     stopRemoteWatcher: vi.fn(async () => {}),
@@ -106,18 +105,6 @@ vi.mock('@main/core/sessions/session-hooks', () => ({
   sessionHooks: { _emit: h.sessionHookEmit },
 }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
-vi.mock('@main/core/locations/store', () => ({
-  forgetObservedLocationIfUnused: h.forgetObservedLocationIfUnused,
-  assertRunsHere: (location: {
-    observed?: boolean;
-    dir: string;
-    observedOwner?: string | null;
-  }) => {
-    if (location.observed) {
-      throw new Error(`${location.dir} belongs to the account ${location.observedOwner}`);
-    }
-  },
-}));
 
 const { deleteAgent } = await import('./deleteAgent');
 const { getAgentLocation } = await import('./agent-location');
@@ -211,55 +198,6 @@ describe('deleteAgent', () => {
     });
 
     expect(await fs.exists(agentSettingsRelativePath('cc-sibling'))).toBe(true);
-  });
-
-  describe('an agent another account runs', () => {
-    // Followed from this Console (CHOO-2893): it can be let go of, but its
-    // sessions, identity and files are its owner's.
-    const OBSERVED = {
-      id: 'loc-observed',
-      sshHost: 'vm-1',
-      dir: '/home/alice/reviewer',
-      observed: true,
-      observedOwner: 'alice',
-    };
-
-    it('is removed from this Console and nothing else', async () => {
-      vi.mocked(getAgentLocation).mockResolvedValueOnce(OBSERVED as never);
-
-      await deleteAgent('agent-1', {
-        deleteInSwitch: false,
-        removeProvisionedFiles: false,
-        trigger: 'user',
-      });
-
-      expect(stopSharedAgentSessions).not.toHaveBeenCalled();
-      expect(stopRemoteWatcher).not.toHaveBeenCalled();
-      expect(autoSessionWatcher.stopForAgent).not.toHaveBeenCalled();
-      expect(gatewayDeleteAgent).not.toHaveBeenCalled();
-      expect(h.removeSwitchCredentials).not.toHaveBeenCalled();
-      // The observed location stands only for agents followed there.
-      expect(h.forgetObservedLocationIfUnused).toHaveBeenCalledExactlyOnceWith('loc-observed');
-      expect(h.trackEvent).toHaveBeenCalledWith(
-        'agent_removed',
-        expect.objectContaining({ outcome: 'success' })
-      );
-    });
-
-    it.each([
-      { removeProvisionedFiles: true, deleteInSwitch: false },
-      { removeProvisionedFiles: false, deleteInSwitch: true },
-    ])('is not terminated from here (%o)', async (options) => {
-      vi.mocked(getAgentLocation).mockResolvedValueOnce(OBSERVED as never);
-
-      await expect(deleteAgent('agent-1', { ...options, trigger: 'user' })).rejects.toThrow(
-        /belongs to the account alice/
-      );
-
-      expect(stopSharedAgentSessions).not.toHaveBeenCalled();
-      expect(gatewayDeleteAgent).not.toHaveBeenCalled();
-      expect(h.removeSwitchCredentials).not.toHaveBeenCalled();
-    });
   });
 
   describe('the auto-session watcher', () => {

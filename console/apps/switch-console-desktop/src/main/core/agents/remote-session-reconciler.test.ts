@@ -18,13 +18,11 @@ const mocks = vi.hoisted(() => ({
   updateStatus: vi.fn(),
   syncActivity: vi.fn(),
   emit: vi.fn(),
-  location: vi.fn(async () => ({ id: 'loc', observed: false })),
   rows: [] as { id: string }[],
 }));
 vi.mock('./getAgentById', () => ({
   getAgentById: async () => ({
     id: 'local',
-    locationId: 'loc',
     switchAgentId: 'agent',
     serverId: 'server',
     providerId: 'codex',
@@ -34,7 +32,6 @@ vi.mock('./getAgentById', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: mocks.server,
 }));
-vi.mock('@main/core/locations/store', () => ({ getLocationById: mocks.location }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchRoomDetail: mocks.room,
 }));
@@ -97,18 +94,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   mocks.rows = [];
 });
-it('does not look for the sessions of an agent another account runs', async () => {
-  // They live in that account's home on the host, and reading the host as this
-  // account finds only this account's (CHOO-2893).
-  mocks.location.mockResolvedValueOnce({ id: 'loc', observed: true });
-  mocks.list.mockResolvedValue([session]);
-
-  await tick();
-
-  expect(mocks.list).not.toHaveBeenCalled();
-  expect(mocks.create).not.toHaveBeenCalled();
-});
-
 it('adopts an authorized shared session without starting execution', async () => {
   mocks.list.mockResolvedValue([session]);
   mocks.snapshot.mockResolvedValue({

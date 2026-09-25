@@ -20,12 +20,6 @@ export type DeleteAgentModalArgs = {
   sshHost: string | null;
   /** The agent's working directory, for naming where its files live. */
   dir: string | null;
-  /**
-   * Set when this Console only observes the agent (CHOO-2893): the account that
-   * runs it, or "another account". Such an agent can only be removed from this
-   * Console — its files, sessions and identity are its owner's.
-   */
-  observedOwner: string | null;
 };
 
 /** What the confirm resolves with: what to tear down beyond this Console's row. */
@@ -33,60 +27,7 @@ export type DeleteAgentModalResult = { deleteInSwitch: boolean; removeProvisione
 
 type Props = BaseModalProps<DeleteAgentModalResult> & DeleteAgentModalArgs;
 
-export function DeleteAgentModal({
-  agentLabel,
-  sshHost,
-  dir,
-  observedOwner,
-  onSuccess,
-  onClose,
-}: Props) {
-  if (observedOwner !== null) {
-    return (
-      <>
-        <DialogHeader showCloseButton={false}>
-          <DialogTitle>Remove agent</DialogTitle>
-        </DialogHeader>
-        <DialogContentArea className="flex flex-col gap-4 pt-0">
-          <p className="text-sm text-foreground-muted">
-            <span className="font-medium text-foreground">{agentLabel}</span> will be removed from
-            this Switch Console. It keeps running under {observedOwner}
-            {sshHost ? ` on ${sshHost}` : ''}, with its files, sessions and Switch identity
-            untouched — you can follow it again from the host’s Load existing agents.
-          </p>
-        </DialogContentArea>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Cancel
-          </Button>
-          <ConfirmButton
-            variant="destructive"
-            onClick={() => onSuccess({ deleteInSwitch: false, removeProvisionedFiles: false })}
-          >
-            Remove
-          </ConfirmButton>
-        </DialogFooter>
-      </>
-    );
-  }
-  return (
-    <OwnedAgentRemoval
-      agentLabel={agentLabel}
-      sshHost={sshHost}
-      dir={dir}
-      onSuccess={onSuccess}
-      onClose={onClose}
-    />
-  );
-}
-
-function OwnedAgentRemoval({
-  agentLabel,
-  sshHost,
-  dir,
-  onSuccess,
-  onClose,
-}: Omit<Props, 'agentId' | 'observedOwner'>) {
+export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose }: Props) {
   const [deleteInSwitch, setDeleteInSwitch] = useState(false);
   const [chosen, setChosen] = useState(false);
   const onThisMachine = sshHost === null;

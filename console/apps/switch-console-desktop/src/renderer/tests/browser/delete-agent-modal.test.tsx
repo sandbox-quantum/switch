@@ -46,7 +46,6 @@ async function render(sshHost: string | null) {
             agentLabel="reviewer"
             sshHost={sshHost}
             dir="/srv/reviewer"
-            observedOwner={null}
             onSuccess={onSuccess}
             onClose={() => {}}
           />

@@ -13,13 +13,6 @@ const pushRemoteAutoApprove = vi.fn(async (_id: string) => {});
 const recordAutoApproveOnHost = vi.fn(async (_id: string) => {});
 
 vi.mock('./updateAgent', () => ({ updateAgent: (p: unknown) => updateAgent(p) }));
-vi.mock('./getAgentById', () => ({
-  getAgentById: async (id: string) => ({ id, locationId: 'loc' }),
-}));
-vi.mock('./observed-guard', () => ({
-  // Every agent in these cases is one this Console runs (CHOO-2893).
-  locationWhereAgentRuns: async () => ({ sshHost: 'host', dir: '/work', observed: false }),
-}));
 vi.mock('./agent-location', () => ({
   getRemoteAgentLocation: (a: unknown) => getRemoteAgentLocation(a),
 }));

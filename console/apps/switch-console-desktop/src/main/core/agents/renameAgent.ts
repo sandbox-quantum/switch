@@ -12,7 +12,6 @@ import { getAgentLocation } from './agent-location';
 import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getAgentById } from './getAgentById';
-import { locationWhereAgentRuns } from './observed-guard';
 import { ensureRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { agentSettingsRelativePath } from './switch-settings-paths';
@@ -167,10 +166,6 @@ export async function renameAgent(
 ): Promise<Result<Agent, RenameAgentError>> {
   const previous = await getAgentById(params.agentId);
   if (!previous) return err({ type: 'agent-not-found' });
-  // An observed agent's name is its identity where it runs (CHOO-2893): its
-  // files and sessions are keyed by it on its owner's side, which this Console
-  // cannot move.
-  await locationWhereAgentRuns(previous);
 
   if (await agentNameTaken(previous.locationId, params.newName, previous.id)) {
     return err({ type: 'name-taken', name: params.newName });

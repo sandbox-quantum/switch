@@ -38,14 +38,6 @@ export const locations = sqliteTable(
     name: text('name').notNull(),
     sshHost: text('ssh_host').notNull().default(''),
     dir: text('dir').notNull(),
-    // Set when this Console observes the agents here without running them
-    // (CHOO-2893): the directory belongs to another account on a shared host,
-    // so nothing is read from it or run in it from here, and the agents'
-    // sessions are reached through their Switch server alone.
-    observed: integer('observed', { mode: 'boolean' }).notNull().default(false),
-    // The account on the host that runs an observed location's agents, as far
-    // as it could be told, for saying so. Null when not observed, or unknown.
-    observedOwner: text('observed_owner'),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),

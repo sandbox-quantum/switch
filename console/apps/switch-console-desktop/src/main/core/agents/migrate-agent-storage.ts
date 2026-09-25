@@ -83,9 +83,6 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
 
   const location = await getLocationById(agent.locationId);
   if (!location) return false;
-  // An observed agent's working directory is another account's, migrated —
-  // if at all — by that account's own Console (CHOO-2893).
-  if (location.observed) return false;
 
   const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
   try {

@@ -1,7 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { deleteAgent } from '@main/core/agents/deleteAgent';
 import { db } from '@main/db/client';
-import { agents, locations } from '@main/db/schema';
+import { agents } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 
 /**
@@ -31,9 +31,8 @@ export async function deleteAgentsForServer(
   serverId: string
 ): Promise<{ deleted: string[]; failed: { agentId: string; error: string }[] }> {
   const rows = await db
-    .select({ id: agents.id, name: agents.name, observed: locations.observed })
+    .select({ id: agents.id, name: agents.name })
     .from(agents)
-    .innerJoin(locations, eq(agents.locationId, locations.id))
     .where(eq(agents.serverId, serverId));
 
   const deleted: string[] = [];
@@ -42,12 +41,10 @@ export async function deleteAgentsForServer(
   for (const row of rows) {
     try {
       // A destroyed managed server's agents were provisioned by this install,
-      // so their on-disk files go with them — except an observed agent's
-      // (CHOO-2893), whose files are another account's and whose row is all
-      // there is of it here.
+      // so their on-disk files go with them.
       await deleteAgent(row.id, {
         deleteInSwitch: false,
-        removeProvisionedFiles: !row.observed,
+        removeProvisionedFiles: true,
         trigger: 'server_teardown',
       });
       deleted.push(row.id);
@@ -73,33 +70,4 @@ export async function deleteAgentsForServer(
   }
 
   return { deleted, failed };
-}
-
-/**
- * Drop this Console's rows for the agents it only observes on `serverId`
- * (CHOO-2893), when this Console stops using the server.
- *
- * Disconnecting keeps an ordinary agent, unlinked, because its working
- * directory and credentials are here and it can be pointed at another server.
- * An observed agent has neither: it is a view of an agent another account runs
- * on that server, and without the server it shows nothing. Left behind, it
- * would also be followed a second time on reconnecting. Nothing else is
- * touched — the agent keeps running for its owner.
- */
-export async function forgetObservedAgentsForServer(serverId: string): Promise<string[]> {
-  const rows = await db
-    .select({ id: agents.id })
-    .from(agents)
-    .innerJoin(locations, eq(agents.locationId, locations.id))
-    .where(and(eq(agents.serverId, serverId), eq(locations.observed, true)));
-  const forgotten: string[] = [];
-  for (const row of rows) {
-    await deleteAgent(row.id, {
-      deleteInSwitch: false,
-      removeProvisionedFiles: false,
-      trigger: 'server_teardown',
-    });
-    forgotten.push(row.id);
-  }
-  return forgotten;
 }

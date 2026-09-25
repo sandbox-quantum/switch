@@ -10,14 +10,10 @@ export function SharedSessionPanel({
   sessionId,
   agentId,
   initialPromptDelivery,
-  canRestartHost,
 }: {
   sessionId: string;
   agentId: string;
   initialPromptDelivery: InitialPromptDelivery | undefined;
-  /** False for an observed agent's session (CHOO-2893): its host runs under
-   * another account, whose Console is the one that restarts it. */
-  canRestartHost: boolean;
 }) {
   const [client, setClient] = useState<SessionChatClient | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +93,7 @@ export function SharedSessionPanel({
         startup={startup}
         stopHost={() => rpc.sdkHost.stop(agentId, sessionId)}
         initialPromptDelivery={initialPromptDelivery}
-        restartHost={canRestartHost ? () => rpc.sessions.restartAgent(sessionId) : undefined}
+        restartHost={() => rpc.sessions.restartAgent(sessionId)}
       />
     </div>
   ) : (

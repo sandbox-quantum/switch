@@ -1,9 +1,6 @@
 import { Loader2, RefreshCw, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import {
-  getLocationManagerStore,
-  isObservedLocation,
-} from '@renderer/features/locations/stores/location-selectors';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { useSessionViewContext } from '@renderer/features/sessions/session-view-context';
 import {
   getSessionManagerStore,
@@ -18,21 +15,6 @@ export const SessionMainPanel = observer(function SessionMainPanel() {
   const { locationId, sessionId } = useSessionViewContext();
   const sessionStore = getSessionStore(locationId, sessionId);
   const kind = sessionViewKind(sessionStore, locationId);
-
-  // An observed agent's session is never provisioned here (CHOO-2893): it runs
-  // under the account that owns it, and is read and driven through the server
-  // from the moment it is opened. Its host is its owner's to restart.
-  if (isObservedLocation(locationId)) {
-    const observed = getRegisteredSessionData(locationId, sessionId);
-    return observed ? (
-      <SharedSessionPanel
-        sessionId={sessionId}
-        agentId={observed.agentId}
-        initialPromptDelivery={observed.initialPromptDelivery}
-        canRestartHost={false}
-      />
-    ) : null;
-  }
 
   if (kind === 'creating') {
     return (
@@ -134,7 +116,6 @@ export const SessionMainPanel = observer(function SessionMainPanel() {
       sessionId={sessionId}
       agentId={session.agentId}
       initialPromptDelivery={session.initialPromptDelivery}
-      canRestartHost
     />
   ) : null;
 });

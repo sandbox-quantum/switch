@@ -20,7 +20,6 @@ silently does less on a remote host. This page is the map of the remote half.
 | The persistent SDK host | `packages/agent-providers/src/host/`, `src/main/core/sdk-host/` |
 | A Switch Console-managed Switch server | `src/main/core/managed-switch-server/` |
 | A remote server's shared state: published settings, who uses it | `managed-switch-server/stack-state.ts`, `console-register.ts` |
-| Agents another account runs on a shared host | `src/main/core/agents/observed-agents.ts`, `observed-guard.ts` |
 | Renderer surfaces | `src/renderer/features/remote-hosts/` |
 
 ## Reachability is a state machine, not a boolean (CHOO-1682)
@@ -165,29 +164,11 @@ else using it there. *Also remove it from the host* stops it there and deletes
 the files Console provisioned. Deleting it in Switch implies that: a deleted
 identity has nothing left to run.
 
-**Agents another account runs are observed, not run.** Their working
-directories, credentials and watchers are in the other account's home. A
-location marked `observed` (migration 0051) holds agents whose identity came
-from the server alone, and nothing about them touches the host. Their sessions
-are not followed either: a session lives on its host, in the owning account's
-home, so only a Console signed in as that account can open one. What is shared
-is the server, where the agent can be talked to in rooms. The guards sit at the
-chokepoints:
-
-- `resolveWorkspaceFsFor` refuses an observed directory, so no read or write of
-  an agent's files can reach one however it was asked for.
-- `configureSharedWatcher` leaves an observed agent's watcher to its owner —
-  starting one here would run it as the wrong account and fight the owner's for
-  the session lease.
-- `openLocation` opens an observed location without a provider; creating or
-  provisioning a session refuses with the owner named; storage migration and
-  session discovery skip it.
-- Actions a person asks for (auto-session, auto-approve, provider config,
-  rename, restart, reset, sidecar, diagnostics, terminate, delete in Switch)
-  refuse with `ObservedLocationError`. Removing the row is allowed.
-
-When adding a path that touches an agent's host, check `observed` (via
-`locationWhereAgentRuns` / `isObservedAgent`) before it does.
+**Agents another account runs are not loaded.** Their working directories,
+credentials, watchers and sessions are in that account's home, which this
+account cannot read — and a session is reached through its owner's sidecar — so
+Load existing agents does not offer them. They are on the shared server all the
+same, and can be talked to in its rooms.
 
 **Limitations.** Rootless Docker gives each account its own daemon, so there is
 nothing to share. A remote server's port numbers must also be free on each

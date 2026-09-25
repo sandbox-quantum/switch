@@ -44,16 +44,6 @@ export function locationViewKind(store: LocationStore | undefined): LocationView
   return 'ready';
 }
 
-/**
- * Whether this Console only observes the location's agents (CHOO-2893): another
- * account on a shared host runs them, so nothing is provisioned or run here, and
- * their sessions are read and driven through their Switch server alone.
- * Call only inside `observer` components (or other MobX reactions).
- */
-export function isObservedLocation(locationId: string): boolean {
-  return getLocationStore(locationId)?.data?.observed ?? false;
-}
-
 /** Returns the mounted location payload if ready, otherwise undefined. */
 export function asMounted(store: LocationStore | undefined): MountedLocation | undefined {
   return store?.mountedLocation ?? undefined;

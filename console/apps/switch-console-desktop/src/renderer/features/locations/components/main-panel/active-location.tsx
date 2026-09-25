@@ -2,14 +2,12 @@ import { observer } from 'mobx-react-lite';
 import { AgentEditsProvider } from '@renderer/features/locations/components/main-panel/agent-edits';
 import { AgentPageHeader } from '@renderer/features/locations/components/main-panel/agent-page-header';
 import { AgentSaveBar } from '@renderer/features/locations/components/main-panel/agent-save-bar';
-import { ObservedAgentPanel } from '@renderer/features/locations/components/main-panel/observed-agent-panel';
 import { SessionList } from '@renderer/features/locations/components/session-view/session-list';
 import { SettingsPanel } from '@renderer/features/locations/components/settings-view/settings-panel';
 import { SidecarPanel } from '@renderer/features/locations/components/settings-view/sidecar-panel';
 import {
   asMounted,
   getLocationStore,
-  isObservedLocation,
 } from '@renderer/features/locations/stores/location-selectors';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 
@@ -35,16 +33,8 @@ export const ActiveLocation = observer(function ActiveLocation() {
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           <div className="mx-auto flex w-full max-w-[820px] flex-col gap-10 px-8 pb-20">
             <AgentPageHeader />
-            {/* An agent another account runs has no settings or sidecar this
-                Console can read or change (CHOO-2893); its sessions it can. */}
-            {isObservedLocation(locationId) ? (
-              <ObservedAgentPanel locationId={locationId} />
-            ) : (
-              <>
-                <SettingsPanel />
-                <SidecarPanel />
-              </>
-            )}
+            <SettingsPanel />
+            <SidecarPanel />
             <SessionList />
           </div>
         </div>

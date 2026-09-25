@@ -2,7 +2,6 @@ import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-st
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import { getAgentLocation, getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
-import { locationWhereAgentRuns } from './observed-guard';
 import { ensureRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { updateAgent } from './updateAgent';
@@ -44,9 +43,6 @@ export async function setAgentProviderConfig(params: AgentProviderConfigParams):
   // committed — telling the caller the save failed when it had not.
   const existing = await getAgentById(params.agentId);
   if (!existing) throw new Error(`No agent with id ${params.agentId}`);
-  // An observed agent launches with its owner's settings, on its owner's host
-  // (CHOO-2893); a change recorded here would describe nothing it runs with.
-  await locationWhereAgentRuns(existing);
   const location = params.config === null ? await getAgentLocation(existing) : null;
 
   const agent = await updateAgent({ agentId: params.agentId, providerConfig: params.config });

@@ -1,10 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
-import {
-  getLocationStore,
-  isObservedLocation,
-} from '@renderer/features/locations/stores/location-selectors';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
@@ -50,10 +46,6 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const showMachineName = remote?.displayName != null && remote.displayName !== agentMachineName;
 
   const roomable = serverId !== null && agent?.switchAgentId != null;
-  // An agent another account runs (CHOO-2893) starts its sessions there, so
-  // there is no New Session here — only the note saying whose it is.
-  const observed = isObservedLocation(locationId);
-  const location = getLocationStore(locationId)?.data;
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -105,11 +97,6 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
               {provider}
             </Badge>
           )}
-          {observed && (
-            <Badge variant="outline" className="h-5 shrink-0 px-2 text-[11px]">
-              Runs as {location?.observedOwner ?? 'another account'}
-            </Badge>
-          )}
         </div>
         {showMachineName && (
           <p className="text-sm text-foreground-muted">
@@ -118,15 +105,13 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
         )}
         {description && <p className="text-sm text-foreground-muted">{description}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          {!observed && (
-            <Button
-              onClick={() =>
-                showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
-              }
-            >
-              New Session
-            </Button>
-          )}
+          <Button
+            onClick={() =>
+              showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
+            }
+          >
+            New Session
+          </Button>
           {roomable && (
             <Button
               variant="outline"

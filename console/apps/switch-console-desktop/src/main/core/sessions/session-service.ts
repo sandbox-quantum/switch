@@ -2,7 +2,6 @@ import { err, ok, type Result } from '@switch-console/shared';
 import { eq, sql } from 'drizzle-orm';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
-import { assertRunsHere, getLocationById } from '@main/core/locations/store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryOutcome, TelemetrySessionStartFailure } from '@main/core/telemetry/events';
 import { entryPointOf, startSourceOf } from '@main/core/telemetry/narrow';
@@ -208,11 +207,6 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
 
   private async _provision(sessionId: string): Promise<ProvisionResult> {
     const session = await this._loadSession(sessionId);
-    // An observed agent's session runs under the account that owns it
-    // (CHOO-2893): it is read and driven through the server, never provisioned
-    // here, and saying so beats "location not open", which is not the reason.
-    const stored = await getLocationById(session.agentLocationId);
-    if (stored) assertRunsHere(stored);
     const location = locationManager.getLocation(session.agentLocationId);
     // Recoverable in one click, so say which agent and what to do rather than
     // handing the user the location's id, which appears nowhere they can act on.

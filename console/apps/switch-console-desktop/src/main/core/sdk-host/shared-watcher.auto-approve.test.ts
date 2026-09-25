@@ -117,7 +117,6 @@ beforeEach(() => {
     dir: '/work',
     sshHost: 'builder',
     connectionId: 'connection-1',
-    observed: false,
   });
   mocks.deploy.mockImplementation(async () => ({ ctx, root, entrypoint: 'shared-host.mjs' }));
 });
@@ -213,13 +212,4 @@ it('has nothing to record for an agent that has never had a watcher', async () =
   await recordAutoApproveOnHost('agent-1');
 
   expect(() => readSpec()).toThrow(/ENOENT/);
-});
-
-it('records nothing for an agent another account runs', async () => {
-  mocks.agent.mockResolvedValue(agent(true));
-  mocks.location.mockResolvedValue({ id: 'o', dir: '/home/alice/x', sshHost: 'b', observed: true });
-
-  await recordAutoApproveOnHost('agent-1');
-
-  expect(mocks.deploy).not.toHaveBeenCalled();
 });

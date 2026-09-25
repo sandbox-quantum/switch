@@ -45,10 +45,6 @@ vi.mock('@main/db/client', () => ({
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 vi.mock('@main/lib/events', () => ({ events: { emit: vi.fn() } }));
 vi.mock('./remote-session-reconciler', () => ({ remoteSessionReconciler: { stop: vi.fn() } }));
-vi.mock('./observed-guard', () => ({
-  // Every agent in these cases is one this Console runs (CHOO-2893).
-  locationWhereAgentRuns: async () => ({ sshHost: 'host', dir: '/work', observed: false }),
-}));
 vi.mock('./remote-watcher', () => ({ startRemoteDiscovery: vi.fn() }));
 const session = {
   sessionId: 'remote-only',

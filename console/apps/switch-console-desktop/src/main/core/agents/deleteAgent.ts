@@ -1,5 +1,4 @@
 import { eq } from 'drizzle-orm';
-import { assertRunsHere, forgetObservedLocationIfUnused } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { discardControllerState } from '@main/core/sdk-host/shared-watcher';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
@@ -224,10 +223,6 @@ async function removeAgent(
   const removeFiles =
     options.removeProvisionedFiles || (options.deleteInSwitch && !!location?.sshHost);
   const terminate = removeFiles || options.deleteInSwitch;
-  // An observed agent can only be let go of from this Console (CHOO-2893).
-  // Terminating it stops its owner's sessions, deleting it in Switch deletes
-  // their agent, and its files are in their directory: all theirs to do.
-  if (terminate && location) assertRunsHere(location);
   const stopController = () =>
     location?.sshHost ? stopRemoteWatcher(agentId) : autoSessionWatcher.stopForAgent(agentId);
   const stoppedUpFront = terminate && agent !== undefined;
@@ -291,7 +286,6 @@ async function removeAgent(
   }
 
   await db.delete(agents).where(eq(agents.id, agentId));
-  if (location?.observed) await forgetObservedLocationIfUnused(location.id);
   // The session rows go with it, by a foreign key rather than by any code here,
   // so nothing else announces their end. Without this every session an agent
   // owned reports a start and no finish — the row is gone and no later pass can

@@ -3,10 +3,7 @@ import { ChevronDown } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
-import {
-  getLocationManagerStore,
-  isObservedLocation,
-} from '@renderer/features/locations/stores/location-selectors';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -258,13 +255,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   });
   const roles = rolesQuery.data ?? [];
 
-  // An observed agent's sessions start where it runs, under the account that
-  // owns it (CHOO-2893); this Console shows them once they exist.
-  const observedLocation =
-    selectedLocationId !== undefined && isObservedLocation(selectedLocationId)
-      ? getLocationManagerStore().locations.get(selectedLocationId)?.data
-      : null;
-  const canCreate = !!selectedLocationId && !observedLocation;
+  const canCreate = !!selectedLocationId;
 
   const handleSpawn = () => {
     if (!selectedLocationId) return;
@@ -552,16 +543,6 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         </div>
       </DialogContentArea>
       <DialogFooter>
-        {observedLocation && (
-          <p className="mr-auto max-w-sm text-xs text-foreground-muted">
-            {effectiveAgentName ?? 'This agent'} runs under{' '}
-            {observedLocation.observedOwner
-              ? `the account ${observedLocation.observedOwner}`
-              : 'another account'}{' '}
-            on {observedLocation.sshHost}. Its sessions start there — from a room, or from that
-            account’s Switch Console — and show up here as they do.
-          </p>
-        )}
         <ConfirmButton size="sm" onClick={handleSpawn} disabled={!canCreate}>
           Spawn
         </ConfirmButton>

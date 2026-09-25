@@ -1,5 +1,4 @@
 import type { PluginFs, SwitchLaunchSpecialization } from '@switch-console/core/agents/plugins';
-import { assertRunsHere } from '@main/core/locations/store';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentConfigFile } from './agent-config-file';
 import { readAgentConfigFile } from './agent-config-file';
@@ -55,9 +54,6 @@ export async function withAgentWorkspace<T>(
   if (!agent) throw new Error(`No agent with id ${agentId}`);
 
   const location = await getAgentLocation(agent);
-  // An observed agent's working directory is another account's (CHOO-2893):
-  // neither readable nor writable from here, and its config is its owner's.
-  assertRunsHere(location);
   const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
   try {
     return await run(agent, workspace.fs);

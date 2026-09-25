@@ -14,16 +14,6 @@ export type Location = {
   sshHost: string | null;
   /** Absolute path to the working directory on the location's host. */
   dir: string;
-  /**
-   * Whether this Console observes the agents here without running them
-   * (CHOO-2893). The directory belongs to another account on a shared host:
-   * nothing is read from it or run in it from here, and the agents' sessions
-   * are read and driven through their Switch server alone.
-   */
-  observed: boolean;
-  /** The account on the host that runs an observed location's agents, when it
-   * could be told; null otherwise. */
-  observedOwner: string | null;
   createdAt: string;
   updatedAt: string;
 };

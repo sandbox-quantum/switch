@@ -3,7 +3,6 @@ import { eq, sql } from 'drizzle-orm';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
-import { getLocationById, ObservedLocationError } from '@main/core/locations/store';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import type { SessionConfig } from '@shared/core/sessions/session-config';
@@ -23,14 +22,6 @@ export async function createSession(
   if (!agent) return err({ type: 'agent-not-found' });
 
   const adopted = params.startSource === 'adopted';
-  // An observed agent's sessions start where the agent runs, under the account
-  // that owns it (CHOO-2893); this Console only adopts them once they exist.
-  if (!adopted) {
-    const stored = await getLocationById(agent.locationId);
-    if (stored?.observed) {
-      return err({ type: 'spawn-failed', message: new ObservedLocationError(stored).message });
-    }
-  }
   const location = adopted ? null : locationManager.getLocation(agent.locationId);
   if (!adopted && !location) return err({ type: 'agent-not-found' });
 

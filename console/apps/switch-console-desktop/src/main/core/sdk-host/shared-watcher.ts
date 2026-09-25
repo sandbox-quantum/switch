@@ -117,7 +117,6 @@ export async function recordAutoApproveOnHost(agentId: string): Promise<void> {
   if (!agent) throw new Error(`Agent ${agentId} does not exist.`);
   if (!agent.switchAgentId) return;
   const location = await getAgentLocation(agent);
-  if (location.observed) return;
   const transport = locationTransport(location);
   if (transport.kind !== 'ssh') return;
   const { ctx, root } = await deploySharedHost(transport, location.dir, agent.switchAgentId, true);
@@ -206,17 +205,6 @@ export async function configureSharedWatcher(
     if (server) await ensureServerSessionReady(server);
   }
   const location = await getAgentLocation(agent);
-  // An observed agent's watcher runs on its host under the account that owns
-  // it (CHOO-2893). Starting one here would run it as the wrong person and set
-  // two watchers fighting over one session lease; stopping it would switch off
-  // someone else's auto-session. Either way it is not this Console's.
-  if (location.observed) {
-    log.info('shared-watcher: leaving an observed agent’s watcher to its owner', {
-      agentId,
-      connected: state.connected,
-    });
-    return;
-  }
   const transport = locationTransport(location);
   const identity = `watcher-${agent.switchAgentId}`;
   const opened = await locationManager.openLocation(location);

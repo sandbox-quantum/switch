@@ -34,10 +34,6 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-location', () => ({ getRemoteAgentLocation: async () => h.state.sshHost }));
 vi.mock('./getAgentById', () => ({ getAgentById: async () => h.state.agent }));
-vi.mock('./observed-guard', () => ({
-  // Every agent in these cases is one this Console runs (CHOO-2893).
-  locationWhereAgentRuns: async () => ({ sshHost: h.state.sshHost, dir: '/work', observed: false }),
-}));
 vi.mock('./remote-watcher', () => ({ ensureRemoteWatcher: h.ensureRemoteWatcher }));
 
 import { setAgentAutoSession } from './setAgentAutoSession';

@@ -41,7 +41,6 @@ export function useConfirmDeleteAgent() {
       agentLabel: locationLabel,
       sshHost: location?.sshHost ?? null,
       dir: location?.dir ?? null,
-      observedOwner: location?.observed ? (location.observedOwner ?? 'another account') : null,
       onSuccess: ({ deleteInSwitch, removeProvisionedFiles }) => {
         void (async () => {
           try {

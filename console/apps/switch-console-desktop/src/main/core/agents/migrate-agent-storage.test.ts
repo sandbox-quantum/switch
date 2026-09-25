@@ -288,28 +288,6 @@ describe('migrateAgentStorage', () => {
     expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(false);
   });
 
-  it('opens no workspace of an agent another account runs, and still completes', async () => {
-    // Its directory is that account's, migrated — if at all — by its own
-    // Console (CHOO-2893).
-    const { getLocationById } = await import('@main/core/locations/store');
-    vi.mocked(getLocationById).mockResolvedValueOnce({
-      id: 'loc',
-      name: 'reviewer',
-      sshHost: 'vm-1',
-      dir: '/home/alice/reviewer',
-      observed: true,
-      observedOwner: 'alice',
-      createdAt: '',
-      updatedAt: '',
-    });
-    const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
-
-    await migrateAgentStorage();
-
-    expect(resolveWorkspaceFsFor).not.toHaveBeenCalled();
-    expect(h.markComplete).toHaveBeenCalledTimes(1);
-  });
-
   it('skips the whole pass (no workspace opened) once the current generation is latched', async () => {
     h.completedGeneration.mockResolvedValueOnce(2);
     const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;

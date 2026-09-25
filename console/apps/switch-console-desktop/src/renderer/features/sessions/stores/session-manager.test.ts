@@ -25,7 +25,6 @@ const mocks = vi.hoisted(() => ({
   runtimeActivate: vi.fn(),
   runtimeAcquire: vi.fn(),
   runtimeRelease: vi.fn(),
-  isObservedLocation: vi.fn(() => false),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -47,7 +46,6 @@ vi.mock('@renderer/lib/ipc', () => ({
 
 vi.mock('@renderer/features/locations/stores/location-selectors', () => ({
   getLocationManagerStore: mocks.getLocationManagerStore,
-  isObservedLocation: mocks.isObservedLocation,
 }));
 
 vi.mock('@renderer/features/sessions/stores/session-selectors', () => ({
@@ -171,23 +169,6 @@ describe('SessionManagerStore archive lifecycle', () => {
     expect(store.viewModel).toBe(mocks.viewModels[1]);
     expect(mocks.viewModels[1].initialize).toHaveBeenCalledOnce();
 
-    manager.dispose();
-  });
-
-  it('brings up nothing for a session of an agent another account runs', async () => {
-    // It runs under its owner's account and is read through the server
-    // (CHOO-2893); asking the main process to provision it would be refused.
-    mocks.isObservedLocation.mockReturnValue(true);
-    const manager = makeSessionManager();
-    const session = makeSession({ archivedAt: undefined });
-    const store = createUnprovisionedSession('location-1', session);
-    manager.sessions.set(session.id, store);
-
-    await manager.provisionSession(session.id);
-
-    expect(mocks.provisionSession).not.toHaveBeenCalled();
-    expect(store.phase).toBe('idle');
-    mocks.isObservedLocation.mockReturnValue(false);
     manager.dispose();
   });
 });

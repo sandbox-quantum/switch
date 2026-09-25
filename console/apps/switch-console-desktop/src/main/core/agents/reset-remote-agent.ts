@@ -14,7 +14,6 @@ import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
-import { locationWhereAgentRuns } from './observed-guard';
 import { remoteSessionReconciler } from './remote-session-reconciler';
 import { startRemoteDiscovery } from './remote-watcher';
 
@@ -24,9 +23,6 @@ export async function resetRemoteAgent(agentId: string): Promise<void> {
     throw new Error('The agent is not linked to Switch.');
   const server = await getServer(agent.serverId);
   if (!server) throw new Error('The agent’s Switch server is missing.');
-  // Resetting stops every session the agent has and its watcher — its
-  // owner's to do, not an observer's (CHOO-2893).
-  await locationWhereAgentRuns(agent);
   await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'explicit');
   remoteSessionReconciler.stop(agentId);
   const remote = await listHostSessions(agentId);

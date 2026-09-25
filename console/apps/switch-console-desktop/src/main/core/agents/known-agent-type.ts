@@ -18,16 +18,3 @@ const KNOWN_AGENT_TYPE_BY_PROVIDER: Record<AgentProviderId, KnownAgentType> = {
 export function knownAgentTypeForProvider(providerId: AgentProviderId): KnownAgentType {
   return KNOWN_AGENT_TYPE_BY_PROVIDER[providerId];
 }
-
-/**
- * The provider behind a gateway known-agent type, or null for a type this
- * build does not know (or none at all). The only source of an agent's provider
- * when its working directory cannot be read — an agent another account runs on
- * a shared host (CHOO-2893).
- */
-export function providerForKnownAgentType(type: string | null): AgentProviderId | null {
-  for (const [providerId, known] of Object.entries(KNOWN_AGENT_TYPE_BY_PROVIDER)) {
-    if (known === type) return providerId as AgentProviderId;
-  }
-  return null;
-}

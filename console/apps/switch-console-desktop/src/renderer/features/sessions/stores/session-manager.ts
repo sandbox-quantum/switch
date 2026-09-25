@@ -1,9 +1,6 @@
 import { makeObservable, observable, runInAction, toJS } from 'mobx';
 import { toast } from 'sonner';
-import {
-  getLocationManagerStore,
-  isObservedLocation,
-} from '@renderer/features/locations/stores/location-selectors';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import type { LocationSettingsStore } from '@renderer/features/locations/stores/location-settings-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
@@ -281,10 +278,6 @@ export class SessionManagerStore {
   ): Promise<void> {
     await getLocationManagerStore().mountLocation(this.locationId);
     await this.loadSessions();
-    // An observed agent's sessions run under the account that owns them
-    // (CHOO-2893). Their panel reads them through the server; there is nothing
-    // here to bring up, and asking the main process would only be refused.
-    if (isObservedLocation(this.locationId)) return;
 
     const inFlight = this._provisionPromises.get(sessionId);
     if (inFlight) return inFlight;
