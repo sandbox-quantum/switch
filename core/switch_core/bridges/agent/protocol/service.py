@@ -6,7 +6,7 @@ import re
 import secrets
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
@@ -115,6 +115,7 @@ from switch_core.transport import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.agent_runs import RunService
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
@@ -2485,8 +2486,9 @@ class ProtocolService:
         """Create a room. The caller agent's owner_id is used as the acting
         user for attachment authorization and as the new room's owner.
 
-        `from_room_id` is the room the agent is working in, which decides the
-        new room's `agent_creation_depth`.
+        `from_room_id` is the room the agent is working in: the new room goes
+        into that room's run (see `agent_runs`), and is refused if the run is
+        paused or stopped or the agent is already creating a room.
 
         `group_name`, when given, files the room under an existing room group;
         it is resolved to a group id here (agents work in names, not ids)."""
@@ -2501,88 +2503,61 @@ class ProtocolService:
                 session, agent_id
             )
             group_id = await self._resolve_group_name(session, group_name)
-        await self.check_agent_room_cap(agent_id, wanted=1)
-        depth = await self.agent_creation_depth(from_room_id)
+            owner = await session.get(User, agent.owner_id) if agent.owner_id else None
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
                 f"Agent {agent_id} has no owner_id and cannot attach references "
                 "or packages on creation"
             )
 
-        config = RoomCreateConfig(
-            name=name,
-            description=description,
-            agent_names=agent_names,
-            include_subagents_for=include_subagents_for,
-            join_event_listeners=join_event_listeners,
-            user_names=user_names,
-            channel_type=channel_type,  # type: ignore[arg-type]
-            bridge_id=bridge_id,
-            internal_only=internal_only,
-            admin_mode=admin_mode,
-            protection_config=security_config,
-            instructions=instructions,
-            created_by=agent.owner_id,
-            created_by_kind="agent",
-            created_by_agent_id=agent.id,
-            agent_creation_depth=depth,
-            owner_id=agent.owner_id,
-            group_id=group_id,
-            read_visibility=read_visibility,
-            write_visibility=write_visibility,
-            reference_ids=reference_ids,
-            package_ids=package_ids,
-            linked_rooms=(
-                [LinkedRoomSpec(**lr) for lr in linked_rooms] if linked_rooms else None
-            ),
-            roles=([RoleSpec(**r) for r in roles] if roles else None),
-            aliases=aliases,
-            acting_user_id=agent.owner_id,
-            acting_is_admin=owner_is_admin,
-        )
-        try:
-            result = await self.room_service.create_room(config)
-        except ValueError as e:
-            raise ValueError(f"Failed to create room: {str(e)}") from e
-        except PermissionError as e:
-            raise PermissionError(str(e)) from e
-        except RuntimeError as e:
-            raise RuntimeError(f"Room service error: {str(e)}") from e
+        async with self.run_service().agent_creating(
+            agent,
+            owner_name=owner.name if owner else None,
+            from_room_id=from_room_id,
+        ) as origin:
+            config = RoomCreateConfig(
+                name=name,
+                description=description,
+                agent_names=agent_names,
+                include_subagents_for=include_subagents_for,
+                join_event_listeners=join_event_listeners,
+                user_names=user_names,
+                channel_type=channel_type,  # type: ignore[arg-type]
+                bridge_id=bridge_id,
+                internal_only=internal_only,
+                admin_mode=admin_mode,
+                protection_config=security_config,
+                instructions=instructions,
+                created_by=agent.owner_id,
+                created_by_kind="agent",
+                created_by_agent_id=agent.id,
+                parent_room_id=origin.parent_room_id,
+                run_id=origin.run_id,
+                owner_id=agent.owner_id,
+                group_id=group_id,
+                read_visibility=read_visibility,
+                write_visibility=write_visibility,
+                reference_ids=reference_ids,
+                package_ids=package_ids,
+                linked_rooms=(
+                    [LinkedRoomSpec(**lr) for lr in linked_rooms]
+                    if linked_rooms
+                    else None
+                ),
+                roles=([RoleSpec(**r) for r in roles] if roles else None),
+                aliases=aliases,
+                acting_user_id=agent.owner_id,
+                acting_is_admin=owner_is_admin,
+            )
+            try:
+                result = await self.room_service.create_room(config)
+            except ValueError as e:
+                raise ValueError(f"Failed to create room: {str(e)}") from e
+            except PermissionError as e:
+                raise PermissionError(str(e)) from e
+            except RuntimeError as e:
+                raise RuntimeError(f"Room service error: {str(e)}") from e
         return result
-
-    async def check_agent_room_cap(self, agent_id: str, *, wanted: int) -> None:
-        """Refuse when `wanted` more rooms would take the agent past its
-        hourly allowance (`agent_rooms_per_hour`).
-
-        Agents can wake each other and each can create rooms, so two agents
-        whose instructions feed each other would otherwise create rooms and
-        channels without end. The cap turns that into an error the agent
-        reports. It is checked before anything is created, so a group is
-        refused whole and never made in part.
-        """
-        limit = self.config.agent_rooms_per_hour
-        if limit == 0:
-            return
-        since = datetime.now(UTC) - timedelta(hours=1)
-        async with self.session_factory() as session:
-            recent = await self.room_store.count_created_by_agent_since(
-                session, agent_id, since
-            )
-        if recent + wanted > limit:
-            raise ValueError(
-                f"This agent has created {recent} room(s) in the last hour and "
-                f"may create {limit}. Ask the user before creating more."
-            )
-
-    async def agent_creation_depth(self, from_room_id: str | None) -> int:
-        """The `agent_creation_depth` of a room an agent creates while working
-        in `from_room_id`: one more than that room's. An agent working in no
-        room counts as working in a room a person created."""
-        if from_room_id is None:
-            return 1
-        async with self.session_factory() as session:
-            room = await self.room_store.get(session, from_room_id)
-        return (room.agent_creation_depth if room is not None else 0) + 1
 
     async def _resolve_group_name(
         self, session: AsyncSession, group_name: str | None
@@ -2682,6 +2657,17 @@ class ProtocolService:
             return await self.room_service.add_users_to_room(room_id, user_names)
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
+
+    def run_service(self) -> RunService:
+        """Runs over this service's stores; see ``agent_runs``."""
+        from switch_core.agent_runs import RunService
+
+        return RunService(
+            room_store=self.room_store,
+            agent_store=self.agent_store,
+            session_factory=self.session_factory,
+            client_lifecycle=self.client_lifecycle,
+        )
 
     def room_yaml_service(self) -> RoomYamlService:
         """The template engine over this service's collaborators.

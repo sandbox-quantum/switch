@@ -35,7 +35,7 @@ from switch_core.bridges.agent.protocol.instructions import build_room_instructi
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
-from switch_core.rooms_yaml import ActingAgent, GroupSpec
+from switch_core.rooms_yaml import GroupSpec
 
 logger = logging.getLogger(__name__)
 
@@ -1672,13 +1672,14 @@ async def create_room_from_yaml(
     result provisioned as the calling agent's owner (an ownerless agent
     cannot provision rooms). Server-provided ``{$creator}`` names the owner.
 
-    A ``kickoff:`` is posted with your authority, not your owner's: the
-    agents it mentions wake only if their addressing admits you. It is not
-    posted at all when you are working in a room that an agent created; the
-    room is still made, and the result says so under ``failed_attachments``.
-    Rooms you create count against an hourly allowance shared with
-    ``create_room``. Past it the call is refused; ask the user before
-    creating more.
+    A ``kickoff:`` is posted with your authority, not your owner's, and with
+    the run so far appended: the rooms that led here and who made them. The
+    call is refused, with nothing created, when the kickoff mentions an agent
+    that does not accept messages from you, when you ask for a room with the
+    same kickoff as one you already made further up the same path (the run is
+    then paused until your owner lets it continue), when the run was paused
+    or stopped, or while another room you asked for is still being created.
+    The refusal says which, and what to do.
 
     Args:
         yaml: The template text. A top-level ``room:`` makes one room; a
@@ -1710,7 +1711,6 @@ async def create_room_from_yaml(
             raise ValueError(
                 f"Agent {agent_id} has no owner and cannot provision rooms"
             )
-        agent_name = agent.name
         owner_id = owner.id
         owner_name = owner.name
         owner_email = owner.email
@@ -1726,32 +1726,39 @@ async def create_room_from_yaml(
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
     await rooms_yaml.check_entity_params(parsed)
-    await protocol.check_agent_room_cap(
-        agent_id,
-        wanted=len(parsed.spec.rooms) if isinstance(parsed.spec, GroupSpec) else 1,
+    room_specs = (
+        [(r, r.kickoff) for r in parsed.spec.rooms]
+        if isinstance(parsed.spec, GroupSpec)
+        else [(parsed.spec, parsed.kickoff)]
     )
-    acting_agent = ActingAgent(
-        agent_id=agent_id,
-        name=agent_name,
-        depth=await protocol.agent_creation_depth(await connected_room()),
-    )
-    if isinstance(parsed.spec, GroupSpec):
-        group_result = await rooms_yaml.provision_group(
+    kickoffs = [
+        (text, list(spec.agents), dict(spec.aliases or {}))
+        for spec, text in room_specs
+        if text
+    ]
+    async with protocol.run_service().agent_creating(
+        agent,
+        owner_name=owner_name,
+        from_room_id=await connected_room(),
+        kickoffs=kickoffs,
+    ) as origin:
+        if isinstance(parsed.spec, GroupSpec):
+            group_result = await rooms_yaml.provision_group(
+                parsed.spec,
+                user_id=owner_id,
+                is_admin=owner_is_admin,
+                creator_name=builtins["$creator"],
+                origin=origin,
+            )
+            return group_result.model_dump()
+        result = await rooms_yaml.provision(
             parsed.spec,
+            kickoff=parsed.kickoff,
             user_id=owner_id,
             is_admin=owner_is_admin,
             creator_name=builtins["$creator"],
-            acting_agent=acting_agent,
+            origin=origin,
         )
-        return group_result.model_dump()
-    result = await rooms_yaml.provision(
-        parsed.spec,
-        kickoff=parsed.kickoff,
-        user_id=owner_id,
-        is_admin=owner_is_admin,
-        creator_name=builtins["$creator"],
-        acting_agent=acting_agent,
-    )
     return result.model_dump()
 
 

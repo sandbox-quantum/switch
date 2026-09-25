@@ -5,6 +5,7 @@ import { createRoomOnServer } from '@main/core/switch-servers/create-room';
 import {
   addRoomAgents,
   agentExistsOnServer,
+  changeTemplateRun,
   createRoomFromTemplate,
   createTemplate,
   deleteBridge,
@@ -24,6 +25,7 @@ import {
   fetchRoomRoles,
   fetchRooms,
   fetchTemplateDetail,
+  fetchTemplateRuns,
   fetchTemplates,
   fetchTemplateSchema,
   GatewayError,
@@ -33,6 +35,7 @@ import {
   type StoredTemplateDetail,
   type StoredTemplateSummary,
   type ProvisionFromTemplateResult,
+  type TemplateRun,
   type TemplateVisibility,
   updateAddressingPolicy,
   updateAgentIcon,
@@ -356,9 +359,29 @@ export const workspacesController = createRPCController({
   createRoomFromTemplate: (
     workspaceId: string,
     yamlText: string,
-    inputs: Record<string, string | number | boolean>
+    inputs: Record<string, string | number | boolean>,
+    templateName?: string
   ): Promise<ProvisionFromTemplateResult> =>
-    withWorkspaceSession(workspaceId, (server) => createRoomFromTemplate(server, yamlText, inputs)),
+    withWorkspaceSession(workspaceId, (server) =>
+      createRoomFromTemplate(server, yamlText, inputs, templateName)
+    ),
+
+  /** The runs the user may see, or null when the server does not record runs. */
+  listTemplateRuns: (params: { workspaceId: string }): Promise<TemplateRun[] | null> =>
+    withWorkspaceSession(params.workspaceId, fetchTemplateRuns),
+
+  stopTemplateRun: (params: { workspaceId: string; rootRoomId: string }): Promise<TemplateRun> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      changeTemplateRun(server, params.rootRoomId, 'stop')
+    ),
+
+  continueTemplateRun: (params: {
+    workspaceId: string;
+    rootRoomId: string;
+  }): Promise<TemplateRun> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      changeTemplateRun(server, params.rootRoomId, 'continue')
+    ),
 
   fetchTemplateSchema: (workspaceId: string): Promise<Record<string, unknown> | null> =>
     withWorkspaceSession(workspaceId, fetchTemplateSchema),

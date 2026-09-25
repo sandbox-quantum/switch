@@ -94,6 +94,7 @@ class AdminMessageType(StrEnum):
     COMMAND_RESULT = "command_result"
     SELF_MENTION_UNALIASED = "self_mention_unaliased"
     NO_AGENTS = "no_agents"
+    RUN_NOTICE = "run_notice"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:

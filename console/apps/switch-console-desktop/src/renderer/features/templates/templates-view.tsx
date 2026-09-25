@@ -36,6 +36,8 @@ import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
 import { prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
+import { formatTimeAgo, runMatches } from './template-runs';
+import { TemplateRunRow, useTemplateRuns } from './template-runs-list';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -256,22 +258,15 @@ function Section({
   );
 }
 
-function formatTimeAgo(ms: number): string {
-  const seconds = Math.floor((Date.now() - ms) / 1000);
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 /**
- * Documents used from this Console, kept locally per workspace. Each can be
- * used again or saved to the workspace, where everyone can find it.
+ * What was used lately: the template runs the server records for this
+ * workspace, newest first, then the documents used from this Console, kept
+ * locally per workspace. A run opens to show the rooms it made; a document can
+ * be used again or saved to the workspace, where everyone can find it.
  */
 function RecentsSection({
   serverId,
+  workspaceId,
   serverName,
   onWorkspace,
   kind,
@@ -279,6 +274,7 @@ function RecentsSection({
   onSaved,
 }: {
   serverId: string;
+  workspaceId: string | null;
   serverName: string | null;
   /** Names of templates saved on the workspace. A recent with one of these names gets no Save button. */
   onWorkspace: ReadonlySet<string>;
@@ -292,6 +288,7 @@ function RecentsSection({
   // Each recent with its kind, classified by the same parser as the listing.
   const [recents, setRecents] = useState<(RecentTemplate & { kind: TemplateKind })[] | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const { runs, replace: replaceRun } = useTemplateRuns(workspaceId);
 
   useEffect(() => {
     let cancelled = false;
@@ -347,7 +344,9 @@ function RecentsSection({
       (kind === 'all' || r.kind === kind) &&
       (needle.length === 0 || r.name.toLowerCase().includes(needle))
   );
-  if (shown.length === 0) return null;
+  // A run creates rooms, so an agents-only listing leaves them out.
+  const shownRuns = kind === 'agent' ? [] : runs.filter((r) => runMatches(r, needle));
+  if (shown.length === 0 && shownRuns.length === 0) return null;
 
   return (
     <section>
@@ -356,10 +355,20 @@ function RecentsSection({
         Recently used
       </h3>
       <p className="mt-0.5 mb-3 text-xs text-foreground-muted">
-        Documents you used from this Console. Kept here only; Save to workspace makes one a template
+        Template runs on this workspace, and documents you used from this Console. Open a run to see
+        the rooms it made. Documents are kept here only; Save to workspace makes one a template
         everyone on the workspace can find.
       </p>
       <div className="flex flex-col gap-1">
+        {workspaceId !== null &&
+          shownRuns.map((run) => (
+            <TemplateRunRow
+              key={run.rootRoomId}
+              workspaceId={workspaceId}
+              run={run}
+              onChanged={replaceRun}
+            />
+          ))}
         {shown.map((r) => (
           <div key={r.yamlText} className="flex items-center gap-1">
             <button
@@ -713,6 +722,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
             <RecentsSection
               serverId={serverId}
+              workspaceId={workspaceId}
               serverName={server?.name ?? null}
               onWorkspace={new Set(templates.map((t) => t.name))}
               kind={kind}

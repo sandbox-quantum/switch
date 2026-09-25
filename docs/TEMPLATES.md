@@ -358,6 +358,23 @@ its members have joined. An agent starts working when a message addresses
 it, so mention the agent here or it sits in the room without answering.
 Needs a `room:`; on a group document it goes inside each room entry.
 
+**When an agent runs the template.** The kickoff speaks for that agent, not
+its owner, so the agents it mentions wake only if their addressing admits
+it. The server checks this before creating anything: if a mentioned agent
+would ignore the kickoff, nothing is created and the agent is told which
+one and why. The kickoff also carries the run so far, the rooms that led to
+this one and who made them, so the agents it wakes can see what already
+happened.
+
+**Runs.** Every room an agent creates is recorded in a run: the room it was
+working in, and the room a person made where the chain started. Runs are
+listed in Switch Console under Templates, Recently used, as a tree, and the
+owner of an agent in the run, the person who ran its template, or an admin
+can stop one. A stopped run keeps its rooms; agents just cannot create more
+in it. An agent creates one room at a time, and when it asks for a room with
+the same kickoff as one it already made further up the same path, the run is
+paused until someone lets it continue.
+
 ## Where an agent works
 
 Three shapes cover the cases, each one line of template.

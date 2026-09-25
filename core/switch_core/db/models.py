@@ -640,12 +640,9 @@ class Room(TenantScoped, Base):
         # and the ON DELETE SET NULL when a group is removed both scan the
         # table. Mirrors ix_agents_parent_agent_id.
         Index("ix_rooms_group_id", "group_id"),
-        # The hourly cap counts an agent's recent rooms on every create.
-        Index(
-            "ix_rooms_created_by_agent_id_created_at",
-            "created_by_agent_id",
-            "created_at",
-        ),
+        # A run is listed, checked and stopped by its root on every agent
+        # create and every look at Recently used.
+        Index("ix_rooms_run_id", "run_id"),
         UniqueConstraint(
             "tenant_id", "matrix_room_id", name="uq_rooms_tenant_matrix_room_id"
         ),
@@ -666,6 +663,12 @@ class Room(TenantScoped, Base):
             ["agents.tenant_id", "agents.id"],
             name="fk_rooms_created_by_agent",
             ondelete="SET NULL (created_by_agent_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "parent_room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_rooms_parent_room",
+            ondelete="SET NULL (parent_room_id)",
         ),
     )
 
@@ -688,13 +691,20 @@ class Room(TenantScoped, Base):
     # The agent that created the room through an agent operation. NULL for a
     # room a person created. `created_by` is the agent's owner in both cases.
     created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # How many agent-created rooms lie between this room and one a person
-    # created: 0 for a person's room, 1 for a room an agent created while
-    # working in a person's room, and so on. Bounds how far a chain of
-    # templates can carry kickoffs (see `MAX_KICKOFF_DEPTH`).
-    agent_creation_depth: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="0"
-    )
+    # Where an agent-created room sits in its run (see `agent_runs`): the
+    # room the agent was working in when it asked, and the root of the chain,
+    # a room a person made. NULL for a person's room, which is its own root.
+    parent_room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The template the room came from, when it came from one: its registry
+    # name, or the name the creator gave a pasted document.
+    template_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A fingerprint of the kickoff an agent posted here. Never shown; it is
+    # how the same request made twice on one path is recognised.
+    kickoff_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a run's root only: whether agents may keep creating rooms in the
+    # run. NULL means running. See `agent_runs.RunControl`.
+    run_control: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
