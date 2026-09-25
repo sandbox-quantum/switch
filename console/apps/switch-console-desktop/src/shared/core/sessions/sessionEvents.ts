@@ -99,3 +99,11 @@ export const sessionTranscriptResetChannel = defineEvent<{
   sessionId: string;
   reason: string;
 }>('session:transcript-reset');
+
+/**
+ * Something about a session's health changed: its host failed, came back, or
+ * its start failed. The topic is the session id; ask for the current state.
+ */
+export const sessionIssueChangedChannel = defineEvent<{ sessionId: string }>(
+  'session:issue-changed'
+);

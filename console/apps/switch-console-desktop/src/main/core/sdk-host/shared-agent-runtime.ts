@@ -5,7 +5,7 @@ import {
 } from './session-commands';
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
-import { recordRemoteHostFailure } from './host-failures';
+import { announceSessionIssue, recordRemoteHostFailure } from './host-failures';
 import { reconcileInitialPrompt } from './initial-prompt';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
@@ -91,9 +91,15 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     }
   ) {}
 
+  private setStartupError(error: string | null): void {
+    if (this.startupError === error) return;
+    this.startupError = error;
+    announceSessionIssue(this.params.sessionId);
+  }
+
   async start(session: Session, isResuming?: boolean, initialPrompt?: string): Promise<void> {
     if (this.starting) return this.opened ?? this.starting;
-    this.startupError = null;
+    this.setStartupError(null);
     let connected!: () => void;
     let failed!: (error: unknown) => void;
     this.opened = new Promise<void>((resolve, reject) => {
@@ -103,7 +109,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     this.starting = this.open(session, initialPrompt, isResuming ?? false, false, connected);
     void this.starting
       .then(connected, (error: unknown) => {
-        this.startupError = error instanceof Error ? error.message : String(error);
+        this.setStartupError(error instanceof Error ? error.message : String(error));
         log.error('Background session startup failed', {
           sessionId: session.id,
           error: this.startupError,
@@ -330,12 +336,12 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   async restart(session: Session): Promise<void> {
     await this.resolveServer();
     if (this.starting) await this.starting;
-    this.startupError = null;
+    this.setStartupError(null);
     this.starting = this.open(session, undefined, true, true, () => {});
     try {
       await this.starting;
     } catch (error) {
-      this.startupError = error instanceof Error ? error.message : String(error);
+      this.setStartupError(error instanceof Error ? error.message : String(error));
       throw error;
     } finally {
       this.starting = null;

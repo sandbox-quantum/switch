@@ -1,5 +1,7 @@
 import { sharedSessionRoot } from '@switch-console/agent-providers';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
+import { events } from '@main/lib/events';
+import { sessionIssueChangedChannel } from '@shared/core/sessions/sessionEvents';
 import { localSessionLinks } from './local-host';
 
 /**
@@ -9,10 +11,34 @@ import { localSessionLinks } from './local-host';
  */
 const remote = new Map<string, string>();
 
+/** Session ids by state root, for telling the renderer about a local host's failure. */
+const sessionsByRoot = new Map<string, string>();
+
+/** Tell every window that this session's health may have changed. */
+export function announceSessionIssue(sessionId: string): void {
+  events.emit(sessionIssueChangedChannel, { sessionId }, sessionId);
+}
+
+let listening = false;
+
+/** Start announcing local host failures and recoveries, once the sidebar asks. */
+function listenForLocalHosts(): void {
+  if (listening) return;
+  listening = true;
+  const announceRoot = (root: string) => {
+    const sessionId = sessionsByRoot.get(root);
+    if (sessionId) announceSessionIssue(sessionId);
+  };
+  localSessionLinks.onFailure(announceRoot);
+  localSessionLinks.onReady(announceRoot);
+}
+
 /** The sidecar said the session's host failed (a message) or came up again (null). */
 export function recordRemoteHostFailure(sessionId: string, failure: string | null): void {
+  if (remote.get(sessionId) === (failure ?? undefined)) return;
   if (failure === null) remote.delete(sessionId);
   else remote.set(sessionId, failure);
+  announceSessionIssue(sessionId);
 }
 
 /** Why the session's host last stopped on a failure, or null if it has not since it last started. */
@@ -34,4 +60,15 @@ export function sessionStartupStatus(
   const failure = hostFailure(sessionId);
   if (failure !== null) return { status: 'error', message: `Shared SDK host failed: ${failure}` };
   return started;
+}
+
+/**
+ * What is wrong with a session right now, in a sentence, or null: its start
+ * failed or its host stopped on a failure. The sidebar marks such a session.
+ */
+export function sessionIssue(sessionId: string): string | null {
+  listenForLocalHosts();
+  sessionsByRoot.set(sharedSessionRoot(sessionId), sessionId);
+  const status = sessionStartupStatus(sessionId);
+  return status?.status === 'error' ? (status.message ?? 'The session failed.') : null;
 }

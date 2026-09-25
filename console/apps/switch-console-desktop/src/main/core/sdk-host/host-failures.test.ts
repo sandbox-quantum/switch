@@ -3,7 +3,8 @@ import { EventEmitter } from 'node:events';
 import { sharedSessionRoot } from '@switch-console/agent-providers';
 import { beforeEach, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ runtime: vi.fn() }));
+const mocks = vi.hoisted(() => ({ runtime: vi.fn(), emit: vi.fn() }));
+vi.mock('@main/lib/events', () => ({ events: { emit: mocks.emit } }));
 vi.mock('@main/core/sessions/session-runtime-manager', () => ({
   sessionRuntimeManager: { getAgent: mocks.runtime },
 }));
@@ -12,11 +13,13 @@ vi.mock('./local-host', async () => {
   return { localSessionLinks: new SessionLinks() };
 });
 
-const { recordRemoteHostFailure, sessionStartupStatus } = await import('./host-failures');
+const { recordRemoteHostFailure, sessionIssue, sessionStartupStatus } =
+  await import('./host-failures');
 const { localSessionLinks } = await import('./local-host');
 
 beforeEach(() => {
   mocks.runtime.mockReset();
+  mocks.emit.mockReset();
   mocks.runtime.mockReturnValue(undefined);
 });
 
@@ -58,4 +61,23 @@ it('leaves Console’s own start in charge while it runs', () => {
     status: 'error',
     message: 'Shared SDK host failed: An earlier failure.',
   });
+});
+
+it('tells the sidebar when a session it asked about fails or comes back', () => {
+  expect(sessionIssue('watched-session')).toBeNull();
+  const child = new EventEmitter();
+  localSessionLinks.attach(sharedSessionRoot('watched-session'), child as unknown as ChildProcess);
+  child.emit('exit', 1, null);
+  expect(mocks.emit).toHaveBeenCalledWith(
+    expect.anything(),
+    { sessionId: 'watched-session' },
+    'watched-session'
+  );
+  expect(sessionIssue('watched-session')).toMatch(/^Shared SDK host failed: /);
+
+  mocks.emit.mockReset();
+  recordRemoteHostFailure('remote-watched', 'Not signed in.');
+  recordRemoteHostFailure('remote-watched', 'Not signed in.');
+  expect(mocks.emit).toHaveBeenCalledTimes(1);
+  expect(sessionIssue('remote-watched')).toMatch(/Not signed in\.$/);
 });

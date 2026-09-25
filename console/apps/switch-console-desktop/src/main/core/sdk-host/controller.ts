@@ -5,7 +5,7 @@ import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconc
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
-import { sessionStartupStatus } from './host-failures';
+import { sessionIssue, sessionStartupStatus } from './host-failures';
 import { transcriptSource } from './host-journal';
 import { placeSession } from './place-session';
 import {
@@ -19,6 +19,7 @@ import { closeTranscript, openTranscript } from './transcripts';
 export const sdkHostController = createRPCController({
   stop: (agentId: string, sessionId: string) => stopSharedSession(agentId, sessionId),
   startupStatus: (sessionId: string) => sessionStartupStatus(sessionId),
+  sessionIssue: (sessionId: string) => sessionIssue(sessionId),
   discoveryErrors: () => remoteSessionReconciler.errors(),
   retryDiscovery: (agentId: string) => remoteSessionReconciler.refresh(agentId),
   connectionHealth,
