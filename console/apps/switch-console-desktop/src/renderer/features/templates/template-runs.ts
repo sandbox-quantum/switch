@@ -1,4 +1,4 @@
-import type { TemplateRun, TemplateRunRoom } from '@main/core/switch-servers/gateway-client';
+import type { TemplateRun } from '@main/core/switch-servers/gateway-client';
 
 export function formatTimeAgo(ms: number): string {
   const seconds = Math.floor((Date.now() - ms) / 1000);
@@ -10,47 +10,7 @@ export function formatTimeAgo(ms: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** One line of a run's room tree: the room and how far it sits below the root. */
-export type RunTreeRow = { room: TemplateRunRoom; depth: number };
-
-/**
- * A run's rooms in tree order: each room followed by the rooms created from
- * it, siblings in the order the server listed them (creation order).
- *
- * A room whose parent is not in the list (the server left it out, or it was
- * created before the parent was recorded) is drawn at the top level rather
- * than dropped, so every room the run reports gets a line.
- */
-export function runRoomTree(rooms: readonly TemplateRunRoom[]): RunTreeRow[] {
-  const ids = new Set(rooms.map((r) => r.id));
-  const children = new Map<string, TemplateRunRoom[]>();
-  const tops: TemplateRunRoom[] = [];
-  for (const room of rooms) {
-    const parent = room.parentRoomId;
-    if (parent !== null && parent !== room.id && ids.has(parent)) {
-      const list = children.get(parent) ?? [];
-      list.push(room);
-      children.set(parent, list);
-    } else {
-      tops.push(room);
-    }
-  }
-  const rows: RunTreeRow[] = [];
-  const seen = new Set<string>();
-  const visit = (room: TemplateRunRoom, depth: number) => {
-    if (seen.has(room.id)) return;
-    seen.add(room.id);
-    rows.push({ room, depth });
-    for (const child of children.get(room.id) ?? []) visit(child, depth + 1);
-  };
-  for (const room of tops) visit(room, 0);
-  // Rooms only reachable through a loop of parents have no top to hang from.
-  // Draw them at the top level so none go missing.
-  for (const room of rooms) visit(room, 0);
-  return rows;
-}
-
-/** What a run row is called: the template it came from, or else its first room. */
+/** What a run is listed as: the template it came from, else its first room. */
 export function runLabel(run: TemplateRun): string {
   return run.templateName ?? run.rootRoomName;
 }
@@ -71,7 +31,8 @@ export function runAuthor(run: TemplateRun): string {
   return `${names[0]} and ${names.length - 1} more`;
 }
 
-/** Whether the run can still change, so its row is worth refreshing. */
+/** Whether the run can still change, so its row is worth refreshing: an idle
+ * run starts working again when someone addresses an agent in its rooms. */
 export function isLiveRun(run: TemplateRun): boolean {
   return run.state === 'running' || run.state === 'paused';
 }

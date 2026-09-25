@@ -363,7 +363,11 @@ function RecentsSection({
           />
         ))}
         {shown.map((r) => (
-          <div key={r.yamlText} className="flex items-center gap-1">
+          // The same box as a run above, ending in the time like a run does.
+          <div
+            key={r.yamlText}
+            className="flex items-center rounded-md border border-border transition-colors hover:bg-[var(--sel-soft)]"
+          >
             <button
               type="button"
               onClick={() =>
@@ -373,34 +377,36 @@ function RecentsSection({
                   sourceName: r.name,
                 })
               }
-              className="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--sel-soft)]"
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-2 pl-3 text-left text-sm"
             >
-              <span className="flex items-center gap-2 truncate">
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="size-3.5 shrink-0" aria-hidden />
                 {(() => {
                   const Icon = KIND_ICON[r.kind];
                   return <Icon className="size-3.5 shrink-0 text-foreground-muted" />;
                 })()}
-                {r.name}
-              </span>
-              <span className="shrink-0 text-xs text-foreground-passive">
-                {formatTimeAgo(r.usedAt)}
+                <span className="truncate">{r.name}</span>
               </span>
             </button>
-            {onWorkspace.has(r.name) ? (
-              <span className="px-3 text-xs text-foreground-passive">On the workspace</span>
-            ) : (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                title="Save to the workspace, so everyone on it can use it"
-                disabled={saving === r.yamlText}
-                onClick={() => void saveToWorkspace(r)}
-              >
-                <Save className="size-3.5" />
-                Save to workspace
-              </Button>
-            )}
+            <span className="flex shrink-0 items-center gap-3 pr-3 pl-3">
+              {onWorkspace.has(r.name) ? (
+                <span className="text-xs text-foreground-passive">On the workspace</span>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  title="Save to the workspace, so everyone on it can use it"
+                  disabled={saving === r.yamlText}
+                  onClick={() => void saveToWorkspace(r)}
+                >
+                  <Save className="size-3.5" />
+                  Save to workspace
+                </Button>
+              )}
+              <span className="text-xs text-foreground-passive">{formatTimeAgo(r.usedAt)}</span>
+            </span>
           </div>
         ))}
       </div>
