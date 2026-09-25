@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
-from switch_core.db.models import ApprovalRequest
+from switch_core.db.models import ApprovalRequest, TenantUsage
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -116,6 +116,39 @@ async def test_a_step_is_upserted_by_revision_and_announced_by_turn(service, cha
     assert (step.revision, step.status, step.text) == (2, "completed", "done")
     announced = await changes.expect([("activity", "turn-1"), ("activity", "turn-1")])
     assert all(change.row is None for change in announced)
+
+
+def _turn(turn_id: str, revision: int, status: str):
+    return _step(
+        turn_id=turn_id,
+        item_id="turn",
+        kind="turn",
+        revision=revision,
+        status=status,
+        title="",
+        text="",
+    )
+
+
+async def _turns_counted(session_factory) -> int:
+    async with session_factory() as db:
+        rows = await db.scalars(
+            select(TenantUsage.amount).where(TenantUsage.metric == "turns")
+        )
+        return sum(rows)
+
+
+async def test_a_turn_is_counted_once_when_first_reported(service, session_factory):
+    # A turn is spent once it exists: its later statuses, a retried report and
+    # its steps are the same turn, and one that errors still cost model time.
+    await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "running"))
+    await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "running"))
+    await service.report_item(AGENT, SESSION, **_step(revision=2))
+    await service.report_item(AGENT, SESSION, **_turn("turn-1", 3, "error"))
+    assert await _turns_counted(session_factory) == 1
+
+    await service.report_item(AGENT, SESSION, **_turn("turn-2", 4, "completed"))
+    assert await _turns_counted(session_factory) == 2
 
 
 async def test_a_turns_steps_are_read_in_the_order_first_reported(service):

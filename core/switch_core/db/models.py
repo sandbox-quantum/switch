@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     DDL,
@@ -2303,6 +2304,62 @@ for _table, _triggers in (
 ):
     for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
         event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+
+
+# ── Usage metering ───────────────────────────────────────────────────────────
+
+
+class UsageMetric(StrEnum):
+    """What is counted. Cache reads and writes are kept apart from input
+    tokens because providers price them apart."""
+
+    MESSAGES = "messages"
+    TURNS = "turns"
+    INPUT_TOKENS = "input_tokens"
+    OUTPUT_TOKENS = "output_tokens"
+    CACHE_READ_TOKENS = "cache_read_tokens"
+    CACHE_WRITE_TOKENS = "cache_write_tokens"
+
+
+class TenantUsage(TenantScoped, Base):
+    """What a tenant has consumed, counted as it happens, one row per hour.
+
+    The record that quotas are enforced against and that billing will read,
+    so it is kept apart from the rows it counts: deleting a room cascades to
+    its messages, and a count derived from `messages` would forget usage the
+    tenant has already spent. Written in the same transaction as the thing it
+    counts, so the two cannot disagree.
+
+    Hourly buckets because a budget period is configurable: any period of a
+    whole number of hours is a sum over these rows, while a coarser bucket
+    would fix the shortest period a budget can have.
+
+    `client_id` is who consumed it: the sender of a message, or the client of
+    the agent a turn ran for. No foreign key, so a count outlives the client it
+    names. `model` is empty where a metric has none.
+    """
+
+    __tablename__ = "tenant_usage"
+    __table_args__ = (
+        # Leads on the metric so "this tenant's turns since a moment" — the
+        # shape every budget check asks — is a range scan on the key itself.
+        PrimaryKeyConstraint(
+            "tenant_id", "metric", "bucket_start", "client_id", "model"
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_tenant_usage_metric",
+        ),
+        CheckConstraint("amount > 0", name="ck_tenant_usage_amount"),
+    )
+
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the

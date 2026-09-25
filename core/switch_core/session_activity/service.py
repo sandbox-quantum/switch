@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
@@ -25,6 +26,7 @@ from switch_core.db.models import (
     Agent,
     ApprovalRequest,
     SessionActivityItem,
+    UsageMetric,
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
@@ -38,6 +40,7 @@ from switch_core.db.stores.session_activity_store import (
     ApprovalRequestStore,
     SessionActivityStore,
 )
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.sessions.contract import (
     ApprovalResult,
@@ -133,6 +136,7 @@ class SessionActivityService:
         self._sessions = session_factory
         self._approvals = ApprovalRequestStore()
         self._activity = SessionActivityStore()
+        self._usage = UsageStore()
         self._rooms = RoomStore()
         self._external_users = ExternalUserStore()
         self._addressing = AddressingResolver(
@@ -197,7 +201,13 @@ class SessionActivityService:
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             if room_id is not None:
                 await self._require_member(db, agent_id, room_id)
-            return await self._activity.upsert(
+            first_report = kind == "turn" and (
+                await self._activity.status_for_update(
+                    db, agent_id, session_id, turn_id, item_id
+                )
+                is None
+            )
+            moved = await self._activity.upsert(
                 db,
                 SessionActivityItem(
                     tenant_id=tenant_id,
@@ -217,6 +227,36 @@ class SessionActivityService:
                     occurred_at=occurred_at,
                 ),
             )
+            if moved and first_report:
+                await self._meter_turn(db, tenant_id, agent_id)
+            return moved
+
+    async def _meter_turn(
+        self, db: AsyncSession, tenant_id: str, agent_id: str
+    ) -> None:
+        """Count a turn the first time its host reports it, whatever its status.
+
+        A turn has been paid for once it exists: one that errors or is
+        interrupted still spent the model's time, so counting only the ones
+        that complete would under-report exactly the runaway loops a budget is
+        for. Charged to the agent's client, the identity every other metric is
+        counted against.
+        """
+        client_id = await db.scalar(
+            select(Agent.client_id).where(
+                Agent.tenant_id == tenant_id, Agent.id == agent_id
+            )
+        )
+        if client_id is None:
+            raise SessionError("NOT_FOUND", f"Agent {agent_id} does not exist.")
+        await self._usage.record(
+            db,
+            tenant_id=tenant_id,
+            metric=UsageMetric.TURNS,
+            client_id=client_id,
+            model="",
+            amount=1,
+        )
 
     async def turn_items(
         self, agent_id: str, session_id: str, turn_id: str
