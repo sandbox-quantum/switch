@@ -70,9 +70,11 @@ def validate_provider_credential(provider: str, kind: str, credential: str) -> s
                     parsed = OpenCodeConsoleCredential.model_validate(value)
                     value = parsed.model_dump(mode="json")
                 else:
-                    login = TypeAdapter(
-                        OpenCodeApiCredential | OpenCodeOAuthCredential
-                    ).validate_python(value.get("opencode"))
+                    login: OpenCodeApiCredential | OpenCodeOAuthCredential = (
+                        TypeAdapter(
+                            OpenCodeApiCredential | OpenCodeOAuthCredential
+                        ).validate_python(value.get("opencode"))
+                    )
                     value = {"opencode": login.model_dump()}
             except ValueError:
                 raise ValueError(

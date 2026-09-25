@@ -114,3 +114,24 @@ it.each(['nested', 'parent', 'missing'] as const)(
     }
   }
 );
+
+it('does not migrate a rollout for a partial native thread id', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-migration-test-'));
+  roots.push(root);
+  const sourceHome = join(root, 'parent');
+  const home = join(root, 'nested');
+  await mkdir(join(sourceHome, 'sessions'), { recursive: true });
+  const source = join(
+    sourceHome,
+    'sessions/rollout-2026-01-01-11111111-1111-4111-8111-111111111111.jsonl'
+  );
+  await writeFile(source, 'another conversation');
+  await migrateCodexRollout({
+    home,
+    sourceHome,
+    nativeSessionId: '111111111111',
+    sessionId: 'session',
+  });
+  expect(await readFile(source, 'utf8')).toBe('another conversation');
+  await expect(stat(home)).rejects.toMatchObject({ code: 'ENOENT' });
+});

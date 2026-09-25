@@ -593,6 +593,7 @@ export async function runSharedHost(
       }
       await delay(250, undefined, { signal: executionSignal });
     }
+    if (failure) throw failure;
   } catch (error) {
     const reason = failure ?? stopped.signal.reason ?? error;
     if (reason instanceof Error && 'code' in reason && reason.code === 'HOST_NOT_OWNER') {

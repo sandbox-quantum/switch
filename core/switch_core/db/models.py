@@ -2073,7 +2073,7 @@ class Message(TenantScoped, Base):
     formatted_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     thread_root_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     content: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    sent_at: Mapped[str] = mapped_column(
+    sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

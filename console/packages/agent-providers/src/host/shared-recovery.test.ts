@@ -732,7 +732,9 @@ it.each(['renew', 'stream'])(
       new AbortController().signal
     );
     const failed = expect(running).rejects.toBeInstanceOf(SharedHostFencedError);
-    await vi.waitFor(() => expect(f.adapter.startSession).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(f.fetchMock.mock.calls.some(([url]) => url.endsWith('/commands'))).toBe(true)
+    );
     if (source === 'stream')
       streamFailure(Object.assign(new Error('Host changed'), { code: 'HOST_NOT_OWNER' }));
     else takeover = true;
@@ -768,4 +770,24 @@ it('retains pending identities and cleanup causes when fencing fails to stop the
     cause: expect.any(AggregateError),
   });
   expect((failure as Error).cause).toMatchObject({ errors: expect.arrayContaining([cleanup]) });
+});
+
+it('fences a stream takeover when startup finishes without entering the poll loop', async () => {
+  const f = await fixture();
+  let streamFailure: (error: Error) => void = () => {};
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockImplementation(async (_a, _b, _c, fail) => {
+    streamFailure = fail;
+  });
+  f.adapter.listModels = vi.fn(async () => {
+    streamFailure(Object.assign(new Error('Host changed'), { code: 'HOST_NOT_OWNER' }));
+    return [];
+  });
+  await expect(
+    runSharedHost(
+      { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+      f.adapter,
+      new AbortController().signal
+    )
+  ).rejects.toBeInstanceOf(SharedHostFencedError);
+  expect(await readFile(join(f.root, 'inbox.jsonl'), 'utf8')).toContain('"type":"stopped"');
 });

@@ -69,6 +69,7 @@ export async function migrateCodexRollout(input: {
   nativeSessionId: string;
   sessionId: string;
 }): Promise<void> {
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(input.nativeSessionId)) return;
   const find = async (directory: string): Promise<string[]> => {
     const entries = await readdir(directory, { withFileTypes: true }).catch(
       (error: NodeJS.ErrnoException) => {

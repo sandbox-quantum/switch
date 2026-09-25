@@ -125,13 +125,13 @@ async def provider_status(
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
-    launch = await worker_launch(session, agent)
-    await ProviderConnectionStore().wait_user(session, launch.owner_id)
+    current = await worker_launch(session, agent)
+    await ProviderConnectionStore().wait_user(session, current.owner_id)
     launch = await session.scalar(
         select(HostedLaunch)
         .where(
             HostedLaunch.tenant_id == require_tenant_id(),
-            HostedLaunch.id == launch.id,
+            HostedLaunch.id == current.id,
             HostedLaunch.desired_state == "running",
             HostedLaunch.state != "error",
         )
