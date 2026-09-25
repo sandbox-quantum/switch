@@ -495,6 +495,83 @@ class HostedWakeMailbox(TenantScoped, Base):
     )
 
 
+class HostedCutoverVolume(TenantScoped, Base):
+    """A launch's retained worker volume, complete once its worker uploaded its manifest."""
+
+    __tablename__ = "hosted_cutover_volumes"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "launch_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "preflight_state IN ('pending', 'complete')",
+            name="ck_hosted_cutover_volumes_state",
+        ),
+    )
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    preflight_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="pending"
+    )
+    manifest_sha256: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HostedCutoverItem(TenantScoped, Base):
+    """Pre-cutover work for a hosted agent: its evidence, and what was done with it."""
+
+    __tablename__ = "hosted_cutover_items"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "kind IN ('room_message', 'console_command', 'session', 'request_open', 'reset_pending', 'operation')",
+            name="ck_hosted_cutover_items_kind",
+        ),
+        CheckConstraint(
+            "disposition IS NULL OR disposition IN ('ran', 'uncertain', 'unrecoverable', 'import', 'settled_by_host', 'owner_notice', 'interrupted', 'preserved')",
+            name="ck_hosted_cutover_items_disposition",
+        ),
+        CheckConstraint(
+            "kind <> 'room_message' OR (room_id IS NOT NULL AND message_id IS NOT NULL)",
+            name="ck_hosted_cutover_items_room_message",
+        ),
+        Index(
+            "uq_hosted_cutover_items_room_message",
+            "tenant_id",
+            "agent_id",
+            "room_id",
+            "message_id",
+            unique=True,
+            postgresql_where=text("kind = 'room_message'"),
+        ),
+        Index("ix_hosted_cutover_items_launch", "tenant_id", "launch_id"),
+    )
+    id: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("gen_random_uuid()::text")
+    )
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str | None] = mapped_column(Text)
+    message_id: Mapped[str | None] = mapped_column(Text)
+    thread_id: Mapped[str | None] = mapped_column(Text)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    disposition: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    notice_posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Invitations ────────────────────────────────────────────────────────────────
 
 

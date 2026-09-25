@@ -1,5 +1,9 @@
 """Both histories reach the merge revision `33e037ee949f` with their data.
 
+A pilot database reaches it through the cutover manifest `a3c9e5f71d28`, which
+has to run before main's `b9e4d2a71c05` drops the server-side session tables:
+the manifest is what keeps their pending work.
+
 The hosted-agent chain (`ab921ef034cd` .. `95fc38e451b6`) was applied on a
 pilot before main grew its own head (`e3b7c9d2a415`), so a database can arrive
 at the merge from either side. The pilot side still has to run main's
@@ -11,6 +15,7 @@ rows, the tenant-isolation policies and the runtime grants are all in place.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -32,6 +37,7 @@ _CORE = Path(__file__).resolve().parents[2]
 _MERGE_REVISION = "33e037ee949f"
 _PILOT_HEAD = "95fc38e451b6"
 _MAIN_HEAD = "e3b7c9d2a415"
+_MANIFEST_REVISION = "a3c9e5f71d28"
 
 _HOSTED_TABLES = (
     "provider_connections",
@@ -40,6 +46,8 @@ _HOSTED_TABLES = (
     "hosted_operations",
     "github_issued_tokens",
     "hosted_wake_mailbox",
+    "hosted_cutover_volumes",
+    "hosted_cutover_items",
 )
 
 _PREDICATE = (
@@ -108,6 +116,157 @@ async def _seed_tenant_and_user(connection: AsyncConnection) -> None:
             "VALUES ('u1', 'User', 'user@example.invalid', 'user', 'x')"
         )
     )
+
+
+def _command(room_id: str | None, message_id: str | None, surface: str) -> str:
+    return json.dumps(
+        {
+            "contractVersion": 1,
+            "commandId": "placeholder-command",
+            "sessionId": "s1",
+            "epoch": "e1",
+            "origin": {
+                "actorId": "placeholder-actor",
+                "surface": surface,
+                "roomId": room_id,
+                "threadId": "th1" if room_id else None,
+                "messageId": message_id,
+            },
+            "body": {"type": "message.send", "text": "placeholder", "attachments": []},
+        }
+    )
+
+
+def _status(command_id: str, status: str) -> str:
+    return json.dumps(
+        {
+            "type": "command.status",
+            "commandId": command_id,
+            "status": status,
+            "code": None,
+            "message": None,
+        }
+    )
+
+
+async def _seed_sdk_rows(connection: AsyncConnection) -> None:
+    """#538's server-side session state for the hosted agent `a1` and a local agent `a9`."""
+    # The agents, rooms and bridges these rows point at are beside the point here.
+    await connection.execute(text("SET LOCAL session_replication_role = replica"))
+    for session_id, agent_id in (("s1", "a1"), ("s9", "a9")):
+        await connection.execute(
+            text(
+                "INSERT INTO sdk_sessions "
+                "(tenant_id, id, agent_id, host_id, epoch, lease_expires_at, snapshot, host_sequence) "
+                "VALUES ('t1', :id, :agent, 'h1', 'e1', now(), '{}', 7)"
+            ),
+            {"id": session_id, "agent": agent_id},
+        )
+    for session_id, command_id, room_id, message_id, surface, status in (
+        ("s1", "c1", "r1", "m1", "slack", "dispatched"),
+        ("s1", "c2", "r1", "m2", "slack", "applied"),
+        ("s1", "c3", None, None, "console", "accepted"),
+        ("s1", "c4", None, None, "console", "applied"),
+        ("s9", "c5", "r1", "m3", "slack", "accepted"),
+    ):
+        await connection.execute(
+            text(
+                "INSERT INTO sdk_session_commands "
+                "(tenant_id, session_id, command_id, accepted_sequence, command, status) "
+                "VALUES ('t1', :session, :command_id, 1, CAST(:command AS jsonb), CAST(:status AS jsonb))"
+            ),
+            {
+                "session": session_id,
+                "command_id": command_id,
+                "command": _command(room_id, message_id, surface),
+                "status": _status(command_id, status),
+            },
+        )
+    for post_id, removed in (("p1", None), ("p2", "now()")):
+        await connection.execute(
+            text(
+                "INSERT INTO session_request_posts "
+                "(tenant_id, id, bridge_id, token, handle, external_channel_id, "
+                "external_post_id, room_id, thread_id, session_id, epoch, request_id, "
+                "revision, form, removed_at) "
+                f"VALUES ('t1', :id, 'b1', :id || '-placeholder-token', :id, 'C0', :id, 'r1', "
+                f"'th1', 's1', 'e1', :request, 1, '{{}}', {removed or 'NULL'})"
+            ),
+            {"id": post_id, "request": f"q-{post_id}"},
+        )
+
+
+_EXPECTED_MANIFEST = (
+    [("l1", "pending")],
+    [
+        (
+            "console_command",
+            "s1",
+            None,
+            None,
+            None,
+            {"core": {"command_id": "c3", "status": "accepted"}},
+        ),
+        (
+            "operation",
+            "s1",
+            None,
+            None,
+            None,
+            {"core": {"operation_id": "o1", "action": "start", "state": "queued"}},
+        ),
+        (
+            "request_open",
+            "s1",
+            "r1",
+            None,
+            "th1",
+            {"core": {"request_id": "q-p1", "epoch": "e1"}},
+        ),
+        (
+            "room_message",
+            "s1",
+            "r1",
+            "m1",
+            "th1",
+            {"core": {"command_id": "c1", "status": "dispatched", "code": None}},
+        ),
+        (
+            "room_message",
+            "s1",
+            "r1",
+            "m2",
+            "th1",
+            {"core": {"command_id": "c2", "status": "applied", "code": None}},
+        ),
+        ("session", "s1", None, None, None, "session"),
+    ],
+)
+
+
+async def _cutover_rows(connection: AsyncConnection) -> tuple[list[Any], list[Any]]:
+    volumes = (
+        await connection.execute(
+            text("SELECT launch_id, preflight_state FROM hosted_cutover_volumes")
+        )
+    ).all()
+    items = (
+        await connection.execute(
+            text(
+                "SELECT kind, session_id, room_id, message_id, thread_id, evidence "
+                "FROM hosted_cutover_items WHERE agent_id = 'a1' AND disposition IS NULL "
+                "ORDER BY kind, message_id"
+            )
+        )
+    ).all()
+    assert all(
+        row.kind != "session" or row.evidence["core"]["host_sequence"] == 7
+        for row in items
+    )
+    return [tuple(row) for row in volumes], [
+        tuple(row)[:5] + (("session",) if row.kind == "session" else (row.evidence,))
+        for row in items
+    ]
 
 
 async def _assert_merged_schema(connection: AsyncConnection) -> None:
@@ -250,6 +409,14 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
                     "VALUES ('t1', 'g1', 'u1', 'l1', 1, 'sealed-token', now(), false, 0)"
                 )
             )
+            await _seed_sdk_rows(connection)
+
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_MANIFEST_REVISION))
+
+        async with engine.begin() as connection:
+            assert await connection.scalar(text("SELECT to_regclass('sdk_sessions')"))
+            captured = await _cutover_rows(connection)
 
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to("heads"))
@@ -287,6 +454,7 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
                     )
                 )
             ).all()
+            kept = await _cutover_rows(connection)
     finally:
         await engine.dispose()
 
@@ -297,6 +465,44 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
     ]
     assert [tuple(row) for row in operations] == [("o1", "l1", 1, "start")]
     assert [tuple(row) for row in tokens] == [("g1", "l1", "sealed-token")]
+    assert captured == _EXPECTED_MANIFEST
+    assert kept == _EXPECTED_MANIFEST
+
+
+async def test_pilot_upgrade_refuses_to_drop_sessions_before_the_manifest(
+    pilot_url: str,
+) -> None:
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_PILOT_HEAD))
+        async with engine.begin() as connection:
+            await _seed_tenant_and_user(connection)
+            await connection.execute(
+                text(
+                    "INSERT INTO hosted_launches "
+                    "(tenant_id, id, owner_id, name, spec, agent_id, state) "
+                    "VALUES ('t1', 'l1', 'u1', 'pilot-agent', '{}', 'a1', 'stopped')"
+                )
+            )
+            await _seed_sdk_rows(connection)
+
+        with pytest.raises(RuntimeError, match="just hosted-cutover-upgrade"):
+            async with engine.begin() as connection:
+                await connection.run_sync(_upgrade_to("heads"))
+
+        async with engine.begin() as connection:
+            version = await connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+            commands = await connection.scalar(
+                text("SELECT count(*) FROM sdk_session_commands")
+            )
+    finally:
+        await engine.dispose()
+
+    assert version == _PILOT_HEAD
+    assert commands == 5
 
 
 async def test_main_database_keeps_session_activity_through_the_merge(
@@ -370,9 +576,11 @@ async def test_main_database_keeps_session_activity_through_the_merge(
                     text("SELECT item_id, status, title FROM session_activity_items")
                 )
             ).all()
+            cutover = await _cutover_rows(connection)
     finally:
         await engine.dispose()
 
     assert [tuple(row) for row in budgets] == [("b1", "input_tokens", 5000000)]
     assert [tuple(row) for row in requests] == [("r1", "Write file?", "open")]
     assert [tuple(row) for row in items] == [("item-1", "completed", "Read file")]
+    assert cutover == ([], [])
