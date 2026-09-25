@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.hosted_workers import NOTICE_MESSAGES
 from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.agent_client import (
     _HOSTED_ERROR_MESSAGE,
@@ -313,12 +315,16 @@ def _hosted(send_message: _Recorder, **launch: object) -> SimpleNamespace:
     )
     fake._note_hosted_addressed = AsyncMock(
         return_value=HostedNote(
-            launch=SimpleNamespace(revision=8, **launch),  # type: ignore[arg-type]
+            launch=SimpleNamespace(  # type: ignore[arg-type]
+                id="launch-1", agent_id="agent-1", revision=8, **launch
+            ),
             refusal=None,
             deliver=True,
         )
     )
     fake._waking_notice_revisions = {}
+    fake._unreachable_notice_revisions = {}
+    fake._connections = ConnectionRegistry()
     return fake
 
 
@@ -342,6 +348,14 @@ def _hosted(send_message: _Recorder, **launch: object) -> SimpleNamespace:
             {"desired_state": "running", "sleeping": True, "state": "queued"},
             _WAKING_MESSAGE,
         ),
+        (
+            {"desired_state": "running", "sleeping": False, "state": "provisioning"},
+            NOTICE_MESSAGES["unreachable"],
+        ),
+        (
+            {"desired_state": "running", "sleeping": False, "state": "ready"},
+            NOTICE_MESSAGES["unreachable"],
+        ),
     ],
 )
 async def test_an_unavailable_hosted_agent_says_what_its_worker_is_doing(
@@ -354,3 +368,37 @@ async def test_an_unavailable_hosted_agent_says_what_its_worker_is_doing(
     )
 
     assert [call["body"] for call in send_message.calls] == [f"@louisa {notice}"]
+
+
+@pytest.mark.asyncio
+async def test_an_unconnected_hosted_worker_is_announced_once_per_room_and_revision() -> (
+    None
+):
+    send_message = _Recorder()
+    fake = _hosted(send_message, desired_state="running", sleeping=False, state="ready")
+    room = RoomRef(room_id="!matrix:server")
+
+    await AgentClient.on_message(fake, room, _event(None))
+    await AgentClient.on_message(fake, room, _event(None))
+
+    assert [call["body"] for call in send_message.calls] == [
+        f"@louisa {NOTICE_MESSAGES['unreachable']}"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_connected_hosted_worker_is_not_called_unreachable() -> None:
+    send_message = _Recorder()
+    fake = _hosted(send_message, desired_state="running", sleeping=False, state="ready")
+    fake._connections = SimpleNamespace(
+        attached_worker=lambda _agent_id: SimpleNamespace(
+            worker=SimpleNamespace(launch_id="launch-1", launch_revision=8)
+        ),
+        supersede=lambda *_: None,
+    )
+
+    await AgentClient.on_message(fake, RoomRef(room_id="!matrix:server"), _event(None))
+
+    assert [call["body"] for call in send_message.calls] == [
+        "@louisa cd /data/workspace && claude ..."
+    ]

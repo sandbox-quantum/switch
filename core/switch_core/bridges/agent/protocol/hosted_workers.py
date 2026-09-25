@@ -72,6 +72,7 @@ NOTICE_MESSAGES = {
     "cutover_unrecoverable": "My cloud worker was upgraded before I processed this message, and it could not be carried over, so it was not run. Please send it again.",
     "cutover_interrupted": "An approval I was waiting for here was interrupted by an upgrade of my cloud worker. Ask me again if it is still needed.",
     "cutover_run_now": "My cloud worker has been upgraded, and I will process this message now.",
+    "unreachable": "My cloud worker is not connected right now: it may still be starting, or it may be unreachable. I have kept your message and will process it when the worker connects.",
 }
 
 #: The subscription name a watcher pushes health under.

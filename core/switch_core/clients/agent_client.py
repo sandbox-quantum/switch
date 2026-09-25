@@ -345,6 +345,7 @@ class AgentClient(ClientBase[ClientConfig]):
         self._external_user_store = external_user_store
         self._hosted_launch_store = hosted_launch_store
         self._waking_notice_revisions: dict[str, int] = {}
+        self._unreachable_notice_revisions: dict[str, int] = {}
         self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
@@ -598,7 +599,21 @@ class AgentClient(ClientBase[ClientConfig]):
                     self._waking_notice_revisions[meta.room_id] = launch.revision
                     unavailable = _WAKING_MESSAGE
             elif unavailable is not None and launch is not None:
-                unavailable = _hosted_unavailable(launch) or unavailable
+                stated = _hosted_unavailable(launch)
+                if stated is not None:
+                    unavailable = stated
+                elif attached_worker_for(self._connections, launch) is None:
+                    # Once per room per revision, like the waking notice: the
+                    # mailbox holds every message until the worker attaches.
+                    unavailable = None
+                    if (
+                        self._unreachable_notice_revisions.get(meta.room_id)
+                        != launch.revision
+                    ):
+                        self._unreachable_notice_revisions[meta.room_id] = (
+                            launch.revision
+                        )
+                        unavailable = NOTICE_MESSAGES["unreachable"]
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
