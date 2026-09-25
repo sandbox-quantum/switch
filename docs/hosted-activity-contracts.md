@@ -1343,8 +1343,8 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
 - **WP1 base port.** Rebase #538's non-session parts onto main: controller,
   launches, provider and GitHub connections, bootstrap, the controller's
   per-revision bundle (`required_bundle_token` / `bundle_token`, start gated
-  on it, `accept_launch` without the `instance_launch_issued` early return
-  for the bundle step), `agent_event_boot`
+  on it and on the version holding `AWSCURRENT`, `accept_launch` without the
+  `instance_launch_issued` early return for the bundle step), `agent_event_boot`
   floor with the below-floor restart branch, `ac2ffa1d`. Remove every
   `SdkSession` / `SessionAuthority` use (`hosted_routes.py`,
   `hosted_launches.py`, `hosted_launch_store.py`, `session_routes.py`,
@@ -1359,7 +1359,9 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
   `serveControl`. Adds `list`, `journal`, paged answers, attachment transfers,
   capability file (from the bundle's `workerCapability`, accepted by
   `switch_hosted_worker.py`) and attach headers, `relays.jsonl` and the
-  contiguous `relays_through` with the attach fence, idle report,
+  contiguous `relays_through` with the attach fence, handler cancellation and
+  the `busyBarrier` host message, exit 75 on an obsolete capability with the
+  worker's `obsolete-bundle` wait, idle report,
   `busy` IPC, the doorbell handlers (`operation`, `credential`) with claim and
   result via `operations.jsonl`, watcher-side admission, reconcile-before-admit
   for `cancelled`, held inputs and the `held` ack, cutover rows under the
@@ -1373,7 +1375,8 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
   bounded per-connection queues. Gateway relay route and relay stream
   (owner-only, 2 MiB requests, paged replies, resync reasons); agent relay
   reply and push routes. Mutating relays reserve a queue slot, then stamp
-  `relay_seq` and `active_at` under the launch lock; `relay_fence` in
+  `relay_seq` and `active_at` under the launch lock, with commit and send
+  shielded from request cancellation; `relay_fence` in
   `worker_attached`; pending-relay busy, idle report storage, `idle_evidence`
   with the contiguous watermark and without `held` rows or tombstones. Operation doorbell with re-ring, fenced claim, result re-post.
   Credential doorbell and idle-report catch-up.
