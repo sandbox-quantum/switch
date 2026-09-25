@@ -173,9 +173,16 @@ contracts:
     # `room_released` (`room_id`, and the session placed there or null). The
     # frame is sent only to a client that declares this revision, for the same
     # reason as revision 4.
+    #
+    # Revision 7 adds the hosted worker. A worker attaches with its capability
+    # (`X-Switch-Worker-Capability`) and host identity headers, and only it is
+    # sent `worker_attached`, `relay`, `relay_cancel`, `wake`, `mailbox_cancel`,
+    # `operation` and `credential`. A hosted agent's stream refuses a client
+    # below this revision (`upgrade_required`); nothing changes for any other
+    # agent, so `accepts` stays at 1.
     artifacts:
       switch-core: { speaks: 6, accepts: 1 }
-      agent-runtime: { speaks: 6, accepts: 1 }
+      agent-runtime: { speaks: 7, accepts: 1 }
 
   gateway-api:
     description: >-

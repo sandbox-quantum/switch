@@ -99,6 +99,47 @@ export const EVICTION_TAKEN_OVER = 'taken_over';
 export const EVICTION_HEARTBEAT_LAPSED = 'heartbeat_lapsed';
 export const EVICTION_CLOSED = 'closed';
 export const EVICTION_CREDENTIALS_REJECTED = 'credentials_rejected';
+/** A hosted worker's launch moved to a newer revision. Terminal, like `taken_over`. */
+export const EVICTION_LAUNCH_SUPERSEDED = 'launch_superseded';
+/** Switch refused a hosted worker's open or up-call for good; `code` names why. */
+export const WORKER_CAPABILITY_OBSOLETE = 'worker_capability_obsolete';
+const TERMINAL_WORKER_REFUSALS = new Set([
+  WORKER_CAPABILITY_OBSOLETE,
+  'worker_capability_required',
+  'upgrade_required',
+  'hosted_worker_only',
+]);
+
+/** The frames of agent-protocol 7, sent only to an attached hosted worker. */
+export const WORKER_FRAMES = [
+  'worker_attached',
+  'relay',
+  'relay_cancel',
+  'wake',
+  'mailbox_cancel',
+  'operation',
+  'credential',
+] as const;
+export type WorkerFrameName = (typeof WORKER_FRAMES)[number];
+
+/** Who a hosted worker is, stated on every open. */
+export interface WorkerIdentity {
+  capability: string;
+  bootId: string;
+  instanceId: string;
+}
+
+/** A hosted up-call Switch answered with anything but success. */
+export class WorkerCallError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | null,
+    detail: string
+  ) {
+    super(`Switch refused ${detail} (HTTP ${status}${code ? `, ${code}` : ''})`);
+    this.name = 'WorkerCallError';
+  }
+}
 
 /**
  * Read the code off an `evicted` frame, falling back to its prose.
@@ -279,6 +320,12 @@ export interface SwitchEventStreamDeps {
    * A `taken_over` eviction has already halted both loops before this runs:
    * there is nothing left to reconnect, only something to report. */
   onEvicted(eviction: Eviction): void;
+  /**
+   * Open as the agent's hosted worker. Null for every other client. A worker
+   * is handed the protocol-7 frames through `onWorkerFrame`, in order.
+   */
+  worker: WorkerIdentity | null;
+  onWorkerFrame?: (frame: WorkerFrameName, data: Record<string, unknown>) => Promise<void> | void;
   log: EventStreamLogger;
   /** Aborts the stream and the heartbeat together. */
   signal: AbortSignal;
@@ -456,10 +503,34 @@ export class SwitchEventStream {
     return true;
   }
 
+  /**
+   * A refusal a hosted worker cannot reopen its way past: its capability is
+   * obsolete or missing, or it speaks too old a protocol. Ends both loops and
+   * reports the refusal's own code.
+   */
+  private refuseWorker(status: number, body: string): boolean {
+    const code = refusalCode(body);
+    if (code === null || !TERMINAL_WORKER_REFUSALS.has(code)) return false;
+    if (this.halt.signal.aborted) return true;
+    this.deps.log.error('SwitchEventStream: Switch refused this worker — stopping', {
+      event: 'switch_stream_worker_refused',
+      status,
+      code,
+    });
+    this.halt.abort();
+    this.deps.onEvicted({
+      code,
+      reason: `Switch refused this worker (HTTP ${status}, ${code})`,
+      roomId: null,
+    });
+    return true;
+  }
+
   /** A rejected credential is not an outage: every reopen would carry the same
    * token, so end both loops and tell the owner once. */
   private rejectCredentials(status: number, body: string): void {
     if (this.halt.signal.aborted) return;
+    if (this.refuseWorker(status, body)) return;
     const detail = body.slice(0, 500);
     this.deps.log.error('SwitchEventStream: the server rejected our credentials — stopping', {
       event: 'switch_stream_credentials_rejected',
@@ -541,15 +612,7 @@ export class SwitchEventStream {
    * Raises on any answer but success; a takeover also stands the stream down.
    */
   async replacePlacements(placements: Record<string, string>): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const attached = await Promise.race([
-      this.fence.reached.then(() => true),
-      until(this.deps.signal, this.halt.signal).then(() => false),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), PLACEMENTS_WAIT_MS);
-      }),
-    ]).finally(() => clearTimeout(timer));
-    if (!attached || this.halt.signal.aborted)
+    if (!(await this.attached()))
       throw new Error('the connection to Switch is not open, so it cannot take placements');
     const resp = await this.post('connection/placements', {
       connection_id: this.deps.connectionId,
@@ -560,6 +623,44 @@ export class SwitchEventStream {
     const body = await resp.text();
     if (resp.status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) this.standDown();
     throw new PlacementsRefusedError(resp.status, body.slice(0, 500));
+  }
+
+  private async attached(): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attached = await Promise.race([
+      this.fence.reached.then(() => true),
+      until(this.deps.signal, this.halt.signal).then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), PLACEMENTS_WAIT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    return attached && !this.halt.signal.aborted;
+  }
+
+  /**
+   * A hosted worker's up-call: `path` under the API endpoint, sent as this
+   * connection and the incarnation it holds. Waits for the stream to be
+   * attached like a placements update. Answers the parsed body; any other
+   * status raises a `WorkerCallError` carrying the refusal's code.
+   */
+  async workerCall(path: string, body: Record<string, unknown>): Promise<unknown> {
+    if (!(await this.attached()))
+      throw new Error(`the connection to Switch is not open, so ${path} cannot be sent`);
+    const { creds } = this.deps;
+    const resp = await fetch(`${creds.apiEndpoint}${path}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...body,
+        connection_id: this.deps.connectionId,
+        generation: this.generation,
+      }),
+      redirect: 'error',
+      signal: AbortSignal.any([AbortSignal.timeout(30_000), this.deps.signal, this.halt.signal]),
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new WorkerCallError(resp.status, refusalCode(text), path);
+    return text ? JSON.parse(text) : null;
   }
 
   private post(path: string, body: unknown, timeoutMs = BEAT_REQUEST_TIMEOUT_MS) {
@@ -644,17 +745,26 @@ export class SwitchEventStream {
         // deliberate takeover still works: it has no incarnation to claim.
         if (this.generation !== null) params.set('expected_generation', String(this.generation));
 
+        const worker = this.deps.worker;
         const resp = await fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/events?${params}`, {
           headers: {
             Authorization: `Bearer ${creds.token}`,
             Accept: 'text/event-stream',
             ...(this.cursor > 0 ? { 'Last-Event-ID': String(this.cursor) } : {}),
+            ...(worker
+              ? {
+                  'X-Switch-Worker-Capability': worker.capability,
+                  'X-Switch-Host-Boot-Id': worker.bootId,
+                  'X-Switch-Host-Instance-Id': worker.instanceId,
+                }
+              : {}),
           },
           signal: AbortSignal.any([socketAbort.signal, signal, this.halt.signal]),
         });
 
         if (!resp.ok || !resp.body) {
           const body = await resp.text();
+          if (this.refuseWorker(resp.status, body)) return;
           // Reopening without the refused room is a different request from the
           // one that just failed, and the declared set strictly shrinks, so
           // this cannot spin: retry now rather than serving the backoff a
@@ -808,7 +918,7 @@ export class SwitchEventStream {
         // Halt before reporting: a takeover is the one ending that reopening
         // cannot recover, because reopening is itself a takeover. Both loops
         // end here, and nothing the callback does can restart them.
-        if (code === EVICTION_TAKEN_OVER) this.halt.abort();
+        if (code === EVICTION_TAKEN_OVER || code === EVICTION_LAUNCH_SUPERSEDED) this.halt.abort();
         onEvicted({
           code,
           reason: String(frame.data.reason ?? 'connection closed'),
@@ -836,6 +946,16 @@ export class SwitchEventStream {
         return;
       }
       default:
+        if ((WORKER_FRAMES as readonly string[]).includes(frame.event)) {
+          if (this.deps.onWorkerFrame)
+            await this.deps.onWorkerFrame(frame.event as WorkerFrameName, frame.data);
+          else
+            log.warn('SwitchEventStream: worker frame on a connection that is not a worker', {
+              event: 'switch_stream_unexpected_worker_frame',
+              frame: frame.event,
+            });
+          return;
+        }
         if (typeof frame.data.type !== 'string') {
           // A frame this runtime does not know and cannot read as a room event.
           log.warn('SwitchEventStream: unknown frame dropped', {
