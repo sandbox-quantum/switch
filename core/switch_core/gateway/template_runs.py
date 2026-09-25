@@ -228,8 +228,9 @@ async def continue_template_run(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateRun:
-    """Let a paused run go on. The request that paused it may now be made
-    once more; making it again after that pauses the run again."""
+    """Let a paused run go on. The agent whose request paused it is woken in
+    the room it was working in to carry on. The request may now be made once
+    more; making it again after that pauses the run again."""
     return await _control(
         root_room_id,
         "running",

@@ -8,10 +8,12 @@ guess. It records the chain, stops the few requests that cannot work, and
 leaves the rest to people, who can see every run and stop it.
 
 **The run.** Every room an agent creates records the room it was working in
-(``parent_room_id``) and the root of the chain (``run_id``), a room a person
-made. A template a person runs is a run of its own, rooted at the room it
-made. The run's state sits on its root (``run_control``): running, paused, or
-stopped.
+(``parent_room_id``) and the root of its run (``run_id``). A template a person
+runs is a run of its own, rooted at the room it made. An agent working in an
+ordinary room a person made (a lobby, a DM) starts a new run with each room it
+creates there, rooted at that room: stopping one chain must not stop agents
+from ever creating rooms from the lobby again. The run's state sits on its
+root (``run_control``): running, paused, or stopped.
 
 **What is refused**, before anything is created, with the reason:
 
@@ -47,6 +49,7 @@ from sqlalchemy import func, select
 
 from switch_core.addressing import can_address, parse_policy
 from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 
 if TYPE_CHECKING:
@@ -79,8 +82,11 @@ class RunControl(BaseModel):
     # When a person last let a paused run continue. A repeat is only a repeat
     # of a room made after this, so each Continue allows one more round.
     resumed_at: datetime | None = None
-    # The room the paused request would have repeated.
+    # The room the paused request would have repeated, and where the agent
+    # that made it was working: Continue wakes that agent there to go on.
     repeat_of: str | None = None
+    paused_in: str | None = None
+    paused_agent_name: str | None = None
 
 
 def run_control(room: Room) -> RunControl | None:
@@ -118,9 +124,15 @@ class AgentOrigin:
         return self.owner_name or "The agent's owner"
 
 
+# How the run so far starts when it is appended to a kickoff (see `_trace`).
+TRACE_OPENING = "This room is part of a run that started in "
+
+
 def kickoff_fingerprint(text: str) -> str:
-    """The same request, however it is spaced or capitalised."""
-    normalised = " ".join(text.split()).casefold()
+    """The same request, however it is spaced or capitalised, and without the
+    run history an agent may have copied from the kickoff it received."""
+    request = text.split(TRACE_OPENING, 1)[0]
+    normalised = " ".join(request.split()).casefold()
     return hashlib.sha256(normalised.encode()).hexdigest()
 
 
@@ -129,6 +141,18 @@ def mentioned(text: str, name: str, alias: str | None) -> bool:
     if mention_regex(name).search(body):
         return True
     return alias is not None and mention_regex(alias).search(body) is not None
+
+
+def _run_of(parent: Room) -> str | None:
+    """The run a room created from inside ``parent`` joins: the parent's run,
+    or the parent itself when it roots one (a template a person ran, or a room
+    an agent created). None for an ordinary room a person made: the new room
+    starts a run of its own."""
+    if parent.run_id is not None:
+        return parent.run_id
+    if parent.template_name is not None or parent.created_by_agent_id is not None:
+        return parent.id
+    return None
 
 
 class RunService:
@@ -210,7 +234,7 @@ class RunService:
             owner_id=agent.owner_id,
             owner_name=owner_name,
             parent_room_id=parent.id if parent else None,
-            run_id=(parent.run_id or parent.id) if parent else None,
+            run_id=_run_of(parent) if parent else None,
         )
 
     async def _check_open(self, origin: AgentOrigin) -> None:
@@ -269,6 +293,8 @@ class RunService:
                     ).scalar_one(),
                     resumed_at=resumed_at,
                     repeat_of=repeated.id,
+                    paused_in=origin.parent_room_id,
+                    paused_agent_name=origin.agent_name,
                 ).model_dump(mode="json"),
             )
             await session.commit()
@@ -355,8 +381,7 @@ class RunService:
             lines.append(f"{i}. {room.name} ({who}){about}")
         lines.append(f"{len(path) + 1}. this room (created by {origin.agent_name})")
         return (
-            "This room is part of a run that started in "
-            f"{path[0].name}. So far:\n"
+            f"{TRACE_OPENING}{path[0].name}. So far:\n"
             + "\n".join(lines)
             + "\nIf you are asked to repeat a step that already ran, say so here "
             "and stop, rather than creating another room."
@@ -420,18 +445,46 @@ class RunService:
             for room in rooms:
                 if room.archived_at is None:
                     await self._notice(room, text)
-        elif current is not None and current.state == "paused" and current.repeat_of:
-            text = f"{user_name} let this run continue."
-            for room in rooms:
-                if room.id == current.repeat_of:
-                    await self._notice(room, text)
+        elif current is not None and current.state == "paused":
+            paused_in = next((r for r in rooms if r.id == current.paused_in), None)
+            if paused_in is not None and current.paused_agent_name:
+                await self._resume(
+                    paused_in,
+                    current.paused_agent_name,
+                    user_id=user_id,
+                    user_name=user_name,
+                )
+
+    async def _resume(
+        self, room: Room, agent_name: str, *, user_id: str, user_name: str
+    ) -> None:
+        """Wake the agent whose request paused the run, in the room it was
+        working in, so the sequence carries on without anyone asking it
+        again. Said with the authority of the person who let it continue, so
+        the agent's addressing judges them, not the platform."""
+        text = (
+            f"@{agent_name} {user_name} let this run continue. Go ahead with "
+            "the room you asked for."
+        )
+        admin = self._admin(room)
+        if admin is None:
+            return
+        try:
+            await admin.send_platform_message(
+                room.matrix_room_id, text, on_behalf_of=OnBehalfOf(user_id, user_name)
+            )
+        except Exception:  # noqa: BLE001 - the run is running either way
+            logger.warning("Could not wake the agent in %s", room.id, exc_info=True)
+
+    def _admin(self, room: Room) -> AdminClient | None:
+        if self._client_lifecycle is None:
+            return None
+        admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
+        return next((c for c in admins if isinstance(c, AdminClient)), None)
 
     async def _notice(self, room: Room, text: str) -> None:
         """Best effort: the state has changed whether or not the note lands."""
-        if self._client_lifecycle is None:
-            return
-        admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
-        admin = next((c for c in admins if isinstance(c, AdminClient)), None)
+        admin = self._admin(room)
         if admin is None:
             return
         try:

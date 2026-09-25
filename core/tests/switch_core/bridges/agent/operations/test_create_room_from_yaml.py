@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+import yaml
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -412,10 +413,14 @@ async def test_rooms_record_their_place_in_the_run(env):
     room = await _room(env, first["room_id"])
     assert room.created_by_agent_id == env["agent_id"]
     assert room.created_by == env["user_id"]
-    assert (room.parent_room_id, room.run_id) == (lobby, lobby)
+    # Made from an ordinary room a person made, so it roots a run of its own.
+    assert (room.parent_room_id, room.run_id) == (lobby, None)
     assert room.kickoff_hash is not None
     deeper = await _room(env, second["room_id"])
-    assert (deeper.parent_room_id, deeper.run_id) == (first["room_id"], lobby)
+    assert (deeper.parent_room_id, deeper.run_id) == (
+        first["room_id"],
+        first["room_id"],
+    )
     assert deeper.kickoff_hash is None
 
 
@@ -460,7 +465,7 @@ async def test_the_same_kickoff_again_on_one_path_pauses_the_run(env):
     with pytest.raises(RunRefused, match="the run is paused"):
         await _call(env["agent_id"], session_key=inside, yaml=KICKOFF_YAML)
 
-    root = await _room(env, lobby)
+    root = await _room(env, first["room_id"])
     assert root.run_control is not None
     assert root.run_control["state"] == "paused"
     assert root.run_control["repeat_of"] == first["room_id"]
@@ -475,7 +480,9 @@ async def test_the_same_kickoff_again_on_one_path_pauses_the_run(env):
 
 
 @pytest.mark.asyncio
-async def test_continue_allows_one_more_round(env):
+async def test_continue_wakes_the_agent_where_it_paused_and_allows_one_more_round(
+    env,
+):
     lobby = await _person_room(env)
     first = await _call(
         env["agent_id"], session_key=_working_in(env, lobby), yaml=KICKOFF_YAML
@@ -487,19 +494,52 @@ async def test_continue_allows_one_more_round(env):
             yaml=KICKOFF_YAML,
         )
     runs = env["protocol"].run_service()
-    await runs.set_state(lobby, "running", user_id=env["user_id"], user_name="alice")
+    await runs.set_state(
+        first["room_id"], "running", user_id=env["user_id"], user_name="alice"
+    )
 
+    # The agent is addressed with the authority of whoever let it continue,
+    # so it picks the sequence back up without being asked again.
+    wake = env["admin"].sent[-1]
+    assert wake["body"].startswith("@claude-code.alice alice let this run continue")
+    assert (wake["on_behalf_of"].user_id, wake["on_behalf_of"].agent_id) == (
+        env["user_id"],
+        None,
+    )
     again = await _call(
         env["agent_id"],
         session_key=_working_in(env, first["room_id"]),
         yaml=KICKOFF_YAML,
     )
-    assert "let this run continue" in env["admin"].notices[-1]["body"]
     with pytest.raises(RunRefused, match="the run is paused"):
         await _call(
             env["agent_id"],
             session_key=_working_in(env, again["room_id"]),
             yaml=KICKOFF_YAML,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_kickoff_copied_with_its_run_history_is_still_a_repeat(env):
+    lobby = await _person_room(env)
+    first = await _call(
+        env["agent_id"], session_key=_working_in(env, lobby), yaml=KICKOFF_YAML
+    )
+    # What the woken agent read: the kickoff with the run so far appended.
+    received = env["admin"].sent[-1]["body"]
+    assert "This room is part of a run" in received
+    copied = yaml.safe_dump(
+        {
+            **yaml.safe_load(KICKOFF_YAML),
+            "kickoff": received,
+        }
+    )
+
+    with pytest.raises(RunRefused, match="the run is paused"):
+        await _call(
+            env["agent_id"],
+            session_key=_working_in(env, first["room_id"]),
+            yaml=copied,
         )
 
 
@@ -516,7 +556,7 @@ async def test_a_new_step_on_the_same_path_is_not_a_repeat(env):
         yaml=KICKOFF_YAML.replace("Start on the brief.", "Now grow the trees."),
     )
 
-    assert (await _room(env, lobby)).run_control is None
+    assert (await _room(env, first["room_id"])).run_control is None
 
 
 @pytest.mark.asyncio
@@ -526,7 +566,9 @@ async def test_a_stopped_run_refuses_rooms_and_says_so_in_each(env):
         env["agent_id"], session_key=_working_in(env, lobby), yaml=SINGLE_ROOM_YAML
     )
     runs = env["protocol"].run_service()
-    await runs.set_state(lobby, "stopped", user_id=env["user_id"], user_name="alice")
+    await runs.set_state(
+        first["room_id"], "stopped", user_id=env["user_id"], user_name="alice"
+    )
 
     with pytest.raises(RunRefused, match="stopped by alice"):
         await _call(
@@ -535,14 +577,16 @@ async def test_a_stopped_run_refuses_rooms_and_says_so_in_each(env):
             yaml=SINGLE_ROOM_YAML,
         )
     noted = {n["room"] for n in env["admin"].notices}
-    assert noted == {
-        (await _room(env, lobby)).matrix_room_id,
-        (await _room(env, first["room_id"])).matrix_room_id,
-    }
+    assert noted == {(await _room(env, first["room_id"])).matrix_room_id}
     with pytest.raises(RunRefused, match="already stopped"):
         await runs.set_state(
-            lobby, "running", user_id=env["user_id"], user_name="alice"
+            first["room_id"], "running", user_id=env["user_id"], user_name="alice"
         )
+    # The lobby it started from is not part of the run, so agents can still
+    # create rooms from it.
+    await _call(
+        env["agent_id"], session_key=_working_in(env, lobby), yaml=SINGLE_ROOM_YAML
+    )
 
 
 @pytest.mark.asyncio
@@ -589,27 +633,26 @@ async def test_one_room_at_a_time(env):
 @pytest.mark.asyncio
 async def test_who_may_control_a_run(env):
     lobby = await _person_room(env)
-    await _call(
+    made = await _call(
         env["agent_id"], session_key=_working_in(env, lobby), yaml=SINGLE_ROOM_YAML
     )
+    root = made["room_id"]
     async with env["session_factory"]() as session:
         stranger = User(name="mallory", email="m@example.com", role="member")
         session.add(stranger)
         await session.flush()
         runs = env["protocol"].run_service()
         assert await runs.may_control(
-            session, lobby, user_id=env["user_id"], is_admin=False
+            session, root, user_id=env["user_id"], is_admin=False
         )
         assert not await runs.may_control(
-            session, lobby, user_id=stranger.id, is_admin=False
+            session, root, user_id=stranger.id, is_admin=False
         )
-        assert await runs.may_control(
-            session, lobby, user_id=stranger.id, is_admin=True
-        )
+        assert await runs.may_control(session, root, user_id=stranger.id, is_admin=True)
         roots = await RoomStore().recent_run_roots(
             session, user_id=env["user_id"], limit=20
         )
-        assert roots == [lobby]
+        assert roots == [root]
         assert (
             await RoomStore().recent_run_roots(session, user_id=stranger.id, limit=20)
             == []

@@ -367,13 +367,15 @@ this one and who made them, so the agents it wakes can see what already
 happened.
 
 **Runs.** Every room an agent creates is recorded in a run: the room it was
-working in, and the room a person made where the chain started. Runs are
-listed in Switch Console under Templates, Recently used, as a tree, and the
-owner of an agent in the run, the person who ran its template, or an admin
-can stop one. A stopped run keeps its rooms; agents just cannot create more
-in it. An agent creates one room at a time, and when it asks for a room with
-the same kickoff as one it already made further up the same path, the run is
-paused until someone lets it continue.
+working in, and the room the run started from. A template a person runs is
+a run of its own; an agent creating a room from an ordinary room, such as a
+lobby, starts a new run with that room. Runs are listed in Switch Console
+under Templates, Recently used, as a tree, and the owner of an agent in the
+run, the person who ran its template, or an admin can stop one. A stopped
+run keeps its rooms; agents just cannot create more in it. An agent creates
+one room at a time, and when it asks for a room with the same kickoff as one
+it already made further up the same path, the run is paused. Continuing it
+wakes that agent where it stopped, so the run carries on.
 
 ## Where an agent works
 
