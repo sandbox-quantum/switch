@@ -64,6 +64,7 @@ async def _open(
     connection_id: str | None = None,
     boot_id: str = "boot-a",
     speaks: int = 7,
+    state_version: int | None = 1,
     expected_generation: int | None = None,
 ) -> Any:
     return await poll_events(
@@ -80,6 +81,7 @@ async def _open(
         worker_capability=capability,
         host_boot_id=boot_id,
         host_instance_id="instance-a",
+        worker_state_version=state_version,
     )
 
 
@@ -153,6 +155,10 @@ async def test_worker_attach_requires_current_capability(worker_app):
         426,
         "upgrade_required",
     )
+    for state_version in (None, 0):
+        assert await _refusal(
+            _open(service, agent, capability=capability, state_version=state_version)
+        ) == (426, "upgrade_required")
     assert service.connections.for_agent(agent_id) == []
 
     response = await _open(service, agent, capability=capability)

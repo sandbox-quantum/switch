@@ -11,6 +11,9 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import func, select, text
 
+from switch_core.bridges.agent.api.hosted_cutover_routes import (
+    router as hosted_cutover_router,
+)
 from switch_core.bridges.agent.api.hosted_routes import router as worker_router
 from switch_core.bridges.agent.api.hosted_worker_routes import (
     router as hosted_worker_router,
@@ -144,6 +147,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     app.include_router(router)
     app.include_router(worker_router)
     app.include_router(hosted_worker_router, prefix="/agents")
+    app.include_router(hosted_cutover_router, prefix="/agents")
     app.include_router(launch_router)
     app.include_router(relay_router)
     settings_path = tmp_path / "controller.json"

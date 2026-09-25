@@ -94,6 +94,7 @@ class MailboxEntry:
     message_id: str
     thread_id: str | None
     event: dict[str, Any]
+    origin: Literal["live", "cutover"]
 
     @classmethod
     def of(cls, event: AgentEvent) -> MailboxEntry | None:
@@ -107,6 +108,7 @@ class MailboxEntry:
             message_id=message_id,
             thread_id=thread_id if isinstance(thread_id, str) else None,
             event={"type": event.type, "payload": payload, "missed": None},
+            origin="live",
         )
 
     @classmethod
@@ -116,6 +118,7 @@ class MailboxEntry:
             message_id=row.message_id,
             thread_id=row.thread_id,
             event=row.event,
+            origin="cutover" if row.origin == "cutover" else "live",
         )
 
     def wire(self) -> dict[str, Any]:
@@ -124,6 +127,7 @@ class MailboxEntry:
             "message_id": self.message_id,
             "thread_id": self.thread_id,
             "event": self.event,
+            "origin": self.origin,
         }
 
 
@@ -225,7 +229,7 @@ class HostedMailboxStore:
                 ever_offered=offered,
                 offered_to=offered_to,
                 offered_until=now + OFFER_LEASE if offered else None,
-                origin="live",
+                origin=entry.origin,
                 addressed_at=now,
                 updated_at=now,
                 expires_at=now + MAILBOX_EXPIRY,

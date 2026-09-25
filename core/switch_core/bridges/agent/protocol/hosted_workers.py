@@ -28,6 +28,11 @@ if TYPE_CHECKING:
 #: The protocol revision that carries the hosted worker frames.
 HOSTED_PROTOCOL_REVISION = 7
 
+#: The retained-state layout a worker's volume must have been migrated to
+#: (`hosted-preflight`) before it may attach; sent as
+#: `X-Switch-Worker-State-Version`.
+HOSTED_WORKER_STATE_VERSION = 1
+
 #: Bound on frames that carry a body (a relayed request, a room event).
 FRAME_QUEUE_FRAMES = 64
 FRAME_QUEUE_BYTES = 8 * 1024 * 1024
@@ -63,6 +68,10 @@ NOTICE_MESSAGES = {
     "started_before_stop": "I had already started processing this message before my cloud worker was stopped, so it may have been processed in part. Check the conversation before sending it again.",
     "started_before_expiry": "I had already started processing this message before it expired, so it may have been processed in part. Check the conversation before sending it again.",
     "expired_uncertain": "I could not confirm whether my cloud worker received this message in time, so it may or may not have been processed. Check the conversation before sending it again.",
+    "cutover_uncertain": "My cloud worker was upgraded while I was processing this message, so it may have been interrupted. Check the conversation and send it again if needed.",
+    "cutover_unrecoverable": "My cloud worker was upgraded before I processed this message, and it could not be carried over, so it was not run. Please send it again.",
+    "cutover_interrupted": "An approval I was waiting for here was interrupted by an upgrade of my cloud worker. Ask me again if it is still needed.",
+    "cutover_run_now": "My cloud worker has been upgraded, and I will process this message now.",
 }
 
 #: The subscription name a watcher pushes health under.

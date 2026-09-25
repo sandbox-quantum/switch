@@ -734,6 +734,9 @@ async def poll_events(
     host_instance_id: Annotated[
         str | None, Header(alias="x-switch-host-instance-id")
     ] = None,
+    worker_state_version: Annotated[
+        int | None, Header(alias="x-switch-worker-state-version")
+    ] = None,
 ) -> EventResponse | Response:
     """Deliver the agent's events, as a push stream or a long poll.
 
@@ -770,6 +773,7 @@ async def poll_events(
             worker_capability=worker_capability,
             host_boot_id=host_boot_id,
             host_instance_id=host_instance_id,
+            worker_state_version=worker_state_version,
         )
 
     if hosted_launch_of(agent.metadata_) is not None:
@@ -875,6 +879,7 @@ async def _open_event_stream(
     worker_capability: str | None,
     host_boot_id: str | None,
     host_instance_id: str | None,
+    worker_state_version: int | None,
 ) -> StreamingResponse:
     if not connection_id:
         raise HTTPException(
@@ -926,6 +931,7 @@ async def _open_event_stream(
                 capability=worker_capability,
                 boot_id=host_boot_id,
                 instance_id=host_instance_id,
+                state_version=worker_state_version,
             )
             conn = open_connection()
             if attach.takes_over is not None and attach.takes_over.id != conn.id:

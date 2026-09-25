@@ -137,8 +137,8 @@ def upgrade() -> None:
             raise RuntimeError(
                 f"{launches} hosted launches exist but sdk_sessions is already gone, so "
                 "their pre-cutover session state cannot be captured. Upgrade with "
-                "`just hosted-cutover-upgrade`, which runs this revision before "
-                "b9e4d2a71c05."
+                "`switch-hosted-cutover-upgrade` (`just hosted-cutover-upgrade`), "
+                "which runs this revision before b9e4d2a71c05."
             )
         return
 

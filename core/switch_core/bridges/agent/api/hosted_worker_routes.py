@@ -35,6 +35,7 @@ from switch_core.bridges.agent.protocol.connections import (
 from switch_core.bridges.agent.protocol.hosted_workers import (
     HOSTED_PROTOCOL_REVISION,
     HOSTED_WORKER_ONLY_MESSAGE,
+    HOSTED_WORKER_STATE_VERSION,
     IDLE_FRESH_FOR_SECONDS,
     IDLE_REPORT_EVERY_SECONDS,
     NOTICE_MESSAGES,
@@ -124,6 +125,7 @@ async def admit_worker(
     capability: str | None,
     boot_id: str | None,
     instance_id: str | None,
+    state_version: int | None,
 ) -> WorkerAttach:
     """Check a hosted agent's stream open, under the launch lock the caller holds open.
 
@@ -143,6 +145,13 @@ async def admit_worker(
             "upgrade_required",
             f"A cloud worker must speak agent-protocol {HOSTED_PROTOCOL_REVISION} "
             "or later.",
+        )
+    if (state_version or 0) < HOSTED_WORKER_STATE_VERSION:
+        raise refusal(
+            426,
+            "upgrade_required",
+            f"A cloud worker must have migrated its volume to state version "
+            f"{HOSTED_WORKER_STATE_VERSION} before it attaches.",
         )
     if not boot_id or not instance_id:
         raise HTTPException(
@@ -379,7 +388,12 @@ NoticeReason = Literal[
 
 #: Reasons only Core posts, for outcomes only the wake mailbox knows.
 CoreNoticeReason = Literal[
-    "started_before_stop", "started_before_expiry", "expired_uncertain"
+    "started_before_stop",
+    "started_before_expiry",
+    "expired_uncertain",
+    "cutover_uncertain",
+    "cutover_unrecoverable",
+    "cutover_run_now",
 ]
 
 
@@ -405,19 +419,45 @@ async def post_room_notice(
 
     True when this call posted it. Core's own reasons go through here too.
     """
-    key = json.dumps([agent.id, room_id, message_id, reason])
+    return await post_notice_once(
+        protocol,
+        agent,
+        room_id,
+        key=json.dumps([agent.id, room_id, message_id, reason]),
+        body=NOTICE_MESSAGES[reason].format(name=agent.name),
+        thread_id=thread_id,
+        anchor=message_id,
+    )
+
+
+async def post_notice_once(
+    protocol: ProtocolService,
+    agent: Agent,
+    room_id: str,
+    *,
+    key: str,
+    body: str,
+    thread_id: str | None,
+    anchor: str | None,
+) -> bool:
+    """Post `body` to the room unless the agent already posted one under `key`.
+
+    `anchor`, when set, is the message the notice is about, and must be in
+    the room. True when this call posted it.
+    """
     async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
         await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": f"room-failure:{require_tenant_id()}:{key}"},
         )
-        target = await db.scalar(
-            select(Message.id).where(
-                Message.room_id == room_id, Message.transport_event_id == message_id
+        if anchor is not None:
+            target = await db.scalar(
+                select(Message.id).where(
+                    Message.room_id == room_id, Message.transport_event_id == anchor
+                )
             )
-        )
-        if target is None:
-            raise ValueError(f"Message {message_id} is not in room {room_id}")
+            if target is None:
+                raise ValueError(f"Message {anchor} is not in room {room_id}")
         sender = (
             select(Client.matrix_user_id)
             .join(Agent, Agent.client_id == Client.id)
@@ -438,7 +478,7 @@ async def post_room_notice(
         await protocol.send_message(
             agent.id,
             room_id,
-            NOTICE_MESSAGES[reason].format(name=agent.name),
+            body,
             thread_id=thread_id,
             extra_content={"switch_room_failure": key},
         )

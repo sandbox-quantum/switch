@@ -117,6 +117,13 @@ migrate:
     uv run --project core alembic -c core/alembic.ini upgrade head
 
 
+# ── Upgrade a database that ran hosted agents on the old session tables ─────────
+# Refuses unless every hosted launch is stopped, then captures the cutover
+# manifest before main's revisions drop those tables.
+hosted-cutover-upgrade:
+    uv run --project core python -m switch_core.hosted_cutover_upgrade
+
+
 # ── Generate a new alembic migration ──────────────────────────────────────────
 migration msg:
     uv run --project core alembic -c core/alembic.ini revision --autogenerate -m "{{ msg }}"

@@ -19,7 +19,8 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from alembic.config import Config
@@ -29,8 +30,14 @@ from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 import switch_core.db.models  # noqa: F401 — registers every table on Base.metadata
+from switch_core.config import SwitchConfig
 from switch_core.db.rls_ddl import POLICY_NAME, REQUIRE_TENANT_FUNCTION_NAME
 from switch_core.db.runtime_role import _require_every_policy, grant_runtime_role
+from switch_core.hosted_cutover_upgrade import (
+    CutoverRefused,
+    running_launches,
+    upgrade,
+)
 
 _CORE = Path(__file__).resolve().parents[2]
 
@@ -503,6 +510,23 @@ async def test_pilot_upgrade_refuses_to_drop_sessions_before_the_manifest(
 
     assert version == _PILOT_HEAD
     assert commands == 5
+
+    config = cast(
+        SwitchConfig,
+        SimpleNamespace(owner_database_url=pilot_url, database_url=pilot_url),
+    )
+    assert await running_launches(config) == ["l1"]
+    with pytest.raises(CutoverRefused, match="l1"):
+        await upgrade(config)
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE hosted_launches SET desired_state = 'stopped'")
+            )
+    finally:
+        await engine.dispose()
+    assert await running_launches(config) == []
 
 
 async def test_main_database_keeps_session_activity_through_the_merge(
