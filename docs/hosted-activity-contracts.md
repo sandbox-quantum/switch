@@ -86,10 +86,14 @@ controller never gets a new bundle to a woken VM
   (`reconciler.py` `_running`: `state == "stopped"` → `start_instance`),
   without waiting for any bundle.
 
-The worker reads the assignment secret's `AWSCURRENT` version on every boot
-(`deploy/hosted/worker/switch_hosted_worker.py` `SecretsManager.read`
-*(#538)*), so refreshing that secret before the start reaches the VM on the
-next boot. The contract:
+The worker reads the assignment secret's `AWSCURRENT` version each time its
+service starts (`deploy/hosted/worker/switch_hosted_worker.py` `main` →
+`SecretsManager.read` *(#538)*). The service is `switch-hosted-worker.service`,
+`Restart=always`, `RestartSec=15s`. So a secret refreshed before the start
+reaches the VM on boot, and a service restart re-reads it without a reboot.
+The contract promises **safe rejection plus recovery**, not an atomic Core
+and EC2 start: a worker that boots on an obsolete bundle is refused by Core,
+then restarts onto the current one.
 
 **Core, `prepare` (idempotent by revision).** For a launch at revision R that
 is `desired_state = running` (checked already):
@@ -117,9 +121,13 @@ controller's agent store (`store.py`, SQLite): `required_bundle_token` and
 1. For a job with desired `running`, set `required_bundle_token` to the
    revision's token before anything else. The `instance_launch_issued` early
    return is removed from this step; it still guards `run_instance`.
-2. If the secret already has a version with that token
-   (`describe_secret` → `VersionIdsToStages`), the bundle is persisted: set
-   `bundle_token` and stop.
+2. If the secret has a version with that token **and its stages include
+   `AWSCURRENT`** (`describe_secret` → `VersionIdsToStages[token]`), the
+   bundle is persisted: set `bundle_token` and stop. If the version exists
+   without `AWSCURRENT`, move the stage to it
+   (`update_secret_version_stage`, `MoveToVersionId = token`,
+   `RemoveFromVersionId` = the current holder), then set `bundle_token`.
+   Mere presence of the version is never enough.
 3. Otherwise call `prepare`, check `prepared.revision == job.revision` (a
    mismatch is a stale job: stop and wait for the next poll), build the
    bundle, and `put_secret_value` with that `ClientRequestToken`. The put
@@ -141,10 +149,39 @@ retained VM never boots on the previous revision's bundle.
   the controller treats as step 2. Step 2 is checked first, so this only
   happens when the check and the put race.
 - A restart between the put and `bundle_token`: step 2 on the next poll.
-- A revision bump between `prepare` and the put: `prepare` at the old
-  revision returned the old capability, which is now obsolete. The worker
-  would be refused, but the gate stops that happening: the job's revision is
-  stale, so the next poll recomputes the token for the new revision.
+- A revision bump after `prepare(R)` returns: the controller can still
+  write R's bundle, set both tokens to R and start the instance before its
+  next poll. The bundle gate does not prevent that boot. What makes it safe
+  is Core: the R capability is refused on attach (`worker_capability_obsolete`),
+  so that worker never gets a wake, relay, placement or operation. The next
+  poll then writes R+1's bundle (steps 1–3), and the obsolete-bundle restart
+  below moves the running worker onto it.
+
+**Obsolete boot bundle on a running instance.** A worker that is refused
+`worker_capability_obsolete`, or evicted `launch_superseded`, restarts its
+service onto the current secret. It never retries with the same bundle:
+
+1. The daemon exits with code 75 (`EX_TEMPFAIL`), reserved for this case.
+2. `switch_hosted_worker.py` records the secret `VersionId` it booted with
+   (returned by `get_secret_value`) as obsolete in
+   `<state root>/obsolete-bundle`, then exits. systemd restarts the service
+   15 s later.
+3. On start, the worker reads `AWSCURRENT`. If its `VersionId` is the recorded
+   obsolete one, it does **not** start the daemon. It polls the secret every
+   30 s and logs a warning every 5 minutes, and starts the daemon only once a
+   different version is current. So there is no daemon restart loop and no
+   repeated refused attach, only one cheap poll.
+4. With a new version current, it deletes the marker and boots normally. If
+   that bundle is obsolete as well (another bump in between), the same steps
+   run again, once per revision, which is bounded by how often the owner or
+   autostop changes the launch.
+
+If the launch was stopping (autostop, Stop, restart), EC2 stops the instance
+while the worker waits, and the marker has no effect on the next boot. That
+boot reads a newer version, because `start_instance` is gated on the bundle.
+While a worker waits, `observe` sees no attached worker and the launch stays
+`provisioning`. Its existing 10-minute `error` path is the visible failure if
+the controller never supplies a bundle.
 
 **Validity.** A capability is valid iff its hash matches **and**
 `worker_capability_revision = launch.revision` **and** `desired_state =
@@ -258,6 +295,16 @@ for a database whose sequence was reset.
   revision, a new secret version becomes `AWSCURRENT`, and `start_instance`
   is not called before `bundle_token` matches. The woken worker attaches with
   the new capability.
+- `test_revision_bump_between_prepare_and_start_recovers` (controller, Core
+  and worker, fake cloud): `prepare(R)` returns, Core bumps to R+1, and the
+  controller writes R and starts the instance. The R worker is refused 403 and
+  exits 75, and no wake, relay or placement reaches it. The next poll writes
+  R+1 as `AWSCURRENT`, the service restarts onto it and attaches at R+1. The
+  worker waits (no daemon start) while `AWSCURRENT` is still the obsolete
+  version.
+- `test_bundle_present_but_not_current_is_promoted` (controller): a version
+  with the token but no `AWSCURRENT` stage is promoted before `bundle_token`
+  is set.
 - `test_controller_restart_between_issuance_and_persistence` (controller):
   kill after `prepare` returns, before `put_secret_value`; restart. One secret
   version for that revision, holding the capability `prepare` first returned.
@@ -491,7 +538,7 @@ The reason kinds are:
 
 - `turn_running`, `turn_starting`;
 - `room_pending`: the watcher's pump queue, or a held room for a session;
-- `approval_open`, `reset_waiting`, `operation_claimed`, `relay_inflight`;
+- `approval_open`, `reset_waiting`, `operation_claimed`, `relay_inflight`, `host_unknown`;
 - `console_recent`: a **mutating** relay in the last 10 minutes. Read-only
   messages (`list`, `snapshot`, `journal`, `page`, `health`, `subscribe`) and
   an open live view do not count, so a forgotten window cannot pin a VM;
@@ -548,14 +595,52 @@ watcher's `busy`. Each number is resolved exactly one way:
 |---|---|
 | `taken` | `command`: the host replied to the command (accepted, or a status). The host posts `busy` before it replies whenever its busy state changed, and the channel is ordered, so the watcher has applied the change first. `place`, `forget`, `attachment`, `attachmentCancel`: the watcher's handler has returned its answer. |
 | `refused` | validation failed in the watcher, or the host refused (`STALE_EPOCH`, `UNSUPPORTED_CAPABILITY`, `HOST_STOPPING`, …). Nothing changed. |
-| `interrupted` | received before a watcher restart and not resolved. After the restart, host recovery has settled the command (`unknown`, `HOST_RESTARTED`), so current `busy` already reflects it. |
+| `interrupted` | received before a watcher restart and not resolved. The hosts died with it (`KillMode=control-group` in `switch-hosted-worker.service`), so nothing can apply the command later. After the restart, host recovery has settled it (`unknown`, `HOST_RESTARTED`), so current `busy` already reflects it. |
 | `not_delivered` | at or below the reattach fence and never received (below). |
-| `timed_out` | still unresolved 5 minutes after receipt. Logged as an error. Whatever the host is still doing shows in `sessionBusy`, so the VM stays up if it is doing anything. |
+| `abandoned` | the handler had not yet dispatched to the host, and the watcher cancelled it (below). Cancelling happens inside the watcher's serial section, and the handler checks the flag in that section right before dispatching, so a cancelled handler can never apply later. The relay reply, if Console still waits, is `relay_timeout`. |
+| `barrier` | the command was dispatched to the host, no reply came, and a later busy barrier to that host has completed (below). |
+
+**Elapsed time alone never resolves a relay.** An unresolved relay is busy,
+reported as reason `relay_inflight` with its session, however old it is and
+whatever idle report Core last cached. Its handler may still be waiting to
+dispatch (the session's host starting, the watcher's serial chain), or the
+host may still be about to act on it. After 5 minutes unresolved (logged as a
+warning), the watcher tries to close it in one of two ways:
+
+- **Not yet dispatched**: cancel the handler, then resolve `abandoned`.
+- **Dispatched, no reply**: send the host a busy barrier, a new parent → host
+  message `{kind: 'busyBarrier', id}` (`session-channel.ts`
+  `toChildSchema`). The host runs it on the same serial chain as
+  `accept` (`session-host.ts` `this.serial`), so it completes only after every
+  earlier command has been accepted or refused. It answers `{kind: 'busy',
+  busy, reasons, barrier: id}` with its state at that point. The watcher
+  applies that state, then resolves `barrier`.
+
+If the barrier gets no answer (the host is hung, or its serial chain is
+stuck behind the command), the host's state is **unknown**, and unknown
+counts as busy (reason `host_unknown`). The relay stays unresolved. The watcher
+retries the barrier every minute. It gives up only if the host exits or is
+stopped; a host that has exited cannot apply the command, and the host's
+recovery on its next start settles it (`interrupted`). A permanently hung
+host therefore keeps the VM up. That is visible (`host_unknown` in the
+report, and in Console's health view), and stopping the session from Console
+or the room releases it.
 
 The watcher keeps `relays.jsonl` beside `assignments.jsonl`, with records
 `received {seq, id}` (fsynced before the message is applied) and `resolved
 {seq, how}`. It computes `relays_through` from them: completion out of order
 advances nothing until the gap below it resolves.
+
+**Gateway request cancellation.** Console can drop the request (closed
+window, network, its own timeout) at any await in the route. Once the
+sequence number is about to be committed, the rest of the route (commit, then
+putting the frame in its reserved slot, then registering the pending relay)
+runs as one task under `asyncio.shield`. Cancelling the request cancels only
+the wait for the reply, never the send. A healthy worker stream therefore
+gets the frame, and neither side reconnects because Console left. The reply
+is discarded when it arrives, and the watermark advances as usual. If the
+shielded step itself fails after the commit (Core crash, the connection
+gone), that is the fenced reconciliation's case below.
 
 **Fenced reconciliation on attach.** A sequence number can be committed and
 never reach the watcher: the connection dies between commit and send, or Core
@@ -638,6 +723,18 @@ addressed event wakes it and lands in the mailbox, and a relay is refused
   `worker_busy` and `relay_seq` is unchanged.
 - `test_relay_out_of_order_completion`: N+1 resolves before N;
   `relays_through` stays at N-1 until N resolves.
+- `test_delayed_handler_at_five_minutes_stays_busy`: Core's cached report
+  says idle, and a command handler is blocked before dispatch for more than 5
+  minutes. The launch stays busy the whole time (`relays_through` below
+  `relay_seq`). At 5 minutes the watcher abandons the handler; unblocking it
+  afterwards dispatches nothing; the watermark advances and the VM can stop.
+  Variants: dispatched with a delayed host reply → resolved only after the
+  barrier completes, with the barrier's busy state applied; a host that does
+  not answer the barrier → `host_unknown`, busy, no resolution.
+- `test_gateway_cancel_after_commit_still_enqueues`: the Console request is
+  cancelled right after the commit. The frame still reaches the worker on the
+  same stream generation (no reconnect), the watermark advances, and
+  `relay_seq` has no hole.
 - `test_relay_worker_restart`: the watcher restarts with N received but not
   resolved. N resolves `interrupted` and the watermark advances; the host's
   recovered state decides `busy`.
@@ -1233,10 +1330,12 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
 - **Relay is owner-only.** Tenant admins get no relay, read-only or
   otherwise, for now; a non-owner is 404 (D1). Support access would be a
   separate, audited feature.
-- **Mailbox limits are pilot defaults**: 500 open rows per agent, 24 h to
+- **Mailbox limits are pilot defaults**: 500 rows `pending` or `offered` per
+  agent (the bound D3 enforces; `accepted` and `held` rows are on the worker's
+  disk and do not count), 24 h to
   expiry, 7 days to prune. Hitting a limit is always visible: a refused insert
   tells the room, and expiry posts its notice. The upkeep loop logs, per agent,
-  open-row count, oldest open row age and refusals, and the pilot sets the
+  pending-or-offered count, oldest such row and refusals, and the pilot sets the
   final values from those numbers.
 
 ## Work packages
