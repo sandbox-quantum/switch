@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { superviseSharedHost } from './supervisor';
 
 const roots: string[] = [];
@@ -132,35 +132,23 @@ async function leaseWorker(root: string, firstExit: number): Promise<string[]> {
   return [path, root];
 }
 
-it('relaunches the worker after a lease-expiry exit and returns on its clean exit', async () => {
+it('stops without relaunching or recording a failure when the worker is obsolete', async () => {
   const root = await fixture();
-  await superviseSharedHost({
-    root,
-    executable: process.execPath,
-    args: await leaseWorker(root, LEASE_EXPIRED_EXIT_CODE),
-    env: process.env,
-    signal: new AbortController().signal,
-    build: 'test-bundle.mjs',
-    links: null,
-  });
-  expect(await readFile(join(root, 'attempts'), 'utf8')).toBe('2');
+  await expect(
+    superviseSharedHost({
+      root,
+      executable: process.execPath,
+      args: await leaseWorker(root, OBSOLETE_BUNDLE_EXIT_CODE),
+      env: process.env,
+      signal: new AbortController().signal,
+      build: 'test-bundle.mjs',
+      links: null,
+    })
+  ).rejects.toBeInstanceOf(WorkerObsoleteError);
+  expect(await readFile(join(root, 'attempts'), 'utf8')).toBe('1');
   await expect(readFile(join(root, 'supervisor', 'failure.json'))).rejects.toMatchObject({
     code: 'ENOENT',
   });
-});
-
-it('releases the expired worker owner record before the relaunch', async () => {
-  const root = await fixture();
-  await superviseSharedHost({
-    root,
-    executable: process.execPath,
-    args: await leaseWorker(root, LEASE_EXPIRED_EXIT_CODE),
-    env: process.env,
-    signal: new AbortController().signal,
-    build: 'test-bundle.mjs',
-    links: null,
-  });
-  expect(await readFile(join(root, 'lock-at-relaunch'), 'utf8')).toBe('missing');
   await expect(readFile(join(root, 'shared-owner.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 

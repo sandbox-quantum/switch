@@ -848,6 +848,7 @@ export async function runSharedWatcher(
         token: credentials.SWITCH_API_TOKEN,
       },
       connectionId,
+      worker: null,
       scope: 'all',
       filter: 'addressed',
       spawnCapable: spawn,

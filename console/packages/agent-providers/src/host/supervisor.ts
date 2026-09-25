@@ -5,7 +5,7 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner } from './process-fence';
 import type { SessionLinks } from './session-channel';
@@ -97,11 +97,8 @@ export async function superviseSharedHost(input: {
       }
       if (input.signal.aborted) return;
       if (code === 0) return;
-      if (code === LEASE_EXPIRED_EXIT_CODE) {
-        console.warn('Shared SDK host lease expired; relaunching from saved state after fencing.');
-        await delay(1000, undefined, { signal: input.signal });
-        continue;
-      }
+      if (code === OBSOLETE_BUNDLE_EXIT_CODE)
+        throw new WorkerObsoleteError('the watcher was refused as obsolete and stopped.');
       if (code !== null) {
         try {
           await readFile(join(directory, 'failure.json'));
