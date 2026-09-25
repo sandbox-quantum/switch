@@ -1909,6 +1909,157 @@ it('admits nothing from its journal until it has settled what Switch cancelled',
   }
 });
 
+/** Writes what a session host had durably recorded of `messageId` when its watcher died. */
+async function hostRecorded(
+  sessionRoot: string,
+  config: ReturnType<typeof watchable>,
+  messageId: string,
+  furthest: 'dispatched' | 'finished'
+) {
+  const commandId = randomUUID();
+  await writeFile(
+    join(sessionRoot, 'room-inbox.jsonl'),
+    `${JSON.stringify({ type: 'handoff', sequence: 1, roomId: 'room', messageId, event: wakeEntry(messageId, 'room').event })}\n`
+  );
+  const records = [
+    {
+      type: 'accepted',
+      command: {
+        contractVersion: 1,
+        commandId,
+        sessionId: config.session.sessionId,
+        epoch: 'epoch',
+        origin: {
+          surface: 'slack',
+          actorId: '@owner:example.test',
+          roomId: 'room',
+          threadId: null,
+          messageId,
+        },
+        body: { type: 'message.send', text: 'hi', attachments: [], delivery: 'queue' },
+      },
+    },
+    { type: 'dispatched', commandId },
+    ...(furthest === 'finished' ? [{ type: 'finished', commandId }] : []),
+  ];
+  await writeFile(
+    join(sessionRoot, 'inbox.jsonl'),
+    records.map((record) => `${JSON.stringify(record)}\n`).join('')
+  );
+}
+
+it.each(['dispatched', 'finished'] as const)(
+  'answers a Stop for a message its host had %s before the watcher crashed as admitted',
+  async (furthest) => {
+    const root = await mkdtemp(join(tmpdir(), `shared-watch-hosted-cancel-${furthest}-`));
+    roots.push(root);
+    paths.root = root;
+    const config = await spawning(root);
+    const assignments = await SharedWatchAssignments.open(root);
+    await assignments.park(
+      { sequence: 1, roomId: 'room', messageId: 'taken', event: wakeEntry('taken', 'room').event },
+      true,
+      true
+    );
+    const { sessionRoot } = await existing(root, config);
+    await hostRecorded(sessionRoot, config, 'taken', furthest);
+    const hosts = sessionHosts();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+    try {
+      await watcher.attach({
+        cancelled: [{ room_id: 'room', message_id: 'taken', reason: 'stopped' }],
+      });
+      await eventually(() => acks().includes('admitted:taken'));
+      expect(acks()).not.toContain('cancelled:taken');
+      expect(hosts.requests).toEqual([]);
+      expect(
+        (await SharedWatchAssignments.open(root)).deliveryState({
+          roomId: 'room',
+          messageId: 'taken',
+        })
+      ).toEqual({ state: 'released', reason: null });
+    } finally {
+      watcher.abort.abort();
+      await watcher.run;
+    }
+  }
+);
+
+it('still answers a Stop for a journaled message no host took as cancelled', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-cancel-unstarted-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  await assignments.park(
+    {
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'waiting',
+      event: wakeEntry('waiting', 'room').event,
+    },
+    true,
+    true
+  );
+  const { sessionRoot } = await existing(root, config);
+  await hostRecorded(sessionRoot, config, 'other', 'finished');
+  const hosts = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await watcher.attach({
+      cancelled: [{ room_id: 'room', message_id: 'waiting', reason: 'stopped' }],
+    });
+    await eventually(() => acks().includes('cancelled:waiting'));
+    expect(acks()).not.toContain('admitted:waiting');
+    expect(hosts.requests).toEqual([]);
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('leaves a Stop unanswered, loudly, when a host record it would need is unreadable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-cancel-unreadable-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  await assignments.park(
+    {
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'unclear',
+      event: wakeEntry('unclear', 'room').event,
+    },
+    true,
+    true
+  );
+  const { sessionRoot } = await existing(root, config);
+  await writeFile(join(sessionRoot, 'inbox.jsonl'), '{"type":"accepted","comm');
+  const hosts = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await expect(
+      watcher.attach({
+        cancelled: [{ room_id: 'room', message_id: 'unclear', reason: 'stopped' }],
+      })
+    ).rejects.toThrow(/Cannot tell whether session .* took message unclear/);
+    expect(acks()).toEqual([]);
+    expect(
+      (await SharedWatchAssignments.open(root)).deliveryState({
+        roomId: 'room',
+        messageId: 'unclear',
+      })
+    ).toEqual({ state: 'journaled' });
+  } finally {
+    watcher.abort.abort();
+    await watcher.run.catch(() => {});
+  }
+});
+
 it('refuses a new session past the limit, and admits exactly one of two starts at the edge', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-limit-'));
   roots.push(root);
