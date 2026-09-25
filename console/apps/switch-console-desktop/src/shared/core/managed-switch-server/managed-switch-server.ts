@@ -137,11 +137,15 @@ export type DeployedTelemetry =
  *   `error` until a retry succeeds.
  * - `pending` — the stack is stopped. It is upgraded when it is next started,
  *   never started at the old version.
+ * - `held` — the stack is running on a shared host and others have used it
+ *   recently (CHOO-2893). The update restarts it for all of them, so it waits
+ *   for someone here to run it rather than happening under them unasked.
  */
 export type ManagedServerUpgrade =
   | { state: 'updating'; from: string; to: string }
   | { state: 'failed'; from: string; to: string; error: string }
-  | { state: 'pending'; from: string; to: string };
+  | { state: 'pending'; from: string; to: string }
+  | { state: 'held'; from: string; to: string };
 
 /** Why a session cannot start on a managed server whose upgrade has not
  * finished. Shared so the thrown error and the UI say the same thing. */
@@ -151,6 +155,9 @@ export function managedServerUpgradeBlockedReason(
 ): string {
   if (upgrade.state === 'pending') {
     return `${serverName} is stopped on switch-core ${upgrade.from} and needs switch-core ${upgrade.to}. Start it from the server's page to update it; sessions on it start once the update finishes.`;
+  }
+  if (upgrade.state === 'held') {
+    return `${serverName} runs switch-core ${upgrade.from} and this Console needs switch-core ${upgrade.to}. Others use it too, so it is not updated without asking: update it from the server's page. Sessions on it start once the update finishes.`;
   }
   return `Updating ${serverName} from switch-core ${upgrade.from} to ${upgrade.to} failed: ${upgrade.error} Retry the update from the server's page; sessions on it stay paused until it succeeds.`;
 }
@@ -295,6 +302,27 @@ export type StackRegister = {
   /** Most recent first, and only the latest few. */
   activity: StackActivityEntry[];
 };
+
+/** How long a Console counts as still using a shared server after it was last
+ * seen: long enough to span a holiday, short enough that someone who tried it
+ * once in the spring is not warned about in the autumn. */
+export const RECENTLY_SEEN_DAYS = 14;
+
+/** The other Consoles seen on the server recently, most recent first — the
+ * people a stop, restart, reset or update from here will affect. */
+export function othersRecentlySeen(
+  register: StackRegister | null,
+  now: Date,
+  withinDays: number = RECENTLY_SEEN_DAYS
+): StackConsole[] {
+  if (!register) return [];
+  const cutoff = now.getTime() - withinDays * 24 * 60 * 60 * 1000;
+  return register.consoles.filter((c) => {
+    if (c.consoleId === register.self) return false;
+    const seen = Date.parse(c.lastSeenAt);
+    return Number.isFinite(seen) && seen >= cutoff;
+  });
+}
 
 /**
  * What a remote host has of a stack, for the renderer to decide what to offer

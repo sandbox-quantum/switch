@@ -30,6 +30,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
 import { LocalServerControls } from './LocalServerControls';
@@ -50,7 +51,7 @@ import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
-import { othersRecentlySeen } from './shared-consoles';
+import { affectedSentence } from './shared-consoles';
 import { SharedConsolesSection } from './shared-consoles-section';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
@@ -301,6 +302,14 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           upgrade={serverUpgrade(server)}
           progress={serverProgress(server)}
           disabled={stackTransitioning}
+          affected={
+            server.managementKind === 'remote' && server.sshHost
+              ? affectedSentence(
+                  othersRecentlySeen(remoteServerStore.registerFor(server.sshHost), new Date()),
+                  new Date()
+                )
+              : null
+          }
           onRestart={() => restartStack(server)}
         />
 

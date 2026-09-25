@@ -34,6 +34,7 @@ const m = vi.hoisted(() => {
     version: vi.fn(),
     journal: vi.fn(),
     establish: vi.fn(),
+    register: vi.fn(),
     start: vi.fn<(opts: StartStackOptions) => Promise<StartLocalServerResult>>(),
   };
 });
@@ -64,7 +65,7 @@ vi.mock('./stack-state', async (importOriginal) => ({
   ...(await importOriginal<typeof StackState>()),
   inspectStack: m.inspect,
 }));
-vi.mock('./console-register', () => ({ writeRecord: vi.fn(), readRegister: vi.fn() }));
+vi.mock('./console-register', () => ({ writeRecord: vi.fn(), readRegister: m.register }));
 vi.mock('./paths', () => ({ remoteServerStateDir: (slug: string) => `/user-data/remote/${slug}` }));
 vi.mock('./secrets', () => ({ clearSecrets: vi.fn() }));
 vi.mock('./ports', () => ({ clearPorts: vi.fn() }));
@@ -137,6 +138,7 @@ beforeEach(() => {
   m.adopt.mockResolvedValue({ ports, secrets: {} });
   m.version.mockResolvedValue(behind);
   m.journal.mockResolvedValue(null);
+  m.register.mockResolvedValue({ self: 'me', consoles: [], activity: [] });
   m.start.mockImplementation(upgradingStart());
 });
 
@@ -309,4 +311,73 @@ it('refuses sessions when the host cannot be reached for its upgrade, rather tha
   await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(
     /failed: builder is unreachable/
   );
+});
+
+/** A register in which someone else last used the server `daysAgo` days ago. */
+function usedByBob(daysAgo: number) {
+  return {
+    self: 'me',
+    consoles: [
+      {
+        consoleId: 'bob',
+        name: 'bob@desk',
+        hostAccount: 'bob',
+        appVersion: '0.36.0',
+        lastSeenAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    ],
+    activity: [],
+  };
+}
+
+it('holds the update of a running server others used lately, until someone here runs it', async () => {
+  // It restarts the server for them, so it is not done under them unasked.
+  m.register.mockResolvedValue(usedByBob(1));
+  const service = new RemoteServerService();
+  const upgraded = vi.fn();
+  service.onUpgradeFinished(upgraded);
+  await service.initialize();
+
+  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(
+    /Builder runs switch-core 0\.10\.0 .* Others use it too/
+  );
+  expect(m.start).not.toHaveBeenCalled();
+  // Still reachable from here while it waits: only sessions are held.
+  expect(m.establish).toHaveBeenCalledOnce();
+  expect(service.getStatus('builder')).toMatchObject({
+    phase: 'running',
+    upgrade: { state: 'held', from: '0.10.0', to: '0.11.0' },
+  });
+
+  expect(await service.start('builder', 'Builder')).toMatchObject({ kind: 'started' });
+  await expect(service.ensureReady('builder', 'Builder')).resolves.toBeUndefined();
+  expect(upgraded).toHaveBeenCalledExactlyOnceWith('srv-builder');
+});
+
+it('updates on its own when nobody else has used the server for over two weeks', async () => {
+  m.register.mockResolvedValue(usedByBob(15));
+  const service = new RemoteServerService();
+  await service.initialize();
+  await service.ensureReady('builder', 'Builder');
+
+  expect(m.start).toHaveBeenCalledOnce();
+});
+
+it('resumes an update this account already started, whoever else uses the server', async () => {
+  m.register.mockResolvedValue(usedByBob(1));
+  m.journal.mockResolvedValue({ from: '0.10.0', startedAt: '2026-01-01T00:00:00Z' });
+  const service = new RemoteServerService();
+  await service.initialize();
+  await service.ensureReady('builder', 'Builder');
+
+  expect(m.start).toHaveBeenCalledOnce();
+});
+
+it('asks rather than updates when it cannot tell who uses the server', async () => {
+  m.register.mockRejectedValue(new Error('no such volume'));
+  const service = new RemoteServerService();
+  await service.initialize();
+
+  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(/Others use it too/);
+  expect(m.start).not.toHaveBeenCalled();
 });

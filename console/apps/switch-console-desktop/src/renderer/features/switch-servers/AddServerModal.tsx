@@ -20,6 +20,7 @@ import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -34,6 +35,7 @@ import { LogTail } from './log-tail';
 import { remoteServerStore } from './remote-server-store';
 import { type RemoteSetupAction, remoteSetupAction } from './remote-setup-action';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
+import { affectedSentence } from './shared-consoles';
 import { switchServersStore } from './switch-servers-store';
 
 /**
@@ -568,6 +570,15 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
     !hostBlocked &&
     (action?.kind === 'connect' || action?.kind === 'start');
   const updating = action?.kind === 'connect' && action.updatesTo !== null;
+  // Joining an older server updates it for everyone using it, so the step
+  // names who that is (CHOO-2893).
+  useEffect(() => {
+    if (sshHost && updating) void store.loadRegister(sshHost);
+  }, [store, sshHost, updating]);
+  const affected =
+    sshHost && updating
+      ? affectedSentence(othersRecentlySeen(store.registerFor(sshHost), new Date()), new Date())
+      : null;
   const primaryLabel = running
     ? 'Done'
     : joining
@@ -651,6 +662,7 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
               <RemoteStackNotice
                 sshHost={sshHost}
                 action={action}
+                affected={affected}
                 onCheckAgain={() => void store.probe(sshHost)}
               />
             )}
@@ -747,10 +759,13 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
 function RemoteStackNotice({
   sshHost,
   action,
+  affected,
   onCheckAgain,
 }: {
   sshHost: string;
   action: RemoteSetupAction;
+  /** Who else an update on joining reaches, when anyone does. */
+  affected: string | null;
   onCheckAgain: () => void;
 }) {
   switch (action.kind) {
@@ -773,6 +788,7 @@ function RemoteStackNotice({
             {action.updatesTo === null
               ? 'Connecting adds it to this Console without restarting it, so anyone already using it carries on undisturbed.'
               : `This Console needs switch-core ${action.updatesTo}, so connecting updates it — for everyone who uses it. Its database is backed up first, and it restarts once, keeping its rooms, agents and data.`}
+            {action.updatesTo !== null && affected && ` ${affected}`}
             {!action.shared &&
               ' It was set up before servers could be shared; connecting shares it, so others with access to the host can connect too.'}
           </AlertDescription>

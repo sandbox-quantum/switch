@@ -14,10 +14,11 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import { LogTail } from './log-tail';
 import { remoteServerStore } from './remote-server-store';
 import { phaseLabel, StackAction, StackSection, StackStatusRow } from './server-stack-section';
-import { affectedSentence, othersRecentlySeen, sharedWithSentence } from './shared-consoles';
+import { affectedSentence, sharedWithSentence } from './shared-consoles';
 
 /** A lifecycle action that reaches the other people using the server. */
 type SharedAction = 'stop' | 'restart';

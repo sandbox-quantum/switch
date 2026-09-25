@@ -24,6 +24,7 @@ import {
   type StartLocalServerResult,
   managedServerUpgradeBlockedReason,
   matrixMigrationFailedMessage,
+  othersRecentlySeen,
   switchVersionDowngradeMessage,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -446,6 +447,12 @@ export class RemoteServerService {
       // Only a stack this account can start from the host's own settings: an
       // upgrade is a start, and a start is refused for anything else.
       upgradeNow = owed !== null && stack.kind === 'present' && (stack.running || journal !== null);
+      // Updating a running stack restarts it for everyone using it, so one that
+      // others have used lately is not updated under them unasked (CHOO-2893);
+      // it waits for someone here to run it. An update this account already
+      // started is resumed: it is past asking, and the stack is half-migrated.
+      const held = upgradeNow && journal === null && (await this.othersUseIt(sshHost, host));
+      if (held) upgradeNow = false;
       if (upgradeNow) {
         // The start replaces this Console's forward, if it holds one.
       } else if (stack.kind === 'present' && stack.running) {
@@ -478,7 +485,10 @@ export class RemoteServerService {
           notice: noticeForIdleStack(host.label, stack, wasRunning),
         });
       }
-      this.setStatus(sshHost, { ...version, upgrade: owed && upgradeState(owed, upgradeNow) });
+      this.setStatus(sshHost, {
+        ...version,
+        upgrade: owed && (held ? { state: 'held', ...owed } : upgradeState(owed, upgradeNow)),
+      });
     } catch (error) {
       log.warn(`remote-switch-server: reconcile failed for ${sshHost}`, { error });
       this.leaveUnanswered(
@@ -498,6 +508,22 @@ export class RemoteServerService {
       // Only the reachability check throws rather than reporting a result.
       log.warn(`remote-switch-server: could not upgrade ${sshHost}`, { error });
       this.failUpgrade(sshHost, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Whether other Consoles have used the stack on `host` lately, by the
+   * register they keep there. One that cannot be read is taken as yes: an
+   * update is asked about when there is no telling who it would reach.
+   */
+  private async othersUseIt(sshHost: string, host: RemoteServerHost): Promise<boolean> {
+    try {
+      return othersRecentlySeen(await readRegister(host), new Date()).length > 0;
+    } catch (error) {
+      log.warn(`remote-switch-server: could not read who uses the server on ${sshHost}`, {
+        error,
+      });
+      return true;
     }
   }
 

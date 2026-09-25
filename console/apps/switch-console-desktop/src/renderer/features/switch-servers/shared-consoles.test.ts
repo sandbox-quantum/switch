@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type {
-  StackConsole,
-  StackRegister,
+import {
+  othersRecentlySeen,
+  type StackConsole,
+  type StackRegister,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   activitySentence,
   affectedSentence,
   describeConsole,
-  othersRecentlySeen,
   sharedWithSentence,
 } from './shared-consoles';
 

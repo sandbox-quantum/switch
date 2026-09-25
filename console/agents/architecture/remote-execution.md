@@ -124,6 +124,25 @@ stack's `.env` and took the running server down. Now:
   stopped, restarted on new ports or reset shows as it is. The status carries a
   `notice` for what this Console did not do.
 
+**Updating a shared stack is an update for everyone.** A Console brings a
+managed stack up to its own switch-core pin when it takes the stack up
+(`managed-upgrade.ts`), and on a shared host that restarts it for everyone
+using it, from the account that happened to do it — the pre-update backup lands
+in that account's working dir. So:
+
+- **Connect** joins as-is only at this build's own version. An older stack is
+  brought up to date as a start from the host's settings (the connect step
+  says so and names who else uses it); a newer one is refused, since its
+  database has migrated past anything this build can run.
+- At launch or reachability recovery, a running stack behind the pin is updated
+  on its own only when no other Console has used it in the last
+  `RECENTLY_SEEN_DAYS` (the register on the host says who). Otherwise its
+  upgrade is `held`: the stack is still forwarded, sessions on it wait
+  (`ensureReady`), and the server page offers *Update for everyone*, naming
+  who it reaches. A register that cannot be read counts as others using it. An
+  update this account already started (its journal is there) is resumed
+  regardless.
+
 **Identity is shared; attribution is not.** Everyone signs in as the stack's one
 seeded admin — sessions are owner-only on the server with no admin override, so
 per-person accounts would hide each person's sessions from the others. Instead:

@@ -3,34 +3,12 @@ import type {
   StackActivityAction,
   StackActivityEntry,
   StackConsole,
-  StackRegister,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 
 /**
  * How the people sharing a remote server are described (CHOO-2893). One place,
  * so the server page, Stop, Reset and Delete name them the same way.
  */
-
-/** How long a Console counts as still using the server after it was last seen:
- * long enough to span a holiday, short enough that someone who tried it once
- * in the spring is not warned about in the autumn. */
-export const RECENTLY_SEEN_DAYS = 14;
-
-/** The other Consoles seen on the server recently, most recent first — the
- * people a stop, restart or reset from here will affect. */
-export function othersRecentlySeen(
-  register: StackRegister | null,
-  now: Date,
-  withinDays: number = RECENTLY_SEEN_DAYS
-): StackConsole[] {
-  if (!register) return [];
-  const cutoff = now.getTime() - withinDays * 24 * 60 * 60 * 1000;
-  return register.consoles.filter((c) => {
-    if (c.consoleId === register.self) return false;
-    const seen = Date.parse(c.lastSeenAt);
-    return Number.isFinite(seen) && seen >= cutoff;
-  });
-}
 
 /** `bob@desk (as bob)` — the desktop, and the account it reaches the host as. */
 export function describeConsole(console: Pick<StackConsole, 'name' | 'hostAccount'>): string {

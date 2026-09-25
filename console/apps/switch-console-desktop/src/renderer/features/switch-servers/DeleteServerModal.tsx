@@ -13,8 +13,9 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
+import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import { remoteServerStore } from './remote-server-store';
-import { affectedSentence, othersRecentlySeen } from './shared-consoles';
+import { affectedSentence } from './shared-consoles';
 import { switchServersStore } from './switch-servers-store';
 
 type DeleteServerModalArgs = {
