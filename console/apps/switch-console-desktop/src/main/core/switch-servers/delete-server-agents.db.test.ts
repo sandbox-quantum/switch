@@ -2,7 +2,7 @@ import { openFixture } from '@tooling/utils/db';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
-import { agents, locations, switchServers } from '@main/db/schema';
+import { agents, locations, switchServers, workspaces } from '@main/db/schema';
 
 const mocks = vi.hoisted(() => ({
   db: undefined as AppDb | undefined,
@@ -44,6 +44,11 @@ describe('deleteAgentsForServer', () => {
         gatewayUrl: `https://${id}.example.com`,
         apiUrl: `https://api-${id}.example.com`,
       });
+      // Deliberately not the server's id: the query has to reach the server
+      // through the workspace, and identical ids would hide it not doing so.
+      await fixture.db
+        .insert(workspaces)
+        .values({ id: `ws-${id}`, serverId: id, name: `Workspace ${id}` });
     }
   });
 
@@ -53,9 +58,13 @@ describe('deleteAgentsForServer', () => {
   });
 
   async function seedAgent(id: string, serverId: string | null): Promise<void> {
-    await fixture.db
-      .insert(agents)
-      .values({ id, locationId: 'loc-1', name: id, providerId: 'claude', serverId });
+    await fixture.db.insert(agents).values({
+      id,
+      locationId: 'loc-1',
+      name: id,
+      providerId: 'claude',
+      workspaceId: serverId ? `ws-${serverId}` : null,
+    });
   }
 
   it('deletes only the agents belonging to the given server', async () => {
@@ -121,7 +130,7 @@ describe('deleteAgentsForServer', () => {
     const remaining = await fixture.db
       .select({ id: agents.id })
       .from(agents)
-      .where(eq(agents.serverId, 'other-1'));
+      .where(eq(agents.workspaceId, 'ws-other-1'));
     expect(remaining).toEqual([{ id: 'agent-other' }]);
   });
 });

@@ -6,6 +6,7 @@ import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
@@ -47,7 +48,7 @@ export type AttachConfiguredAgentsResult = Result<Agent[], OnboardAgentError>;
  * provider config — the directory is another install's state and this operation
  * treats it as read-only. That is possible because the API token is never needed
  * here: it stays where it already is, and the launch path reads it from disk when
- * a session spawns. This module deliberately imports no workspace writer, so the
+ * a session spawns. This module deliberately imports no workdir writer, so the
  * guarantee is structural rather than a matter of care.
  *
  * An identity that no longer exists on the chosen server fails the attach loudly
@@ -70,6 +71,7 @@ export async function attachConfiguredAgents(
 
   const server = await getServer(params.serverId);
   if (!server) throw new Error(`No Switch server with id ${params.serverId}`);
+  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
 
   const discovered = new Map(
     (
@@ -158,7 +160,7 @@ export async function attachConfiguredAgents(
       providerId,
       switchAgentId: found.switchAgentId,
       apiEndpoint: found.apiEndpoint,
-      serverId: params.serverId,
+      workspaceId: targetWorkspace.id,
       autoApprove: params.sshHost !== null,
       ownerName: ownerName ?? null,
     });

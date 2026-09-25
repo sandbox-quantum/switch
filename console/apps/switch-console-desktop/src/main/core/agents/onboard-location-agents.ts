@@ -8,6 +8,7 @@ import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { findServerByEndpoint, getServer } from '@main/core/switch-servers/servers-store';
+import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { Agent } from '@shared/core/agents/agents';
@@ -16,9 +17,9 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
-import { resolveWorkspaceFsFor, type WorkspaceFs } from './agent-workspace-fs';
+import { resolveWorkdirFsFor, type WorkdirFs } from './agent-workdir-fs';
 import { createAgent } from './createAgent';
-import { getLocationAgentsOnServer } from './getAgents';
+import { getLocationAgentsInWorkspace } from './getAgents';
 import { registerAgentIdentity } from './register-agent-identity';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
@@ -84,7 +85,7 @@ async function resolveIdentity(
   description: string | null,
   ctx: {
     server: SwitchServer;
-    workspace: WorkspaceFs;
+    workdir: WorkdirFs;
     credsByName: Map<string, { switchAgentId: string | null; apiEndpoint: string | null }>;
     dir: string;
   }
@@ -146,7 +147,7 @@ async function resolveIdentity(
     };
   }
 
-  await writeNeutralAgentSettingsFs(ctx.workspace.fs, {
+  await writeNeutralAgentSettingsFs(ctx.workdir.fs, {
     slug: name,
     apiEndpoint: ctx.server.apiUrl,
     apiToken: registered.apiKey,
@@ -196,15 +197,16 @@ export async function onboardLocationAgents(
     name: params.locationName ?? basenameFromAnyPath(params.dir) ?? params.providerId,
   });
 
+  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
   const existing = new Set(
-    (await getLocationAgentsOnServer(location.id, params.serverId)).map((a) => a.name)
+    (await getLocationAgentsInWorkspace(location.id, targetWorkspace.id)).map((a) => a.name)
   );
 
-  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
   const created: Agent[] = [];
   try {
-    const definitions = await behavior.discoverDefinitions(workspace.fs);
-    const local = await behavior.discoverLocal(workspace.fs, workspace.homeFs);
+    const definitions = await behavior.discoverDefinitions(workdir.fs);
+    const local = await behavior.discoverLocal(workdir.fs, workdir.homeFs);
     const credsByName = new Map(local.map((l) => [l.name, l]));
 
     // Onboardable = a definition that can join Switch and isn't already a row.
@@ -234,7 +236,7 @@ export async function onboardLocationAgents(
     for (const def of selected) {
       const resolved = await resolveIdentity(def.name, def.description, {
         server,
-        workspace,
+        workdir,
         credsByName,
         dir: params.dir,
       });
@@ -247,7 +249,7 @@ export async function onboardLocationAgents(
         providerId: params.providerId,
         switchAgentId: resolved.identity.switchAgentId,
         apiEndpoint: resolved.identity.apiEndpoint,
-        serverId: params.serverId,
+        workspaceId: targetWorkspace.id,
         autoApprove: params.sshHost !== null,
       });
       existing.add(def.name);
@@ -261,7 +263,7 @@ export async function onboardLocationAgents(
       });
     }
   } finally {
-    workspace.close();
+    workdir.close();
   }
 
   if (created.length === 0) {

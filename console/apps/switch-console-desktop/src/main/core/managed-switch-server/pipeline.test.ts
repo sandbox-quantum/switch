@@ -69,7 +69,6 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 vi.mock('@main/core/switch-servers/auth', () => ({
   passwordLogin: () => Promise.resolve({ success: true }),
 }));
-vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
 vi.mock('./managed-upgrade', () => ({
   prepareUpgrade: prepareUpgradeMock,
   finishUpgrade: finishUpgradeMock,
