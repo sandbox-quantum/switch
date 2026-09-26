@@ -22,8 +22,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -39,6 +41,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt, decode_jwt
@@ -56,9 +59,23 @@ class _FakeClientLifecycle:
     async def create_tenant(self, name: str, slug: str) -> Tenant:
         tenant = Tenant(id=str(uuid.uuid4()), name=name, slug=slug)
         async with tenant_session(self._session_factory, tenant.id) as session:
-            session.add(tenant)
+            await TenantStore().create(session, tenant)
             await session.commit()
         return tenant
+
+
+class _ProvisioningFailsLifecycle(_FakeClientLifecycle):
+    """Commits the tenant, then fails the way a concurrent admin-client insert
+    does — an integrity error that has nothing to do with the slug."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        super().__init__(session_factory)
+        self.calls = 0
+
+    async def create_tenant(self, name: str, slug: str) -> Tenant:
+        self.calls += 1
+        await super().create_tenant(name, slug)
+        raise IntegrityError("INSERT INTO clients ...", None, Exception("duplicate"))
 
 
 def _fake_protocol() -> SimpleNamespace:
@@ -361,6 +378,24 @@ class TestCreateTenant:
             response = await client.post("/tenants", json={"name": "Ops Co"})
 
         assert response.status_code == 201, response.text
+
+    async def test_a_failure_other_than_a_taken_slug_is_not_retried(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Retrying would leave the committed workspace behind, ownerless, and
+        make another one."""
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="unlucky", role="user"
+        )
+        token = _token(user_id, "unlucky@example.invalid", None)
+        lifecycle = _ProvisioningFailsLifecycle(session_factory)
+
+        app = _app(session_factory, client_lifecycle=lifecycle, signup_mode="open")
+        async with _client(app, token) as client:
+            with pytest.raises(IntegrityError):
+                await client.post("/tenants", json={"name": "Unlucky Co"})
+
+        assert lifecycle.calls == 1
 
     async def test_a_name_with_no_slug_characters_is_400(
         self, session_factory: async_sessionmaker[AsyncSession]
