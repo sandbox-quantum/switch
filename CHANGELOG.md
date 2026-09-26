@@ -1345,6 +1345,8 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.37.1] - 2026-09-26
+
 #### Fixed
 - **An agent's instructions and settings can no longer be blanked or reverted
   by the Console itself.** The agent's config file (`.switch/config/<name>.json`)
