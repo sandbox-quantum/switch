@@ -267,6 +267,9 @@ jobs:
       - name: Build (tsc + vite)
         run: npm run build
 
+      - name: Test (vitest)
+        run: npm test
+
   migration-heads-on-merge:
     name: Migration heads on merge
     # Only meaningful right after a new migration lands on main — a PR still
