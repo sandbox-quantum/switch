@@ -433,11 +433,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Database pool: in use vs size",
+        "title": "Database pool: peak in use vs size",
         "show_legend": true,
         "requests": [
           {
-            "q": "avg:switch.db.pool.in_use{$env,$service}",
+            "q": "max:switch.db.pool.in_use{$env,$service}",
             "display_type": "area"
           },
           {
@@ -692,6 +692,25 @@
       "layout": {
         "x": 0,
         "y": 59,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database pool: checkout timeouts",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "sum:switch.db.pool.timeouts{$env,$service}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 63,
         "width": 12,
         "height": 4
       }

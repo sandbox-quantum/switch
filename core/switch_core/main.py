@@ -133,7 +133,7 @@ from switch_core.observability.bootstrap import (
     RuntimeProbes,
     start_observability,
 )
-from switch_core.observability.pool import pool_stats
+from switch_core.observability.pool import install_pool_watermark, pool_stats
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
@@ -347,6 +347,7 @@ async def run(config: SwitchConfig) -> None:
     # reports nothing pays nothing worth counting, and turning export on does
     # not change how queries execute.
     instrument_queries(engine)
+    pool_watermark = install_pool_watermark(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -713,7 +714,7 @@ async def run(config: SwitchConfig) -> None:
         connectors_running=connector_lifecycle.running_count,
         connectors_configured=connector_lifecycle.expected_count,
         agents_connected=lambda: len(connections.live_agent_ids()),
-        pool_stats=lambda: pool_stats(engine),
+        pool_stats=lambda: pool_stats(engine, pool_watermark),
     )
 
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
