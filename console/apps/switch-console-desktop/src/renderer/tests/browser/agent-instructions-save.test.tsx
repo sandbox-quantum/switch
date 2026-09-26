@@ -163,3 +163,19 @@ describe('an agent’s instructions', () => {
     expect(updateInstructions).toHaveBeenCalledWith({ agentId: 'agent-1', instructions: '' });
   });
 });
+
+describe('when the settings cannot be read', () => {
+  it('says so instead of offering an empty box to type over them', async () => {
+    readInstructions.mockRejectedValue(
+      new Error(
+        'Agent agent-one has no settings file (.switch/config/agent-one.json) in its working directory.'
+      )
+    );
+
+    const el = await renderPage();
+
+    expect(field(el)).toBeNull();
+    expect(el.querySelector('[role="alert"]')?.textContent).toContain('has no settings file');
+    expect(updateInstructions).not.toHaveBeenCalled();
+  });
+});

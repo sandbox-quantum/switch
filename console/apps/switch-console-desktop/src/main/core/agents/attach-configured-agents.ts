@@ -4,6 +4,7 @@ import type { Result } from '@switch-console/shared';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
@@ -12,9 +13,12 @@ import type { OnboardAgentError } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
+import { readAgentConfigFile } from './agent-config-file';
 import { agentEvents } from './agent-events';
+import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
 import { discoverConfiguredAgents } from './discover-configured-agents';
+import { importAgentConfig } from './import-agent-config';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 
 export type AttachConfiguredAgentsParams = {
@@ -43,12 +47,12 @@ export type AttachConfiguredAgentsResult = Result<Agent[], OnboardAgentError>;
  * rather than trusted from the caller, so a stale scan cannot mint a row
  * pointing at the wrong agent.
  *
- * **Writes nothing to the working directory.** No credentials, no definition, no
- * provider config — the directory is another install's state and this operation
- * treats it as read-only. That is possible because the API token is never needed
- * here: it stays where it already is, and the launch path reads it from disk when
- * a session spawns. This module deliberately imports no workspace writer, so the
- * guarantee is structural rather than a matter of care.
+ * **Writes no credentials.** The API token is never needed here: it stays where
+ * it already is, and the launch path reads it from disk when a session spawns.
+ * The one thing written is an agent's config file, and only when it has none —
+ * every agent has one, and one set up by an older Console may not yet. It is
+ * built from the agent's own definition, so it holds nothing the directory did
+ * not already say.
  *
  * An identity that no longer exists on the chosen server fails the attach loudly
  * instead of falling back to minting a fresh one — a silent mint is exactly the
@@ -151,6 +155,8 @@ export async function attachConfiguredAgents(
       });
     }
 
+    await ensureAgentConfig({ sshHost: params.sshHost, dir: params.dir, name, providerId });
+
     const agent = await createAgent({
       id: randomUUID(),
       locationId: location.id,
@@ -191,4 +197,25 @@ export async function attachConfiguredAgents(
   }
 
   return ok(created);
+}
+
+/** Create the agent's config file from its definition when it has none; leave an existing one alone. */
+async function ensureAgentConfig(params: {
+  sshHost: string | null;
+  dir: string;
+  name: string;
+  providerId: AgentProviderId;
+}): Promise<void> {
+  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  try {
+    if ((await readAgentConfigFile(workspace.fs, params.name)) !== null) return;
+    await importAgentConfig({
+      workspaceFs: workspace.fs,
+      repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
+      name: params.name,
+      providerConfig: null,
+    });
+  } finally {
+    workspace.close();
+  }
 }

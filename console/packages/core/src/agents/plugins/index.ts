@@ -82,6 +82,7 @@ export type {
   IRepoAgentsBehavior,
   LocalRepoAgent,
   RepoAgentAttributes,
+  RepoAgentLaunchDefinition,
   RepoAgentAttributeValue,
   RepoAgentDefinition,
   RepoAgentField,

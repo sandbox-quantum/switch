@@ -11,6 +11,7 @@ import { setupApplicationMenu } from './app/menu';
 import { registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
+import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migration-ready';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
 import { resolveAgentServers } from './core/agents/resolve-servers';
@@ -156,6 +157,7 @@ void app.whenReady().then(async () => {
   const migrationReady = migrateAgentStorage().catch((e) => {
     log.warn('switch-agents: failed to migrate agent storage layout at boot', { error: e });
   });
+  setAgentStorageMigrationReady(migrationReady);
 
   controlService.initialize().catch((e) => {
     log.error('Failed to start control API service:', e);

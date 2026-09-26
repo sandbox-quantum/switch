@@ -119,6 +119,13 @@ export type RepoAgentAttributeValue = string | string[] | number | boolean | nul
 export type RepoAgentAttributes = Record<string, RepoAgentAttributeValue>;
 
 /**
+ * The definition a session runs as, in the shape the provider's SDK takes it.
+ * Provider-specific; JSON-serialisable, since it travels in the launch spec to
+ * the host that starts the session.
+ */
+export type RepoAgentLaunchDefinition = Record<string, string | string[] | number | boolean>;
+
+/**
  * How an agent provider creates, runs, and credentials the named agents defined
  * in a working directory. Switch Console has no notion of "subagents" — it just asks
  * a provider to create and run an agent with a given name in a directory, and to
@@ -154,6 +161,11 @@ export type IRepoAgentsBehavior = {
   renderDefinition(attributes: RepoAgentAttributes): string;
   /** The definition file's path, relative to the working directory. */
   definitionPath(name: string): string;
+  /**
+   * The definition a session runs as, built from these attributes and handed to
+   * the provider's SDK directly, so nothing is read from disk at launch. Pure.
+   */
+  launchDefinition(attributes: RepoAgentAttributes): RepoAgentLaunchDefinition;
   /** Create or overwrite a named agent's on-disk definition from its attributes
    * (workspace scope). `attributes.name` selects the agent. */
   writeDefinition(workspaceFs: PluginFs, attributes: RepoAgentAttributes): Promise<void>;

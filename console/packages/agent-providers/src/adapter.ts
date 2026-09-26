@@ -7,6 +7,23 @@ import type {
 } from './events';
 
 /**
+ * An agent definition in the shape Claude Code's SDK takes it (`AgentDefinition`),
+ * restricted to what a Switch agent's settings can set.
+ */
+export type AgentLaunchDefinition = {
+  description: string;
+  prompt: string;
+  tools?: string[];
+  disallowedTools?: string[];
+  model?: string;
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto';
+  maxTurns?: number;
+  background?: boolean;
+  memory?: 'user' | 'project' | 'local';
+};
+
+/**
  * How much the agent may do without asking. Maps onto each vendor's own
  * permission model inside the adapter; orchestration only ever sees this.
  */
@@ -49,14 +66,17 @@ export interface ProviderSessionStartInput {
   /** Extra system-level context appended to whatever the vendor loads itself. */
   systemContext?: string;
   /**
-   * A named agent definition the vendor already knows, which the session should
-   * run *as* — its system prompt, tool restrictions and model.
+   * A named agent definition the session should run *as* — its system prompt,
+   * tool restrictions and model. Claude Code's `--agent <name>`.
    *
-   * Claude Code's `--agent <name>`, reading `.claude/agents/<name>.md`. Naming a
-   * definition the vendor cannot find is an error there, so a caller passes this
-   * only once it knows the definition exists.
+   * Without {@link agentDefinition} the vendor must already know the name —
+   * Claude Code reads `.claude/agents/<name>.md`, and naming a definition it
+   * cannot find is an error there.
    */
   agentName?: string;
+  /** The definition of {@link agentName}, handed to the vendor directly instead
+   * of read from its own files. */
+  agentDefinition?: AgentLaunchDefinition;
 }
 
 export interface ProviderSession {

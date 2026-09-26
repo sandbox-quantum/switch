@@ -44,7 +44,7 @@ export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose 
           <span className="font-medium text-foreground">{agentLabel}</span> will be removed from
           Switch Console.{' '}
           {onThisMachine
-            ? 'Its sessions stop, and the credentials and definition files Console provisioned for it are deleted. The working directory itself, and everything else in it, are left alone.'
+            ? 'Its sessions stop, and the credentials and settings files Console provisioned for it are deleted. The working directory itself, and everything else in it, are left alone.'
             : 'Its working directory, the credentials stored there, and any running sidecar are untouched unless you choose below.'}
         </p>
 

@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  agentLaunchDefinitionSchema,
   SessionHostFailedError,
   sharedConfigSchema,
   sharedSessionRoot,
@@ -25,7 +26,7 @@ import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '@switch-console/plugins
 import { commandStatusSchema, type Snapshot } from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
-import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
+import { agentLaunchConfig } from '@main/core/agents/agent-launch-config';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
@@ -378,7 +379,8 @@ export async function buildSharedHostConfig(
 ): Promise<SharedHostConfig> {
   const agent = await getAgentById(session.agentId);
   if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
-  const specialization = (await agentLaunchSpecialization(session.agentId)) ?? {};
+  const launch = await agentLaunchConfig(session.agentId);
+  const specialization = launch.specialization ?? {};
   if (!providerAdapterRegistry.supports(session.providerId))
     throw new Error(
       'SDK sessions support Claude Code, Codex, OpenCode, Antigravity and Cursor. Choose one of these providers.'
@@ -402,6 +404,8 @@ export async function buildSharedHostConfig(
           : undefined;
   const capabilities = providerAdapterRegistry.get(provider).capabilities;
   const slug = session.agentName ?? agent.name ?? agent.id;
+  const subagent = slug !== agent.name;
+  const repoAgents = getPlugin(provider).behavior.repoAgents;
   const profile =
     provider === 'codex'
       ? getPlugin(provider).behavior.mcp?.launchProfile?.({
@@ -445,6 +449,12 @@ export async function buildSharedHostConfig(
         ...(session.providerSessionId
           ? { resume: { nativeSessionId: session.providerSessionId } }
           : {}),
+        ...(launch.definition && !subagent
+          ? {
+              agentName: slug,
+              agentDefinition: parseLaunchDefinition(slug, launch.definition),
+            }
+          : {}),
         ...(specialization.model
           ? {
               model: {
@@ -482,13 +492,10 @@ export async function buildSharedHostConfig(
       ],
       ...(binaryPath ? { binaryPath } : {}),
       ...(params.shellSetup ? { shellSetup: params.shellSetup } : {}),
-      ...(getPlugin(provider).behavior.repoAgents
-        ? {
-            agentDefinition: {
-              name: slug,
-              path: getPlugin(provider).behavior.repoAgents!.definitionPath(slug),
-            },
-          }
+      // A subagent watched under its parent is Claude Code's own: it has no
+      // Switch config of its own yet, so it runs from its definition file.
+      ...(subagent && repoAgents
+        ? { agentDefinition: { name: slug, path: repoAgents.definitionPath(slug) } }
         : {}),
       codexConfig: profile?.files.map((file) => file.content).join('\n') ?? '',
       // OpenCode loads the skill as a file through its own skill tool; the
@@ -511,4 +518,18 @@ async function journalEpoch(agentId: string, sessionId: string): Promise<string 
     if (error instanceof JournalUnavailableError) return null;
     throw error;
   }
+}
+
+/**
+ * The launch definition, checked against what the host accepts. A value the
+ * host would refuse fails here, naming the agent and the setting, rather than
+ * as a validation error from inside the host.
+ */
+function parseLaunchDefinition(name: string, definition: unknown) {
+  const parsed = agentLaunchDefinitionSchema.safeParse(definition);
+  if (parsed.success) return parsed.data;
+  const problems = parsed.error.issues
+    .map((issue) => `${issue.path.join('.') || 'definition'}: ${issue.message}`)
+    .join('; ');
+  throw new Error(`Agent ${name} has settings its session cannot start with (${problems}).`);
 }

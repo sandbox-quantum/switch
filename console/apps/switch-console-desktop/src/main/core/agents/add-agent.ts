@@ -27,12 +27,12 @@ import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { writeAgentConfigFile } from './agent-config-file';
 import type { AgentTemplateOrigin } from './agent-config-file';
-import { syncAgentConfig } from './agent-config-sync';
 import { foreignCredentialsOwner, sameEndpointAgentId } from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
+import { acknowledgeDefinition } from './import-agent-config';
 import { knownAgentTypeForProvider } from './known-agent-type';
 import { registerAgentIdentity } from './register-agent-identity';
 import { inspectRemoteDir } from './remote-dir';
@@ -135,11 +135,11 @@ function reportFailedCreate(params: AddAgentParams, result: AddAgentResult): Add
 
 /**
  * Add a new agent to a location: mint its Switch identity on the gateway, write
- * its provider definition (`.claude/agents/<name>.md`) and its per-agent Switch
- * credentials (`.switch/agents/<name>.json`, keyed by name), then create the
- * agent row. Every Switch Console-managed agent is a flat, repository-defined agent
- * — for a provider that supports definitions it launches as `--agent <name>`
- * with its own identity; there is no "main" agent and no parent (CHOO-1440).
+ * its config file (`.switch/config/<name>.json`) and its per-agent Switch
+ * credentials (`.switch/agents/<name>.json`), both keyed by name, then create the
+ * agent row. Every Switch Console-managed agent is a flat, named agent — for a
+ * provider that supports definitions each session runs as `<name>` with its own
+ * identity; there is no "main" agent and no parent (CHOO-1440).
  *
  * Works for local and remote (SSH) run locations. The minted API token is
  * written to disk and never returned. A recoverable gateway failure is mapped to
@@ -267,14 +267,12 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   });
   if (registered.kind !== 'created') return reportFailedCreate(params, registered);
 
-  const behavior = getPlugin(params.providerId).behavior.repoAgents;
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   try {
     // Writing the per-agent Switch credentials is unconditional core behavior for
     // every provider, keyed by the agent's `name` — the single key-space every
     // reader (launch path, auto-session watcher, notification poller) uses
-    // (CHOO-1440). Providers with repo-agent definitions (Claude) layer their
-    // on-disk definition on top; that's the only provider-specific extra.
+    // (CHOO-1440).
     await writeNeutralAgentSettingsFs(workspace.fs, {
       slug: params.name,
       apiEndpoint: server.apiUrl,
@@ -282,19 +280,25 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       agentId: registered.id,
       expectedAgentId: slotAgentId ?? undefined,
     });
-    // The config file is the agent's configuration; the provider's own file is
-    // generated from it, here and on every later edit.
-    await writeAgentConfigFile(workspace.fs, params.name, {
-      instructions: params.instructions,
-      settings: params.definitionAttributes,
-      ...(params.templateOrigin ? { template: params.templateOrigin } : {}),
-    });
-    await syncAgentConfig({
-      workspaceFs: workspace.fs,
-      repoAgents: behavior ?? null,
-      name: params.name,
-      description: params.description,
-    });
+    // The config file is the agent's whole configuration: each launch builds
+    // what the provider needs from it. A definition an earlier agent of this
+    // name left behind is recorded as accounted for, so nothing takes it for an
+    // edit to this one.
+    await writeAgentConfigFile(
+      workspace.fs,
+      params.name,
+      await acknowledgeDefinition({
+        workspaceFs: workspace.fs,
+        repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
+        name: params.name,
+        config: {
+          description: params.description,
+          instructions: params.instructions,
+          settings: params.definitionAttributes,
+          ...(params.templateOrigin ? { template: params.templateOrigin } : {}),
+        },
+      })
+    );
   } finally {
     workspace.close();
   }

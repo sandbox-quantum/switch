@@ -55,8 +55,3 @@ export type CreateAgentParams = {
   /** Optional per-agent provider config set at creation. */
   providerConfig?: AgentProviderConfig | null;
 };
-
-export type RenameAgentParams = {
-  agentId: string;
-  newName: string;
-};

@@ -11,6 +11,7 @@ const { h } = vi.hoisted(() => ({
   h: {
     trackEvent: vi.fn(),
     emit: vi.fn(),
+    importAgentConfig: vi.fn(async (_params: Record<string, unknown>) => true),
     validDirectory: true,
     detected: { agentId: 'sw-1', apiEndpoint: 'https://switch.example.com' } as {
       agentId: string;
@@ -71,6 +72,13 @@ vi.mock('./setAgentAutoSession', () => ({
   reconcileAgentAutoSessionFromGateway: vi.fn(async () => {}),
 }));
 vi.mock('./write-switch-settings', () => ({ writeAgentNeutralSettings: vi.fn(async () => {}) }));
+vi.mock('./agent-workspace-fs', () => ({
+  resolveWorkspaceFsFor: vi.fn(async () => ({ fs: {}, close: () => {} })),
+}));
+vi.mock('./import-agent-config', () => ({ importAgentConfig: h.importAgentConfig }));
+vi.mock('@main/core/providers/plugin-registry', () => ({
+  getPlugin: () => ({ behavior: { repoAgents: { definitionPath: () => '' } } }),
+}));
 
 const { onboardAgent } = await import('./onboard-agent');
 
@@ -178,5 +186,23 @@ describe('what a failed onboarding reports', () => {
     await onboardAgent(params({ dir: '/Users/someone/secret-project' }));
 
     expect(JSON.stringify(h.trackEvent.mock.calls)).not.toContain('secret-project');
+  });
+});
+
+describe('the onboarded agent’s config file', () => {
+  it('is created, since every agent has one', async () => {
+    const result = await onboardAgent(params());
+
+    expect(result.success).toBe(true);
+    expect(h.importAgentConfig).toHaveBeenCalledTimes(1);
+    expect(h.importAgentConfig.mock.calls[0]?.[0]).toMatchObject({ name: 'repo' });
+  });
+
+  it('is not touched when onboarding fails', async () => {
+    h.detected = null;
+
+    await onboardAgent(params());
+
+    expect(h.importAgentConfig).not.toHaveBeenCalled();
   });
 });

@@ -1,10 +1,22 @@
-import type { PluginFs, SwitchLaunchSpecialization } from '@switch-console/core/agents/plugins';
+import type {
+  PluginFs,
+  RepoAgentLaunchDefinition,
+  SwitchLaunchSpecialization,
+} from '@switch-console/core/agents/plugins';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentConfigFile } from './agent-config-file';
 import { readAgentConfigFile } from './agent-config-file';
 import { getAgentLocation } from './agent-location';
+import {
+  agentStorageMigrationReady,
+  isAgentUnmigrated,
+  markAgentMigrated,
+} from './agent-storage-migration-ready';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getAgentById } from './getAgentById';
+import { importAgentConfig } from './import-agent-config';
+import { agentConfigRelativePath } from './switch-settings-paths';
 
 /**
  * Reading an agent's configuration in order to launch it (CHOO-2228).
@@ -16,22 +28,90 @@ import { getAgentById } from './getAgentById';
  * it only reads a file.
  */
 
-/** Read launch settings from the execution host; transport failures must stop launch. */
-export async function readAgentConfigForLaunch(agentId: string): Promise<AgentConfigFile> {
-  return withAgentWorkspace(
-    agentId,
-    async (agent, fs) => (await readAgentConfigFile(fs, agent.name)) ?? {}
-  );
+/**
+ * Every agent has a config file from the moment it is created, so one that has
+ * none is broken, not blank. Treating it as empty would launch the agent with
+ * no instructions, and the next save would write that emptiness back.
+ */
+export class AgentConfigMissingError extends Error {
+  constructor(agentName: string) {
+    super(
+      `Agent ${agentName} has no settings file (${agentConfigRelativePath(agentName)}) in its working directory.`
+    );
+    this.name = 'AgentConfigMissingError';
+  }
 }
 
 /**
- * The values a provider's launch profile is built from: the agent's settings
- * plus its instructions, under the canonical key every provider renders.
+ * The agent's config file, which must exist.
+ *
+ * Waits for the boot migration first, since that is what creates the file for
+ * agents that predate it. An agent the migration could not reach at boot is
+ * migrated here instead: its working directory is reachable now.
  */
-export async function agentLaunchSpecialization(
-  agentId: string
-): Promise<SwitchLaunchSpecialization | undefined> {
-  const config = await readAgentConfigForLaunch(agentId);
+export async function readRequiredAgentConfig(
+  agent: Agent,
+  fs: PluginFs
+): Promise<AgentConfigFile> {
+  await agentStorageMigrationReady();
+  if (isAgentUnmigrated(agent.id)) {
+    await importAgentConfig({
+      workspaceFs: fs,
+      repoAgents: getPlugin(agent.providerId).behavior.repoAgents ?? null,
+      name: agent.name,
+      providerConfig: agent.providerConfig,
+    });
+    markAgentMigrated(agent.id);
+  }
+  const config = await readAgentConfigFile(fs, agent.name);
+  if (config) return config;
+  throw new AgentConfigMissingError(agent.name);
+}
+
+/**
+ * What a session is launched with, from the agent's config file:
+ * - `specialization`, the values a provider's launch profile is built from —
+ *   the agent's settings plus its instructions, under the canonical key every
+ *   provider renders;
+ * - `definition`, for a provider that runs a session as a named agent, the
+ *   definition it runs as.
+ */
+export type AgentLaunchConfig = {
+  specialization: SwitchLaunchSpecialization | undefined;
+  definition: RepoAgentLaunchDefinition | undefined;
+};
+
+export async function agentLaunchConfig(agentId: string): Promise<AgentLaunchConfig> {
+  return withAgentWorkspace(agentId, async (agent, fs) => {
+    const config = await readRequiredAgentConfig(agent, fs);
+    const repoAgents = getPlugin(agent.providerId).behavior.repoAgents;
+    return {
+      specialization: launchSpecialization(config),
+      definition:
+        repoAgents && definesAgent(config)
+          ? repoAgents.launchDefinition({
+              ...config.settings,
+              name: agent.name,
+              description: config.description || agent.name,
+              instructions: config.instructions ?? '',
+            })
+          : undefined,
+    };
+  });
+}
+
+/**
+ * Whether the config says anything a definition would carry. One that says
+ * nothing runs the provider as it is, as an agent with no definition file on
+ * disk always did, rather than as a definition whose prompt is its own name.
+ */
+function definesAgent(config: AgentConfigFile): boolean {
+  return (
+    !!config.description || !!config.instructions || Object.keys(config.settings ?? {}).length > 0
+  );
+}
+
+function launchSpecialization(config: AgentConfigFile): SwitchLaunchSpecialization | undefined {
   const specialization: SwitchLaunchSpecialization = {};
 
   for (const [key, value] of Object.entries(config.settings ?? {})) {
