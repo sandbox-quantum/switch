@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -22,6 +23,7 @@ from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
     InvitationStore,
 )
+from switch_core.db.stores.tenant_store import TenantSlugTaken
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
@@ -34,6 +36,7 @@ from switch_core.gateway.auth import (
     require_tenant_admin,
     set_session_cookie,
     tenant_of_invitation_token,
+    workspace_creation_refusal,
 )
 from switch_core.gateway.auth_routes import _session_response
 from switch_core.gateway.dependencies import (
@@ -43,11 +46,18 @@ from switch_core.gateway.dependencies import (
     get_client_lifecycle,
     get_config,
     get_invitation_store,
+    get_invite_mailer,
     get_protocol,
     get_session,
     get_session_factory,
     get_system_session,
     get_user_store,
+)
+from switch_core.gateway.invite_mail import (
+    InviteEmail,
+    InviteEmailFailed,
+    InviteMailer,
+    invite_link,
 )
 from switch_core.gateway.schemas import (
     InvitationAcceptRequest,
@@ -73,13 +83,19 @@ TENANT_MEMBER_ROLES = ("owner", "admin", "member")
 
 _SLUG_INVALID_CHARS = re.compile(r"[^a-z0-9]+")
 
+# A first choice and this many suffixed ones. Four hex characters make a
+# repeat collision on the same name vanishingly unlikely, so running out means
+# something other than bad luck is wrong.
+_SLUG_ATTEMPTS = 4
+
 
 def _derive_slug(name: str) -> str:
     """A URL-safe slug from a workspace name.
 
-    A taken slug is a 409 (`create_tenant` below), never a silently
-    suffixed alternative — the design is explicit that a caller must be told
-    rather than handed a workspace under a name it did not ask for.
+    The slug is an identifier, not the name: the workspace keeps the name its
+    creator typed exactly, and a slug that is already taken gets a short
+    random suffix (`_provision_workspace` below). Refusing instead would tell anyone
+    who can sign up which workspace names exist on this server.
     """
     slug = _SLUG_INVALID_CHARS.sub("-", name.strip().lower()).strip("-")
     if not slug:
@@ -206,7 +222,7 @@ _LOCK_NOT_AVAILABLE = "55P03"
 
 
 async def _lock_workspace_allowance(
-    session: AsyncSession, caller: AuthenticatedCaller, limit: int
+    session: AsyncSession, caller: AuthenticatedCaller, config: SwitchConfig
 ) -> User:
     """Lock the caller's row and raise 403 unless they may create one more
     workspace. Returns the locked row, for the caller to count the creation on.
@@ -216,7 +232,9 @@ async def _lock_workspace_allowance(
     buys the deployment steady-state work
     (`docs/old/multi-tenancy-phase2-tenants.md`, §5). A limit of 0 closes the
     route entirely, which is how a deployment that is not ready to offer
-    self-service says so.
+    self-service says so; so does `invite_only` sign-up. What is refused, and
+    why, is `workspace_creation_refusal`'s, so `GET /auth/session` reports the
+    same answer this enforces.
 
     The bound is on workspaces created (`users.workspaces_created`), not on
     workspaces owned: ownership can be handed to another account, so a count of
@@ -232,11 +250,6 @@ async def _lock_workspace_allowance(
     share on this same row from another session, and `FOR UPDATE` would make
     the request wait on itself.
     """
-    if limit == 0:
-        raise HTTPException(
-            status_code=403,
-            detail="Workspace creation is disabled on this deployment",
-        )
     try:
         user = await session.scalar(
             select(User)
@@ -252,14 +265,11 @@ async def _lock_workspace_allowance(
         ) from exc
     if user is None:
         raise HTTPException(status_code=401, detail="Unknown user")
-    if user.workspaces_created >= limit:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"You have created {user.workspaces_created} workspaces, and "
-                f"this deployment allows {limit}"
-            ),
-        )
+    refusal = workspace_creation_refusal(
+        config, is_operator=False, workspaces_created=user.workspaces_created
+    )
+    if refusal is not None:
+        raise HTTPException(status_code=403, detail=refusal)
     return user
 
 
@@ -270,13 +280,25 @@ async def _provision_workspace(
     caller: AuthenticatedCaller,
     name: str,
 ) -> Tenant:
-    slug = _derive_slug(name)
-    try:
-        tenant = await client_lifecycle.create_tenant(name, slug)
-    except IntegrityError as exc:
+    base_slug = _derive_slug(name)
+    tenant: Tenant | None = None
+    for attempt in range(_SLUG_ATTEMPTS):
+        slug = base_slug if attempt == 0 else f"{base_slug}-{secrets.token_hex(2)}"
+        try:
+            tenant = await client_lifecycle.create_tenant(name, slug)
+        except TenantSlugTaken:
+            continue
+        break
+    if tenant is None:
+        logger.error(
+            "Could not find a free slug for workspace %r after %d attempts",
+            name,
+            _SLUG_ATTEMPTS,
+        )
         raise HTTPException(
-            status_code=409, detail=f"Slug already taken: {slug}"
-        ) from exc
+            status_code=503,
+            detail="Could not create the workspace; please try again",
+        )
 
     try:
         async with tenant_session(session_factory, tenant.id) as session:
@@ -300,16 +322,24 @@ async def _provision_workspace(
 @router.post("/tenants", status_code=201)
 async def create_tenant(
     req: TenantCreateRequest,
+    response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-    allowance: Annotated[AsyncSession, Depends(get_system_session)],
 ) -> TenantMembershipResponse:
-    """Create a workspace. The caller becomes its `owner`.
+    """Create a workspace. The caller becomes its `owner`, and their session
+    switches into it.
+
+    Whether they may is `workspace_creation_refusal`'s decision: sign-up mode
+    and a per-person cap on workspaces created, with operators exempt. It is
+    authenticated with `get_authenticated_caller` because the caller who
+    most needs this — someone who has just signed up — has no workspace for
+    `get_current_user` to bind.
 
     How many workspaces one person may create is bounded, and the bound is
     checked before anything is provisioned — see `_lock_workspace_allowance`.
@@ -338,19 +368,25 @@ async def create_tenant(
     codebase refuses. An operator repairs it by inserting the membership.
     """
     if caller.is_operator:
+        user = await user_store.get(session, caller.id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
         tenant = await _provision_workspace(
             session_factory, user_store, client_lifecycle, caller, req.name
         )
     else:
-        user = await _lock_workspace_allowance(
-            allowance, caller, config.gateway_max_workspaces_per_user
-        )
+        user = await _lock_workspace_allowance(session, caller, config)
         tenant = await _provision_workspace(
             session_factory, user_store, client_lifecycle, caller, req.name
         )
         user.workspaces_created += 1
-        await allowance.commit()
+        await session.commit()
 
+    await user_store.record_last_tenant(session, user, tenant.id)
+    await session.commit()
+    set_session_cookie(
+        response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant.id
+    )
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role="owner"
     )
@@ -385,6 +421,8 @@ async def switch_tenant(
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
 
+    await user_store.record_last_tenant(session, user, tenant_id)
+    await session.commit()
     set_session_cookie(
         response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant_id
     )
@@ -402,18 +440,40 @@ async def create_invitation(
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
     is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    mailer: Annotated[InviteMailer | None, Depends(get_invite_mailer)],
 ) -> InvitationCreateResponse:
     """Mint an invitation to the bound tenant. `owner`/`admin` only.
 
     An `owner` invitation is owner-only: minting one is granting ownership
     with a step of indirection, so it answers to the same gate the direct
     grant does (`_require_owner`).
+
+    An invitation naming an e-mail is also sent there when a relay is
+    configured. The e-mail is a convenience on top of the link, not a
+    condition of the invitation: when it cannot go out the invitation still
+    stands, and `email_delivery` tells the admin to share the link instead.
     """
     _require_bound_tenant(tenant_id)
     if req.role not in TENANT_MEMBER_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role: {req.role}")
     if req.role == "owner":
         _require_owner(is_owner, "invite another owner")
+    if req.email is not None and mailer is not None and user.role != "admin":
+        sent_today = await invitation_store.count_addressed_since(
+            session, datetime.now(UTC) - timedelta(days=1)
+        )
+        if sent_today >= config.gateway_invite_emails_per_day:
+            await session.commit()
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "This workspace has sent its daily limit of "
+                    f"{config.gateway_invite_emails_per_day} invitation e-mails; "
+                    "try again tomorrow, or create an invitation without an "
+                    "e-mail and share the link"
+                ),
+            )
 
     expires_at = datetime.now(UTC) + timedelta(hours=req.expires_in_hours)
     invitation, token = await invitation_store.create(
@@ -424,9 +484,63 @@ async def create_invitation(
         uses_remaining=req.uses_remaining,
         created_by=user.id,
     )
+    tenant = await session.get(Tenant, tenant_id)
+    assert tenant is not None
     await session.commit()
-    emit_safely(current_telemetry(), "invitation_sent", {})
-    return InvitationCreateResponse(token=token, **_invitation_fields(invitation))
+
+    delivery = await _deliver_invitation(
+        mailer,
+        config,
+        invitation,
+        token,
+        workspace_name=tenant.name,
+        inviter_name=user.name,
+    )
+    emit_safely(current_telemetry(), "invitation_sent", {"delivery": delivery})
+    return InvitationCreateResponse(
+        token=token, email_delivery=delivery, **_invitation_fields(invitation)
+    )
+
+
+async def _deliver_invitation(
+    mailer: InviteMailer | None,
+    config: SwitchConfig,
+    invitation: Invitation,
+    token: str,
+    *,
+    workspace_name: str,
+    inviter_name: str,
+) -> Literal["sent", "not_configured", "failed", "not_requested"]:
+    if invitation.email is None:
+        return "not_requested"
+    if mailer is None:
+        logger.warning(
+            "Invitation %s to tenant %s names an e-mail, but no SMTP relay is "
+            "configured (GATEWAY_SMTP_HOST); nothing was sent",
+            invitation.id,
+            invitation.tenant_id,
+        )
+        return "not_configured"
+    assert config.frontend_base_url is not None
+    try:
+        await mailer.send_invitation(
+            InviteEmail(
+                to=invitation.email,
+                link=invite_link(config.frontend_base_url, token),
+                workspace_name=workspace_name,
+                inviter_name=inviter_name,
+                role=invitation.role,
+                expires_at=invitation.expires_at,
+            )
+        )
+    except InviteEmailFailed:
+        logger.exception(
+            "Invitation %s to tenant %s was created but its e-mail was not sent",
+            invitation.id,
+            invitation.tenant_id,
+        )
+        return "failed"
+    return "sent"
 
 
 @router.get("/tenants/{tenant_id}/invitations")
@@ -463,14 +577,17 @@ async def revoke_invitation(
 @router.post("/invitations/accept")
 async def accept_invitation(
     req: InvitationAcceptRequest,
+    response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
-    """Accept an invitation, joining its tenant.
+    """Accept an invitation, joining its tenant, and switch the caller's
+    session into it — someone who follows an invite link means to be there.
 
     Authenticated with `get_authenticated_caller`, not `get_current_user`:
     the caller's own session may be bound to a different tenant than the
@@ -531,8 +648,17 @@ async def accept_invitation(
 
         tenant = await session.get(Tenant, tenant_id)
         assert tenant is not None
+        # `users` is global, so the caller's row is writable from a session
+        # bound to any tenant — this one included.
+        user = await user_store.get(session, caller.id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        await user_store.record_last_tenant(session, user, tenant_id)
         await session.commit()
 
+    set_session_cookie(
+        response, user, config.jwt_secret_key, config.gateway_cookie_secure, tenant_id
+    )
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
     )

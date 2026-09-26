@@ -210,16 +210,37 @@ export interface UpdateRoomInput {
   write_visibility?: "public" | "private";
 }
 
-/** FastAPI's `detail` is a string for HTTPException but an array of
- * validation objects for a 422; render both as text so no error surfaces
- * as "[object Object]". */
-function errorText(detail: unknown, fallback: string): string {
+/** A failed gateway call that keeps what the server said: the status, for
+ * callers that branch on it, and `detail` as sent. `message` is `detail`
+ * rendered as text. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(status: number, detail: unknown, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+/** FastAPI's `detail` is a string for HTTPException, an array of validation
+ * objects for a 422, and an object for the structured errors (tenant
+ * resolution's `{error, message, ...}`). Render all three as text so no error
+ * surfaces as "[object Object]". */
+export function errorText(detail: unknown, fallback: string): string {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
     const msgs = detail
       .map((d) => (d && typeof d === "object" && "msg" in d ? String(d.msg) : null))
       .filter((m): m is string => m !== null);
     if (msgs.length > 0) return msgs.join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    const record = detail as Record<string, unknown>;
+    if (typeof record.message === "string") return record.message;
+    if (typeof record.error === "string") return record.error;
   }
   return fallback;
 }
@@ -236,8 +257,13 @@ async function jsonRequest<T>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
+    const payload = await res.json().catch(() => null);
+    const detail = payload?.detail ?? null;
+    throw new ApiError(
+      res.status,
+      detail,
+      errorText(detail, `${res.status} ${res.statusText}`),
+    );
   }
   return (await res.json()) as T;
 }
@@ -907,17 +933,7 @@ export interface UserInfo {
 }
 
 export async function login(email: string, password: string): Promise<UserInfo> {
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
-  return (await res.json()) as UserInfo;
+  return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
 export async function logout(): Promise<void> {
@@ -931,10 +947,151 @@ export async function fetchMe(): Promise<UserInfo | null> {
   return fetchJson<UserInfo>("/auth/me");
 }
 
+export type SignupMode = "default_tenant" | "invite_only" | "open";
+
 export interface AuthConfig {
   password_login_enabled: boolean;
   oidc_enabled: boolean;
   oidc_provider_label: string | null;
+  signup_mode: SignupMode;
+}
+
+// ── Session and workspaces ──────────────────────────────────────────────────
+
+export type TenantRole = "owner" | "admin" | "member";
+
+export interface TenantMembership {
+  id: string;
+  slug: string;
+  name: string;
+  role: TenantRole;
+}
+
+export interface SessionUser {
+  id: string;
+  name: string;
+  email: string;
+  is_operator: boolean;
+}
+
+export type SessionStateName = "ready" | "needs_selection" | "needs_workspace";
+
+export interface Session {
+  user: SessionUser;
+  tenant: TenantMembership | null;
+  tenants: TenantMembership[];
+  state: SessionStateName;
+  can_create_workspace: boolean;
+  // Whether an invitation naming an e-mail is sent there by this server.
+  invite_email_enabled: boolean;
+}
+
+/** The signed-in session, or null when nobody is signed in. Any other
+ * failure throws: a server error is not the same answer as "signed out". */
+export async function fetchSession(): Promise<Session | null> {
+  try {
+    return await jsonRequest<Session>("/auth/session", "GET");
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
+  }
+}
+
+export async function createTenant(name: string): Promise<TenantMembership> {
+  return jsonRequest<TenantMembership>("/tenants", "POST", { name });
+}
+
+export async function switchTenant(tenantId: string): Promise<void> {
+  await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}/switch`, "POST");
+}
+
+export interface Member {
+  user_id: string;
+  name: string;
+  email: string;
+  role: TenantRole;
+  created_at: string;
+}
+
+export async function fetchMembers(tenantId: string): Promise<Member[]> {
+  return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
+}
+
+export async function updateMemberRole(
+  tenantId: string,
+  userId: string,
+  role: TenantRole,
+): Promise<Member> {
+  return jsonRequest<Member>(
+    `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+    "PATCH",
+    { role },
+  );
+}
+
+export async function removeMember(tenantId: string, userId: string): Promise<void> {
+  await jsonRequest(
+    `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+    "DELETE",
+  );
+}
+
+export interface Invitation {
+  id: string;
+  role: TenantRole;
+  email: string | null;
+  expires_at: string;
+  uses_remaining: number;
+  revoked_at: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export type EmailDelivery = "sent" | "not_configured" | "failed" | "not_requested";
+
+export interface CreatedInvitation extends Invitation {
+  // The plaintext token, returned once, at creation, and never again.
+  token: string;
+  email_delivery: EmailDelivery;
+}
+
+export interface CreateInvitationInput {
+  role: TenantRole;
+  email: string | null;
+  expires_in_hours: number;
+  uses_remaining: number;
+}
+
+export async function fetchInvitations(tenantId: string): Promise<Invitation[]> {
+  return jsonRequest<Invitation[]>(
+    `/tenants/${encodeURIComponent(tenantId)}/invitations`,
+    "GET",
+  );
+}
+
+export async function createInvitation(
+  tenantId: string,
+  input: CreateInvitationInput,
+): Promise<CreatedInvitation> {
+  return jsonRequest<CreatedInvitation>(
+    `/tenants/${encodeURIComponent(tenantId)}/invitations`,
+    "POST",
+    input,
+  );
+}
+
+export async function revokeInvitation(
+  tenantId: string,
+  invitationId: string,
+): Promise<void> {
+  await jsonRequest(
+    `/tenants/${encodeURIComponent(tenantId)}/invitations/${encodeURIComponent(invitationId)}`,
+    "DELETE",
+  );
+}
+
+export async function acceptInvitation(token: string): Promise<TenantMembership> {
+  return jsonRequest<TenantMembership>("/invitations/accept", "POST", { token });
 }
 
 // Unauthenticated: tells the login page which methods to offer.

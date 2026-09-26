@@ -34,7 +34,7 @@ import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, canAdminTenant } = useAuth();
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -77,7 +77,7 @@ export default function DocumentDetailPage() {
   }
 
   const canMutate =
-    !!user && (user.id === doc.owner_id || user.role === "admin");
+    !!user && (user.id === doc.owner_id || canAdminTenant);
 
   return (
     <Box>

@@ -2,6 +2,7 @@ import re
 import ssl
 import uuid
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
@@ -141,6 +142,23 @@ class SwitchConfig(BaseSettings):
     # docs/old/multi-tenancy-phase2-tenants.md, §4.
     gateway_tenant_choice_enabled: bool = False
 
+    # What a person signing in through the IdP for the first time gets.
+    #
+    # "default_tenant": joined to the deployment's one pre-existing workspace,
+    #   tenant zero. Right for a single-organisation deployment, and what every
+    #   deployment did before sign-up existed.
+    # "invite_only": an account and no workspace. They get in by accepting an
+    #   invitation; only an operator may create a workspace.
+    # "open": an account and no workspace, and they may create their own, up to
+    #   gateway_max_workspaces_per_user.
+    #
+    # Who may sign in at all is the IdP's decision, not this one: this only
+    # decides where a new account lands. Accounts an administrator creates
+    # (`POST /users`) always join that administrator's workspace.
+    gateway_signup_mode: Literal["default_tenant", "invite_only", "open"] = (
+        "default_tenant"
+    )
+
     # How many workspaces one person may own here. 0 turns `POST /tenants` into
     # a 403 outright, so this single value is both the cap and the gate.
     #
@@ -157,6 +175,24 @@ class SwitchConfig(BaseSettings):
     # an operator provisioning workspaces for other people is not that.
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
+
+    # Outbound mail for invitations addressed to an e-mail. Setting the host
+    # turns it on; any SMTP relay works. Unset, an addressed invitation is
+    # still created and the admin is told nothing was sent, so they can share
+    # the link themselves. The link is built from `frontend_base_url` — never
+    # from the request's Host header, which the requester controls.
+    gateway_smtp_host: str | None = None
+    gateway_smtp_port: int = 587
+    # "starttls" upgrades a plain connection (port 587), "tls" connects over
+    # TLS from the start (port 465), "none" is for a local relay only.
+    gateway_smtp_tls: Literal["starttls", "tls", "none"] = "starttls"
+    gateway_smtp_username: str | None = None
+    gateway_smtp_password: str | None = None
+    gateway_smtp_from: str | None = None
+    # How many e-mailed invitations one workspace may send in 24 hours. With
+    # sign-up open anyone can own a workspace, so without this the server is
+    # a relay for mail to arbitrary addresses. Operators are not limited.
+    gateway_invite_emails_per_day: int = 50
 
     # ── Logging ──────────────────────────────────────────────────────────────
     # "text" for a terminal, "json" for a log pipeline that parses fields.
@@ -611,6 +647,36 @@ class SwitchConfig(BaseSettings):
     @property
     def observability_enabled(self) -> bool:
         return self.otlp_endpoint is not None
+
+    @property
+    def invite_email_enabled(self) -> bool:
+        return bool(self.gateway_smtp_host)
+
+    @model_validator(mode="after")
+    def _validate_smtp(self) -> "SwitchConfig":
+        if self.gateway_invite_emails_per_day < 1:
+            raise ValueError(
+                "GATEWAY_INVITE_EMAILS_PER_DAY must be at least 1, got "
+                f"{self.gateway_invite_emails_per_day!r}."
+            )
+        if bool(self.gateway_smtp_username) != bool(self.gateway_smtp_password):
+            raise ValueError(
+                "GATEWAY_SMTP_USERNAME and GATEWAY_SMTP_PASSWORD must be set "
+                "together or not at all."
+            )
+        if not self.invite_email_enabled:
+            return self
+        if not self.gateway_smtp_from:
+            raise ValueError(
+                "GATEWAY_SMTP_FROM is required when GATEWAY_SMTP_HOST is set: "
+                "it is the address invitation e-mails are sent from."
+            )
+        if not self.frontend_base_url:
+            raise ValueError(
+                "FRONTEND_BASE_URL is required when GATEWAY_SMTP_HOST is set: "
+                "invitation e-mails link to the dashboard at that origin."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_max_workspaces_per_user(self) -> "SwitchConfig":

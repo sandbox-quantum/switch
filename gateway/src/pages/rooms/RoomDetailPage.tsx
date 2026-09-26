@@ -67,7 +67,7 @@ import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, canAdminTenant } = useAuth();
   const { data: room, loading, error, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -96,11 +96,11 @@ export default function RoomDetailPage() {
   const canWrite =
     !!user &&
     (user.id === room.owner_id ||
-      user.role === "admin" ||
+      canAdminTenant ||
       room.write_visibility === "public");
   // Delete is stricter — owner or admin only, never via public write.
   const canDelete =
-    !!user && (user.id === room.owner_id || user.role === "admin");
+    !!user && (user.id === room.owner_id || canAdminTenant);
 
   return (
     <Box>

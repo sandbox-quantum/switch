@@ -30,6 +30,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
@@ -58,6 +59,7 @@ def init_dependencies(
     resource_service: ResourceService,
     protocol: ProtocolService,
     install_service: MessagingInstallService | None,
+    invite_mailer: InviteMailer | None,
     config: SwitchConfig,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -79,6 +81,7 @@ def init_dependencies(
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
     _state["install_service"] = install_service
+    _state["invite_mailer"] = invite_mailer
     _state["config"] = config
 
 
@@ -240,6 +243,12 @@ def get_install_store() -> MessagingInstallStore:
     credentials are taken away, which is exactly when the service is gone.
     """
     return MessagingInstallStore()
+
+
+def get_invite_mailer() -> InviteMailer | None:
+    """None when no SMTP relay is configured: an addressed invitation is
+    still minted, and the response says nothing was sent."""
+    return _state["invite_mailer"]  # type: ignore[no-any-return]
 
 
 def get_install_service() -> MessagingInstallService | None:

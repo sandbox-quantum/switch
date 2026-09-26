@@ -124,6 +124,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.logging_config import configure_logging
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
@@ -645,6 +646,11 @@ async def run(config: SwitchConfig) -> None:
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,
+        invite_mailer=(
+            SmtpInviteMailer.from_config(config)
+            if config.invite_email_enabled
+            else None
+        ),
         config=config,
     )
 

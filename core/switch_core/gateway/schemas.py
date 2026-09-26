@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from switch_core.addressing import AddressingPolicy
 from switch_core.bridges.collaboration.models import BridgeInstallLink
@@ -677,6 +677,41 @@ class TenantCreateRequest(BaseModel):
     name: str
 
 
+class SessionStateUser(BaseModel):
+    id: str
+    name: str
+    email: str
+    # The deployment operator (`users.role == "admin"`), who administers every
+    # workspace and the deployment-wide user list.
+    is_operator: bool
+
+
+class SessionStateResponse(BaseModel):
+    """Where this session stands with respect to workspaces — the body of
+    `GET /auth/session`, readable before any workspace is selected.
+
+    `state` mirrors what tenant resolution would do with this session's claim
+    on any other request:
+
+    - "ready": a workspace resolves, and it is `tenant`.
+    - "needs_selection": the caller belongs to at least one workspace but the
+      session resolves none — no claim with several memberships, or a claim
+      naming a workspace they no longer belong to. Selecting one of `tenants`
+      (`POST /tenants/{id}/switch`) fixes it.
+    - "needs_workspace": no memberships at all. Creating a workspace (when
+      `can_create_workspace`) or accepting an invitation fixes it.
+    """
+
+    user: SessionStateUser
+    tenant: TenantMembershipResponse | None
+    tenants: list[TenantMembershipResponse]
+    state: Literal["ready", "needs_selection", "needs_workspace"]
+    can_create_workspace: bool
+    # Whether an invitation addressed to an e-mail is sent there, or only
+    # minted for the admin to share.
+    invite_email_enabled: bool
+
+
 class InvitationCreateRequest(BaseModel):
     role: str = "member"
     # None mints a shareable link; set, the invitation is addressed to one
@@ -687,6 +722,26 @@ class InvitationCreateRequest(BaseModel):
     # A year is well beyond any legitimate invitation's life.
     expires_in_hours: int = Field(default=168, gt=0, le=8760)
     uses_remaining: int = Field(default=1, ge=1)
+
+    @field_validator("email")
+    @classmethod
+    def _address_shaped(cls, value: str | None) -> str | None:
+        # Not full RFC 5322: enough that what is stored, compared against a
+        # signed-in account and put in a To header is one plausible address.
+        if value is None:
+            return None
+        address = value.strip().lower()
+        local, at, domain = address.partition("@")
+        if (
+            not at
+            or not local
+            or "." not in domain
+            or "@" in domain
+            or len(address) > 320
+            or any(c.isspace() or not c.isprintable() for c in address)
+        ):
+            raise ValueError("Not an e-mail address")
+        return address
 
 
 class InvitationAcceptRequest(BaseModel):
@@ -711,6 +766,11 @@ class InvitationCreateResponse(InvitationDetail):
     # The plaintext token. Present only here — see
     # `InvitationStore.create`, which is the one call that can hand it back.
     token: str
+    # What happened to the e-mail, so the admin knows whether to share the
+    # link themselves: "not_requested" when the invitation names no address,
+    # "not_configured" when this server has no mail relay, "failed" when the
+    # relay refused or could not be reached, "sent" otherwise.
+    email_delivery: Literal["sent", "not_configured", "failed", "not_requested"]
 
 
 class MemberDetail(BaseModel):
@@ -735,6 +795,9 @@ class AuthConfigResponse(BaseModel):
     password_login_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
+    # Where a first sign-in lands (`SwitchConfig.gateway_signup_mode`), so the
+    # page can say whether signing in also creates an account of your own.
+    signup_mode: Literal["default_tenant", "invite_only", "open"]
 
 
 class ContractRangeResponse(BaseModel):
