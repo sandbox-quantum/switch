@@ -1045,8 +1045,8 @@ export async function deleteAgent(server: SwitchServer, agentId: string): Promis
 
 /**
  * Export a room's configuration as YAML (`GET /rooms/{roomId}/yaml`). Returns
- * the raw YAML text, in the shape `POST /rooms/from-yaml` accepts, so the
- * exported file round-trips through import unchanged.
+ * the raw YAML text — the same surface `POST /rooms/from-yaml` accepts, so
+ * the exported file round-trips through import unchanged.
  *
  * Each section can be dropped via its boolean toggles (default: all included).
  */

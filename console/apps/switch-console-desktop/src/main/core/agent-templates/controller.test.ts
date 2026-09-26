@@ -1,7 +1,13 @@
 import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
-import { cloneDirectory, firstFreeDirectory, stripFrontMatter } from './agent-template-format';
-import { composeTemplateDocument, parseAgentTemplate, serverDocument } from './template-document';
+import {
+  agentTemplateRoomDocument,
+  cloneDirectory,
+  composeAgentTemplateDocument,
+  firstFreeDirectory,
+  parseAgentTemplate,
+  stripFrontMatter,
+} from './agent-template-format';
 
 const SWITCH_EXPERT = `
 version: 1
@@ -99,9 +105,9 @@ describe('stripFrontMatter', () => {
   });
 });
 
-describe('serverDocument', () => {
+describe('agentTemplateRoomDocument', () => {
   it('turns the room half into a room template with the agent as a declared param', () => {
-    const yaml = serverDocument(SWITCH_EXPERT);
+    const yaml = agentTemplateRoomDocument(SWITCH_EXPERT);
     expect(yaml).not.toBeNull();
     const doc = load(yaml!) as Record<string, unknown>;
     expect(Object.keys(doc).sort()).toEqual(['kickoff', 'params', 'room', 'version']);
@@ -116,7 +122,7 @@ describe('serverDocument', () => {
   });
 
   it('keeps params the template declares itself', () => {
-    const yaml = serverDocument(
+    const yaml = agentTemplateRoomDocument(
       'agent:\n  instructions: i\nparams:\n  topic:\n    type: string\nroom:\n  name: "{topic}"\n'
     );
     const doc = load(yaml!) as { params: Record<string, unknown> };
@@ -124,13 +130,13 @@ describe('serverDocument', () => {
   });
 
   it('is null when the template has no room', () => {
-    expect(serverDocument('agent:\n  instructions: i\n')).toBeNull();
+    expect(agentTemplateRoomDocument('agent:\n  instructions: i\n')).toBeNull();
   });
 });
 
-describe('composeTemplateDocument', () => {
+describe('composeAgentTemplateDocument', () => {
   it('inlines the persona, minus its front matter, and keeps the rest of the document', () => {
-    const out = composeTemplateDocument(
+    const out = composeAgentTemplateDocument(
       'agent:\n  name: a\n  repo: https://x/y\nroom:\n  name: r\n',
       '---\nname: a\n---\nBody.\n'
     );
@@ -142,7 +148,7 @@ describe('composeTemplateDocument', () => {
   });
 
   it('leaves inline instructions alone', () => {
-    const out = composeTemplateDocument('agent:\n  instructions: mine\n', 'other');
+    const out = composeAgentTemplateDocument('agent:\n  instructions: mine\n', 'other');
     expect((load(out) as { agent: { instructions: string } }).agent.instructions).toBe('mine');
   });
 });

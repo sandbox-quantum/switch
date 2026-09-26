@@ -13,8 +13,7 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { TemplateKind } from '@main/core/agent-templates/template-document';
-import type { TemplateSummary } from '@main/core/agent-templates/template-summary';
+import type { TemplateSummary } from '@main/core/agent-templates/controller';
 import type { RecentTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -33,7 +32,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
-import { prefillForSave } from './agent-template-data';
+import { documentKind, prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
 
 function useServerId(): string {
@@ -98,14 +97,13 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
 
-/** The card's summary line, for example "Creates 1 room and 2 agents · 4 inputs".
- * An agent template's room is optional, so its card names the agent alone. */
+/** The card's summary line, for example "Creates 1 room and 2 agents · 4 inputs". */
 function summaryLine(s: TemplateSummary): string {
   const parts: string[] = [];
-  if (s.rooms > 0 && s.kind !== 'agent') parts.push(plural(s.rooms, 'room'));
-  if (s.agents > 0) parts.push(s.kind === 'agent' ? 'an agent' : plural(s.agents, 'agent'));
+  if (s.rooms > 0) parts.push(plural(s.rooms, 'room'));
+  if (s.agents > 0) parts.push(plural(s.agents, 'agent'));
   const creates = parts.length > 0 ? `Creates ${parts.join(' and ')}` : 'Creates nothing yet';
-  const inputs = s.inputs === 0 ? 'nothing to fill in' : plural(s.inputs, 'input');
+  const inputs = s.inputs === 0 ? 'no inputs' : plural(s.inputs, 'input');
   return `${creates} · ${inputs}`;
 }
 
@@ -284,34 +282,18 @@ function RecentsSection({
 }) {
   const { navigate } = useNavigate();
   const showSaveModal = useShowModal('saveTemplateModal');
-  // Each recent with its kind, classified by the same parser as the listing.
-  const [recents, setRecents] = useState<(RecentTemplate & { kind: TemplateKind })[] | null>(null);
+  const [recents, setRecents] = useState<RecentTemplate[] | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const list = await rpc.roomTemplates.getRecents(serverId);
-        // One row per name. The same template used before and after an edit is two
-        // documents with one name, and only the newest use is offered.
-        const newest = list.filter((r, i) => list.findIndex((o) => o.name === r.name) === i);
-        const classified = await Promise.all(
-          newest.map(async (r) => ({
-            ...r,
-            kind: await rpc.agentTemplates
-              .kind({ yamlText: r.yamlText })
-              .catch(() => 'room' as const),
-          }))
-        );
-        if (!cancelled) setRecents(classified);
-      } catch {
-        if (!cancelled) setRecents([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    rpc.roomTemplates
+      .getRecents(serverId)
+      // One row per name. The same template used before and after an edit is two
+      // documents with one name, and only the newest use is offered.
+      .then((list) =>
+        setRecents(list.filter((r, i) => list.findIndex((o) => o.name === r.name) === i))
+      )
+      .catch(() => setRecents([]));
   }, [serverId]);
 
   const saveToWorkspace = async (recent: RecentTemplate) => {
@@ -339,7 +321,7 @@ function RecentsSection({
   const needle = query.trim().toLowerCase();
   const shown = (recents ?? []).filter(
     (r) =>
-      (kind === 'all' || r.kind === kind) &&
+      (kind === 'all' || documentKind(r.yamlText) === kind) &&
       (needle.length === 0 || r.name.toLowerCase().includes(needle))
   );
   if (shown.length === 0) return null;
@@ -370,7 +352,7 @@ function RecentsSection({
             >
               <span className="flex items-center gap-2 truncate">
                 {(() => {
-                  const Icon = KIND_ICON[r.kind];
+                  const Icon = KIND_ICON[documentKind(r.yamlText)];
                   return <Icon className="size-3.5 shrink-0 text-foreground-muted" />;
                 })()}
                 {r.name}
@@ -483,11 +465,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const { builtIn, onWorkspace } = useMemo(() => {
     // A bundled card is always the bundled document. Saving it creates a
     // workspace template, listed below as the user's own; the bundled card
-    // only marks that a copy exists. Names are unique per owner, so only the
-    // user's own template of that name counts as the copy.
-    const byName = new Map(
-      templates.filter((t) => meId !== null && t.ownerId === meId).map((t) => [t.name, t])
-    );
+    // only marks that a copy exists.
+    const byName = new Map(templates.map((t) => [t.name, t]));
     const builtIn: TemplateListEntry[] = bundledTemplates.map((b) => ({
       id: b.id,
       kind: kindOf(b.kind),

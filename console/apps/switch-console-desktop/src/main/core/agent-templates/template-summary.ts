@@ -60,13 +60,7 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
     doc = null;
   }
   const root = asRecord(doc) ?? {};
-  // Only params the deployer has to answer: no default to prefill from, and
-  // not marked optional. A chain default counts as a default here, since a
-  // server with the first candidate set up asks nothing.
-  const inputs = Object.values(asRecord(root.params) ?? {}).filter((spec) => {
-    const record = asRecord(spec);
-    return record?.default === undefined && record?.required !== false;
-  }).length;
+  const inputs = Object.keys(asRecord(root.params) ?? {}).length;
 
   const agentEntries: Record<string, unknown>[] = Array.isArray(root.agents)
     ? root.agents.map(asRecord).filter((a): a is Record<string, unknown> => !!a)
@@ -112,4 +106,18 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
     inputs,
     creates: roomEntries.length > 0 ? creates : [],
   };
+}
+
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+/** The card line: "Creates 1 room and 2 agents · 4 inputs". */
+export function describeSummary(s: TemplateSummary): { creates: string; inputs: string } {
+  const parts: string[] = [];
+  if (s.rooms > 0) parts.push(plural(s.rooms, 'room'));
+  if (s.agents > 0) parts.push(plural(s.agents, 'agent'));
+  const creates = parts.length > 0 ? `Creates ${parts.join(' and ')}` : 'Creates nothing yet';
+  const inputs = s.inputs === 0 ? 'no inputs' : plural(s.inputs, 'input');
+  return { creates, inputs };
 }

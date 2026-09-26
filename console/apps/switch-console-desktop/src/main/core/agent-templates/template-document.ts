@@ -1,14 +1,9 @@
 import { dump, load } from 'js-yaml';
 import {
-  CONSOLE_PARAM_TYPES,
-  type ConsoleParamType,
-} from '@shared/core/switch-servers/room-template-params';
-import {
   type AgentTemplateAddressing,
   type AgentTemplateSource,
   extractSources,
   optionalString,
-  type ParsedAgentTemplate,
   stripFrontMatter,
 } from './agent-template-format';
 
@@ -32,8 +27,6 @@ export type TemplateKind = 'agent' | 'room' | 'group';
 export type ParsedAgentEntry = {
   /** The name as written in the template, with any `{param}` still unfilled. */
   name: string | null;
-  /** How the agent is shown to people, when the template gives one. */
-  displayName: string | null;
   description: string;
   instructions: string;
   repoUrl: string | null;
@@ -45,12 +38,6 @@ export type ParsedAgentEntry = {
    * has no `provider` field; the Use page asks for one.
    */
   provider: string | null;
-  /** Where it runs: `local`, an ssh host, or a `{param}`. Null when the template has no `location` field. */
-  location: string | null;
-  /** Its working directory, or a `{param}`. Null when the template has no `directory` field. */
-  directory: string | null;
-  /** Rooms the agent is added to once it exists, by name or `{param}`. */
-  join: string[];
 };
 
 export type TemplateAgents = {
@@ -156,7 +143,6 @@ export function parseTemplateAgents(
     }
     return {
       name: optionalString(agent.name),
-      displayName: optionalString(agent.display_name),
       description: typeof agent.description === 'string' ? agent.description.trim() : '',
       instructions,
       repoUrl: optionalString(agent.repo),
@@ -165,106 +151,27 @@ export function parseTemplateAgents(
         ? (addressing as AgentTemplateAddressing)
         : null,
       provider: optionalString(agent.provider),
-      location: optionalString(agent.location),
-      directory: optionalString(agent.directory),
-      join: Array.isArray(agent.join)
-        ? agent.join.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
-        : [],
     };
   });
   return { agents, singular: !Array.isArray(doc.agents) && agents.length === 1, warnings };
 }
 
-/** How the Use page lays out what the template folds away. From the document's `form:` block. */
-export type FormOptions = {
-  advanced: {
-    /** The heading of the fold that holds the `input: advanced` and `input: fixed` params. */
-    label: string;
-    /** Whether the fold starts open. */
-    open: boolean;
-  };
-};
-
-export function formOptions(yamlText: string): FormOptions {
-  const form = asRecord(parseYaml(yamlText).form);
-  const advanced = asRecord(form?.advanced);
-  return {
-    advanced: {
-      label: optionalString(advanced?.label) ?? 'Advanced',
-      open: advanced?.open === true,
-    },
-  };
-}
-
-/**
- * The single-agent view of a document: the first agent entry and the room it
- * is put in. What the agent's settings page reads when it offers the
- * template's current instructions. Same parse as `parseTemplateAgents`.
- */
-export function parseAgentTemplate(
-  yamlText: string,
-  fallbackInstructions: string | null = null
-): ParsedAgentTemplate {
-  const doc = parseYaml(yamlText);
-  if (asRecord(doc.agent) === null) {
-    throw new Error(
-      Array.isArray(doc.agents)
-        ? 'This template creates several agents, so it has no single set of instructions to offer.'
-        : 'Template must have an "agent:" block.'
-    );
-  }
-  const { agents, warnings } = parseTemplateAgents(yamlText, fallbackInstructions);
-  const [agent] = agents;
-  if (!agent) throw new Error('Template must have an "agent:" block.');
-  const room = asRecord(doc.room);
-  return {
-    name: agent.name,
-    addressing: agent.addressing,
-    description: agent.description,
-    instructions: agent.instructions,
-    repoUrl: agent.repoUrl,
-    sources: agent.sources,
-    room: room ? { name: optionalString(room.name), kickoff: optionalString(doc.kickoff) } : null,
-    provider: agent.provider,
-    warnings,
-  };
-}
-
-function isConsoleParam(spec: unknown): boolean {
+function isProviderParam(spec: unknown): boolean {
   const record = asRecord(spec);
-  return record !== null && CONSOLE_PARAM_TYPES.includes(record.type as ConsoleParamType);
-}
-
-/** Every `{name}` placeholder written anywhere inside `node`. */
-function placeholdersIn(node: unknown, into: Set<string> = new Set()): Set<string> {
-  if (typeof node === 'string') {
-    for (const match of node.matchAll(/\{(\$?\w+)\}/g)) into.add(match[1]);
-  } else if (Array.isArray(node)) {
-    for (const item of node) placeholdersIn(item, into);
-  } else if (node !== null && typeof node === 'object') {
-    for (const [key, value] of Object.entries(node)) {
-      placeholdersIn(key, into);
-      placeholdersIn(value, into);
-    }
-  }
-  return into;
+  return record !== null && record.type === 'provider';
 }
 
 /**
  * Build the document the server receives: the room part only, in the shape
  * `POST /rooms/from-yaml` validates.
  *
- * Kept: `room:` (or `group:`, `rooms:`, `links:`), `kickoff:`, `version:`,
- * and the params the room part refers to. Dropped: the agent entries, which
- * the server does not understand; the params of a Console type (`provider`,
- * `location`, `directory`), which only the Console can answer; and any
- * param used only by an agent entry, such as the agent's name or a room it
- * joins, which the Console has already resolved. For the singular `agent:`
- * form, an `agent` param is added so the room's `{agent}` reference resolves
- * on the server.
- *
- * With `keepConsoleParams`, every declared param is kept: the Use page
- * parses this document to build its form and must see them all.
+ * Kept: `room:` (or `group:`, `rooms:`, `links:`), `params:`, `kickoff:`,
+ * `version:`. Dropped: the agent entries, which the server does not
+ * understand, and any `type: provider` param, which only the Console can
+ * answer. A param's `prefill` key is dropped too: the form has already
+ * applied it, and a server that predates the key refuses the document.
+ * For the singular `agent:` form, an `agent` param is added so the room's
+ * `{agent}` reference resolves on the server.
  *
  * Returns null when the document has no room part.
  */
@@ -277,18 +184,17 @@ export function serverDocument(
   const isGroup = doc.group !== undefined || Array.isArray(doc.rooms);
   if (!room && !isGroup) return null;
 
-  const usedByRooms = placeholdersIn({
-    room: doc.room,
-    group: doc.group,
-    rooms: doc.rooms,
-    links: doc.links,
-    kickoff: doc.kickoff,
-  });
+  // The Use page also parses this document to build its form, and the form
+  // must show provider params. Only the copy sent to the server drops them.
   const declared = Object.fromEntries(
-    Object.entries(asRecord(doc.params) ?? {}).filter(
-      ([name, spec]) =>
-        options.keepConsoleParams || (!isConsoleParam(spec) && usedByRooms.has(name))
-    )
+    Object.entries(asRecord(doc.params) ?? {})
+      .filter(([, spec]) => options.keepConsoleParams || !isProviderParam(spec))
+      .map(([name, spec]) => {
+        const record = asRecord(spec);
+        if (record === null || record.prefill === undefined) return [name, spec];
+        const { prefill: _prefill, ...rest } = record;
+        return [name, rest];
+      })
   );
   const params: Record<string, unknown> =
     asRecord(doc.agent) !== null && !Array.isArray(doc.agents)
@@ -315,15 +221,14 @@ export function serverDocument(
  * Replace agent names in the server document.
  *
  * `replacements` maps a name as written in the template (`{team}-triager`)
- * to the name the agent has, for the slots whose name differs: the deployer
+ * to the name the agent has. Two situations need this: the deployer
  * chose an existing agent for that slot instead of creating one, or the
- * name carried a param the Console filled in itself.
+ * intended name was taken and the agent was created as `name-2`.
  *
  * Every place a room refers to an agent is updated: the `agents:` list, the
- * keys of `aliases:`, and mentions inside `kickoff:` text. In kickoff text a
- * name is replaced only as a whole word, with or without a leading `@`, so
- * renaming `helper` leaves `helper-bot` alone and a mention still names an
- * agent that exists.
+ * keys of `aliases:`, and mentions inside `kickoff:` text. In kickoff text
+ * the name is replaced wherever it occurs, with or without a leading `@`,
+ * so a mention still names an agent that exists.
  */
 export function substituteAgentSlots(
   coreYaml: string,
@@ -332,22 +237,11 @@ export function substituteAgentSlots(
   const doc = parseYaml(coreYaml);
   const rename = (name: unknown) =>
     typeof name === 'string' && Object.hasOwn(replacements, name) ? replacements[name] : name;
-  // One pass over the text, longest name first so `{team}-ab` is matched
-  // before `{team}-a`, and a name only counts when neither neighbour can
-  // continue an agent name: `my-helper` is not `helper`. A dot continues a
-  // name only when a name character follows it, so "@helper." at the end of
-  // a sentence still matches and `helper._bot` is left alone.
-  const names = Object.keys(replacements).sort((a, b) => b.length - a.length);
-  const pattern =
-    names.length > 0
-      ? new RegExp(
-          `(?<![A-Za-z0-9_.-])(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])`,
-          'g'
-        )
-      : null;
   const inText = (text: unknown) => {
-    if (typeof text !== 'string' || pattern === null) return text;
-    return text.replace(pattern, (name) => replacements[name]);
+    if (typeof text !== 'string') return text;
+    let out = text;
+    for (const [from, to] of Object.entries(replacements)) out = out.split(from).join(to);
+    return out;
   };
   const rooms = [asRecord(doc.room), ...(Array.isArray(doc.rooms) ? doc.rooms.map(asRecord) : [])];
   for (const room of rooms) {
@@ -362,6 +256,33 @@ export function substituteAgentSlots(
     if (room.kickoff !== undefined) room.kickoff = inText(room.kickoff);
   }
   if (doc.kickoff !== undefined) doc.kickoff = inText(doc.kickoff);
+  return dump(doc, { lineWidth: -1 });
+}
+
+/**
+ * Remove params the deployer left empty from the server document, both the
+ * declaration under `params:` and every room field set to `{name}`.
+ *
+ * This exists for `bridge` params. The server treats a missing `bridge:` as
+ * "use the default messaging app", so leaving the input empty should produce
+ * a room with no `bridge:` field rather than a validation error.
+ */
+export function dropUnsetParams(coreYaml: string, names: string[]): string {
+  if (names.length === 0) return coreYaml;
+  const doc = parseYaml(coreYaml);
+  const params = asRecord(doc.params);
+  if (params) {
+    for (const name of names) delete params[name];
+    if (Object.keys(params).length === 0) delete doc.params;
+  }
+  const placeholders = new Set(names.map((n) => `{${n}}`));
+  const rooms = [asRecord(doc.room), ...(Array.isArray(doc.rooms) ? doc.rooms.map(asRecord) : [])];
+  for (const room of rooms) {
+    if (!room) continue;
+    for (const [key, value] of Object.entries(room)) {
+      if (typeof value === 'string' && placeholders.has(value)) delete room[key];
+    }
+  }
   return dump(doc, { lineWidth: -1 });
 }
 

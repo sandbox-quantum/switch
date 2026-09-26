@@ -2,9 +2,8 @@ import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import {
   composeTemplateDocument,
-  formOptions,
   serverDocument,
-  parseAgentTemplate,
+  dropUnsetParams,
   parseTemplateAgents,
   substituteAgentSlots,
   templateKind,
@@ -104,35 +103,24 @@ describe('serverDocument', () => {
     expect(Object.keys(doc.params)).toEqual(['team', 'provider', 'bridge']);
   });
 
-  it('drops params only an agent entry reads, and every Console type', () => {
+  it('drops prefill, which a server that predates the key refuses', () => {
     const doc = load(
       serverDocument(
         [
           'params:',
-          '  name:',
-          '    type: string',
-          '    default: Expert',
-          '  where:',
-          '    type: room',
-          '    default: [$new]',
-          '  location:',
-          '    type: location',
-          '    default: local',
           '  bridge:',
           '    type: bridge',
-          '    default: [$first]',
-          'agent:',
-          '  display_name: "{name}"',
-          '  location: "{location}"',
-          '  join: ["{where}"]',
+          '    description: Where the room lives',
+          '    prefill: first',
           'room:',
-          '  name: "Ask {agent}"',
+          '  name: n',
+          '  description: d',
           '  bridge: "{bridge}"',
-        ].join('\n')
+        ].join('\n'),
+        { keepConsoleParams: true }
       ) ?? ''
     ) as { params: Record<string, unknown> };
-    expect(Object.keys(doc.params)).toEqual(['agent', 'bridge']);
-    expect(doc.params.bridge).toEqual({ type: 'bridge', default: ['$first'] });
+    expect(doc.params.bridge).toEqual({ type: 'bridge', description: 'Where the room lives' });
   });
 
   it('declares {agent} for a lone agent', () => {
@@ -183,59 +171,24 @@ describe('substituteAgentSlots kickoffs', () => {
   });
 });
 
+describe('dropUnsetParams', () => {
+  it('removes the declaration and the room fields that read it', () => {
+    const out = load(
+      dropUnsetParams(
+        'params:\n  bridge:\n    type: bridge\n  team:\n    type: string\nroom:\n  name: "{team}"\n  bridge: "{bridge}"\n',
+        ['bridge']
+      )
+    ) as { params: Record<string, unknown>; room: Record<string, unknown> };
+    expect(Object.keys(out.params)).toEqual(['team']);
+    expect(out.room).toEqual({ name: '{team}' });
+  });
+});
+
 describe('composeTemplateDocument', () => {
   it('fills every agent missing instructions', () => {
     const out = load(
       composeTemplateDocument('agents:\n  - name: a\n  - name: b\n    instructions: own\n', 'P')
     ) as { agents: { instructions: string }[] };
     expect(out.agents.map((a) => a.instructions)).toEqual(['P', 'own']);
-  });
-});
-
-describe('substituteAgentSlots: whole names', () => {
-  it('leaves a longer name alone when a shorter one that starts it is renamed', () => {
-    const core =
-      'room:\n  name: r\n  agents: [helper, helper-bot]\nkickoff: "@helper-bot please brief @helper."\n';
-    const out = load(substituteAgentSlots(core, { helper: 'bob' })) as {
-      room: { agents: string[] };
-      kickoff: string;
-    };
-    expect(out.room.agents).toEqual(['bob', 'helper-bot']);
-    expect(out.kickoff).toBe('@helper-bot please brief @bob.');
-  });
-
-  it('renames both when both change, whichever order the map lists them', () => {
-    const core = 'room:\n  name: r\n  agents: ["{t}-a", "{t}-ab"]\nkickoff: "@{t}-a and @{t}-ab"\n';
-    for (const map of [
-      { '{t}-a': 'x-a', '{t}-ab': 'x-ab' },
-      { '{t}-ab': 'x-ab', '{t}-a': 'x-a' },
-    ]) {
-      const out = load(substituteAgentSlots(core, map)) as { kickoff: string };
-      expect(out.kickoff).toBe('@x-a and @x-ab');
-    }
-  });
-
-  it('leaves a name that ends in the renamed one alone, and a dotted one too', () => {
-    const core =
-      'room:\n  name: r\n  agents: [helper]\nkickoff: "@my-helper, @helper._bot and @helper."\n';
-    const out = load(substituteAgentSlots(core, { helper: 'bob' })) as { kickoff: string };
-    expect(out.kickoff).toBe('@my-helper, @helper._bot and @bob.');
-  });
-
-  it('has no single-agent view of a document with several agents', () => {
-    expect(() => parseAgentTemplate('agents:\n  - name: a\n    instructions: i\n')).toThrow(
-      /several agents/
-    );
-  });
-});
-
-describe('formOptions', () => {
-  it('reads the advanced fold settings and falls back to a folded "Advanced"', () => {
-    expect(
-      formOptions('form:\n  advanced:\n    label: More\n    open: true\nroom:\n  name: r\n')
-    ).toEqual({ advanced: { label: 'More', open: true } });
-    expect(formOptions('room:\n  name: r\n')).toEqual({
-      advanced: { label: 'Advanced', open: false },
-    });
   });
 });

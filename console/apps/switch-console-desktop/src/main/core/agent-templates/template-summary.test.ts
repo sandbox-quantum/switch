@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { summarizeTemplate, type TemplateSummary } from './template-summary';
+import { describeSummary, summarizeTemplate, type TemplateSummary } from './template-summary';
 
 const counts = ({ creates: _creates, ...rest }: TemplateSummary) => rest;
 
@@ -13,6 +13,10 @@ room:
   agents: ["{agent}", helper]
 `);
     expect(counts(s)).toEqual({ kind: 'agent', rooms: 1, agents: 1, inputs: 0 });
+    expect(describeSummary(s)).toEqual({
+      creates: 'Creates 1 room and 1 agent',
+      inputs: 'no inputs',
+    });
   });
 
   it('counts an agent template without a room as one agent', () => {
@@ -35,6 +39,8 @@ room:
   agents: ["{red}", "{blue}", judge]
 `);
     expect(counts(s)).toEqual({ kind: 'room', rooms: 1, agents: 0, inputs: 3 });
+    expect(describeSummary(s).creates).toBe('Creates 1 room');
+    expect(describeSummary(s).inputs).toBe('3 inputs');
   });
 
   it('counts a rooms-only group by its rooms', () => {

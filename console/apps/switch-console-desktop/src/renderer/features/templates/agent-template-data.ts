@@ -1,6 +1,9 @@
-import type { ParsedAgentTemplate } from '@main/core/agent-templates/agent-template-format';
-import type { ParsedAgentEntry, TemplateKind } from '@main/core/agent-templates/template-document';
-import type { TemplateSummary } from '@main/core/agent-templates/template-summary';
+import type {
+  ParsedAgentEntry,
+  ParsedAgentTemplate,
+  TemplateKind,
+  TemplateSummary,
+} from '@main/core/agent-templates/controller';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
@@ -41,7 +44,7 @@ export async function agentTemplateFromContent(
 ): Promise<AgentTemplate> {
   const parsed = await rpc.agentTemplates.parse({ yamlText: content, instructions });
   const roomYaml = parsed.room
-    ? await rpc.agentTemplates.serverDocument({ yamlText: content })
+    ? await rpc.agentTemplates.roomDocument({ yamlText: content })
     : null;
   return {
     name: templateName,
@@ -127,17 +130,23 @@ export type LoadedTemplate = {
   document: string;
 };
 
+/** Classify a document from its top-level keys alone, without parsing the YAML. */
+export function documentKind(yamlText: string): TemplateKind {
+  if (/^group:/m.test(yamlText) || /^rooms:/m.test(yamlText)) return 'group';
+  if (/^agents:/m.test(yamlText)) return 'group';
+  if (/^agent:\s*$/m.test(yamlText) || /^agent:\s+\S/m.test(yamlText)) return 'agent';
+  return 'room';
+}
+
 /**
  * Load one template by the id the listing gave it: a bundled id, or a registry
- * row id. A bundled template also records whether the signed-in user saved a
- * copy of it on the workspace, and a workspace row of theirs records which
- * built-in it copies, so the page can say either. Names are unique only per
- * owner, so someone else's template of the same name is not a copy.
+ * row id. A bundled template also records whether a copy of it is saved on
+ * the workspace, and a workspace row records which built-in it copies, so
+ * the page can say either.
  */
 export async function loadTemplateById(
   serverId: string,
-  templateId: string,
-  meId: string | null
+  templateId: string
 ): Promise<LoadedTemplate> {
   const bundled = findBundledTemplate(templateId);
   let name: string;
@@ -149,7 +158,7 @@ export async function loadTemplateById(
   if (bundled) {
     savedCopy =
       (await rpc.switchServers.listTemplates({ serverId }).catch(() => [])).find(
-        (t) => t.name === bundled.name && meId !== null && t.ownerId === meId
+        (t) => t.name === bundled.name
       ) ?? null;
     name = bundled.name;
     description = bundled.description;
@@ -166,19 +175,11 @@ export async function loadTemplateById(
     description = detail.description;
     document = definition;
     server = summary;
-    copyOf =
-      meId !== null && detail.ownerId === meId
-        ? (bundledTemplates.find((b) => b.name === detail.name) ?? null)
-        : null;
+    copyOf = bundledTemplates.find((b) => b.name === detail.name) ?? null;
   }
   const kind = await rpc.agentTemplates.kind({ yamlText: document });
   const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
-  // Every param, the Console's own types included, so the Inputs table lists
-  // what the Use page asks for and what the card counts.
-  const coreYaml = await rpc.agentTemplates.serverDocument({
-    yamlText: document,
-    keepConsoleParams: true,
-  });
+  const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText: document });
   const room = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
   const summary = await rpc.agentTemplates.summarize({ yamlText: document });
   return {
