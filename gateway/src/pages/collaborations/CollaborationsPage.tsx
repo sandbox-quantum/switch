@@ -38,8 +38,7 @@ const STATUS_COLOR: Record<string, "success" | "error" | "default"> = {
 };
 
 export default function CollaborationsPage() {
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { canAdminTenant: isAdmin } = useAuth();
   const { data: bridges, loading, refetch } = useBridges();
   const [deleteTarget, setDeleteTarget] = useState<BridgeDetail | null>(null);
   const [deleting, setDeleting] = useState(false);

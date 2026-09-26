@@ -35,8 +35,7 @@ import RegisterAgentDialog from "./RegisterAgentDialog";
 
 export default function AgentsPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { user, canAdminTenant: isAdmin } = useAuth();
   const { data: agents, loading, refetch } = useAgents();
   const [deleteTarget, setDeleteTarget] = useState<AgentSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
