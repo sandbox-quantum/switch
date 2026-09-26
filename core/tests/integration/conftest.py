@@ -76,7 +76,6 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_store import TenantStore
-from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
@@ -558,7 +557,6 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             config=config,
             room_store=session_env.room_store,
             message_store=session_env.message_store,
-            usage_store=UsageStore(),
             media_store=session_env.media_store,
             listener=message_listener,
             invites=invites,

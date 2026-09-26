@@ -3,17 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import update
 
 from switch_core.addressing import owner_only_policy
-from switch_core.db.models import ApprovalRequest, TenantUsage
+from switch_core.db.models import ApprovalRequest
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
     Question,
     QuestionOption,
     SwitchUser,
-    TokenSpend,
 )
 from switch_core.sessions.contract import Answer, QuestionsResult
 from switch_core.sessions.errors import SessionError
@@ -65,7 +64,6 @@ def _step(**overrides):
         thread_id=None,
         message_id=None,
         occurred_at=datetime(2026, 9, 23, 12, 0, tzinfo=UTC),
-        usage=[],
     )
     values.update(overrides)
     return values
@@ -118,86 +116,6 @@ async def test_a_step_is_upserted_by_revision_and_announced_by_turn(service, cha
     assert (step.revision, step.status, step.text) == (2, "completed", "done")
     announced = await changes.expect([("activity", "turn-1"), ("activity", "turn-1")])
     assert all(change.row is None for change in announced)
-
-
-def _turn(turn_id: str, revision: int, status: str, usage=()):
-    return _step(
-        turn_id=turn_id,
-        item_id="turn",
-        kind="turn",
-        revision=revision,
-        status=status,
-        title="",
-        text="",
-        usage=list(usage),
-    )
-
-
-async def _turns_counted(session_factory) -> int:
-    async with session_factory() as db:
-        rows = await db.scalars(
-            select(TenantUsage.amount).where(TenantUsage.metric == "turns")
-        )
-        return sum(rows)
-
-
-async def test_a_turn_is_counted_once_when_first_reported(service, session_factory):
-    # A turn is spent once it exists: its later statuses, a retried report and
-    # its steps are the same turn, and one that errors still cost model time.
-    await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "running"))
-    await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "running"))
-    await service.report_item(AGENT, SESSION, **_step(revision=2))
-    await service.report_item(AGENT, SESSION, **_turn("turn-1", 3, "error"))
-    assert await _turns_counted(session_factory) == 1
-
-    await service.report_item(AGENT, SESSION, **_turn("turn-2", 4, "completed"))
-    assert await _turns_counted(session_factory) == 2
-
-
-def _spend(model: str, input_tokens: int) -> TokenSpend:
-    return TokenSpend(
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=1,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-    )
-
-
-async def _tokens_counted(session_factory) -> list[tuple[str, str, int]]:
-    async with session_factory() as db:
-        rows = await db.execute(
-            select(TenantUsage.metric, TenantUsage.model, TenantUsage.amount).where(
-                TenantUsage.metric != "turns"
-            )
-        )
-        return sorted(tuple(row) for row in rows)
-
-
-async def test_a_turns_tokens_are_counted_once_when_it_first_ends(
-    service, session_factory
-):
-    spent = [_spend("small", 7), _spend("big", 10)]
-    await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "running"))
-    await service.report_item(AGENT, SESSION, **_turn("turn-1", 2, "completed", spent))
-    # A retried report, and a later revision of an ended turn, spend nothing new.
-    await service.report_item(AGENT, SESSION, **_turn("turn-1", 2, "completed", spent))
-    await service.report_item(
-        AGENT, SESSION, **_turn("turn-1", 3, "interrupted", spent)
-    )
-    assert await _tokens_counted(session_factory) == [
-        ("input_tokens", "big", 10),
-        ("input_tokens", "small", 7),
-        ("output_tokens", "big", 1),
-        ("output_tokens", "small", 1),
-    ]
-
-
-async def test_usage_on_a_turn_that_has_not_ended_is_refused(service):
-    with pytest.raises(SessionError, match="ended turn"):
-        await service.report_item(
-            AGENT, SESSION, **_turn("turn-1", 1, "running", [_spend("big", 1)])
-        )
 
 
 async def test_a_turns_steps_are_read_in_the_order_first_reported(service):

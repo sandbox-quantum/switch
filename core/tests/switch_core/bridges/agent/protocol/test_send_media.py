@@ -26,7 +26,6 @@ class _FakeClient:
         mimetype: str,
         size: int,
         *,
-        metered: bool,
         msgtype: str,
         caption: str | None = None,
         thread_root_id: str | None = None,
@@ -39,7 +38,6 @@ class _FakeClient:
                 "filename": filename,
                 "mimetype": mimetype,
                 "size": size,
-                "metered": metered,
                 "msgtype": msgtype,
                 "caption": caption,
                 "thread_root_id": thread_root_id,
@@ -60,7 +58,7 @@ def _build_service(client: _FakeClient, *, max_bytes: int = 100) -> ProtocolServ
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
     svc.connections = ConnectionRegistry()
-    svc.require_room_poster = _require  # type: ignore[assignment]
+    svc.require_room_member = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
         get_by_agent_id=lambda agent_id: client
     )
@@ -90,7 +88,6 @@ async def test_send_media_uploads_and_posts_image() -> None:
     sent = client.sends[0]
     assert sent["room_id"] == "!room"
     assert sent["msgtype"] == "m.image"
-    assert sent["metered"] is True
     assert sent["caption"] is None
     assert sent["thread_root_id"] is None
     # A lone attachment carries no group marker.
