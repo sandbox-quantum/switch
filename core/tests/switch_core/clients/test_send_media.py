@@ -54,7 +54,6 @@ async def test_send_media_with_caption_passes_caption_and_filename_through() -> 
         1234,
         msgtype="m.image",
         caption="look at this",
-        metered=True,
     )
 
     assert event_id == "$fake1"
@@ -76,13 +75,7 @@ async def test_send_media_without_caption_sends_no_caption() -> None:
     client = _client(transport)
 
     await client.send_media(
-        "!room",
-        "mxc://s/abc",
-        "cat.png",
-        "image/png",
-        1234,
-        msgtype="m.image",
-        metered=True,
+        "!room", "mxc://s/abc", "cat.png", "image/png", 1234, msgtype="m.image"
     )
 
     sent = transport.sent_media[0]
@@ -94,13 +87,7 @@ async def test_send_media_returns_none_when_the_transport_rejects_it() -> None:
     client = _client(FakeTransport(fail_send="nope"))
 
     result = await client.send_media(
-        "!room",
-        "mxc://s/abc",
-        "cat.png",
-        "image/png",
-        1234,
-        msgtype="m.image",
-        metered=True,
+        "!room", "mxc://s/abc", "cat.png", "image/png", 1234, msgtype="m.image"
     )
 
     assert result is None

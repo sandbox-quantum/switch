@@ -77,20 +77,12 @@ class MessageTransport(Protocol):
         body: str,
         *,
         sender_name: str,
-        metered: bool,
         format: MessageFormat = "text",
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
     ) -> SendResult:
-        """Post a text message. Raises `TransportError` if it is not accepted.
-
-        `metered` says whether the message counts toward the tenant's usage. It
-        is false for what Switch posts on a participant's behalf — greetings,
-        command replies, automatic refusals — which the participant never chose
-        to say. It is an argument rather than something read from the content,
-        because a sender controls the content.
-        """
+        """Post a text message. Raises `TransportError` if it is not accepted."""
         ...
 
     async def send_event(
@@ -111,7 +103,6 @@ class MessageTransport(Protocol):
         size: int,
         *,
         sender_name: str,
-        metered: bool,
         msgtype: str,
         caption: str | None = None,
         thread_root_id: str | None = None,
@@ -121,7 +112,7 @@ class MessageTransport(Protocol):
 
         `group` marks this as one part of a multi-attachment message —
         `{"id": ..., "index": i, "total": n}` — for transports that cannot
-        carry several files on one event. `metered` is as for `send_message`.
+        carry several files on one event.
         """
         ...
 

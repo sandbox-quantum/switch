@@ -12,7 +12,6 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.usage_store import UsageStore
 from switch_core.messages.notify import MessageListener
 from switch_core.transport import MessageTransport
 from switch_core.transport.ephemeral import EphemeralBus
@@ -31,7 +30,6 @@ class ClientFactory:
         config: SwitchConfig,
         room_store: RoomStore,
         message_store: MessageStore,
-        usage_store: UsageStore,
         media_store: MediaStore,
         listener: MessageListener,
         invites: InviteBus,
@@ -42,7 +40,6 @@ class ClientFactory:
         self._config = config
         self._room_store = room_store
         self._message_store = message_store
-        self._usage_store = usage_store
         self._media_store = media_store
         self._listener = listener
         self._invites = invites
@@ -98,7 +95,6 @@ class ClientFactory:
             session_factory=self._session_factory,
             room_store=self._room_store,
             message_store=self._message_store,
-            usage_store=self._usage_store,
             media_store=self._media_store,
             listener=self._listener,
             invites=self._invites,

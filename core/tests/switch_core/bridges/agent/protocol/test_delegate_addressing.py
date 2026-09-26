@@ -6,22 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import AgentStatus
-from switch_core.budgets import BudgetExceeded, BudgetGuard
-from switch_core.db.models import (
-    Agent,
-    ApiKey,
-    Client,
-    Room,
-    UsageBudget,
-    UsageMetric,
-    User,
-    require_tenant_id,
-)
+from switch_core.db.models import Agent, ApiKey, Client, Room, User
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
-from switch_core.db.stores.usage_store import UsageStore
 
 
 def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
@@ -33,7 +21,6 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolServi
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
     svc.task_store = TaskStore()  # type: ignore[attr-defined]
-    svc.budget_guard = BudgetGuard(BudgetStore())  # type: ignore[attr-defined]
     # No live matrix client → delegate_task skips the custom-event send.
     svc.client_lifecycle = _NoClients()  # type: ignore[attr-defined]
 
@@ -231,57 +218,3 @@ class TestDelegateAddressingGate:
 
         result = await svc.delegate_task(req_id, room_id, perf_id, "do it", "details")
         assert result.task_id
-
-
-async def _spend_budget(session: AsyncSession, agent: Agent) -> None:
-    session.add(
-        UsageBudget(
-            agent_id=agent.id,
-            metric="turns",
-            model="",
-            amount_limit=1,
-            period_hours=24,
-        )
-    )
-    await UsageStore().record(
-        session,
-        tenant_id=require_tenant_id(),
-        metric=UsageMetric.TURNS,
-        client_id=agent.client_id,
-        model="",
-        amount=1,
-    )
-
-
-class TestDelegateBudgetGate:
-    @pytest.mark.parametrize("over_budget", ["requester", "performer"])
-    async def test_an_agent_over_its_budget_takes_no_part_in_a_delegation(
-        self, session_factory: async_sessionmaker[AsyncSession], over_budget: str
-    ) -> None:
-        svc = _service(session_factory)
-        async with session_factory() as session:
-            owner = await _make_user(session, "owner")
-            requester = await _make_agent(session, "req", owner_id=owner.id)
-            performer = await _make_agent(
-                session,
-                "perf",
-                owner_id=owner.id,
-                addressing_policy={
-                    "rules": [{"users": [], "agents": [], "owner_agents": True}]
-                },
-            )
-            room = await _make_room(
-                session, svc.room_store, [requester.id, performer.id]
-            )
-            await _spend_budget(
-                session, requester if over_budget == "requester" else performer
-            )
-            await session.commit()
-            req_id, perf_id, room_id = requester.id, performer.id, room.id
-
-        with pytest.raises(BudgetExceeded, match="has reached its budget of 1 turns"):
-            await svc.delegate_task(req_id, room_id, perf_id, "do it", "details")
-
-        async with session_factory() as session:
-            tasks = await svc.task_store.get_by_room(session, room_id)
-        assert tasks == []

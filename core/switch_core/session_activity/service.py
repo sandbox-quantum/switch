@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
@@ -26,7 +25,6 @@ from switch_core.db.models import (
     Agent,
     ApprovalRequest,
     SessionActivityItem,
-    UsageMetric,
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
@@ -40,10 +38,8 @@ from switch_core.db.stores.session_activity_store import (
     ApprovalRequestStore,
     SessionActivityStore,
 )
-from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.sessions.contract import (
-    TURN_ENDED,
     ApprovalResult,
     QuestionsResult,
     RequestResult,
@@ -57,10 +53,6 @@ MAX_OPTIONS = 10
 MAX_QUESTIONS = 50
 MAX_QUESTION_OPTIONS = 50
 MAX_CUSTOM_ANSWER_CHARS = 4000
-MAX_MODEL_CHARS = 200
-MAX_MODELS_PER_TURN = 50
-# A host counts in JavaScript numbers, exact only up to 2**53 - 1.
-MAX_TOKENS = 2**53 - 1
 # What the host sends inside a question is not truncated by the host, so it is
 # cut here to what any platform can show rather than refused.
 _QUESTION_TITLE_CHARS = 500
@@ -83,18 +75,6 @@ ITEM_STATUSES: dict[str, frozenset[str]] = {
 Decision = Literal["accept", "acceptForSession", "decline", "cancel"]
 DECISIONS: tuple[Decision, ...] = ("accept", "acceptForSession", "decline", "cancel")
 RequestKind = Literal["approval", "questions"]
-
-
-@dataclass(frozen=True)
-class TokenSpend:
-    """Tokens one model spent in a turn. `model` is empty when the provider
-    ran its default without naming it."""
-
-    model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cache_write_tokens: int
 
 
 @dataclass(frozen=True)
@@ -153,7 +133,6 @@ class SessionActivityService:
         self._sessions = session_factory
         self._approvals = ApprovalRequestStore()
         self._activity = SessionActivityStore()
-        self._usage = UsageStore()
         self._rooms = RoomStore()
         self._external_users = ExternalUserStore()
         self._addressing = AddressingResolver(
@@ -185,13 +164,8 @@ class SessionActivityService:
         thread_id: str | None,
         message_id: str | None,
         occurred_at: datetime,
-        usage: list[TokenSpend],
     ) -> bool:
-        """Record one step of a turn. False when a revision at least as new is stored.
-
-        `usage` is what the turn spent, and only a turn's own row, reported as
-        ended, carries it.
-        """
+        """Record one step of a turn. False when a revision at least as new is stored."""
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
         if status not in ITEM_STATUSES[kind]:
@@ -213,10 +187,6 @@ class SessionActivityService:
             )
         if revision < 0:
             raise SessionError("INVALID_EVENT", "A revision is never negative.")
-        if usage and not (kind == "turn" and status in TURN_ENDED):
-            raise SessionError(
-                "INVALID_EVENT", "Only an ended turn's own row carries its usage."
-            )
         if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
             raise SessionError(
                 "INVALID_EVENT",
@@ -227,14 +197,7 @@ class SessionActivityService:
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             if room_id is not None:
                 await self._require_member(db, agent_id, room_id)
-            prior_status = (
-                await self._activity.status_for_update(
-                    db, agent_id, session_id, turn_id, item_id
-                )
-                if kind == "turn"
-                else None
-            )
-            moved = await self._activity.upsert(
+            return await self._activity.upsert(
                 db,
                 SessionActivityItem(
                     tenant_id=tenant_id,
@@ -254,78 +217,6 @@ class SessionActivityService:
                     occurred_at=occurred_at,
                 ),
             )
-            if moved and kind == "turn":
-                if prior_status is None:
-                    await self._meter_turn(db, tenant_id, agent_id)
-                if status in TURN_ENDED and prior_status not in TURN_ENDED:
-                    await self._meter_tokens(db, tenant_id, agent_id, usage)
-            return moved
-
-    async def _meter_turn(
-        self, db: AsyncSession, tenant_id: str, agent_id: str
-    ) -> None:
-        """Count a turn the first time its host reports it, whatever its status.
-
-        A turn has been paid for once it exists: one that errors or is
-        interrupted still spent the model's time, so counting only the ones
-        that complete would under-report exactly the runaway loops a budget is
-        for.
-        """
-        await self._usage.record(
-            db,
-            tenant_id=tenant_id,
-            metric=UsageMetric.TURNS,
-            client_id=await self._agent_client_id(db, tenant_id, agent_id),
-            model="",
-            amount=1,
-        )
-
-    async def _meter_tokens(
-        self,
-        db: AsyncSession,
-        tenant_id: str,
-        agent_id: str,
-        usage: list[TokenSpend],
-    ) -> None:
-        """Count what a turn spent, once: when its row first reports it ended.
-
-        The counts are what the host says: a customer's own agent reports on
-        itself, which is enough for a budget the customer sets for itself.
-        """
-        if not usage:
-            return
-        client_id = await self._agent_client_id(db, tenant_id, agent_id)
-        # One agent's turns can end concurrently; upserting the counters in the
-        # same order in each keeps two of them from deadlocking.
-        for spend in sorted(usage, key=lambda s: s.model):
-            for metric, amount in (
-                (UsageMetric.INPUT_TOKENS, spend.input_tokens),
-                (UsageMetric.OUTPUT_TOKENS, spend.output_tokens),
-                (UsageMetric.CACHE_READ_TOKENS, spend.cache_read_tokens),
-                (UsageMetric.CACHE_WRITE_TOKENS, spend.cache_write_tokens),
-            ):
-                if amount > 0:
-                    await self._usage.record(
-                        db,
-                        tenant_id=tenant_id,
-                        metric=metric,
-                        client_id=client_id,
-                        model=spend.model,
-                        amount=amount,
-                    )
-
-    @staticmethod
-    async def _agent_client_id(db: AsyncSession, tenant_id: str, agent_id: str) -> str:
-        """The client an agent's usage is charged to, the identity every other
-        metric is counted against."""
-        client_id = await db.scalar(
-            select(Agent.client_id).where(
-                Agent.tenant_id == tenant_id, Agent.id == agent_id
-            )
-        )
-        if client_id is None:
-            raise SessionError("NOT_FOUND", f"Agent {agent_id} does not exist.")
-        return client_id
 
     async def turn_items(
         self, agent_id: str, session_id: str, turn_id: str
