@@ -49,8 +49,8 @@ vi.mock('@main/core/sdk-host/shared-watcher', () => ({
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({ behavior: { repoAgents: h.state.repoAgents } }),
 }));
-vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
+vi.mock('./agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
 }));
 vi.mock('./agent-location', () => ({
   getAgentLocation: vi.fn(async () => ({ sshHost: h.state.sshHost, dir: '/repo' })),
@@ -85,7 +85,10 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
     }
   },
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => unknown) =>
+    fn({ id: 'srv-1' }),
+}));
 vi.mock('@main/core/view-state/view-state-service', () => ({
   viewStateService: { del: vi.fn(async () => {}) },
 }));
@@ -333,10 +336,9 @@ describe('deleteAgent', () => {
         providerId: 'claude',
         locationId: 'loc',
         serverId: 'srv-1',
+        workspaceId: 'ws-1',
         switchAgentId: 'sw-1',
       };
-      const { getServer } = await import('@main/core/switch-servers/servers-store');
-      vi.mocked(getServer).mockResolvedValue({ id: 'srv-1' } as never);
 
       await expect(
         deleteAgent('agent-1', {
@@ -359,6 +361,7 @@ describe('deleteAgent', () => {
         providerId: 'claude',
         locationId: 'loc',
         serverId: null,
+        workspaceId: null,
         switchAgentId: null,
       };
 

@@ -6,7 +6,7 @@ import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { db } from '@main/db/client';
-import { agents } from '@main/db/schema';
+import { agents, workspaces } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentApiUrlPropagation } from '@shared/core/switch-servers/switch-servers';
@@ -155,7 +155,8 @@ async function propagateToAgent(
 }
 
 /**
- * Cascade a server's new API URL to every agent linked to it, rewriting each
+ * Cascade a server's new API URL to every agent in any of its workspaces —
+ * the URL is the server's, so all of them move together. Rewrites each
  * agent's on-disk `SWITCH_API_ENDPOINT` (local dir or remote SSH host) and the
  * DB mirror. Agents keep their token; unprovisioned agents are skipped, not
  * clobbered. Returns a per-agent summary — failures are reported, never
@@ -166,10 +167,14 @@ export async function propagateServerApiUrl(
   serverId: string,
   apiEndpoint: string
 ): Promise<AgentApiUrlPropagation[]> {
-  const rows = await db.select().from(agents).where(eq(agents.serverId, serverId));
+  const rows = await db
+    .select({ agent: agents })
+    .from(agents)
+    .innerJoin(workspaces, eq(agents.workspaceId, workspaces.id))
+    .where(eq(workspaces.serverId, serverId));
   const results: AgentApiUrlPropagation[] = [];
   for (const row of rows) {
-    results.push(await propagateToAgent(mapAgentRowToAgent(row), apiEndpoint));
+    results.push(await propagateToAgent(mapAgentRowToAgent(row.agent, serverId), apiEndpoint));
   }
   return results;
 }

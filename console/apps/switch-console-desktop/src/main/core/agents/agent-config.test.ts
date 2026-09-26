@@ -44,8 +44,8 @@ vi.mock('./getAgentById', () => ({
 vi.mock('./agent-location', () => ({
   getAgentLocation: async () => ({ id: 'loc-1', dir: '/repo', sshHost: 'vm-1' }),
 }));
-vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: async () => ({ fs: fakeFs(), close: () => {} }),
+vi.mock('./agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: async () => ({ fs: fakeFs(), close: () => {} }),
 }));
 vi.mock('./setAgentProviderConfig', () => ({
   setAgentProviderConfig: (params: unknown) => setAgentProviderConfig(params),

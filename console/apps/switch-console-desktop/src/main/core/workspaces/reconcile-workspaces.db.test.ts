@@ -1,0 +1,447 @@
+import { openFixture } from '@tooling/utils/db';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AppDb } from '@main/db/client';
+import { agents, locations, switchServers } from '@main/db/schema';
+import { workspacesChangedChannel } from '@shared/core/workspaces/workspaceEvents';
+import { isWithdrawnWorkspace } from '@shared/core/workspaces/workspaces';
+
+const mocks = vi.hoisted(() => ({
+  db: undefined as AppDb | undefined,
+}));
+
+const fetchTenants = vi.hoisted(() => vi.fn());
+const decodeJwtTenantId = vi.hoisted(() => vi.fn((_jwt: string): string | null => null));
+const getSessionCookie = vi.hoisted(() => vi.fn(async (): Promise<string | null> => null));
+const listServers = vi.hoisted(() => vi.fn(async (): Promise<{ id: string }[]> => []));
+const warn = vi.hoisted(() => vi.fn());
+const emit = vi.hoisted(() => vi.fn());
+
+vi.mock('@main/db/client', () => ({
+  get db() {
+    if (!mocks.db) throw new Error('Test database not initialized');
+    return mocks.db;
+  },
+}));
+vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
+  isManagedServerRunning: () => true,
+}));
+vi.mock('@main/core/switch-servers/gateway-client', () => ({ decodeJwtTenantId, fetchTenants }));
+vi.mock('@main/core/switch-servers/require-server', () => ({
+  requireServer: async (id: string) => ({ id, name: id }),
+}));
+vi.mock('@main/lib/events', () => ({ events: { emit } }));
+vi.mock('@main/lib/logger', () => {
+  const logger = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn(), child: () => logger };
+  return { log: logger };
+});
+
+// Mocked whole rather than in part: the module builds the encrypted secrets
+// store at import, which a test has no key for.
+vi.mock('@main/core/switch-servers/servers-store', () => ({ getSessionCookie, listServers }));
+
+const { reconcileAllWorkspaces, reconcileServerWorkspaces } =
+  await import('./reconcile-workspaces');
+const { createTenantWorkspace, ensureServerWorkspace, listWorkspacesForServer } =
+  await import('./workspaces-store');
+
+function tenant(id: string, name: string, role = 'member') {
+  return { id, slug: id, name, role };
+}
+
+describe('reconcile-workspaces', () => {
+  let fixture: Awaited<ReturnType<typeof openFixture>>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    decodeJwtTenantId.mockReturnValue(null);
+    getSessionCookie.mockResolvedValue(null);
+    fixture = await openFixture('empty');
+    mocks.db = fixture.db;
+    fixture.sqlite.pragma('foreign_keys = ON');
+    await fixture.db.insert(switchServers).values({
+      id: 'srv-1',
+      name: 'Local dev',
+      gatewayUrl: 'https://srv-1.example.com',
+      apiUrl: 'https://api-srv-1.example.com',
+    });
+    listServers.mockResolvedValue([{ id: 'srv-1' }]);
+  });
+
+  afterEach(() => {
+    fixture.close();
+    mocks.db = undefined;
+  });
+
+  /** An agent in a workspace, which is the one thing that makes it unguessable. */
+  async function attachAgent(workspaceId: string): Promise<void> {
+    await fixture.db
+      .insert(locations)
+      .values({ id: 'loc-1', name: 'repo', dir: '/repo' })
+      .onConflictDoNothing();
+    await fixture.db.insert(agents).values({
+      id: `agent-${workspaceId}`,
+      locationId: 'loc-1',
+      name: 'a',
+      providerId: 'claude',
+      workspaceId,
+    });
+  }
+
+  /**
+   * The case every install upgrading into tenancy is in: one workspace carrying
+   * every agent, and one membership it turns out to be.
+   */
+  it('claims the server’s existing workspace for its sole membership', async () => {
+    const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(1);
+    // Same row: the agents, the active selection and the saved navigation all
+    // name this id, and a replacement would detach every one of them.
+    expect(found[0]!.id).toBe(before.id);
+    expect(found[0]!.tenantId).toBe('t-1');
+    expect(found[0]!.role).toBe('owner');
+  });
+
+  /**
+   * A row is named after its server only until it is matched. After that the
+   * workspace is a tenant, the gateway is the only place it can be named or
+   * renamed, and nothing in this app offers to name one — so a local label kept
+   * here is one neither side can ever correct.
+   */
+  it('takes the gateway’s name for a workspace it has matched', async () => {
+    await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    expect((await listWorkspacesForServer('srv-1'))[0]!.name).toBe('Default');
+  });
+
+  /**
+   * Also how a name typed into the create form survives the round trip that
+   * records it failing. The workspace exists on the gateway under that name and
+   * the local row does not have it yet; the next reconcile is what closes the
+   * gap, so the name is late rather than lost.
+   */
+  it('carries a later rename on the gateway onto the row it already matched', async () => {
+    await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
+    await reconcileServerWorkspaces('srv-1');
+
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Acme Robotics')]);
+    await reconcileServerWorkspaces('srv-1');
+
+    expect((await listWorkspacesForServer('srv-1'))[0]!.name).toBe('Acme Robotics');
+  });
+
+  it('adds a workspace for a membership this install has no row for', async () => {
+    await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    getSessionCookie.mockResolvedValue('cookie');
+    decodeJwtTenantId.mockReturnValue('t-1');
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default'), tenant('t-2', 'Research')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(2);
+    expect(found.find((w) => w.tenantId === 't-1')!.name).toBe('Default');
+    expect(found.find((w) => w.tenantId === 't-2')!.name).toBe('Research');
+  });
+
+  /**
+   * What every multi-membership sign-in used to produce: the gateway refuses a
+   * scoped call from a session with several memberships and no selection, so
+   * this server has never answered one and its row holds nothing. Left behind
+   * while a row was added per membership, it appeared in the switcher as a
+   * workspace belonging to no membership at all.
+   */
+  it('gives the registration row a membership rather than leaving it belonging to none', async () => {
+    const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(1);
+    // The same row, so the active selection and the saved navigation still name
+    // something that exists.
+    expect(found[0]!.id).toBe(before.id);
+    expect(found[0]!.tenantId).toBe('t-1');
+  });
+
+  /**
+   * Which membership inherits the id the agents, the active selection and the
+   * saved navigation point at is not something to decide by coin toss. Every
+   * membership gets its own row instead, and the placeholder nothing was ever
+   * put in is dropped — the same list, arrived at the same way every time.
+   */
+  it('refuses to pick one of several memberships for the registration row', async () => {
+    const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default'), tenant('t-2', 'Research')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(2);
+    expect(found.some((w) => w.id === before.id)).toBe(false);
+    expect(found.map((w) => w.name).toSorted()).toEqual(['Default', 'Research']);
+  });
+
+  /**
+   * The cookie says which membership this row's calls have been reaching, so
+   * there is nothing to guess and the row keeps its agents and its id.
+   */
+  it('adopts the membership the session already resolves to', async () => {
+    const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    getSessionCookie.mockResolvedValue('cookie');
+    decodeJwtTenantId.mockReturnValue('t-2');
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default'), tenant('t-2', 'Research')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(2);
+    expect(found.find((w) => w.id === before.id)!.tenantId).toBe('t-2');
+  });
+
+  /**
+   * The one case that cannot be answered: agents were registered through this
+   * row, so it stands for wherever they live, and naming it the wrong
+   * membership would move them somewhere the user cannot see.
+   */
+  it('refuses to guess which membership a workspace with agents holds', async () => {
+    const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    await attachAgent(before.id);
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default'), tenant('t-2', 'Research')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found.find((w) => w.id === before.id)!.tenantId).toBeNull();
+    // Both memberships are still recorded — only the question of which one the
+    // existing row holds is left open.
+    expect(found).toHaveLength(3);
+    expect(found.some((w) => w.tenantId === 't-1')).toBe(true);
+    expect(found.some((w) => w.tenantId === 't-2')).toBe(true);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  /**
+   * The repair the short-circuit used to make impossible: once every membership
+   * has a row, the leftover registration row could never be revisited, and no
+   * later boot or sign-in could clear it.
+   */
+  it('drops an empty registration row left over once every membership has one', async () => {
+    const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    await createTenantWorkspace('srv-1', {
+      id: 't-1',
+      slug: 't-1',
+      name: 'Default',
+      role: 'owner',
+    });
+    await createTenantWorkspace('srv-1', {
+      id: 't-2',
+      slug: 't-2',
+      name: 'Research',
+      role: 'member',
+    });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default'), tenant('t-2', 'Research')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(2);
+    expect(found.some((w) => w.id === before.id)).toBe(false);
+  });
+
+  /**
+   * The boot sweep runs behind an open window that read its list before it
+   * started, and nothing else tells that window the list moved. Without this a
+   * membership gained or lost between launches stays invisible for the whole
+   * session, and the row dropped above goes on being offered in the switcher
+   * after it has gone.
+   */
+  it('announces the change so an open window re-reads the list', async () => {
+    await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    expect(emit).toHaveBeenCalledWith(workspacesChangedChannel, undefined);
+  });
+
+  /**
+   * The boot sweep is not awaited, so a sign-in lands in the middle of it. Read
+   * together, both passes see a membership with no row and both create one; the
+   * unique index then turns the loser into an error that abandons the rest of
+   * its pass, leaving the tenants it had not reached yet unmatched.
+   */
+  it('runs two passes on one server one after the other', async () => {
+    await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    getSessionCookie.mockResolvedValue('cookie');
+    decodeJwtTenantId.mockReturnValue('t-1');
+    fetchTenants.mockResolvedValue([
+      tenant('t-1', 'Default'),
+      tenant('t-2', 'Research'),
+      tenant('t-3', 'Ops'),
+    ]);
+
+    await Promise.all([reconcileServerWorkspaces('srv-1'), reconcileServerWorkspaces('srv-1')]);
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(3);
+    expect(found.map((w) => w.tenantId).toSorted((a, b) => a!.localeCompare(b!))).toEqual([
+      't-1',
+      't-2',
+      't-3',
+    ]);
+  });
+
+  it('carries a role change on a workspace it already matched', async () => {
+    const existing = await createTenantWorkspace('srv-1', {
+      id: 't-1',
+      slug: 't-1',
+      name: 'Research',
+      role: 'member',
+    });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Research', 'admin')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.id).toBe(existing.id);
+    expect(found[0]!.role).toBe('admin');
+  });
+
+  /**
+   * Deleting it would silently detach that workspace's agents. Kept, so the
+   * next call scoped to it fails and says why — and said out loud now.
+   */
+  it('keeps a workspace whose membership has been withdrawn, and says so', async () => {
+    await createTenantWorkspace('srv-1', {
+      id: 't-gone',
+      slug: 't-gone',
+      name: 'Research',
+      role: 'member',
+    });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    const gone = found.find((w) => w.tenantId === 't-gone');
+    expect(gone).toBeDefined();
+    // The role is what the switcher reads to say so before the click, rather
+    // than leaving the log file as the only place it is said.
+    expect(gone!.role).toBeNull();
+    expect(isWithdrawnWorkspace(gone!)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no longer a member'), {
+      server: 'srv-1',
+      workspace: expect.any(String),
+    });
+  });
+
+  it('restores the role when a withdrawn membership is granted again', async () => {
+    await createTenantWorkspace('srv-1', {
+      id: 't-back',
+      slug: 't-back',
+      name: 'Research',
+      role: 'admin',
+    });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
+    await reconcileServerWorkspaces('srv-1');
+
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default'), tenant('t-back', 'Research')]);
+    await reconcileServerWorkspaces('srv-1');
+
+    const back = (await listWorkspacesForServer('srv-1')).find((w) => w.tenantId === 't-back');
+    expect(isWithdrawnWorkspace(back!)).toBe(false);
+  });
+
+  // An account in no workspace at all is a server the user cannot use; saying
+  // nothing and deleting the local row would look like it had never been set up.
+  it('leaves the rows alone when the gateway reports no membership', async () => {
+    const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toEqual([before]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  /**
+   * The short-circuit for "no memberships" used to return before the withdrawal
+   * pass, so the one case where every row has been withdrawn was the one case
+   * that never marked any. The switcher and the first-run picker went on
+   * offering them, and the refusal only arrived after the click.
+   */
+  it('marks every row withdrawn when the account is left in no workspace', async () => {
+    const held = await createTenantWorkspace('srv-1', {
+      id: 't-gone',
+      slug: 't-gone',
+      name: 'Research',
+      role: 'member',
+    });
+    fetchTenants.mockResolvedValue([]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found.find((w) => w.id === held.id)!.role).toBeNull();
+    expect(found.find((w) => w.id === held.id)!.tenantId).toBe('t-gone');
+  });
+
+  it('is idempotent across launches', async () => {
+    const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
+
+    await reconcileServerWorkspaces('srv-1');
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.id).toBe(before.id);
+  });
+
+  describe('the boot sweep', () => {
+    // Asking costs a round trip that can only be refused, and the answer would
+    // be thrown away.
+    it('skips a server this install is not signed in to', async () => {
+      await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+
+      await reconcileAllWorkspaces();
+
+      expect(fetchTenants).not.toHaveBeenCalled();
+    });
+
+    // One server being down must not stop the rest from being reconciled.
+    it('carries on past a server that cannot be reached', async () => {
+      await fixture.db.insert(switchServers).values({
+        id: 'srv-2',
+        name: 'Staging',
+        gatewayUrl: 'https://srv-2.example.com',
+        apiUrl: 'https://api-srv-2.example.com',
+      });
+      await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+      await ensureServerWorkspace({ id: 'srv-2', name: 'Staging' });
+      listServers.mockResolvedValue([{ id: 'srv-1' }, { id: 'srv-2' }]);
+      getSessionCookie.mockResolvedValue('cookie');
+      fetchTenants
+        .mockRejectedValueOnce(new Error('no route to host'))
+        .mockResolvedValue([tenant('t-2', 'Default')]);
+
+      await reconcileAllWorkspaces();
+
+      expect((await listWorkspacesForServer('srv-1'))[0]!.tenantId).toBeNull();
+      expect((await listWorkspacesForServer('srv-2'))[0]!.tenantId).toBe('t-2');
+      expect(warn).toHaveBeenCalled();
+    });
+  });
+});

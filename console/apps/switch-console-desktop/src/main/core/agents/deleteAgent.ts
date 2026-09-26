@@ -11,7 +11,6 @@ import {
   deleteAgent as gatewayDeleteAgent,
   GatewayError,
 } from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type {
   TelemetryAgentRemoveFailure,
@@ -21,6 +20,7 @@ import type {
 import { agentRemoveTriggerOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { viewStateService } from '@main/core/view-state/view-state-service';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { db } from '@main/db/client';
 import { agents, sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
@@ -29,7 +29,7 @@ import type { Location } from '@shared/core/locations/locations';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
 import { agentEvents } from './agent-events';
 import { getAgentLocation } from './agent-location';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getAgentById } from './getAgentById';
 import { stopRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
@@ -101,17 +101,14 @@ function locationKindOfRow(location: Location | null): TelemetryLocationKind {
  * rather than leaving the row gone but the Switch identity orphaned.
  */
 async function deleteAgentInSwitch(agent: Agent): Promise<void> {
-  if (!agent.serverId || !agent.switchAgentId) {
+  const { workspaceId, switchAgentId } = agent;
+  if (!workspaceId || !switchAgentId) {
     throw new AgentNotLinkedToSwitchError(
-      `Agent ${agent.id} is not linked to a Switch server, so it cannot be deleted in Switch.`
+      `Agent ${agent.id} is not linked to a Switch workspace, so it cannot be deleted in Switch.`
     );
   }
-  const server = await getServer(agent.serverId);
-  if (!server) {
-    throw new AgentNotLinkedToSwitchError(`No Switch server with id ${agent.serverId}`);
-  }
 
-  await gatewayDeleteAgent(server, agent.switchAgentId);
+  await withWorkspaceSession(workspaceId, (server) => gatewayDeleteAgent(server, switchAgentId));
 }
 
 /**
@@ -126,7 +123,7 @@ async function deleteAgentInSwitch(agent: Agent): Promise<void> {
  * (visibly) rather than thrown — the credentials being torn down are already dead.
  */
 async function removeProvisionedFiles(agent: Agent, location: Location): Promise<void> {
-  const ctx = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const ctx = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
     const behavior = getPlugin(agent.providerId).behavior.repoAgents;
     if (behavior && agent.name) {

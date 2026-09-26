@@ -15,7 +15,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 
 type Props = BaseModalProps<void> & {
-  serverId: string;
+  workspaceId: string;
   roomId: string;
   roomName: string;
 };
@@ -28,7 +28,7 @@ type Props = BaseModalProps<void> & {
  * trying, so they are said before rather than reported after.
  */
 export const DeleteRoomModal = observer(function DeleteRoomModal({
-  serverId,
+  workspaceId,
   roomId,
   roomName,
   onSuccess,
@@ -47,7 +47,7 @@ export const DeleteRoomModal = observer(function DeleteRoomModal({
     setCloseGuard(true);
     setError(null);
     try {
-      await switchRoomsStore.deleteRoom(serverId, roomId);
+      await switchRoomsStore.deleteRoom(workspaceId, roomId);
       onSuccess();
     } catch (cause) {
       setError(failureText(cause, 'Could not delete the room.'));
@@ -55,7 +55,7 @@ export const DeleteRoomModal = observer(function DeleteRoomModal({
     } finally {
       setCloseGuard(false);
     }
-  }, [serverId, roomId, onSuccess, setCloseGuard]);
+  }, [workspaceId, roomId, onSuccess, setCloseGuard]);
 
   return (
     <>

@@ -35,7 +35,7 @@ const claudeRepoAgents = getPlugin('claude').behavior.repoAgents!;
 
 function importClaude(pluginFs = createPluginFs(dir)) {
   return importAgentConfig({
-    workspaceFs: pluginFs,
+    workdirFs: pluginFs,
     repoAgents: claudeRepoAgents,
     name: NAME,
     providerConfig: null,
@@ -161,7 +161,7 @@ describe('importAgentConfig', () => {
       pluginFs,
       NAME,
       await acknowledgeDefinition({
-        workspaceFs: pluginFs,
+        workdirFs: pluginFs,
         repoAgents: claudeRepoAgents,
         name: NAME,
         config: { description: 'Mine', instructions: 'Mine.' },
@@ -229,7 +229,7 @@ describe('importAgentConfig', () => {
   it('seeds a config file from the agent row for a provider without definitions', async () => {
     const pluginFs = createPluginFs(dir);
     await importAgentConfig({
-      workspaceFs: pluginFs,
+      workdirFs: pluginFs,
       repoAgents: null,
       name: NAME,
       providerConfig: {
@@ -250,7 +250,7 @@ describe('importAgentConfig', () => {
 
     expect(
       await importAgentConfig({
-        workspaceFs: pluginFs,
+        workdirFs: pluginFs,
         repoAgents: null,
         name: NAME,
         providerConfig: {

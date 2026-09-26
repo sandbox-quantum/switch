@@ -28,8 +28,9 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   setAutoSession: h.setAutoSession,
   GatewayError: class GatewayError extends Error {},
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: vi.fn(async () => ({ id: 'server-1' })),
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_id: string, fn: (server: { id: string }) => unknown) =>
+    fn({ id: 'server-1' }),
 }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-location', () => ({ getRemoteAgentLocation: async () => h.state.sshHost }));
@@ -42,7 +43,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.calls.length = 0;
   h.state.sshHost = null;
-  h.state.agent = { id: 'agent-1', serverId: 'server-1', switchAgentId: 'switch-1' };
+  h.state.agent = { id: 'agent-1', workspaceId: 'workspace-1', switchAgentId: 'switch-1' };
 });
 
 it('makes the controller spawn-capable before claiming the profile that promises a session', async () => {

@@ -342,6 +342,10 @@ function RemoveHostButton({
  */
 export const remoteHostsView = {
   MainPanel: RemoteHostsSettingsPage,
+  // A host is somewhere agents run, not something a server owns, so the page
+  // stands up with no server registered — as does the Settings tab it forwards
+  // to.
+  worksWithoutServer: true,
   canActivate: (): GuardResult => ({
     ok: false,
     redirect: 'settings',

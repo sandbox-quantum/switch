@@ -12,7 +12,7 @@ import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
  * Callers MUST invoke `close()` in a `finally` — a leaked SFTP channel
  * eventually exhausts the host's MaxSessions.
  */
-export type WorkspaceFs = {
+export type WorkdirFs = {
   /** FS rooted at the working dir — local disk or the remote repo dir. */
   fs: PluginFs;
   /** FS for user-scoped (`~/.claude`) definitions; empty for remote agents. */
@@ -34,15 +34,12 @@ const EMPTY_PLUGIN_FS: PluginFs = {
 };
 
 /**
- * Open a {@link WorkspaceFs} for a working directory identified by run location
+ * Open a {@link WorkdirFs} for a working directory identified by run location
  * (ssh host + dir) rather than an existing agent row — used at create/onboard
  * time before a row exists. Local dirs resolve on disk; remote dirs open an
  * SFTP channel to the host.
  */
-export async function resolveWorkspaceFsFor(
-  sshHost: string | null,
-  dir: string
-): Promise<WorkspaceFs> {
+export async function resolveWorkdirFsFor(sshHost: string | null, dir: string): Promise<WorkdirFs> {
   if (sshHost === null) {
     return { fs: createPluginFs(dir), homeFs: createPluginFs(homedir()), close: () => {} };
   }

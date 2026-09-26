@@ -45,6 +45,12 @@ vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: vi.fn(async () => h.server),
 }));
+vi.mock('@main/core/workspaces/workspaces-store', () => ({
+  requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
+}));
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: unknown) => unknown) => fn(h.server),
+}));
 vi.mock('@main/core/switch-servers/gateway-client', () => {
   class GatewayError extends Error {
     constructor(readonly kind: string) {
@@ -72,8 +78,8 @@ vi.mock('./setAgentAutoSession', () => ({
   reconcileAgentAutoSessionFromGateway: vi.fn(async () => {}),
 }));
 vi.mock('./write-switch-settings', () => ({ writeAgentNeutralSettings: vi.fn(async () => {}) }));
-vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: vi.fn(async () => ({ fs: {}, close: () => {} })),
+vi.mock('./agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: vi.fn(async () => ({ fs: {}, close: () => {} })),
 }));
 vi.mock('./import-agent-config', () => ({ importAgentConfig: h.importAgentConfig }));
 vi.mock('@main/core/providers/plugin-registry', () => ({

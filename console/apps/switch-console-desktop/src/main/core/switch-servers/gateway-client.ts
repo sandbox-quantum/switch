@@ -3,6 +3,7 @@ import {
   managedServerHostBlocked,
   managedServerStoppedPhase,
 } from '@main/core/managed-switch-server/managed-server-status';
+import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
@@ -26,8 +27,9 @@ import type {
   SwitchServerDeclaration,
   SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
-import { reauthenticateManagedServer, refreshSession } from './auth';
-import { getSessionCookie } from './servers-store';
+import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
+import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
+import { getSessionCookie, setSessionCookie } from './servers-store';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
 function gatewayUrl(server: SwitchServer, path: string): string {
@@ -53,6 +55,30 @@ function decodeJwtExpMs(jwt: string): number | null {
       exp?: unknown;
     };
     return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the `tenant_id` claim out of a JWT without verifying it. Returns null
+ * for a malformed token, and for a session that has selected no tenant — the
+ * gateway mints the claim as null until `/tenants/{id}/switch` is called.
+ *
+ * Unverified is the right level here: the claim only ever *selects* which
+ * workspace a call is scoped to, and the gateway re-checks membership against
+ * a live row on every request, so nothing this reads can grant access. It is
+ * read to know whether the selection already matches the workspace being
+ * addressed, or whether a switch has to happen first.
+ */
+export function decodeJwtTenantId(jwt: string): string | null {
+  const parts = jwt.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as {
+      tenant_id?: unknown;
+    };
+    return typeof payload.tenant_id === 'string' ? payload.tenant_id : null;
   } catch {
     return null;
   }
@@ -139,10 +165,40 @@ async function resolveAuthCookie(server: SwitchServer): Promise<string> {
     return renewIfExpiring(server, stored);
   }
   if (server.managed) {
-    const minted = await reauthenticateManagedServer(server);
+    const minted = await silentLogin(server);
     if (minted) return minted;
   }
   throw new GatewayError('unauthorized', 'Not signed in to this Switch server.');
+}
+
+/**
+ * Servers whose silent re-login is putting a tenant back, so the switch it makes
+ * does not try to re-login its way out of its own 401.
+ */
+const restoringTenant = new Set<string>();
+
+/**
+ * Log a managed server back in silently, and re-select the workspace the calls
+ * in flight on it were addressing.
+ *
+ * A login cookie names no tenant. Handed back on its own it would answer the
+ * rest of a workspace-scoped call with the account's default workspace —
+ * succeeding, and looking exactly like the answer that was asked for.
+ */
+async function silentLogin(server: SwitchServer): Promise<string | null> {
+  const minted = await reauthenticateManagedServer(server);
+  if (!minted) return null;
+  const tenantId = assertedTenant(server.id);
+  if (tenantId === null || restoringTenant.has(server.id)) return minted;
+  restoringTenant.add(server.id);
+  try {
+    await switchTenant(server, tenantId);
+  } finally {
+    restoringTenant.delete(server.id);
+  }
+  // `switchTenant` stores the scoped cookie; the minted one it replaced would
+  // send this very call to the wrong workspace.
+  return (await getSessionCookie(server.id)) ?? minted;
 }
 
 async function gatewayFetch(
@@ -199,7 +255,7 @@ async function gatewayFetch(
   // We hold its admin creds, so re-login and retry the call once rather than
   // bouncing the user to a sign-in screen for a password they never saw.
   if (response.status === 401 && options.authenticated && server.managed) {
-    const renewed = await reauthenticateManagedServer(server);
+    const renewed = await silentLogin(server);
     if (renewed) {
       response = await sendOnce(renewed);
     }
@@ -275,6 +331,76 @@ function mapUser(json: UserResponseJson): SwitchUser {
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
   const res = await gatewayFetch(server, '/auth/me', { authenticated: true });
   return mapUser((await res.json()) as UserResponseJson);
+}
+
+/** A tenant the signed-in user belongs to, as `GET /tenants` reports it. */
+export type RemoteTenant = {
+  id: string;
+  slug: string;
+  name: string;
+  role: WorkspaceRole;
+};
+
+function mapRole(raw: unknown): WorkspaceRole {
+  if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
+  throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
+}
+
+/**
+ * The tenants the signed-in user belongs to. Answered without a tenant being
+ * selected on the session, which is what makes it the entry point: a user with
+ * several memberships has none selected until they pick one.
+ */
+export async function fetchTenants(server: SwitchServer): Promise<RemoteTenant[]> {
+  const res = await gatewayFetch(server, '/tenants', { authenticated: true });
+  const json = (await res.json()) as Array<{
+    id: string;
+    slug: string;
+    name: string;
+    role: string;
+  }>;
+  return json.map((t) => ({ id: t.id, slug: t.slug, name: t.name, role: mapRole(t.role) }));
+}
+
+/**
+ * Create a workspace on this server, owned by the signed-in user.
+ *
+ * The gateway derives the slug from the name and refuses a name whose slug is
+ * already taken, so the caller shows that refusal rather than retrying under a
+ * name the user did not choose.
+ */
+export async function createTenant(server: SwitchServer, name: string): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/tenants', {
+    authenticated: true,
+    method: 'POST',
+    body: { name },
+  });
+  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
+  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+}
+
+/**
+ * Select a tenant for this server's session, persisting the re-minted cookie.
+ *
+ * One session holds one selected tenant, so this is what makes a call scoped to
+ * a particular workspace rather than to whichever one was picked last. The
+ * gateway verifies membership before it mints, so a refusal here is a real
+ * answer — it is raised rather than swallowed, because the alternative is
+ * issuing the caller's next request against somebody else's workspace.
+ */
+export async function switchTenant(server: SwitchServer, tenantId: string): Promise<void> {
+  const res = await gatewayFetch(server, `/tenants/${encodeURIComponent(tenantId)}/switch`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) {
+    throw new GatewayError(
+      'http',
+      `${server.name} accepted the workspace selection but returned no session cookie.`
+    );
+  }
+  await setSessionCookie(server.id, cookie);
 }
 
 /** Options for `registerKnownAgent`, matching the gateway's

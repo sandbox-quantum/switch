@@ -20,6 +20,7 @@ import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServe
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
+import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
 import { ConfirmActionDialog } from '@renderer/lib/components/confirm-action-dialog';
 import { ExternalLinkChoiceDialog } from '@renderer/lib/components/external-link-choice-dialog';
 import { UnsavedChangesDialog } from '@renderer/lib/components/unsaved-changes-dialog';
@@ -65,6 +66,10 @@ export const modalRegistry = {
   }),
   deleteSessionModal: createModal(DeleteSessionModal, { size: 'sm' }),
   addServerModal: createModal(AddServerModal, { size: 'md', dismissOnOutsideClick: false }),
+  createWorkspaceModal: createModal(CreateWorkspaceModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   addHostModal: createModal(AddHostModal, { size: 'md', dismissOnOutsideClick: false }),
   assignServerModal: createModal(AssignServerModal, { size: 'sm', dismissOnOutsideClick: false }),
   renameServerModal: createModal(RenameServerModal, {
