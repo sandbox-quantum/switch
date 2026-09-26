@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   create: vi.fn(),
   emit: vi.fn(),
   start: vi.fn(),
+  importConfig: vi.fn(),
 }));
 vi.mock('@main/core/agents/agent-events', () => ({ agentEvents: { _emit: mocks.emit } }));
 vi.mock('@main/core/agents/createAgent', () => ({ createAgent: mocks.create }));
@@ -18,6 +19,16 @@ vi.mock('@main/core/agents/remote-session-reconciler', () => ({
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: mocks.remote }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
+vi.mock('@main/core/agents/agent-location', () => ({
+  getAgentLocation: async () => ({ id: 'location', dir: '/repo', sshHost: 'vm-1' }),
+}));
+vi.mock('@main/core/agents/agent-workspace-fs', () => ({
+  resolveWorkspaceFsFor: async () => ({ fs: {}, close: () => {} }),
+}));
+vi.mock('@main/core/agents/import-agent-config', () => ({ importAgentConfig: mocks.importConfig }));
+vi.mock('@main/core/providers/plugin-registry', () => ({
+  getPlugin: () => ({ behavior: { repoAgents: { definitionPath: () => '' } } }),
+}));
 const parent = {
   id: 'parent',
   locationId: 'location',
@@ -79,4 +90,23 @@ it('surfaces server verification failure before starting the child watcher', asy
   await expect(adoptSubagent(parent, 'reviewer', 'child')).rejects.toThrow('Sign in required');
   expect(mocks.create).not.toHaveBeenCalled();
   expect(mocks.start).not.toHaveBeenCalled();
+});
+
+it('gives the subagent a config file from its own definition before creating it', async () => {
+  const order: string[] = [];
+  mocks.importConfig.mockImplementation(async () => {
+    order.push('config');
+    return true;
+  });
+  mocks.create.mockImplementation(async (value) => {
+    order.push('row');
+    return { ...value, id: 'local-child' };
+  });
+
+  await adoptSubagent(parent, 'reviewer', 'child');
+
+  expect(mocks.importConfig).toHaveBeenCalledWith(
+    expect.objectContaining({ name: 'reviewer', providerConfig: parent.providerConfig })
+  );
+  expect(order).toEqual(['config', 'row']);
 });

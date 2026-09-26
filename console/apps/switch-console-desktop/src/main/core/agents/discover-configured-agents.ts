@@ -99,13 +99,9 @@ async function definitionOwners(workspaceFs: PluginFs): Promise<Map<string, Agen
  * keyed on the provider-neutral `.switch/agents/<name>.json` credentials every
  * provider writes at create time (CHOO-1937).
  *
- * This is the counterpart to `discoverLocationAgents`, and answers a different
- * question. That one asks a provider which of *its* definitions in the directory
- * could become an agent — a Claude-only answer today, since Claude is the only
- * provider with a definition concept. This one asks which agents already *are*
- * configured here, whoever set them up and whichever provider runs them, so an
- * agent someone else onboarded on a shared host is visible to every Switch Console
- * that can reach the directory.
+ * It asks which agents already *are* configured here, whoever set them up and
+ * whichever provider runs them, so an agent someone else onboarded on a shared
+ * host is visible to every Switch Console that can reach the directory.
  *
  * Deliberately pure disk IO: it does not verify the identities against a Switch
  * server. That check needs a server the caller has chosen and belongs to the

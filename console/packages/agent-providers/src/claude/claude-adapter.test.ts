@@ -227,6 +227,22 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(bare.options().agent).toBeUndefined();
   });
 
+  it('hands a definition over directly when the caller carries one', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const definition = { description: 'Reviews diffs', prompt: 'Be careful.', model: 'opus' };
+    await adapter.startSession(startInput({ agentName: 'reviewer', agentDefinition: definition }));
+    expect(sdk.options().agent).toBe('reviewer');
+    expect(sdk.options().agents).toEqual({ reviewer: definition });
+
+    const named = createFakeSdk();
+    await new ClaudeAdapter({
+      query: named.query,
+      claudeExecutablePath: '/bin/claude',
+    }).startSession(startInput({ agentName: 'reviewer' }));
+    expect(named.options().agents).toBeUndefined();
+  });
+
   it('forwards the model and its reasoning effort, ignoring an effort it does not know', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });

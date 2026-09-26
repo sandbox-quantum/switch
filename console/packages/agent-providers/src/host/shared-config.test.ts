@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it, vi, afterEach } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { executionEnvironment, prepareSharedConfig, sharedConfigSchema } from './shared-config';
 
 afterEach(() => vi.unstubAllEnvs());
@@ -153,4 +153,85 @@ it('gives Codex the Switch skill as instructions, like the other providers', asy
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+describe('agent definitions in the launch spec', () => {
+  const base = (input: Record<string, unknown>, execution: Record<string, unknown> = {}) => ({
+    session: {
+      sessionId: 'session',
+      agentId: 'agent',
+      hostId: 'host',
+      epoch: 'epoch',
+      provider: 'claude',
+      status: 'starting',
+      connectivity: 'online',
+      pendingRequestIds: [],
+      capabilities: {
+        input: 'queue',
+        approvals: true,
+        questions: true,
+        interrupt: true,
+        reset: false,
+        compact: false,
+        modelChange: false,
+        attachmentMimeTypes: [],
+      },
+    },
+    start: {
+      provider: 'claude',
+      input: {
+        sessionId: 'session',
+        cwd: '/repo',
+        runtimeMode: 'approval-required',
+        env: {},
+        mcpServers: {},
+        ...input,
+      },
+    },
+    execution: {
+      credentialsPath: '/repo/.switch/agents/reviewer.json',
+      inheritEnv: [],
+      codexConfig: '',
+      skill: '',
+      context: '',
+      ...execution,
+    },
+  });
+
+  it('carries a definition handed over directly', () => {
+    const config = sharedConfigSchema.parse(
+      base({
+        agentName: 'reviewer',
+        agentDefinition: { description: 'Reviews diffs', prompt: 'Be careful.', maxTurns: 3 },
+      })
+    );
+    expect(config.start.input.agentDefinition).toEqual({
+      description: 'Reviews diffs',
+      prompt: 'Be careful.',
+      maxTurns: 3,
+    });
+  });
+
+  it('still reads a session saved by a Console that named a definition file', () => {
+    // Sessions relaunch from the spec they were saved with, so the old shape has
+    // to keep parsing after the host is upgraded.
+    const config = sharedConfigSchema.parse(
+      base({}, { agentDefinition: { name: 'reviewer', path: '.claude/agents/reviewer.md' } })
+    );
+    expect(config.execution?.agentDefinition).toEqual({
+      name: 'reviewer',
+      path: '.claude/agents/reviewer.md',
+    });
+  });
+
+  it('rejects a definition field the SDK would not understand', () => {
+    expect(() =>
+      sharedConfigSchema.parse(
+        base({
+          agentName: 'reviewer',
+          agentDefinition: { description: 'd', prompt: 'p', color: 'blue' },
+        })
+      )
+    ).toThrow();
+  });
 });

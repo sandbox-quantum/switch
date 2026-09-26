@@ -17,14 +17,16 @@ import { agentConfigRelativePath } from './switch-settings-paths';
  * explicitly would freeze today's defaults into every user's repository and
  * make a later change to them invisible.
  *
- * This is the source of truth for an agent's configuration. Each provider's
- * own file — a Claude Code subagent definition, a Codex profile, an OpenCode
- * config — is generated from it, so those are outputs rather than places to
- * edit. The one exception is deliberate: a hand-edited Claude Code definition
- * is read back in rather than overwritten, which `rendered` below is what
- * makes decidable.
+ * This is the source of truth for an agent's configuration, and the only one:
+ * each launch builds what its provider needs from this file directly, so
+ * nothing else on disk is generated from it or read back into it.
  */
 export type AgentConfigFile = {
+  /**
+   * What the agent is for, in one line. Claude Code carries it in the agent
+   * definition it runs as. Absent when none is set.
+   */
+  description?: string;
   /** The agent's provider-agnostic system prompt. Absent when none is set. */
   instructions?: string;
   /**
@@ -36,15 +38,15 @@ export type AgentConfigFile = {
    */
   settings?: RepoAgentAttributes;
   /**
-   * Fingerprint of the provider artifact as this app last generated it, keyed
-   * by the artifact's path relative to the working directory.
+   * Fingerprint of each provider definition this config already accounts for —
+   * as an earlier version of this app generated it, or as it was when its
+   * contents were taken over — keyed by the file's path relative to the working
+   * directory.
    *
-   * This is what makes the round trip decidable. Comparing an artifact to what
-   * the config would generate right now cannot distinguish "the config
-   * changed" from "someone edited the file"; comparing it to what was last
-   * written can. A match means the file is untouched and the config should be
-   * written out; a mismatch means it was hand-edited and those edits should be
-   * read back in.
+   * This version no longer reads or writes those files. The fingerprints are
+   * kept for the import (to tell a hand edit from a file left as generated) and
+   * for an older Switch Console sharing the directory, which reconciles the two
+   * on every read and would otherwise take a stale definition for a hand edit.
    */
   rendered?: Record<string, string>;
   /**
@@ -93,6 +95,7 @@ export function parseAgentConfigFile(raw: string): AgentConfigFile {
 
   const record = parsed as Record<string, unknown>;
   const config: AgentConfigFile = {};
+  if (typeof record.description === 'string') config.description = record.description;
   if (typeof record.instructions === 'string') config.instructions = record.instructions;
   if (isPlainObject(record.settings)) config.settings = record.settings as RepoAgentAttributes;
   const template = parseTemplateOrigin(record.template);
@@ -123,10 +126,15 @@ export function serialiseAgentConfigFile(
   unknownKeys: Record<string, unknown> = {}
 ): string {
   const out: Record<string, unknown> = { ...unknownKeys };
+  delete out.description;
   delete out.instructions;
   delete out.settings;
   delete out.rendered;
   delete out.template;
+
+  if (config.description !== undefined && config.description !== '') {
+    out.description = config.description;
+  }
 
   // Blank is how the owner says "none", and none is the absent state — the
   // value itself is written exactly as given, never trimmed, because trimming

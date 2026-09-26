@@ -6,8 +6,8 @@ import { agents } from '@main/db/schema';
  * Whether another agent in the same location already answers to `name`.
  *
  * Everything Switch Console provisions per agent is keyed by the name rather than the
- * id — `.switch/agents/<name>.json` carries the Switch token, `.claude/agents/<name>.md`
- * the definition — so two agents sharing a name in one directory share one
+ * id — `.switch/agents/<name>.json` carries the Switch token, `.switch/config/<name>.json`
+ * the configuration — so two agents sharing a name in one directory share one
  * credentials file, and whoever writes last decides which identity both of them
  * present. The gateway's own uniqueness check cannot stand in for this one: it is
  * scoped to a Switch server, and a name can be free there while taken here.

@@ -1345,6 +1345,19 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **An agent's instructions and settings can no longer be blanked or reverted
+  by the Console itself.** The agent's config file (`.switch/config/<name>.json`)
+  is now the only record: opening an agent's page never writes anything, Claude
+  Code sessions get their agent definition from the config file directly instead
+  of from `.claude/agents/<name>.md`, and that file is no longer written or read
+  back. A missing config file is reported as an error rather than treated as an
+  agent with no instructions. A one-time migration gives every existing agent a
+  config file, taking over its description and any hand edits from the old
+  definition file; attaching to an agent, or adopting a subagent, creates one
+  when it is missing. Deleting an agent's provisioned files now removes its
+  config file too, so an agent re-created under the same name starts clean.
+
 ### [0.37.0] - 2026-09-25
 
 #### Added
@@ -3067,6 +3080,11 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+#### Changed
+- Claude Code sessions accept their agent definition in the launch spec and pass
+  it to the SDK, rather than reading `.claude/agents/<name>.md` on the host.
+  Sessions saved by an earlier Console, which name the file, still relaunch.
 
 ### [1.9.10] - 2026-09-25
 
