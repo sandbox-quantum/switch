@@ -1,8 +1,27 @@
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Tenant
+
+# Postgres's default name for `tenants.slug`'s unique constraint, from the
+# migration that created the table.
+_SLUG_CONSTRAINT = "tenants_slug_key"
+
+
+class TenantSlugTaken(Exception):
+    """The slug belongs to another tenant. Nothing was written."""
+
+    def __init__(self, slug: str) -> None:
+        super().__init__(f"Tenant slug {slug!r} is taken")
+        self.slug = slug
+
+
+def _violated_constraint(err: IntegrityError) -> str | None:
+    # asyncpg's own exception, which carries the constraint name, is the
+    # cause of the DBAPI adapter's.
+    return getattr(getattr(err.orig, "__cause__", None), "constraint_name", None)
 
 
 class TenantStore:
@@ -30,7 +49,16 @@ class TenantStore:
         The session it is handed must be bound to the tenant being created:
         `tenants`' policy compares on `id`, so that binding is what satisfies
         `with check`, and no other one can.
+
+        A taken slug raises `TenantSlugTaken` — the one failure a caller can
+        answer by picking another slug. Every other integrity error propagates
+        as it is.
         """
         session.add(tenant)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError as err:
+            if _violated_constraint(err) == _SLUG_CONSTRAINT:
+                raise TenantSlugTaken(tenant.slug) from err
+            raise
         return tenant

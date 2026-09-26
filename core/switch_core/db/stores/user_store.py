@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 # would mean something other than the race this exists for.
 _MAX_ATTEMPTS = 2
 
+_LAST_TENANT_KEY = "last_tenant_id"
+
 
 class OidcIdentityConflictError(Exception):
     """An unverified OIDC login's email already belongs to a different account.
@@ -203,9 +205,17 @@ class UserStore:
         name: str,
         sub: str,
         email_verified: bool,
+        join_tenant: bool,
     ) -> User:
         """Resolve an OIDC identity to a gateway user, provisioning on first
         login (JIT).
+
+        `join_tenant` decides whether an account this creates, or links, is
+        given a membership in the tenant bound to the caller's context. With
+        it false, the account is left with none: that is how a deployment with
+        self-service sign-up hands a newcomer to onboarding — create a
+        workspace or accept an invitation — instead of placing them somewhere
+        on its own (`gateway_signup_mode`).
 
         Accounts are keyed on verified email, not on login method: a subject
         already linked to a user is returned as-is (looked up on the
@@ -249,7 +259,11 @@ class UserStore:
                 try:
                     async with session.begin_nested():
                         await self._link_identity(
-                            session, user=existing, iss=iss, sub=sub
+                            session,
+                            user=existing,
+                            iss=iss,
+                            sub=sub,
+                            join_tenant=join_tenant,
                         )
                 except IntegrityError:
                     self._raise_if_exhausted(attempt)
@@ -259,8 +273,18 @@ class UserStore:
             user = User(name=name, email=email.lower(), role="user", password_hash=None)
             try:
                 async with session.begin_nested():
-                    await self.create(session, user)
-                    await self._link_identity(session, user=user, iss=iss, sub=sub)
+                    if join_tenant:
+                        await self.create(session, user)
+                    else:
+                        session.add(user)
+                        await session.flush()
+                    await self._link_identity(
+                        session,
+                        user=user,
+                        iss=iss,
+                        sub=sub,
+                        join_tenant=join_tenant,
+                    )
             except IntegrityError:
                 self._raise_if_exhausted(attempt)
                 continue
@@ -278,7 +302,13 @@ class UserStore:
             )
 
     async def _link_identity(
-        self, session: AsyncSession, *, user: User, iss: str, sub: str
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        iss: str,
+        sub: str,
+        join_tenant: bool,
     ) -> None:
         session.add(OidcIdentity(user_id=user.id, iss=iss, sub=sub))
         await session.flush()
@@ -293,8 +323,31 @@ class UserStore:
         # Linking reaches accounts this store did not create, including any
         # that predate memberships — and an account with none can never sign
         # in again. The startup admin seeding repairs the deployment's own
-        # admin; this repairs anyone else who signs in through an IdP.
-        await self.ensure_membership(session, user)
+        # admin; this repairs anyone else who signs in through an IdP. Under
+        # self-service sign-up an account with none is not stranded — it is
+        # sent to onboarding — so there is nothing to repair.
+        if join_tenant:
+            await self.ensure_membership(session, user)
+
+    def last_tenant_id(self, user: User) -> str | None:
+        """The workspace `user` last selected, as recorded by
+        `record_last_tenant`, or None if they never have.
+
+        Only a preference: it names a tenant, it does not grant one. Whoever
+        reads it must check it against the user's current memberships, since
+        they may have been removed since it was written.
+        """
+        metadata = user.metadata_ or {}
+        value = metadata.get(_LAST_TENANT_KEY)
+        return value if isinstance(value, str) else None
+
+    async def record_last_tenant(
+        self, session: AsyncSession, user: User, tenant_id: str
+    ) -> None:
+        """Remember `tenant_id` as the workspace `user` last selected, so the
+        next sign-in lands there rather than asking again."""
+        user.metadata_ = {**(user.metadata_ or {}), _LAST_TENANT_KEY: tenant_id}
+        await session.flush()
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import OidcIdentity, User
+from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, User
 from switch_core.db.stores.user_store import (
     OidcIdentityConflictError,
     OidcIdentityRaceError,
@@ -30,6 +30,7 @@ class TestGetOrCreateOidcUser:
                 name="New",
                 sub="okta|9",
                 email_verified=True,
+                join_tenant=True,
             )
             await session.commit()
             assert user.role == "user"
@@ -54,6 +55,7 @@ class TestGetOrCreateOidcUser:
                 name="New",
                 sub="okta|10",
                 email_verified=True,
+                join_tenant=True,
             )
             await session.commit()
             assert user.email == "new.person@example.com"
@@ -70,6 +72,7 @@ class TestGetOrCreateOidcUser:
                 name="A",
                 sub="okta|1",
                 email_verified=True,
+                join_tenant=True,
             )
             await session.commit()
             first.role = "admin"
@@ -82,6 +85,7 @@ class TestGetOrCreateOidcUser:
                 name="A",
                 sub="okta|1",
                 email_verified=True,
+                join_tenant=True,
             )
             assert again.id == first.id
             assert again.role == "admin"
@@ -110,6 +114,7 @@ class TestGetOrCreateOidcUser:
                 name="Pat",
                 sub="okta|42",
                 email_verified=True,
+                join_tenant=True,
             )
             await session.commit()
 
@@ -145,6 +150,7 @@ class TestGetOrCreateOidcUser:
                 name="Pat",
                 sub="okta|43",
                 email_verified=True,
+                join_tenant=True,
             )
             await session.commit()
 
@@ -204,6 +210,7 @@ class TestGetOrCreateOidcUser:
                 name="Shared",
                 sub="okta|1",
                 email_verified=True,
+                join_tenant=True,
             )
             await session.commit()
 
@@ -214,6 +221,7 @@ class TestGetOrCreateOidcUser:
                 name="Shared",
                 sub="okta|2",
                 email_verified=True,
+                join_tenant=True,
             )
             await session.commit()
 
@@ -249,6 +257,7 @@ class TestGetOrCreateOidcUser:
                     name="Different",
                     sub="okta|1",
                     email_verified=False,
+                    join_tenant=True,
                 )
 
     async def test_identity_already_bound_elsewhere_is_never_relinked(
@@ -266,6 +275,7 @@ class TestGetOrCreateOidcUser:
                 name="Owner",
                 sub="okta|owned",
                 email_verified=True,
+                join_tenant=True,
             )
             await session.commit()
 
@@ -285,6 +295,7 @@ class TestGetOrCreateOidcUser:
                 name="Owner",
                 sub="okta|owned",
                 email_verified=True,
+                join_tenant=True,
             )
             assert again.id == owner.id
 
@@ -313,6 +324,7 @@ class TestGetOrCreateOidcUser:
                 name="Legacy",
                 sub="okta|7",
                 email_verified=True,
+                join_tenant=True,
             )
             assert got.id == legacy_user.id
 
@@ -350,6 +362,7 @@ class TestGetOrCreateOidcUser:
                 name="Admin",
                 sub="okta|8",
                 email_verified=False,
+                join_tenant=True,
             )
             assert got.id == legacy_admin.id
             assert got.role == "admin"
@@ -372,6 +385,7 @@ class TestGetOrCreateOidcUser:
                     name="Logged",
                     sub="okta|logged",
                     email_verified=True,
+                    join_tenant=True,
                 )
                 await session.commit()
 
@@ -437,6 +451,7 @@ class TestGetOrCreateOidcUser:
                 name="Winner",
                 sub="okta|always-races",
                 email_verified=True,
+                join_tenant=True,
             )
             await winner_session.commit()
 
@@ -455,6 +470,7 @@ class TestGetOrCreateOidcUser:
                     name="Loser",
                     sub="okta|always-races",
                     email_verified=True,
+                    join_tenant=True,
                 )
 
     async def test_concurrent_creation_of_the_same_identity_resolves_to_the_winner(
@@ -474,6 +490,7 @@ class TestGetOrCreateOidcUser:
                 name="Race",
                 sub="okta|race",
                 email_verified=True,
+                join_tenant=True,
             )
             await winner_session.commit()
 
@@ -498,6 +515,7 @@ class TestGetOrCreateOidcUser:
                 name="Other",
                 sub="okta|race",
                 email_verified=True,
+                join_tenant=True,
             )
             assert resolved.id == winner.id
 
@@ -518,6 +536,7 @@ class TestGetOrCreateOidcUser:
                 name="First",
                 sub="okta|first",
                 email_verified=True,
+                join_tenant=True,
             )
             await winner_session.commit()
 
@@ -540,9 +559,107 @@ class TestGetOrCreateOidcUser:
                 name="Second",
                 sub="okta|second",
                 email_verified=True,
+                join_tenant=True,
             )
             assert resolved.id == winner.id
 
             for sub in ("okta|first", "okta|second"):
                 identity = await store.get_by_oidc_identity(session, iss=_ISS, sub=sub)
                 assert identity is not None and identity.id == winner.id
+
+
+async def _membership_count(session: AsyncSession, user_id: str) -> int:
+    result = await session.execute(
+        select(TenantMember).where(TenantMember.user_id == user_id)
+    )
+    return len(result.scalars().all())
+
+
+class TestProvisioningWithoutJoiningATenant:
+    """`join_tenant=False` is how an `open` or `invite_only` server signs
+    people up: the account and its identity are made, and nothing places them
+    in a workspace. It must hold with no tenant bound at all, since that is
+    how the callback runs in those modes."""
+
+    async def test_a_new_account_gets_its_identity_and_no_membership(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            user = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="loose@example.com",
+                name="Loose",
+                sub="okta|loose",
+                email_verified=True,
+                join_tenant=False,
+            )
+            await session.commit()
+
+            again = await store.get_by_oidc_identity(
+                session, iss=_ISS, sub="okta|loose"
+            )
+            assert again is not None and again.id == user.id
+            assert await _membership_count(session, user.id) == 0
+
+    async def test_linking_an_existing_account_adds_no_membership(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            existing = User(name="Prior", email="prior@example.com", role="user")
+            session.add(existing)
+            await session.commit()
+
+            user = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="prior@example.com",
+                name="Prior",
+                sub="okta|prior",
+                email_verified=True,
+                join_tenant=False,
+            )
+            await session.commit()
+
+            assert user.id == existing.id
+            assert await _membership_count(session, user.id) == 0
+
+
+class TestLastTenant:
+    async def test_an_account_with_no_history_has_none(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            user = User(name="Fresh", email="fresh@example.com", role="user")
+            session.add(user)
+            await session.commit()
+            assert UserStore().last_tenant_id(user) is None
+
+    async def test_recording_keeps_the_rest_of_the_metadata(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            user = User(
+                name="Noted",
+                email="noted@example.com",
+                role="user",
+                metadata_={"theme": "dark"},
+            )
+            session.add(user)
+            await session.commit()
+            user_id = user.id
+
+            await store.record_last_tenant(session, user, TENANT_ZERO_ID)
+            await session.commit()
+
+        async with session_factory() as session:
+            reloaded = await session.get(User, user_id)
+            assert reloaded is not None
+            assert store.last_tenant_id(reloaded) == TENANT_ZERO_ID
+            assert reloaded.metadata_ == {
+                "theme": "dark",
+                "last_tenant_id": TENANT_ZERO_ID,
+            }

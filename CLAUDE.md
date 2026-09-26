@@ -169,8 +169,11 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   `deploy/observability/`.
 - `docs/old/multi-tenancy.md` — why Switch is multi-tenant the way it is: the
   tenant model, sign-in and onboarding, one official messaging app per
-  platform, and the phased plan the work follows. Phases 0 and 1 are built;
-  read the code, not this, for what exists today.
+  platform, and the phased plan the work follows. Phases 0 and 1 are built,
+  and most of Phase 2; read the code, not this, for what exists today.
+- `docs/old/multi-tenancy-phase2-tenants.md` — several workspaces per person:
+  how a request picks its tenant, the tenant and invitation API, workspace
+  roles, and how sign-up works (§9a)
 - `docs/old/multi-tenancy-phase1-db.md` — the Phase 1 database schema as built:
   tables, per-tenant uniqueness, and how a request's tenant is bound
 - `docs/old/rds-migration.md` — moving a deployment's Postgres to RDS: the

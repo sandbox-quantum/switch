@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import AbstractContextManager, nullcontext
 from typing import Annotated, Any
 
 import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import RedirectResponse
 
 from switch_core.config import SwitchConfig
@@ -17,9 +18,10 @@ from switch_core.db.stores.user_store import (
     OidcIdentityRaceError,
     UserStore,
 )
-from switch_core.gateway.auth import set_session_cookie
+from switch_core.gateway.auth import initial_tenant_claim, set_session_cookie
 from switch_core.gateway.dependencies import (
     get_config,
+    get_session_factory,
     get_system_session,
     get_user_store,
 )
@@ -82,6 +84,9 @@ async def oidc_callback(
     request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> RedirectResponse:
     # `get_system_session`: nobody is signed in yet, so there is no principal
@@ -171,14 +176,18 @@ async def oidc_callback(
     iss = claims.get("iss") or config.gateway_oidc_issuer_url
     if not iss:
         raise HTTPException(status_code=401, detail="OIDC token missing issuer")
-    # A first sign-in provisions the account just in time, and that account
-    # needs a tenant: a user with no membership can never sign in again (see
-    # `gateway/auth.py`). Exactly one tenant exists, and this names it rather
-    # than letting `TenantScoped`'s fallback pick it by accident — the two
-    # produce the same row today, but only one of them is a decision. Sign-up
-    # creating a tenant of its own is a later phase, and this is the line it
-    # changes.
-    with tenant_scope(TENANT_ZERO_ID):
+    # A first sign-in provisions the account just in time. Where it lands is
+    # `gateway_signup_mode`'s decision. Under "default_tenant" it joins tenant
+    # zero, named here rather than left to `TenantScoped`'s fallback, which
+    # would produce the same row by accident rather than by decision. Under
+    # the self-service modes it joins nothing: `users` and `oidc_identities`
+    # are global, so provisioning needs no tenant bound, and the newcomer is
+    # sent to onboarding to create a workspace or accept an invitation.
+    join_tenant = config.gateway_signup_mode == "default_tenant"
+    scope: AbstractContextManager[None] = (
+        tenant_scope(TENANT_ZERO_ID) if join_tenant else nullcontext()
+    )
+    with scope:
         try:
             user = await user_store.get_or_create_oidc_user(
                 session,
@@ -187,6 +196,7 @@ async def oidc_callback(
                 name=name,
                 sub=sub,
                 email_verified=verified,
+                join_tenant=join_tenant,
             )
         except OidcIdentityConflictError as exc:
             logger.warning("OIDC identity conflict: %s", exc)
@@ -208,6 +218,10 @@ async def oidc_callback(
     # back on the SPA with our own session cookie set.
     response = RedirectResponse(url=config.frontend_base_url or "/", status_code=303)
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure, None
+        response,
+        user,
+        config.jwt_secret_key,
+        config.gateway_cookie_secure,
+        await initial_tenant_claim(session_factory, user_store, user),
     )
     return response
