@@ -44,6 +44,12 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.28.1] - 2026-09-26
+
+#### Added
+- Observability: a peak `db.pool.in_use` gauge and a counter for database
+  connection-pool checkout timeouts (#560).
+
 ### [0.28.0] - 2026-09-25
 
 #### Added
