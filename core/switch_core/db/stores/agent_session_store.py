@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, literal_column, select, update
@@ -5,6 +6,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import AgentSession
+from switch_core.db.sql import any_of
 
 _CONFLICT_TARGET = [
     AgentSession.agent_id,
@@ -231,9 +233,43 @@ class AgentSessionStore:
         )
         result = await session.execute(
             select(AgentSession.agent_id)
-            .where(AgentSession.agent_id.in_(agent_ids))
+            .where(any_of(AgentSession.agent_id, agent_ids))
             .where(room_pred)
             .where(AgentSession.lifecycle == "heartbeat")
             .where(AgentSession.last_seen_at > cutoff)
         )
         return set(result.scalars().all())
+
+    async def get_live_agent_room_pairs(
+        self,
+        session: AsyncSession,
+        agent_ids: Collection[str],
+        room_ids: Collection[str],
+    ) -> set[tuple[str, str]]:
+        """`{(agent_id, room_id)}` for every live room-scoped heartbeat among
+        these agents and rooms.
+
+        The many-room form of `get_live_agent_ids` with a concrete `room_id`,
+        and it applies the same `SESSION_TTL` — asking it about one room must
+        answer exactly what that call would.
+
+        It exists because the caller that needs this asks per room in a loop.
+        The agent-detail view is the one that hurts: the Console polls it for
+        every agent it displays, and each call walked that agent's rooms
+        issuing four status queries apiece. Two of those four never depended
+        on the room at all, and the two that did differ only in which room
+        they name — so a membership list of five rooms went to the database
+        twenty times to learn what two queries can say.
+        """
+        if not agent_ids or not room_ids:
+            return set()
+
+        cutoff = datetime.now(UTC) - self.SESSION_TTL
+        result = await session.execute(
+            select(AgentSession.agent_id, AgentSession.room_id)
+            .where(any_of(AgentSession.agent_id, agent_ids))
+            .where(any_of(AgentSession.room_id, room_ids))
+            .where(AgentSession.lifecycle == "heartbeat")
+            .where(AgentSession.last_seen_at > cutoff)
+        )
+        return {(agent_id, room_id) for agent_id, room_id in result.all()}

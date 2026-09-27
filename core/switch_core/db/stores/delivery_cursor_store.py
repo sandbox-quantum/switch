@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from switch_core.db.models import DeliveryCursor
+from switch_core.db.sql import any_of
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -44,7 +45,7 @@ class DeliveryCursorStore:
         result = await session.execute(
             select(DeliveryCursor.agent_id, DeliveryCursor.last_seq).where(
                 DeliveryCursor.room_id == room_id,
-                DeliveryCursor.agent_id.in_(list(agent_ids)),
+                any_of(DeliveryCursor.agent_id, agent_ids),
             )
         )
         return {agent_id: last_seq for agent_id, last_seq in result.all()}

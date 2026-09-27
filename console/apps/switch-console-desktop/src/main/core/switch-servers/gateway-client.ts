@@ -13,6 +13,7 @@ import type {
   DeleteBridgeResult,
   LinkedIdentity,
   RemoteAgentRoom,
+  RemoteAgentRoomMembership,
   RemoteAgentSummary,
   RemoteBridge,
   RemoteBridgeType,
@@ -417,6 +418,36 @@ export async function agentExistsOnServer(server: SwitchServer, agentId: string)
     }
     throw cause;
   }
+}
+
+/**
+ * Room membership for every agent on the server, in one request.
+ *
+ * Replaces a fan-out of `GET /agents/{id}`, one per agent, on the sidebar's
+ * refresh timer — around a hundred requests a minute against the pilot, each
+ * assembling tools, models, sessions, children, per-room presence and role
+ * leases so that three fields could be read off it.
+ *
+ * Returned as a Map keyed by Switch agent id. Agents in no rooms are present
+ * with an empty array, which is what lets a caller tell "no rooms" from "not
+ * in the answer" without asking again.
+ */
+export async function fetchAgentRoomMemberships(
+  server: SwitchServer
+): Promise<Record<string, RemoteAgentRoomMembership[]>> {
+  const res = await gatewayFetch(server, '/agents/memberships', { authenticated: true });
+  const json = (await res.json()) as {
+    memberships?: Record<string, Array<{ room_id: string; room_name: string; archived: boolean }>>;
+  };
+  const out: Record<string, RemoteAgentRoomMembership[]> = {};
+  for (const [agentId, rooms] of Object.entries(json.memberships ?? {})) {
+    out[agentId] = rooms.map((r) => ({
+      roomId: r.room_id,
+      roomName: r.room_name,
+      archived: r.archived,
+    }));
+  }
+  return out;
 }
 
 export async function fetchAgentRooms(

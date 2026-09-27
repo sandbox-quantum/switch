@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import AddressingPolicy
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
+from switch_core.bridges.agent.protocol.statuses import (
+    compute_agent_statuses_for_rooms,
+)
 from switch_core.db.models import Agent, AgentSession
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -174,27 +176,31 @@ async def assemble_agent_detail(
     tools = await agent_store.get_tools(session, agent.id)
     models = await agent_store.get_models(session, agent.id)
 
-    rooms = await room_store.get_rooms_for_agent(
-        session, agent.id, include_archived=True
-    )
-    room_name_by_id = {room.id: room.name for room in rooms}
+    # Three columns rather than mapped `Room` entities: this view reads a
+    # name and an archived flag off each and nothing else.
+    rooms = await room_store.get_agent_room_memberships(session, agent.id)
+    room_name_by_id = {room_id: name for room_id, name, _ in rooms}
 
     memberships: list[AgentRoomMembership] = []
     live_connection_ids = connections.live_connection_ids()
-    for room in rooms:
-        statuses = await compute_agent_statuses(
-            session, [agent], room.id, agent_session_store, connections
-        )
-        room_role = await room_role_store.agent_room_role(
-            session, room.id, agent.id, live_connection_ids
-        )
+    # Both reads are batched across the agent's rooms rather than issued per
+    # room. This is the endpoint the Console polls for every agent it shows,
+    # and per-room it cost five queries a membership.
+    room_ids = [room_id for room_id, _, _ in rooms]
+    statuses_by_room = await compute_agent_statuses_for_rooms(
+        session, [agent], room_ids, agent_session_store, connections
+    )
+    roles_by_room = await room_role_store.agent_room_roles(
+        session, room_ids, agent.id, live_connection_ids
+    )
+    for room_id, name, archived in rooms:
         memberships.append(
             AgentRoomMembership(
-                room_id=room.id,
-                room_name=room.name,
-                archived=room.archived_at is not None,
-                status=statuses[agent.id].value,
-                room_role=room_role,
+                room_id=room_id,
+                room_name=name,
+                archived=archived,
+                status=statuses_by_room[room_id][agent.id].value,
+                room_role=roles_by_room.get(room_id),
             )
         )
 

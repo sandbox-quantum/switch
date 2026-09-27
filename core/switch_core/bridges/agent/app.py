@@ -75,6 +75,10 @@ def create_agent_bridge_app(
     api_key_cache = ApiKeyCache(
         ttl_seconds=config.agent_auth_cache_ttl_seconds,
         max_entries=config.agent_auth_cache_max_entries,
+        # The registry built just above, so a beating connection keeps its own
+        # credential resolved in memory instead of reading Postgres every
+        # third beat. See `ApiKeyCache` for why that is safe.
+        agent_is_connected=connections.is_live,
     )
 
     init_dependencies(

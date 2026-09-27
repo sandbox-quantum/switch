@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from switch_core.db.models import RoleLease, RoomRole
+from switch_core.db.sql import any_of
 
 
 class RoomRoleStore:
@@ -136,7 +137,7 @@ class RoomRoleStore:
         within seconds today, would have been held forever.
         """
         holder_connection_live = (
-            RoleLease.transport_session_id.in_(live_connection_ids)
+            any_of(RoleLease.transport_session_id, live_connection_ids)
             if live_connection_ids
             else false()
         )
@@ -266,6 +267,35 @@ class RoomRoleStore:
             .where(self._live(live_connection_ids))
         )
         return result.scalar_one_or_none()
+
+    async def agent_room_roles(
+        self,
+        session: AsyncSession,
+        room_ids: Collection[str],
+        agent_id: str,
+        live_connection_ids: Collection[str],
+    ) -> dict[str, str]:
+        """`{room_id: role_name}` for the live roles this agent holds, across
+        several rooms at once.
+
+        The many-room form of `agent_room_role`, for the agent-detail view,
+        which asked it once per room the agent belongs to. Rooms where the
+        agent holds nothing are simply absent, so a caller reads it with
+        `.get(room_id)` exactly as it read the single-room answer.
+
+        An agent may hold at most one live role per room, which is what makes
+        a flat mapping the right shape — see `acquire_lease`.
+        """
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(RoleLease.room_id, RoomRole.name)
+            .join(RoleLease, RoleLease.role_id == RoomRole.id)
+            .where(any_of(RoleLease.room_id, room_ids))
+            .where(RoleLease.agent_id == agent_id)
+            .where(self._live(live_connection_ids))
+        )
+        return {room_id: name for room_id, name in result.all()}
 
     async def acquire_lease(
         self,

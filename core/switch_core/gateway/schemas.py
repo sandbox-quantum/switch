@@ -262,6 +262,41 @@ class AgentModelSummary(BaseModel):
     description: str
 
 
+class RoomMembership(BaseModel):
+    """One room an agent belongs to — identity only, no presence.
+
+    Deliberately narrower than `AgentRoomMembership`. Switch Console refreshes
+    every agent's room list on a timer to draw its room-grouped sidebar, and
+    it reads exactly these three fields; the presence status it also received
+    was never rendered and the role never read at all. Producing them meant
+    four presence queries and a role-lease query per room per agent, so the
+    cheapest thing to send is the thing nobody asked for.
+
+    Presence is not missing from here by oversight — it reaches the Console
+    already, pushed from the agent's own sidecar, on a channel that has
+    nothing to do with this.
+    """
+
+    room_id: str
+    room_name: str
+    archived: bool
+
+
+class AgentRoomMembershipsResponse(BaseModel):
+    """Room membership for every agent in the caller's tenant, in one answer.
+
+    Keyed by agent id. An agent in no rooms is present with an empty list, so
+    a caller can tell "no rooms" from "not asked about".
+
+    Shaped per agent because that is how the membership is stored and how the
+    caller's cache is keyed. The Console immediately inverts it into a
+    room-keyed view, which is the thing it actually draws — worth knowing if
+    this ever grows a second consumer that wants it the other way round.
+    """
+
+    memberships: dict[str, list[RoomMembership]]
+
+
 class AgentRoomMembership(BaseModel):
     """A room the agent belongs to, with the agent's presence status there.
 

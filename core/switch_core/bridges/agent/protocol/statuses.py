@@ -124,6 +124,35 @@ async def compute_agent_statuses(
         if aid not in live_addressable and connections.can_spawn_for(aid, room_id)
     }
 
+    return _decide(
+        agents,
+        model_by_id,
+        live_always_on=live_always_on,
+        live_addressable=live_addressable,
+        live_auto_room=live_auto_room,
+        watching_auto=watching_auto,
+        connected_auto=connected_auto,
+        spawn_ready=spawn_ready,
+    )
+
+
+def _decide(
+    agents: list[Agent],
+    model_by_id: dict[str, str],
+    *,
+    live_always_on: set[str],
+    live_addressable: set[str],
+    live_auto_room: set[str],
+    watching_auto: set[str],
+    connected_auto: set[str],
+    spawn_ready: set[str],
+) -> dict[str, AgentStatus]:
+    """Turn the six presence facts into a status per agent.
+
+    Split out so the one-room and many-room callers cannot drift: the reads
+    differ between them, this does not. Changing a rule here changes it for
+    both, which is the point.
+    """
     statuses: dict[str, AgentStatus] = {}
     for agent in agents:
         model = model_by_id[agent.id]
@@ -152,3 +181,89 @@ async def compute_agent_statuses(
         else:
             statuses[agent.id] = AgentStatus.AWAITING_MANUAL_POLL
     return statuses
+
+
+async def compute_agent_statuses_for_rooms(
+    session: AsyncSession,
+    agents: list[Agent],
+    room_ids: list[str],
+    agent_session_store: AgentSessionStore,
+    connections: ConnectionRegistry,
+) -> dict[str, dict[str, AgentStatus]]:
+    """`{room_id: {agent_id: status}}` — `compute_agent_statuses` over several
+    rooms, at a fixed cost in queries rather than four per room.
+
+    Same answer, and deliberately the same decision function: only the reads
+    are batched. Two of the four presence reads are room-agnostic (an
+    always_on agent's liveness, and whether a connector is watching at all),
+    so asking them once per room was asking the same question repeatedly. The
+    two that are room-scoped collapse into one read of (agent, room) pairs.
+
+    The agent-detail view is why this exists: the Console polls it for every
+    agent it displays, and it walked each agent's rooms one at a time.
+    """
+    if not room_ids:
+        return {}
+
+    always_on_ids: list[str] = []
+    addressable_ids: list[str] = []
+    auto_session_ids: list[str] = []
+    model_by_id: dict[str, str] = {}
+    for agent in agents:
+        connection_model = (agent.integration_profile or {}).get(
+            "connection_model", "session_passive"
+        )
+        model_by_id[agent.id] = connection_model
+        if connection_model == "always_on":
+            always_on_ids.append(agent.id)
+        elif connection_model == "session_addressable":
+            addressable_ids.append(agent.id)
+        elif connection_model == "auto_session":
+            auto_session_ids.append(agent.id)
+
+    # Room-agnostic: one read each, not one per room.
+    live_always_on = await agent_session_store.get_live_agent_ids(
+        session, always_on_ids, None
+    )
+    watching_auto = await agent_session_store.get_live_agent_ids(
+        session, auto_session_ids, None
+    )
+    live_always_on |= connections.live_agents(always_on_ids)
+    connected_auto = connections.live_agents(auto_session_ids)
+
+    # Room-scoped: one read of pairs covering every room.
+    session_shaped = auto_session_ids + addressable_ids
+    live_pairs = await agent_session_store.get_live_agent_room_pairs(
+        session, session_shaped, room_ids
+    )
+    live_by_room: dict[str, set[str]] = {room_id: set() for room_id in room_ids}
+    for agent_id, room_id in live_pairs:
+        if room_id in live_by_room:
+            live_by_room[room_id].add(agent_id)
+
+    out: dict[str, dict[str, AgentStatus]] = {}
+    for room_id in room_ids:
+        db_live = live_by_room[room_id]
+        live_auto_room = {aid for aid in auto_session_ids if aid in db_live}
+        live_addressable = {aid for aid in addressable_ids if aid in db_live}
+        live_auto_room |= agents_present_in(auto_session_ids, room_id, connections)
+        live_addressable |= agents_present_in(addressable_ids, room_id, connections)
+        room_watching = watching_auto | connections.agents_that_can_spawn_for(
+            auto_session_ids, room_id
+        )
+        spawn_ready = {
+            aid
+            for aid in addressable_ids
+            if aid not in live_addressable and connections.can_spawn_for(aid, room_id)
+        }
+        out[room_id] = _decide(
+            agents,
+            model_by_id,
+            live_always_on=live_always_on,
+            live_addressable=live_addressable,
+            live_auto_room=live_auto_room,
+            watching_auto=room_watching,
+            connected_auto=connected_auto,
+            spawn_ready=spawn_ready,
+        )
+    return out

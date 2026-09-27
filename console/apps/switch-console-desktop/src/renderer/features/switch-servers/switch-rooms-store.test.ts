@@ -3,6 +3,7 @@ import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-serve
 
 const listRemoteRooms = vi.hoisted(() => vi.fn());
 const listAgentRooms = vi.hoisted(() => vi.fn());
+const listAgentRoomMemberships = vi.hoisted(() => vi.fn());
 const serversStore = vi.hoisted(() => ({
   servers: [] as { id: string; name?: string; managed?: boolean }[],
   activeServerId: null as string | null,
@@ -14,7 +15,7 @@ const serversStore = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn() },
-  rpc: { switchServers: { listRemoteRooms, listAgentRooms } },
+  rpc: { switchServers: { listRemoteRooms, listAgentRooms, listAgentRoomMemberships } },
 }));
 vi.mock('./switch-servers-store', () => ({ switchServersStore: serversStore }));
 vi.mock('./local-server-store', () => ({ localServerStore: { isRunning: true } }));
@@ -244,15 +245,11 @@ describe('listed rooms', () => {
 describe('agent memberships', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    listAgentRooms.mockImplementation(async ({ agentId }: { agentId: string }) => [
-      {
-        roomId: `room-of-${agentId}`,
-        roomName: 'r',
-        archived: false,
-        status: 'live',
-        roomRole: null,
-      },
-    ]);
+    // One request per server now, answering for every agent at once.
+    listAgentRoomMemberships.mockImplementation(async () => ({
+      'agent-1': [{ roomId: 'room-of-agent-1', roomName: 'r', archived: false }],
+      'agent-2': [{ roomId: 'room-of-agent-2', roomName: 'r', archived: false }],
+    }));
   });
 
   it('loads every agent’s rooms so the sidebar can list agents under a room', async () => {
@@ -273,23 +270,23 @@ describe('agent memberships', () => {
 
     await store.ensureMembershipsFor(agents);
     await store.ensureMembershipsFor(agents);
-    expect(listAgentRooms).toHaveBeenCalledOnce();
+    expect(listAgentRoomMemberships).toHaveBeenCalledOnce();
 
     await store.ensureMembershipsFor(agents, { force: true });
-    expect(listAgentRooms).toHaveBeenCalledTimes(2);
+    expect(listAgentRoomMemberships).toHaveBeenCalledTimes(2);
   });
 
   it('inverts memberships into the room-keyed view the sidebar draws', async () => {
-    listAgentRooms.mockImplementation(async ({ agentId }: { agentId: string }) => [
-      { roomId: 'shared', roomName: 'r', archived: false, status: 'live', roomRole: null },
-      {
-        roomId: `only-${agentId}`,
-        roomName: 'r',
-        archived: false,
-        status: 'live',
-        roomRole: null,
-      },
-    ]);
+    listAgentRoomMemberships.mockImplementation(async () => ({
+      'agent-1': [
+        { roomId: 'shared', roomName: 'r', archived: false },
+        { roomId: 'only-agent-1', roomName: 'r', archived: false },
+      ],
+      'agent-2': [
+        { roomId: 'shared', roomName: 'r', archived: false },
+        { roomId: 'only-agent-2', roomName: 'r', archived: false },
+      ],
+    }));
     const store = new SwitchRoomsStore();
 
     await store.ensureMembershipsFor([
@@ -302,9 +299,9 @@ describe('agent memberships', () => {
   });
 
   it('leaves an archived membership out of the room’s member list', async () => {
-    listAgentRooms.mockImplementation(async () => [
-      { roomId: 'gone', roomName: 'r', archived: true, status: 'live', roomRole: null },
-    ]);
+    listAgentRoomMemberships.mockImplementation(async () => ({
+      'agent-1': [{ roomId: 'gone', roomName: 'r', archived: true }],
+    }));
     const store = new SwitchRoomsStore();
 
     await store.ensureMembershipsFor([{ serverId: 'srv-a', switchAgentId: 'agent-1' }]);
@@ -315,9 +312,8 @@ describe('agent memberships', () => {
   it('re-reads every tracked agent on refresh, not just the ones already cached', async () => {
     // An agent created after the sidebar mounted has no cache entry, so a
     // refresh keyed on the cache would never fetch it.
-    listAgentRooms.mockImplementation(async ({ agentId }: { agentId: string }) => {
-      if (agentId === 'agent-late') throw new Error('not yet');
-      return [{ roomId: 'room-a', roomName: 'r', archived: false, status: 'live', roomRole: null }];
+    listAgentRoomMemberships.mockImplementation(async () => {
+      throw new Error('not yet');
     });
     listRemoteRooms.mockImplementation(async () => []);
     const store = new SwitchRoomsStore();
@@ -327,18 +323,17 @@ describe('agent memberships', () => {
     ]);
     expect(store.roomsFor('srv-a', 'agent-late')).toBeUndefined();
 
-    listAgentRooms.mockImplementation(async () => [
-      { roomId: 'room-b', roomName: 'r', archived: false, status: 'live', roomRole: null },
-    ]);
+    listAgentRoomMemberships.mockImplementation(async () => ({
+      'agent-late': [{ roomId: 'room-b', roomName: 'r', archived: false }],
+    }));
     await store.refreshRoomState();
 
     expect(store.roomsFor('srv-a', 'agent-late')?.[0].roomId).toBe('room-b');
   });
 
-  it('reports an agent whose membership failed as unknown, not as in no rooms', async () => {
-    listAgentRooms.mockImplementation(async ({ agentId }: { agentId: string }) => {
-      if (agentId === 'agent-1') throw new Error('nope');
-      return [{ roomId: 'room-b', roomName: 'r', archived: false, status: 'live', roomRole: null }];
+  it('reports agents whose membership failed as unknown, not as in no rooms', async () => {
+    listAgentRoomMemberships.mockImplementation(async () => {
+      throw new Error('nope');
     });
     const store = new SwitchRoomsStore();
 
@@ -347,7 +342,26 @@ describe('agent memberships', () => {
       { serverId: 'srv-a', switchAgentId: 'agent-2' },
     ]);
 
-    expect(store.agentsWithUnknownMembership).toBe(1);
+    expect(store.agentsWithUnknownMembership).toBe(2);
+  });
+
+  it('reports an agent the server did not mention as in no rooms, not unknown', async () => {
+    // The batched answer covers every agent at once, so an agent missing from
+    // it is a statement rather than a gap: it is in no rooms. Leaving it
+    // uncached would make the next tick ask again, forever, about the agents
+    // that have nothing to report.
+    listAgentRoomMemberships.mockImplementation(async () => ({
+      'agent-1': [{ roomId: 'room-a', roomName: 'r', archived: false }],
+    }));
+    const store = new SwitchRoomsStore();
+
+    await store.ensureMembershipsFor([
+      { serverId: 'srv-a', switchAgentId: 'agent-1' },
+      { serverId: 'srv-a', switchAgentId: 'agent-2' },
+    ]);
+
+    expect(store.roomsFor('srv-a', 'agent-2')).toEqual([]);
+    expect(store.agentsWithUnknownMembership).toBe(0);
   });
 
   it('reports no unknown memberships once every tracked agent has loaded', async () => {
@@ -361,23 +375,26 @@ describe('agent memberships', () => {
     expect(store.agentsWithUnknownMembership).toBe(0);
   });
 
-  it('lets one agent’s failed lookup stand without losing the others', async () => {
-    listAgentRooms.mockImplementation(async ({ agentId }: { agentId: string }) => {
-      if (agentId === 'agent-1') throw new Error('nope');
-      return [{ roomId: 'room-b', roomName: 'r', archived: false, status: 'live', roomRole: null }];
+  it('lets one server’s failure stand without losing another server’s', async () => {
+    // Isolation is now per server rather than per agent, because the request
+    // is. A server that cannot be read must not blank the sidebar for the
+    // agents on the ones that can.
+    listAgentRoomMemberships.mockImplementation(async (serverId: string) => {
+      if (serverId === 'srv-a') throw new Error('nope');
+      return { 'agent-2': [{ roomId: 'room-b', roomName: 'r', archived: false }] };
     });
     const store = new SwitchRoomsStore();
 
     await store.ensureMembershipsFor([
       { serverId: 'srv-a', switchAgentId: 'agent-1' },
-      { serverId: 'srv-a', switchAgentId: 'agent-2' },
+      { serverId: 'srv-b', switchAgentId: 'agent-2' },
     ]);
 
     expect(store.roomsFor('srv-a', 'agent-1')).toBeUndefined();
     expect(store.errorFor('srv-a', 'agent-1')).toBe(
-      'Could not load the rooms this agent belongs to. (nope)'
+      'Could not load the rooms these agents belong to. (nope)'
     );
-    expect(store.roomsFor('srv-a', 'agent-2')?.[0].roomId).toBe('room-b');
+    expect(store.roomsFor('srv-b', 'agent-2')?.[0].roomId).toBe('room-b');
   });
 });
 

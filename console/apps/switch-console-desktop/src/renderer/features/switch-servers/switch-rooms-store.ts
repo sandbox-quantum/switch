@@ -2,9 +2,10 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type {
-  RemoteAgentRoom,
+  RemoteAgentRoomMembership,
   RemoteRoomSummary,
 } from '@shared/core/switch-servers/switch-servers';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { serverAvailability } from './server-availability';
 import { switchServersStore } from './switch-servers-store';
@@ -22,8 +23,14 @@ function key(serverId: string, switchAgentId: string): string {
  * last-known set instantly while a refresh runs.
  */
 export class SwitchRoomsStore {
-  /** Membership per `${serverId}:${switchAgentId}`. */
-  private readonly roomsByAgent = new Map<string, RemoteAgentRoom[]>();
+  /** Membership per `${serverId}:${switchAgentId}`.
+   *
+   * Holds the narrow shape, because that is all any view reads: a room's id,
+   * its name, and whether it is archived. The per-agent endpoint still returns
+   * presence and role alongside those, and a value carrying them is assignable
+   * here, but nothing may depend on them through this map — which is what
+   * lets the batched endpoint, which does not produce them, fill it. */
+  private readonly roomsByAgent = new Map<string, RemoteAgentRoomMembership[]>();
   /** Room id → display name, aggregated across connected servers (room ids are
    * globally unique UUIDs, so a flat map is safe). Drives sidebar room headers. */
   private readonly roomNames = new Map<string, string>();
@@ -378,7 +385,7 @@ export class SwitchRoomsStore {
   }
 
   /** Cached membership, or undefined if never fetched. */
-  roomsFor(serverId: string, switchAgentId: string): RemoteAgentRoom[] | undefined {
+  roomsFor(serverId: string, switchAgentId: string): RemoteAgentRoomMembership[] | undefined {
     return this.roomsByAgent.get(key(serverId, switchAgentId));
   }
 
@@ -442,9 +449,80 @@ export class SwitchRoomsStore {
     runInAction(() => {
       this.trackedIdentities = agents;
     });
+    // One request per server, not one per agent. This runs on the sidebar's
+    // refresh timer, and per agent it was the heaviest endpoint the gateway
+    // has — assembling tools, models, sessions, children, presence and role
+    // leases so that three fields could be read off each answer.
+    const byServer = new Map<string, { serverId: string; switchAgentId: string }[]>();
+    for (const agent of agents) {
+      const existing = byServer.get(agent.serverId);
+      if (existing) existing.push(agent);
+      else byServer.set(agent.serverId, [agent]);
+    }
     await Promise.all(
-      agents.map((a) => this.fetchAgentRooms(a.serverId, a.switchAgentId, options))
+      [...byServer].map(([serverId, serverAgents]) =>
+        this.fetchMembershipsFor(serverId, serverAgents, options)
+      )
     );
+  }
+
+  /**
+   * Membership for every agent on one server, in one request.
+   *
+   * Falls back to asking per agent if the batched route is unavailable —
+   * a Console can be newer than the server it is pointed at, and a sidebar
+   * that silently empties would look like the agents had left their rooms.
+   */
+  private async fetchMembershipsFor(
+    serverId: string,
+    agents: { serverId: string; switchAgentId: string }[],
+    options: { force?: boolean }
+  ): Promise<void> {
+    const wanted = agents.filter(
+      (a) => options.force || !this.roomsByAgent.has(key(serverId, a.switchAgentId))
+    );
+    if (wanted.length === 0) return;
+
+    const keys = wanted.map((a) => key(serverId, a.switchAgentId));
+    runInAction(() => {
+      for (const k of keys) {
+        this.loading.add(k);
+        this.errors.delete(k);
+      }
+    });
+    try {
+      const byAgent = await rpc.switchServers.listAgentRoomMemberships(serverId);
+      runInAction(() => {
+        for (const a of wanted) {
+          // An agent the server did not mention is in no rooms. Recording the
+          // empty list is what stops the next tick asking about it again.
+          this.roomsByAgent.set(key(serverId, a.switchAgentId), byAgent[a.switchAgentId] ?? []);
+        }
+      });
+    } catch (cause) {
+      if (isMissingRoute(cause)) {
+        console.warn(
+          'This server has no batched room-membership route; falling back to ' +
+            'one request per agent. Upgrading the server removes that fan-out.'
+        );
+        await Promise.all(
+          wanted.map((a) => this.fetchAgentRooms(serverId, a.switchAgentId, options))
+        );
+        return;
+      }
+      runInAction(() => {
+        for (const k of keys) {
+          this.errors.set(
+            k,
+            failureText(cause, 'Could not load the rooms these agents belong to.')
+          );
+        }
+      });
+    } finally {
+      runInAction(() => {
+        for (const k of keys) this.loading.delete(k);
+      });
+    }
   }
 
   isLoading(serverId: string, switchAgentId: string): boolean {
@@ -463,7 +541,7 @@ export class SwitchRoomsStore {
     serverId: string,
     switchAgentId: string,
     options: { force?: boolean } = {}
-  ): Promise<RemoteAgentRoom[] | null> {
+  ): Promise<RemoteAgentRoomMembership[] | null> {
     const k = key(serverId, switchAgentId);
     const cached = this.roomsByAgent.get(k);
     if (cached && !options.force) return cached;
@@ -489,6 +567,18 @@ export class SwitchRoomsStore {
       });
     }
   }
+}
+
+/**
+ * A 404 from the gateway, which for this route means the server predates it.
+ *
+ * Worth distinguishing rather than treating as a plain failure: a Console can
+ * be newer than the server it is pointed at, and the honest response is to go
+ * back to asking per agent, not to show an empty sidebar as though every agent
+ * had left its rooms.
+ */
+function isMissingRoute(cause: unknown): boolean {
+  return cause instanceof RpcError && cause.numberField('status') === 404;
 }
 
 export const switchRoomsStore = new SwitchRoomsStore();

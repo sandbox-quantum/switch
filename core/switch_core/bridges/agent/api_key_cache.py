@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 
 from switch_core.bridges.agent.protocol.connections import HEARTBEAT_TTL_SECONDS
 from switch_core.db.models import Agent, ApiKey
@@ -30,9 +31,37 @@ class ApiKeyCache:
     revocation, and it is refused at or above the heartbeat TTL — past that a
     credential could authenticate a connection the server has already given up
     on, which is longer than any of this is worth.
+
+    ``agent_is_connected`` lets an entry outlive that TTL for exactly as long
+    as the agent holds a live connection, and not one moment longer. It is
+    what takes the heartbeat off the database.
+
+    The reasoning, since extending a credential's life deserves an argument.
+    An agent beats every 2 s and the TTL must stay under 6 s, so roughly every
+    third beat missed and went to Postgres — thousands a minute, each one a
+    checkout of a pool whose exhaustion is the failure we are chasing. What
+    those lookups re-established was that a credential is still good. But the
+    stream that connection is beating *for* was authenticated once, when it
+    opened, and then runs for hours without being re-checked. Re-proving the
+    credential every six seconds for the beat, while the stream it belongs to
+    goes unexamined, was never a boundary — it was a cost.
+
+    What the cap protected is preserved exactly, because the condition is the
+    thing it was protecting: an entry can now only outlive its TTL while a
+    connection is live, so it can never authenticate a connection the server
+    has already given up on. And it is an extension, never a resurrection —
+    `invalidate` and `invalidate_agent` remove the entry outright, so every
+    revocation path (key rotation, agent deletion, tenant member removal)
+    still takes effect on the next request, as before.
     """
 
-    def __init__(self, *, ttl_seconds: float, max_entries: int) -> None:
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float,
+        max_entries: int,
+        agent_is_connected: Callable[[str], bool] | None = None,
+    ) -> None:
         if ttl_seconds < 0:
             raise ValueError(f"ttl_seconds must not be negative, got {ttl_seconds!r}")
         if ttl_seconds >= HEARTBEAT_TTL_SECONDS:
@@ -44,6 +73,7 @@ class ApiKeyCache:
             raise ValueError(f"max_entries must be at least 1, got {max_entries!r}")
         self._ttl = ttl_seconds
         self._max_entries = max_entries
+        self._agent_is_connected = agent_is_connected
         self._entries: OrderedDict[str, tuple[float, ApiKey, Agent]] = OrderedDict()
 
     @property
@@ -55,11 +85,23 @@ class ApiKeyCache:
         if entry is None:
             return None
         expires_at, api_key, agent = entry
-        if expires_at <= time.monotonic():
+        # Past its deadline, an entry survives only while the agent still
+        # holds the connection this credential opened. The deadline is
+        # deliberately left in the past rather than pushed out, so the
+        # liveness check is consulted on every later read and the entry goes
+        # the first time the connection is gone. Renewing it instead would let
+        # the credential outlive the connection by up to a full TTL, which is
+        # the one thing this must not do.
+        if expires_at <= time.monotonic() and not self._still_connected(agent):
             del self._entries[token_hash]
             return None
         self._entries.move_to_end(token_hash)
         return api_key, agent
+
+    def _still_connected(self, agent: Agent) -> bool:
+        return self._agent_is_connected is not None and self._agent_is_connected(
+            agent.id
+        )
 
     def put(self, token_hash: str, api_key: ApiKey, agent: Agent) -> None:
         if not self.enabled:

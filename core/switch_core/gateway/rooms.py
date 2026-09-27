@@ -329,10 +329,18 @@ async def list_rooms(
             r for r in rooms if term in r.name.lower() or term in r.description.lower()
         ]
 
+    # Both memberships are read for every room at once. Per room they were two
+    # round trips each, so listing fifty rooms went to the database a hundred
+    # times for what two reads answer. Done after the search filter, so a
+    # narrowed list is not paid for in full.
+    room_ids = [room.id for room in rooms]
+    agent_ids_by_room = await room_store.get_agent_ids_for_rooms(session, room_ids)
+    client_ids_by_room = await room_store.get_client_ids_for_rooms(session, room_ids)
+
     summaries = []
     for room in rooms:
-        agent_ids = await room_store.get_agent_ids(session, room.id)
-        client_ids = await room_store.get_client_ids(session, room.id)
+        agent_ids = agent_ids_by_room[room.id]
+        client_ids = client_ids_by_room[room.id]
         connected_names = sorted(
             ext_client_to_name[cid] for cid in client_ids if cid in ext_client_to_name
         )

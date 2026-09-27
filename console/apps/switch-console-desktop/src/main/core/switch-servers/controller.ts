@@ -39,6 +39,7 @@ import type {
   LinkedIdentity,
   PasswordLoginParams,
   RemoteAgentRoom,
+  RemoteAgentRoomMembership,
   RemoteAgentSummary,
   RemoteBridge,
   RemoteBridgeType,
@@ -70,6 +71,7 @@ import {
   deleteBridge,
   deleteRoom,
   fetchAddressingPolicy,
+  fetchAgentRoomMemberships,
   fetchAgentRooms,
   fetchAgents,
   fetchAllExternalUsers,
@@ -596,6 +598,11 @@ export const switchServersController = createRPCController({
     agentId: string;
   }): Promise<RemoteAgentRoom[]> =>
     fetchAgentRooms(await requireServer(params.serverId), params.agentId),
+
+  listAgentRoomMemberships: async (
+    serverId: string
+  ): Promise<Record<string, RemoteAgentRoomMembership[]>> =>
+    fetchAgentRoomMemberships(await requireServer(serverId)),
 
   listRoomRoles: async (params: { serverId: string; roomId: string }): Promise<RemoteRoomRole[]> =>
     fetchRoomRoles(await requireServer(params.serverId), params.roomId),

@@ -276,6 +276,21 @@ export type UpdateRoomParams = {
  * the gateway `AgentRoomMembership`). Drives the "connect to room" picker at
  * session start and the room-focused sidebar grouping.
  */
+/**
+ * A room an agent belongs to — identity only.
+ *
+ * What the room-grouped sidebar actually draws. Deliberately narrower than
+ * `RemoteAgentRoom`: presence and role are not here because nothing renders
+ * them, and producing them server-side cost four presence queries and a
+ * role-lease query per room per agent. Presence reaches the UI already, by
+ * push, from the agent's own sidecar.
+ */
+export type RemoteAgentRoomMembership = {
+  roomId: string;
+  roomName: string;
+  archived: boolean;
+};
+
 export type RemoteAgentRoom = {
   roomId: string;
   roomName: string;

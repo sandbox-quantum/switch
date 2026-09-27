@@ -38,6 +38,7 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.known_agents import KNOWN_AGENTS
 from switch_core.gateway.schemas import (
     AgentDetail,
+    AgentRoomMembershipsResponse,
     AgentSummary,
     BulkRegisterResult,
     KnownAgentType,
@@ -46,6 +47,7 @@ from switch_core.gateway.schemas import (
     RegisterKnownSubagentsRequest,
     RegisterKnownSubagentsResponse,
     RegisterOtherAgentRequest,
+    RoomMembership,
     UpdateAddressingPolicyRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
@@ -577,6 +579,44 @@ async def update_addressing_policy(
         agent_session_store=protocol.agent_session_store,
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
+    )
+
+
+@router.get("/memberships")
+async def get_agent_room_memberships(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    _user: Annotated[User, Depends(get_current_user)],
+) -> AgentRoomMembershipsResponse:
+    """Which rooms each agent belongs to, for every agent in the tenant.
+
+    Exists to replace a fan-out. Switch Console draws a room-grouped sidebar
+    and refreshes it on a timer by calling `GET /agents/{id}` once per agent
+    — around a hundred requests a minute on the pilot, each one assembling
+    tools, models, sessions, child agents, per-room presence and role leases
+    so that three fields could be read off it and the rest discarded. That
+    endpoint was the largest single request in a burst profile.
+
+    This answers the same question in one read of one join, and carries only
+    what the caller uses. Presence is absent on purpose: it already reaches
+    the Console by push, from the agent's own sidecar.
+
+    Scoped by the tenant's row-level security like every other read here, so
+    "every agent" means every agent the caller's tenant has. Agents in no
+    rooms are present with an empty list rather than missing, so a caller can
+    cache the answer without having to ask again about the silent ones.
+    """
+    by_agent = await room_store.get_memberships_by_agent(session)
+    agents = await agent_store.get_all(session)
+    return AgentRoomMembershipsResponse(
+        memberships={
+            agent.id: [
+                RoomMembership(room_id=room_id, room_name=name, archived=archived)
+                for room_id, name, archived in by_agent.get(agent.id, ())
+            ]
+            for agent in agents
+        }
     )
 
 
