@@ -119,6 +119,20 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.mediation",
     # Reached only from the gateway's rooms endpoints, so the same holds.
     "switch_core.rooms_yaml",
+    # Handlers that authorize, or read what they are about to act on, and then
+    # make a slow Matrix/bridge call. They open the session themselves so it
+    # can be *closed* before that call: left on the request's session, the
+    # connection stays checked out for the length of the provisioning and
+    # parks a slot of a pool 40 wide — which is what fills it during a
+    # reconnect stampede. The tenant is still the authenticated caller's, and
+    # still bound around the whole endpoint: `get_current_user` yields inside
+    # its `tenant_scope` for the two gateway modules, and `BearerAuthMiddleware`
+    # wraps the entire request for the agent bridge's registration endpoints.
+    # So these inherit exactly what the request session would have, and differ
+    # from it only in living for less of the request.
+    "switch_core.gateway.rooms",
+    "switch_core.gateway.agents",
+    "switch_core.bridges.agent.api.handlers",
     # ── Reached only from inside a unit of work that has already bound the
     # tenant of the row it is acting on — an inbound bridge event, a delivery,
     # a sweep row, an authenticated agent operation.

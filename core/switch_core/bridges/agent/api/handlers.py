@@ -16,7 +16,7 @@ from fastapi import (
     UploadFile,
 )
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import Response, StreamingResponse
 
 from switch_core.bridges.agent.api.schemas import (
@@ -78,6 +78,7 @@ from switch_core.bridges.agent.dependencies import (
     get_api_key_store,
     get_protocol,
     get_session,
+    get_session_factory,
 )
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
@@ -143,7 +144,9 @@ def _task_info(task: Task) -> TaskInfo:
 
 async def _resolve_registration_user_id(
     authorization: Annotated[str, Header()],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> str:
@@ -154,28 +157,43 @@ async def _resolve_registration_user_id(
     deployment-wide ``"bootstrap"`` key (see ``registration_bootstrap.py``)
     resolves to a dedicated, non-admin account instead of the admin who
     seeded it, so holding it never confers admin authority.
+
+    Both reads go on a session of this dependency's own, which closes before
+    the endpoint body runs. On the request's session they would not: nothing
+    on this router commits it, so the connection checked out here would stay
+    checked out through ``register_agent``'s Matrix room joins and its
+    identity fan-out across every collaboration bridge. That is the whole
+    request, and a host coming back reachable re-registers its agents in
+    bulk — dozens of these at once, each parking a slot of a pool that is 40
+    wide. ``ProtocolService.register_agent_with_token`` scopes the same two
+    reads the same way for the in-process path.
     """
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header")
     token = authorization[7:]
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    key = await api_key_store.get_by_hash(session, token_hash)
-    if key is None or key.type not in REGISTRATION_KEY_TYPES:
-        raise HTTPException(status_code=401, detail="Invalid registration token")
-    # Which credential this was is worth keeping: a deployment bootstrapping
-    # its first agents through the shared key and a user minting a key of
-    # their own are different moments in adoption, and the key type is the
-    # only place that distinction exists.
-    _REGISTRATION_PATH.set(
-        "bootstrap" if key.type == BOOTSTRAP_KEY_TYPE else "personal_key"
-    )
-    try:
-        return await resolve_registration_owner_id(session, protocol.user_store, key)
-    except RuntimeError as exc:
-        logger.error("Agent-registration bootstrap owner resolution failed: %s", exc)
-        raise HTTPException(
-            status_code=503, detail="Agent registration is temporarily unavailable"
-        ) from exc
+    async with session_factory() as session:
+        key = await api_key_store.get_by_hash(session, token_hash)
+        if key is None or key.type not in REGISTRATION_KEY_TYPES:
+            raise HTTPException(status_code=401, detail="Invalid registration token")
+        # Which credential this was is worth keeping: a deployment bootstrapping
+        # its first agents through the shared key and a user minting a key of
+        # their own are different moments in adoption, and the key type is the
+        # only place that distinction exists.
+        _REGISTRATION_PATH.set(
+            "bootstrap" if key.type == BOOTSTRAP_KEY_TYPE else "personal_key"
+        )
+        try:
+            return await resolve_registration_owner_id(
+                session, protocol.user_store, key
+            )
+        except RuntimeError as exc:
+            logger.error(
+                "Agent-registration bootstrap owner resolution failed: %s", exc
+            )
+            raise HTTPException(
+                status_code=503, detail="Agent registration is temporarily unavailable"
+            ) from exc
 
 
 # How the current registration authenticated. A contextvar rather than a
@@ -312,7 +330,9 @@ async def register_known_agents_bulk_endpoint(
     req: RegisterKnownAgentBulkRequest,
     owner_id: Annotated[str, Depends(_resolve_registration_user_id)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
 ) -> RegisterKnownAgentBulkResponse:
     """Register many Claude Code subagents under one parent agent.
 
@@ -320,59 +340,66 @@ async def register_known_agents_bulk_endpoint(
     Names are pre-checked against existing agents (unless ``overwrite``) so a
     name clash fails the whole batch up front rather than leaving a partial
     set registered.
+
+    Every read here happens before the first registration, so they share one
+    short session that closes before the loop. Held open instead, that one
+    connection would span a whole batch of registrations — each of them a
+    Matrix round trip and an identity created on every bridge — which is the
+    longest a single request parks a pool slot anywhere in the bridge.
     """
     if not req.subagents:
         raise HTTPException(status_code=400, detail="No subagents provided")
 
-    parent = await protocol.agent_store.get(session, req.parent_agent_id)
-    if parent is None:
-        raise HTTPException(
-            status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
-        )
-
-    # Subagents inherit the parent's operational settings unless the caller
-    # overrides them: they should run in the same channels mode and use the
-    # same repo dir as their parent.
-    # The bridge exposes no GET-profile endpoint, so inheriting here means the
-    # caller (the configure skill) doesn't have to recover these from the
-    # parent — passing just `parent_agent_id` is enough.
-    parent_md = parent.metadata_ if isinstance(parent.metadata_, dict) else {}
-    parent_opts = parent_md.get("known_agent_options")
-    inherited: dict[str, Any] = {}
-    if isinstance(parent_opts, dict):
-        for key in ("channels_enabled", "repo_dir"):
-            if parent_opts.get(key) is not None:
-                inherited[key] = parent_opts[key]
-
-    # Derive names and reject duplicates within the batch.
-    derived: list[tuple[str, str, str]] = []  # (subagent_name, name, description)
-    seen: set[str] = set()
-    for sub in req.subagents:
-        name = f"{parent.name}.{sub.subagent_name}"
-        if name in seen:
+    async with session_factory() as session:
+        parent = await protocol.agent_store.get(session, req.parent_agent_id)
+        if parent is None:
             raise HTTPException(
-                status_code=400,
-                detail=f"Duplicate subagent in batch: {sub.subagent_name!r}",
+                status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
             )
-        seen.add(name)
-        derived.append((sub.subagent_name, name, sub.description))
 
-    # Pre-check existence so a clash fails the batch before any registration.
-    if not req.overwrite:
-        clashes = [
-            name
-            for _, name, _ in derived
-            if await protocol.agent_store.get_by_name(session, name) is not None
-        ]
-        if clashes:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Subagents already exist: "
-                    + ", ".join(clashes)
-                    + ". Pass overwrite=true to re-register."
-                ),
-            )
+        # Subagents inherit the parent's operational settings unless the caller
+        # overrides them: they should run in the same channels mode and use the
+        # same repo dir as their parent.
+        # The bridge exposes no GET-profile endpoint, so inheriting here means
+        # the caller (the configure skill) doesn't have to recover these from
+        # the parent — passing just `parent_agent_id` is enough.
+        parent_md = parent.metadata_ if isinstance(parent.metadata_, dict) else {}
+        parent_opts = parent_md.get("known_agent_options")
+        inherited: dict[str, Any] = {}
+        if isinstance(parent_opts, dict):
+            for key in ("channels_enabled", "repo_dir"):
+                if parent_opts.get(key) is not None:
+                    inherited[key] = parent_opts[key]
+
+        # Derive names and reject duplicates within the batch.
+        derived: list[tuple[str, str, str]] = []  # (subagent_name, name, description)
+        seen: set[str] = set()
+        for sub in req.subagents:
+            name = f"{parent.name}.{sub.subagent_name}"
+            if name in seen:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate subagent in batch: {sub.subagent_name!r}",
+                )
+            seen.add(name)
+            derived.append((sub.subagent_name, name, sub.description))
+
+        # Pre-check existence so a clash fails the batch before any registration.
+        if not req.overwrite:
+            clashes = [
+                name
+                for _, name, _ in derived
+                if await protocol.agent_store.get_by_name(session, name) is not None
+            ]
+            if clashes:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Subagents already exist: "
+                        + ", ".join(clashes)
+                        + ". Pass overwrite=true to re-register."
+                    ),
+                )
 
     results: list[BulkRegisterResult] = []
     for subagent_name, name, description in derived:

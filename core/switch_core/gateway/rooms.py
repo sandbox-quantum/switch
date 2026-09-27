@@ -5,7 +5,7 @@ import logging
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import Action, Principal, can, require
 from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -31,6 +31,7 @@ from switch_core.gateway.dependencies import (
     get_room_store,
     get_room_yaml_service,
     get_session,
+    get_session_factory,
     get_user_store,
 )
 from switch_core.gateway.schemas import (
@@ -89,6 +90,45 @@ async def _require_room(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return room
+
+
+async def _authorize_room_action(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_store: RoomStore,
+    user_store: UserStore,
+    room_id: str,
+    user: User,
+    action: Action,
+) -> None:
+    """Authorize `action` on `room_id` for `user`, on a short-lived session that
+    is opened and closed before any external provisioning runs.
+
+    Kept off the request's session deliberately: these handlers go on to make
+    slow Matrix/bridge calls, and a connection checked out for the authorization
+    read would otherwise stay parked in the pool for the length of them.
+    """
+    async with session_factory() as session:
+        is_admin = await user_store.administers(session, user)
+        await _require_room(session, room_store, room_id, user, action, is_admin)
+
+
+async def _room_detail_response(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    room_store: RoomStore,
+    bridge_store: CollaborationBridgeStore,
+    external_user_store: ExternalUserStore,
+    protocol: ProtocolService,
+) -> RoomDetail:
+    """Read a room back and build its detail on a short-lived session, opened
+    only after external work has finished so no pool slot is held across it."""
+    async with session_factory() as session:
+        room = await room_store.get(session, room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+        return await _build_room_detail(
+            session, room, room_store, bridge_store, external_user_store, protocol
+        )
 
 
 async def _external_channel_url(room: Room) -> str | None:
@@ -385,10 +425,12 @@ async def create_room(
 @router.post("/from-yaml", status_code=201)
 async def create_room_from_yaml(
     request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> ProvisionResult | GroupProvisionResult:
     """Provision a room, or a group of rooms, from a YAML spec.
 
@@ -405,6 +447,8 @@ async def create_room_from_yaml(
       "inputs": {...}}`` where ``inputs`` supplies values for declared
       ``params:``.
     """
+    async with session_factory() as session:
+        is_admin = await user_store.administers(session, user)
     content_type = request.headers.get("content-type", "")
     try:
         if "application/json" in content_type:
@@ -706,16 +750,20 @@ async def put_observe(
 async def post_room_agents(
     room_id: str,
     req: RoomAgentsRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _authorize_room_action(
+        session_factory, room_store, user_store, room_id, user, "write"
+    )
     try:
         await room_service.add_agents_to_room(
             room_id,
@@ -725,12 +773,13 @@ async def post_room_agents(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    await session.commit()
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+    return await _room_detail_response(
+        session_factory,
+        room_id,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
     )
 
 
@@ -767,26 +816,31 @@ async def patch_room_agent(
 async def delete_room_agent(
     room_id: str,
     agent_id: str,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _authorize_room_action(
+        session_factory, room_store, user_store, room_id, user, "write"
+    )
     try:
         await room_service.remove_agents_from_room(room_id, [agent_id])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    await session.commit()
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+    return await _room_detail_response(
+        session_factory,
+        room_id,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
     )
 
 
@@ -794,119 +848,136 @@ async def delete_room_agent(
 async def post_room_users(
     room_id: str,
     req: RoomUsersRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _authorize_room_action(
+        session_factory, room_store, user_store, room_id, user, "write"
+    )
     try:
         await room_service.add_users_to_room(room_id, req.user_names)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    await session.commit()
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+    return await _room_detail_response(
+        session_factory,
+        room_id,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
     )
 
 
 async def _set_archived(
     room_id: str,
     archived: bool,
-    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
     room_service: RoomService,
     room_store: RoomStore,
     bridge_store: CollaborationBridgeStore,
     external_user_store: ExternalUserStore,
     protocol: ProtocolService,
+    user_store: UserStore,
     user: User,
-    is_admin: bool,
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _authorize_room_action(
+        session_factory, room_store, user_store, room_id, user, "write"
+    )
     try:
         await room_service.set_room_archived(room_id, archived)
     except ValueError:
         raise HTTPException(status_code=404, detail="Room not found")
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+    return await _room_detail_response(
+        session_factory,
+        room_id,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
     )
 
 
 @router.post("/{room_id}/archive")
 async def archive_room(
     room_id: str,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     """: hide it from the default active list. Reversible and
     metadata-only — the Matrix room, members, and bridge channel are intact."""
     return await _set_archived(
         room_id,
         True,
-        session,
+        session_factory,
         room_service,
         room_store,
         bridge_store,
         external_user_store,
         protocol,
+        user_store,
         user,
-        is_admin,
     )
 
 
 @router.post("/{room_id}/unarchive")
 async def unarchive_room(
     room_id: str,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     """: restore it to the active list."""
     return await _set_archived(
         room_id,
         False,
-        session,
+        session_factory,
         room_service,
         room_store,
         bridge_store,
         external_user_store,
         protocol,
+        user_store,
         user,
-        is_admin,
     )
 
 
 @router.delete("/{room_id}")
 async def delete_room(
     room_id: str,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
-    await _require_room(session, room_store, room_id, user, "delete", is_admin)
+    await _authorize_room_action(
+        session_factory, room_store, user_store, room_id, user, "delete"
+    )
     try:
         await room_service.delete_room(room_id)
     except ValueError:

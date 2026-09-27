@@ -51,6 +51,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
     ExistingReferenceById,
@@ -1137,8 +1138,8 @@ async def test_endpoint_json_body(env):
     svc = _svc(env)
     user_id = env["user_id"]
     # Not an administrator of anything: this exercises body parsing, and the
-    # caller owns the room it creates.
-    is_admin = False
+    # caller owns the room it creates. The handler resolves that for itself
+    # from the user's row now, rather than taking it as an argument.
     user = User(name="alice", email="alice@example.com", role="member")
     # Poke the id to match the seeded user so provision works.
     object.__setattr__(user, "id", user_id)
@@ -1154,16 +1155,29 @@ async def test_endpoint_json_body(env):
     request.headers = {"content-type": "application/json"}
     request.body.return_value = body
 
-    async with env["session_factory"]() as session:
-        result = await create_room_from_yaml(request, session, svc, user, is_admin)
+    # The handler opens (and closes) its own session to resolve `is_admin`, so
+    # that the pool slot is not held across provisioning — hence a factory
+    # here rather than a session, and no `async with` around the call.
+    result = await create_room_from_yaml(
+        request=request,
+        session_factory=env["session_factory"],
+        rooms_yaml=svc,
+        user_store=UserStore(),
+        user=user,
+    )
     assert result.room_name == "carol local-deploy"
 
     # Non-string yaml value → 400.
     bad_body = json.dumps({"yaml": 123}).encode()
     request.body.return_value = bad_body
-    async with env["session_factory"]() as session:
-        with pytest.raises(HTTPException) as exc_info:
-            await create_room_from_yaml(request, session, svc, user, is_admin)
+    with pytest.raises(HTTPException) as exc_info:
+        await create_room_from_yaml(
+            request=request,
+            session_factory=env["session_factory"],
+            rooms_yaml=svc,
+            user_store=UserStore(),
+            user=user,
+        )
     assert exc_info.value.status_code == 400
 
 
@@ -2175,8 +2189,13 @@ async def test_endpoint_json_body_group(env):
         {"yaml": GROUP_TEMPLATE, "inputs": {"newcomer": "frank"}}
     ).encode()
 
-    async with env["session_factory"]() as session:
-        result = await create_room_from_yaml(request, session, svc, user, False)
+    result = await create_room_from_yaml(
+        request=request,
+        session_factory=env["session_factory"],
+        rooms_yaml=svc,
+        user_store=UserStore(),
+        user=user,
+    )
     assert result.group_name == "Onboarding"
     assert [r.room_name for r in result.rooms] == ["frank lobby", "frank workroom"]
 

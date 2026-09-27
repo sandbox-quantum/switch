@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
 from switch_core.agent_icon import InvalidIconUrl, normalise_icon_url
@@ -32,6 +32,7 @@ from switch_core.gateway.dependencies import (
     get_protocol,
     get_room_store,
     get_session,
+    get_session_factory,
     get_user_store,
 )
 from switch_core.gateway.known_agents import KNOWN_AGENTS
@@ -199,9 +200,11 @@ async def register_known_subagents(
     req: RegisterKnownSubagentsRequest,
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> RegisterKnownSubagentsResponse:
     """Register many Claude Code subagents under one parent agent (session-authed).
 
@@ -211,6 +214,12 @@ async def register_known_subagents(
     batch up front rather than leaving a partial set registered. Subagents
     inherit the parent's `channels_enabled` / `repo_dir` unless overridden in
     `options`.
+
+    Authorization, the parent read and the clash pre-check share one short
+    session that closes before the registration loop, so no pooled connection
+    is held across a batch of Matrix joins and bridge-identity creations. Only
+    what the loop needs is carried out of it, as plain values rather than rows
+    belonging to a session that has since closed.
     """
     spec = KNOWN_AGENTS.get(req.agent_type)
     if spec is None:
@@ -220,50 +229,52 @@ async def register_known_subagents(
     if not req.subagents:
         raise HTTPException(status_code=400, detail="No subagents provided")
 
-    parent = await agent_store.get(session, req.parent_agent_id)
-    if parent is None:
-        raise HTTPException(
-            status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
-        )
-    try:
-        require_manage(
-            Principal(user.id, is_admin),
-            parent.owner_id,
-        )
-    except PermissionError as exc:
-        raise HTTPException(
-            status_code=403,
-            detail="Only the parent agent's owner or an admin can register its subagents.",
-        ) from exc
-
-    # Derive names + per-subagent options (inheriting parent settings); reject
-    # in-batch duplicates before touching the DB.
-    try:
-        derived = derive_subagent_registrations(
-            parent_name=parent.name,
-            parent_metadata=parent.metadata_,
-            base_options=req.options,
-            subagents=[(s.subagent_name, s.description) for s in req.subagents],
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # Pre-check existence so a clash fails the batch before any registration.
-    if not req.overwrite:
-        clashes = [
-            d.name
-            for d in derived
-            if await agent_store.get_by_name(session, d.name) is not None
-        ]
-        if clashes:
+    async with session_factory() as session:
+        parent = await agent_store.get(session, req.parent_agent_id)
+        if parent is None:
             raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Subagents already exist: "
-                    + ", ".join(clashes)
-                    + ". Pass overwrite=true to re-register."
-                ),
+                status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
             )
+        parent_id = parent.id
+        try:
+            require_manage(
+                Principal(user.id, await user_store.administers(session, user)),
+                parent.owner_id,
+            )
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the parent agent's owner or an admin can register its subagents.",
+            ) from exc
+
+        # Derive names + per-subagent options (inheriting parent settings);
+        # reject in-batch duplicates before touching the DB.
+        try:
+            derived = derive_subagent_registrations(
+                parent_name=parent.name,
+                parent_metadata=parent.metadata_,
+                base_options=req.options,
+                subagents=[(s.subagent_name, s.description) for s in req.subagents],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Pre-check existence so a clash fails the batch before any registration.
+        if not req.overwrite:
+            clashes = [
+                d.name
+                for d in derived
+                if await agent_store.get_by_name(session, d.name) is not None
+            ]
+            if clashes:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Subagents already exist: "
+                        + ", ".join(clashes)
+                        + ". Pass overwrite=true to re-register."
+                    ),
+                )
 
     results: list[BulkRegisterResult] = []
     for d in derived:
@@ -286,7 +297,7 @@ async def register_known_subagents(
                 models=spec.models,
                 metadata=metadata,
                 owner_id=user.id,
-                parent_agent_id=parent.id,
+                parent_agent_id=parent_id,
                 overwrite=req.overwrite,
             )
         except AgentExistsError as exc:
