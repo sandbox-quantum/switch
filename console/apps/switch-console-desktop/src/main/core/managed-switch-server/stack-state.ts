@@ -1,13 +1,16 @@
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
-import type { RemoteStackProbe } from '@shared/core/managed-switch-server/managed-switch-server';
+import type {
+  RemoteStackProbe,
+  SwitchVersionDrift,
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   ENV_FILE_NAME,
   STACK_HELPER_IMAGE,
   STACK_STATE_LABEL,
   STACK_STATE_VOLUME_SUFFIX,
 } from './constants';
-import { classifyVersionDrift } from './deployed-version';
+import { classifyVersionDrift, imageTag } from './deployed-version';
 import { readStackEnv, type StackEnv } from './env-file';
 import type { ServerHost } from './host/types';
 
@@ -122,6 +125,8 @@ export type ProjectContainer = {
   /** The directory compose was run from when it created this container — the
    * working dir of the account that started it. Null when the label is absent. */
   workingDir: string | null;
+  /** The image the container runs, as Docker reports it. */
+  image: string;
 };
 
 export type ProjectResources = {
@@ -156,11 +161,11 @@ async function listContainers(host: StackStateHost): Promise<ProjectContainer[]>
       '--filter',
       `label=${COMPOSE_PROJECT_LABEL}=${host.composeProjectName}`,
       '--format',
-      `{{.Label "${COMPOSE_SERVICE_LABEL}"}}\t{{.State}}\t{{.Label "${COMPOSE_WORKING_DIR_LABEL}"}}`,
+      `{{.Label "${COMPOSE_SERVICE_LABEL}"}}\t{{.State}}\t{{.Label "${COMPOSE_WORKING_DIR_LABEL}"}}\t{{.Image}}`,
     ])
   ).map((line) => {
-    const [service = '', state = '', workingDir = ''] = line.split('\t');
-    return { service, state, workingDir: workingDir || null };
+    const [service = '', state = '', workingDir = '', image = ''] = line.split('\t');
+    return { service, state, workingDir: workingDir || null, image };
   });
 }
 
@@ -343,10 +348,14 @@ const PUBLISH_SCRIPT = [
  * to vouch for a copy it was not written with. The copy is written before its
  * stamp, so a read between the two sees a mismatch and distrusts it, never
  * the other way round.
+ *
+ * Returns whether the copy was stamped, which tells a start whether it still
+ * has to stamp it once compose has created the volume.
  */
-export async function publishEnv(host: StackStateHost, env: string): Promise<void> {
+export async function publishEnv(host: StackStateHost, env: string): Promise<boolean> {
   const stamp = await databaseStamp(host, await listDataVolumes(host));
   await writeStateVolume(host, PUBLISH_SCRIPT, `${stamp ?? ''}\n${env}`, []);
+  return stamp !== null;
 }
 
 /**
@@ -409,6 +418,11 @@ export type StackOnHost =
       source: StackEnvSource;
       running: boolean;
       published: boolean;
+      /** The switch-core version the running core container is on, or null
+       * when it is not running or its image names no version. It is what the
+       * stack is, where `env.version` is what it was last asked to be — the
+       * two differ when a start published its settings and then failed. */
+      runningVersion: string | null;
     }
   /** Someone else's stack that this account cannot read the settings of: it
    * was started from another account's working dir and never published.
@@ -447,6 +461,15 @@ export function unsharedStackMessage(hostLabel: string, ownerDir: string | null)
 
 /** What the renderer is told of a host's stack: enough to choose between
  * Connect and Start, and nothing secret. */
+/** How the stack compares with this build's pin: by the version it runs when
+ * it is running, else by the one its settings name. */
+export function driftOf(
+  stack: Extract<StackOnHost, { kind: 'present' }>
+): SwitchVersionDrift | null {
+  const version = stack.runningVersion ?? stack.env.version;
+  return version === null ? null : classifyVersionDrift(version, COMPATIBLE_SWITCH_VERSION);
+}
+
 export function probeFromStack(hostLabel: string, stack: StackOnHost): RemoteStackProbe {
   switch (stack.kind) {
     case 'absent':
@@ -455,12 +478,9 @@ export function probeFromStack(hostLabel: string, stack: StackOnHost): RemoteSta
       return {
         kind: 'present',
         running: stack.running,
-        deployedVersion: stack.env.version,
+        deployedVersion: stack.runningVersion ?? stack.env.version,
         shared: stack.published,
-        drift:
-          stack.env.version === null
-            ? null
-            : classifyVersionDrift(stack.env.version, COMPATIBLE_SWITCH_VERSION),
+        drift: driftOf(stack),
       };
     case 'unshared':
       return {
@@ -485,14 +505,30 @@ function isRunning(resources: ProjectResources): boolean {
 function fromEnvText(
   raw: string,
   source: StackEnvSource,
-  running: boolean,
+  resources: ProjectResources,
   published: boolean
 ): StackOnHost {
+  const running = isRunning(resources);
   const reading = readStackEnv(raw);
   if (reading.kind === 'incomplete') {
     return { kind: 'incomplete', source, missing: reading.missing, raw, running };
   }
-  return { kind: 'present', env: reading.env, raw, source, running, published };
+  return {
+    kind: 'present',
+    env: reading.env,
+    raw,
+    source,
+    running,
+    published,
+    runningVersion: runningCoreVersion(resources),
+  };
+}
+
+function runningCoreVersion(resources: ProjectResources): string | null {
+  const core = resources.containers.find(
+    (container) => container.service === CORE_SERVICE && container.state === 'running'
+  );
+  return core ? imageTag(core.image) : null;
 }
 
 /**
@@ -534,7 +570,9 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   // A copy with no stamp, or a stack with no database volume to compare it
   // with, cannot be judged, and is trusted as it always was.
   const stale = published?.stamp != null && database !== null && published.stamp !== database;
-  if (published !== null && !stale) return fromEnvText(published.env, 'published', running, true);
+  if (published !== null && !stale) {
+    return fromEnvText(published.env, 'published', resources, true);
+  }
   if (stale) {
     log.warn(
       `stack-state: the published settings on ${host.label} were written for a database that ` +
@@ -549,5 +587,5 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
     .find((dir): dir is string => dir !== null && dir !== host.workingDir);
   if (foreignDir !== undefined) return { kind: 'unshared', ownerDir: foreignDir, running };
   if (own === null) return { kind: 'unshared', ownerDir: null, running };
-  return fromEnvText(own, 'working-dir', running, false);
+  return fromEnvText(own, 'working-dir', resources, false);
 }

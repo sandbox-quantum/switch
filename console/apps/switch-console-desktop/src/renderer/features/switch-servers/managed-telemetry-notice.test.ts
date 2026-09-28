@@ -8,12 +8,20 @@ describe('managedTelemetryNotice', () => {
         running: false,
         deployed: { known: true, enabled: true },
         consent: false,
+        sharedWithOthers: false,
       })
     ).toEqual({ kind: 'in-step' });
   });
 
   it('says nothing when nothing has been observed', () => {
-    expect(managedTelemetryNotice({ running: true, deployed: null, consent: true })).toEqual({
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: null,
+        consent: true,
+        sharedWithOthers: false,
+      })
+    ).toEqual({
       kind: 'in-step',
     });
   });
@@ -25,6 +33,7 @@ describe('managedTelemetryNotice', () => {
           running: true,
           deployed: { known: true, enabled: consent },
           consent,
+          sharedWithOthers: false,
         })
       ).toEqual({ kind: 'in-step' });
     }
@@ -36,6 +45,7 @@ describe('managedTelemetryNotice', () => {
         running: true,
         deployed: { known: true, enabled: false },
         consent: true,
+        sharedWithOthers: false,
       })
     ).toEqual({ kind: 'stale', consent: true });
   });
@@ -48,6 +58,7 @@ describe('managedTelemetryNotice', () => {
         running: true,
         deployed: { known: true, enabled: true },
         consent: false,
+        sharedWithOthers: false,
       })
     ).toEqual({ kind: 'stale', consent: false });
   });
@@ -58,7 +69,32 @@ describe('managedTelemetryNotice', () => {
         running: true,
         deployed: { known: false, reason: 'ssh timed out' },
         consent: true,
+        sharedWithOthers: false,
       })
     ).toEqual({ kind: 'unknown', reason: 'ssh timed out' });
+  });
+
+  it('does not offer to turn sharing on over others using the server', () => {
+    // A start keeps a shared server's sharing off over them, so a restart
+    // from here would change nothing.
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: { known: true, enabled: false },
+        consent: true,
+        sharedWithOthers: true,
+      })
+    ).toEqual({ kind: 'in-step' });
+  });
+
+  it('still offers to apply a no on a server others use', () => {
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: { known: true, enabled: true },
+        consent: false,
+        sharedWithOthers: true,
+      })
+    ).toEqual({ kind: 'stale', consent: false });
   });
 });

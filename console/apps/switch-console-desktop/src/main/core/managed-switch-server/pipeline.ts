@@ -6,12 +6,14 @@ import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-ident
 import {
   CHECKOUT_IMAGE_TAG,
   type ConnectRemoteServerResult,
+  othersRecentlySeen,
   type StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
 import { bundledComposeYaml } from './bundled-compose';
 import { checkoutBuildOverrideYaml } from './checkout-build';
 import { composeDown, composeUp } from './compose';
+import { readRegister } from './console-register';
 import {
   BUILD_OVERRIDE_FILE_NAME,
   COMPOSE_FILE_NAME,
@@ -20,7 +22,7 @@ import {
   LOCAL_SERVER_ADMIN_EMAIL,
 } from './constants';
 import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
-import { buildEnvFile, keysDisagreeing } from './env-file';
+import { buildEnvFile, keysDisagreeing, telemetryRequested } from './env-file';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
@@ -30,6 +32,7 @@ import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './p
 import { type LocalServerSecrets, withRuntimePassword } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
 import {
+  driftOf,
   inspectStack,
   publishEnv,
   stampPublishedEnv,
@@ -199,10 +202,9 @@ type StartPlan =
   /** Nothing on the host, or the local stack, which nobody else shares: this
    * desktop's copy, or new credentials when it has none. */
   | { kind: 'fresh' }
-  /** The host could not say, or its settings have gaps, and this desktop
-   * holds a copy of what the stack last ran with — one that agrees with every
-   * setting the host does hold. The copy is used — refusing would make a stack
-   * its own starter can no longer start — and the degradation is logged. */
+  /** The host's settings have gaps, and this desktop holds a copy of what the
+   * stack last ran with — one that agrees with every setting the host does
+   * hold. The copy fills the gaps, and the degradation is logged. */
   | { kind: 'cached'; reason: string }
   /** Starting here could replace the credentials of a stack that is already
    * there. Nothing may be written. */
@@ -218,12 +220,19 @@ async function planStart(host: ServerHost): Promise<StartPlan> {
       return { kind: 'fresh' };
     case 'unshared':
       return { kind: 'refused', message: unsharedStackMessage(host.label, stack.ownerDir) };
-    case 'incomplete':
-    case 'unreadable': {
-      const reason =
-        stack.kind === 'incomplete'
-          ? `its settings are missing ${stack.missing.join(', ')}`
-          : stack.reason;
+    case 'unreadable':
+      // Not answered from this desktop's copy: nothing here can tell whether
+      // someone has reset the stack since, and starting from — and publishing
+      // — credentials that open nothing would lock everyone out of it.
+      return {
+        kind: 'refused',
+        message:
+          `Could not read the Switch server's settings on ${host.label} (${stack.reason}). ` +
+          `Starting from this desktop's copy could put back credentials someone has since ` +
+          `replaced, so nothing was changed. Try again once the host answers.`,
+      };
+    case 'incomplete': {
+      const reason = `its settings are missing ${stack.missing.join(', ')}`;
       const secrets = await readSecrets(host);
       const ports = await readPersistedPorts(host);
       if (secrets === null || ports === null) {
@@ -238,22 +247,20 @@ async function planStart(host: ServerHost): Promise<StartPlan> {
       // A copy that disagrees with what the host does hold is from another
       // generation of the stack — typically from before someone else reset it
       // — and starting from it would lock the stack out of its database.
-      if (stack.kind === 'incomplete') {
-        const disagreeing = keysDisagreeing(stack.raw, { secrets, ports });
-        if (disagreeing.length > 0) {
-          return {
-            kind: 'refused',
-            message:
-              `The Switch server's settings on ${host.label} are missing ` +
-              `${stack.missing.join(', ')}, and this desktop's copy of them is out of date ` +
-              `(${disagreeing.join(', ')} differ from the host's), so it cannot fill the gap. ` +
-              `Starting from it would lock the server out of its database, so nothing was changed.`,
-          };
-        }
+      const disagreeing = keysDisagreeing(stack.raw, { secrets, ports });
+      if (disagreeing.length > 0) {
+        return {
+          kind: 'refused',
+          message:
+            `The Switch server's settings on ${host.label} are missing ` +
+            `${stack.missing.join(', ')}, and this desktop's copy of them is out of date ` +
+            `(${disagreeing.join(', ')} differ from the host's), so it cannot fill the gap. ` +
+            `Starting from it would lock the server out of its database, so nothing was changed.`,
+        };
       }
       log.warn(
-        `managed-switch-server: could not read the stack's settings on ${host.label}; ` +
-          `starting from this desktop's copy of them`,
+        `managed-switch-server: the stack's settings on ${host.label} are partial; ` +
+          `filling them from this desktop's copy`,
         { reason }
       );
       return { kind: 'cached', reason };
@@ -266,6 +273,9 @@ async function adoptSettings(
   host: ServerHost,
   stack: Extract<StackOnHost, { kind: 'present' }>
 ): Promise<StackSettings> {
+  // A `.env` from before the database role split names no runtime password;
+  // one is made for it, as for a stored copy from then, and the start that
+  // follows gives the role it.
   const { secrets } = withRuntimePassword({
     ...stack.env.secrets,
     dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? '',
@@ -296,15 +306,59 @@ export async function adoptRunningStack(
     throw new Error(`The stack on ${host.label} is not shared, so there is nothing to adopt.`);
   }
   const settings = await adoptSettings(host, stack);
+  await bringWorkingDirInStep(host, stack);
+  if (!stack.published) await publishEnv(shared, stack.raw);
+  return settings;
+}
+
+/**
+ * Bring this account's working dir in step with a stack found on the host, so
+ * compose — for the version check, an upgrade's backup, Stop, Restart — reads
+ * what the stack runs with: the published `.env` byte for byte, and a compose
+ * file where the account has none. An account that never joined the stack has
+ * no compose file; rewriting an existing one is a start's business. A
+ * published stack is past the Matrix line, so this build's file serves it.
+ */
+async function bringWorkingDirInStep(
+  host: ServerHost,
+  stack: Extract<StackOnHost, { kind: 'present' }>
+): Promise<void> {
+  if (stack.source === 'published') await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
   if ((await host.readFile(COMPOSE_FILE_NAME)) === null) {
     await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
   }
-  if (stack.source === 'published') {
-    await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
-  } else if (!stack.published) {
-    await publishEnv(shared, stack.raw);
+}
+
+/**
+ * Whether a start shares usage data from the server.
+ *
+ * One answer covers a Console and the server it runs, but a shared server
+ * serves everyone using it (CHOO-2893). A start always applies this Console's
+ * "no". It applies a "yes" only where that takes nobody's "no" away: the stack
+ * already shares, or nobody else has used it lately. A register that cannot be
+ * read counts as others using it — the guess that cannot be defended is the one
+ * in favour.
+ */
+async function shareUsageData(
+  host: ServerHost,
+  plan: StartPlan,
+  consent: boolean
+): Promise<boolean> {
+  if (!consent || host.sharedState === null || plan.kind !== 'adopt') return consent;
+  if (telemetryRequested(plan.stack.raw)) return true;
+  try {
+    const others = othersRecentlySeen(await readRegister(host.sharedState), new Date());
+    if (others.length === 0) return true;
+  } catch (error) {
+    log.warn(`managed-switch-server: could not read who uses the server on ${host.label}`, {
+      error,
+    });
   }
-  return settings;
+  log.info(
+    `managed-switch-server: the server on ${host.label} does not share usage data and others ` +
+      `use it, so this start keeps it off`
+  );
+  return false;
 }
 
 async function settingsFor(
@@ -399,18 +453,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // reads it. Another account may have started, updated or reset the stack
   // since this one last did, and the version check below reads the `.env`
   // compose would use — which has to be the stack's, not a stale copy.
-  if (plan.kind === 'adopt') {
-    if (plan.stack.source === 'published') {
-      await host.writeFile(ENV_FILE_NAME, plan.stack.raw, 0o600);
-    }
-    // An account that has never joined the stack has no compose file of its
-    // own, and what runs before the start rewrites it — the backup an upgrade
-    // takes above all — addresses the stack through one. A published stack is
-    // past the Matrix line, so this build's file serves it.
-    if ((await host.readFile(COMPOSE_FILE_NAME)) === null) {
-      await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
-    }
-  }
+  if (plan.kind === 'adopt') await bringWorkingDirInStep(host, plan.stack);
 
   onMessage('Checking the deployed version…');
   const downgrade = await refuseDowngrade(host, checkoutRoot);
@@ -435,7 +478,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   const settings = await settingsFor(host, plan);
   // Read here rather than taken from the caller: a start is the moment the
   // user's answer reaches the server, and no supervisor can forget to carry it.
-  const telemetryEnabled = await telemetryConsent();
+  const telemetryEnabled = await shareUsageData(host, plan, await telemetryConsent());
   const env = buildEnvFile({
     version: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
     registry: GHCR_REGISTRY,
@@ -451,9 +494,10 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // halfway. A start whose settings nobody else can read is the state that
   // led the next person's Console to overwrite them, so this failing fails
   // the start rather than being logged past.
+  let stamped = false;
   if (host.sharedState !== null) {
     onMessage('Sharing the server’s settings on the host…');
-    await publishEnv(host.sharedState, env);
+    stamped = await publishEnv(host.sharedState, env);
   }
 
   onMessage(
@@ -462,7 +506,16 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
       : 'Starting containers (pulling images if needed)…'
   );
   await composeUp(host, onLog, checkoutRoot !== null);
-  if (host.sharedState !== null) await stampPublishedEnv(host.sharedState);
+  // Bookkeeping for a copy published before its database existed. The stack
+  // is up by now, so failing here would report a start that happened as one
+  // that did not; an unstamped copy is trusted as before, so it is logged.
+  if (host.sharedState !== null && !stamped) {
+    await stampPublishedEnv(host.sharedState).catch((error: unknown) => {
+      log.warn(`managed-switch-server: could not stamp the published settings on ${host.label}`, {
+        error,
+      });
+    });
+  }
 
   // Make the published ports reachable from the desktop (no-op locally; a
   // mirrored SSH forward remotely) BEFORE the health probe, so the probe takes
@@ -554,10 +607,7 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   // serve this Console, and bringing it up to date is an update for everyone
   // using it, which the caller runs as a start. A newer one has migrated its
   // database past anything this build can run.
-  const drift =
-    stack.env.version === null
-      ? null
-      : classifyVersionDrift(stack.env.version, COMPATIBLE_SWITCH_VERSION);
+  const drift = driftOf(stack);
   if (drift?.direction === 'upgrade') {
     return { kind: 'behind', deployed: drift.deployed, expected: drift.expected };
   }

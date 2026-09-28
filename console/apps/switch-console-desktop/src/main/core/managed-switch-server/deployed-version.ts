@@ -135,7 +135,7 @@ export async function readVersionStatus(
 /** The tag of a `[registry[:port]/]repo[:tag]` image reference, or null when it
  * carries no tag (an implicit `latest`, or a `@sha256:` digest pin — neither
  * names a version we can compare). */
-function imageTag(image: string): string | null {
+export function imageTag(image: string): string | null {
   const lastSlash = image.lastIndexOf('/');
   const name = lastSlash === -1 ? image : image.slice(lastSlash + 1);
   if (name.includes('@')) return null;

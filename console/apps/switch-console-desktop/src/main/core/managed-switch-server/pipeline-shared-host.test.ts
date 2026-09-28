@@ -5,6 +5,7 @@ import type * as EnvFile from './env-file';
 import type { StackEnv } from './env-file';
 import type { ServerHost } from './host/types';
 import type { LocalServerSecrets } from './secret-values';
+import type * as StackState from './stack-state';
 import type { StackOnHost, StackStateHost } from './stack-state';
 
 /**
@@ -16,7 +17,7 @@ import type { StackOnHost, StackStateHost } from './stack-state';
  */
 
 const inspectStackMock = vi.hoisted(() => vi.fn<() => Promise<StackOnHost>>());
-const publishEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const publishEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve(false)));
 const withdrawPublishedEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const stampPublishedEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
@@ -38,12 +39,15 @@ const passwordLoginMock = vi.hoisted(() => vi.fn(() => Promise.resolve({ success
 const logError = vi.hoisted(() => vi.fn());
 const logWarn = vi.hoisted(() => vi.fn());
 
+const readRegisterMock = vi.hoisted(() => vi.fn());
+vi.mock('./console-register', () => ({ readRegister: readRegisterMock }));
 vi.mock('@shared/app-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
   COMPATIBLE_SWITCH_VERSION: '0.11.0',
 }));
 vi.mock('@main/lib/logger', () => ({ log: { error: logError, warn: logWarn, info: vi.fn() } }));
-vi.mock('./stack-state', () => ({
+vi.mock('./stack-state', async (importOriginal) => ({
+  ...(await importOriginal<typeof StackState>()),
   inspectStack: inspectStackMock,
   publishEnv: publishEnvMock,
   stampPublishedEnv: stampPublishedEnvMock,
@@ -78,7 +82,8 @@ vi.mock('./ports', () => ({
   rememberPorts: rememberPortsMock,
   clearPorts: vi.fn(() => Promise.resolve()),
 }));
-vi.mock('./telemetry-consent', () => ({ telemetryConsent: () => Promise.resolve(false) }));
+const telemetryConsentMock = vi.hoisted(() => vi.fn(() => Promise.resolve(false)));
+vi.mock('./telemetry-consent', () => ({ telemetryConsent: telemetryConsentMock }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   ensureManagedServer: ensureManagedServerMock,
   setActiveServerId: vi.fn(() => Promise.resolve()),
@@ -116,6 +121,7 @@ function present(
     source: 'published',
     running: true,
     published: true,
+    runningVersion: null,
     ...overrides,
   };
 }
@@ -166,7 +172,9 @@ function connectOptions(host: ServerHost) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  publishEnvMock.mockResolvedValue(undefined);
+  telemetryConsentMock.mockResolvedValue(false);
+  readRegisterMock.mockResolvedValue({ self: 'me', consoles: [], activity: [] });
+  publishEnvMock.mockResolvedValue(false);
   waitForHealthMock.mockResolvedValue(true);
   loadOrCreateSecretsMock.mockResolvedValue(cachedSecrets);
   resolvePortsMock.mockResolvedValue(cachedPorts);
@@ -272,6 +280,8 @@ describe('starting a shared stack', () => {
     const order: string[] = [];
     publishEnvMock.mockImplementation(async () => {
       order.push('publish');
+      // A first start: no database volume to stamp the copy with yet.
+      return false;
     });
     composeUpMock.mockImplementation(async () => {
       order.push('compose up');
@@ -356,7 +366,25 @@ describe('starting a shared stack', () => {
     expect(loadOrCreateSecretsMock).not.toHaveBeenCalled();
   });
 
-  it('starts from this desktop’s copy when the host cannot be read, and says so', async () => {
+  it('refuses a host it cannot read even when this desktop holds a copy', async () => {
+    // Nothing here can tell whether someone reset the stack since this copy was
+    // taken, and starting from it — and publishing it — would lock everyone out.
+    inspectStackMock.mockResolvedValue({ kind: 'unreadable', reason: 'published copy timed out' });
+    readSecretsMock.mockResolvedValue(cachedSecrets);
+    readPersistedPortsMock.mockResolvedValue(cachedPorts);
+    const { host, writeFile } = sharedHost();
+
+    const result = await startStack(startOptions(host));
+
+    expect(result.kind === 'error' && result.message).toMatch(
+      /Could not read .* on vm-1 \(published copy timed out\).*nothing was changed/
+    );
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(publishEnvMock).not.toHaveBeenCalled();
+    expect(composeUpMock).not.toHaveBeenCalled();
+  });
+
+  it('fills a partial host .env from this desktop’s copy when they agree, and says so', async () => {
     inspectStackMock.mockResolvedValue({
       kind: 'incomplete',
       source: 'working-dir',
@@ -477,6 +505,22 @@ describe('connecting to a shared stack', () => {
     expect(composeUpMock).not.toHaveBeenCalled();
   });
 
+  it('goes by the version the stack runs, not the one its settings ask for', async () => {
+    // A start elsewhere published the new version and then failed: the old
+    // containers still run, and joining them as current would run this Console
+    // against a switch-core it cannot use.
+    inspectStackMock.mockResolvedValue(
+      present({ runningVersion: '0.10.0' }, { version: '0.11.0' })
+    );
+    const { host } = sharedHost();
+
+    expect(await connectStack(connectOptions(host))).toEqual({
+      kind: 'behind',
+      deployed: '0.10.0',
+      expected: '0.11.0',
+    });
+  });
+
   it('refuses a stack newer than this Console, saying to update the Console', async () => {
     inspectStackMock.mockResolvedValue(present({}, { version: '0.12.0' }));
     const { host, writeFile, establishNetworking } = sharedHost();
@@ -580,5 +624,105 @@ describe('resetting a shared stack', () => {
     await resetStack({ ...host, sharedState: null } as unknown as ServerHost);
 
     expect(withdrawPublishedEnvMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('usage data on a shared stack', () => {
+  const bobRecently = {
+    self: 'me',
+    consoles: [
+      {
+        consoleId: 'bob',
+        name: 'bob@desk',
+        hostAccount: 'bob',
+        appVersion: '0.37.0',
+        lastSeenAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      },
+    ],
+    activity: [],
+  };
+  const telemetryOf = () => {
+    const params = buildEnvFileMock.mock.calls.at(-1)?.[0] as
+      | { telemetryEnabled: boolean }
+      | undefined;
+    if (!params) throw new Error('no .env was built');
+    return params.telemetryEnabled;
+  };
+
+  it('always applies this Console’s no', async () => {
+    inspectStackMock.mockResolvedValue(present({ raw: 'TELEMETRY_ENABLED=true\n' }));
+    telemetryConsentMock.mockResolvedValue(false);
+
+    await startStack(startOptions(sharedHost().host));
+
+    expect(telemetryOf()).toBe(false);
+  });
+
+  it('does not turn sharing on over the others using the stack', async () => {
+    // Someone using it said no, or never said yes; one person's yes does not
+    // take that away from them.
+    inspectStackMock.mockResolvedValue(present({ raw: 'TELEMETRY_ENABLED=false\n' }));
+    telemetryConsentMock.mockResolvedValue(true);
+    readRegisterMock.mockResolvedValue(bobRecently);
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({
+      kind: 'started',
+      telemetryEnabled: false,
+    });
+    expect(telemetryOf()).toBe(false);
+  });
+
+  it('keeps sharing on a stack that already shares', async () => {
+    inspectStackMock.mockResolvedValue(present({ raw: 'TELEMETRY_ENABLED=true\n' }));
+    telemetryConsentMock.mockResolvedValue(true);
+    readRegisterMock.mockResolvedValue(bobRecently);
+
+    await startStack(startOptions(sharedHost().host));
+
+    expect(telemetryOf()).toBe(true);
+    expect(readRegisterMock).not.toHaveBeenCalled();
+  });
+
+  it('applies this Console’s yes when nobody else uses the stack', async () => {
+    inspectStackMock.mockResolvedValue(present({ raw: 'TELEMETRY_ENABLED=false\n' }));
+    telemetryConsentMock.mockResolvedValue(true);
+
+    await startStack(startOptions(sharedHost().host));
+
+    expect(telemetryOf()).toBe(true);
+  });
+
+  it('keeps sharing off when it cannot tell who uses the stack', async () => {
+    inspectStackMock.mockResolvedValue(present({ raw: 'TELEMETRY_ENABLED=false\n' }));
+    telemetryConsentMock.mockResolvedValue(true);
+    readRegisterMock.mockRejectedValue(new Error('no such volume'));
+
+    await startStack(startOptions(sharedHost().host));
+
+    expect(telemetryOf()).toBe(false);
+  });
+});
+
+describe('stamping the published settings', () => {
+  it('stamps after compose only a copy published before its database existed', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    publishEnvMock.mockResolvedValue(true);
+
+    await startStack(startOptions(sharedHost().host));
+
+    expect(stampPublishedEnvMock).not.toHaveBeenCalled();
+  });
+
+  it('does not fail a start that happened because the stamp could not be written', async () => {
+    // compose up has restarted the stack for everyone by then; reporting a
+    // failed start would strand this Console without its forward or sign-in.
+    inspectStackMock.mockResolvedValue(present());
+    stampPublishedEnvMock.mockRejectedValueOnce(new Error('helper container timed out'));
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/could not stamp the published settings on vm-1/),
+      expect.anything()
+    );
   });
 });

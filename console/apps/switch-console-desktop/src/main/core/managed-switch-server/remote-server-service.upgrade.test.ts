@@ -87,6 +87,7 @@ vi.mock('./host/remote-host', () => ({
     sshHost,
     label: sshHost,
     establishNetworking: m.establish,
+    writeFile: vi.fn(async () => {}),
     dispose: vi.fn(),
   }),
 }));
@@ -108,6 +109,7 @@ function present(running: boolean): StackOnHost {
     source: 'published',
     running,
     published: true,
+    runningVersion: null,
   };
 }
 

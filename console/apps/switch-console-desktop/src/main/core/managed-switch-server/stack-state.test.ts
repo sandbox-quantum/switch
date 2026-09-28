@@ -154,15 +154,28 @@ describe('the helper image', () => {
 describe('listProjectResources', () => {
   it('finds the project by label, so another account’s stack is seen without its compose file', async () => {
     const { host, calls } = fakeHost({
-      containers: [`switch\trunning\t${OTHER_DIR}`, `postgres\texited\t${OTHER_DIR}`],
+      containers: [
+        `switch\trunning\t${OTHER_DIR}\tghcr.io/sandbox-quantum/switch-core:0.28.0`,
+        `postgres\texited\t${OTHER_DIR}\tpostgres:16-alpine`,
+      ],
       dataVolumes: [`${PROJECT}_pgdata`, `${PROJECT}_mmdata`],
       stateVolume: true,
     });
 
     expect(await listProjectResources(host)).toEqual({
       containers: [
-        { service: 'switch', state: 'running', workingDir: OTHER_DIR },
-        { service: 'postgres', state: 'exited', workingDir: OTHER_DIR },
+        {
+          service: 'switch',
+          state: 'running',
+          workingDir: OTHER_DIR,
+          image: 'ghcr.io/sandbox-quantum/switch-core:0.28.0',
+        },
+        {
+          service: 'postgres',
+          state: 'exited',
+          workingDir: OTHER_DIR,
+          image: 'postgres:16-alpine',
+        },
       ],
       dataVolumes: [`${PROJECT}_pgdata`, `${PROJECT}_mmdata`],
       stateVolume: true,
@@ -174,11 +187,13 @@ describe('listProjectResources', () => {
   });
 
   it('reads a container without a working-dir label as unknown rather than empty', async () => {
-    const { host } = fakeHost({ containers: ['switch\trunning\t'] });
+    const { host } = fakeHost({ containers: ['switch\trunning\t\tswitch-core:0.28.0'] });
 
     const { containers } = await listProjectResources(host);
 
-    expect(containers).toEqual([{ service: 'switch', state: 'running', workingDir: null }]);
+    expect(containers).toEqual([
+      { service: 'switch', state: 'running', workingDir: null, image: 'switch-core:0.28.0' },
+    ]);
   });
 });
 

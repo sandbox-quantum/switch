@@ -269,3 +269,21 @@ export function readStackEnv(env: string): StackEnvReading {
     },
   };
 }
+
+/**
+ * How pydantic-settings reads a boolean, narrowed to the forms that can reach
+ * this variable.
+ *
+ * Absent means off, and that is a reading rather than a fallback: switch-core's
+ * own default for the gate is off, so a stack started before this existed — or
+ * by an operator who never set it — is genuinely not reporting.
+ */
+export function envFlag(value: string | null | undefined): boolean {
+  if (value === null || value === undefined) return false;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+/** Whether a stack's `.env` asks switch-core to share usage data. */
+export function telemetryRequested(envText: string): boolean {
+  return envFlag(readEnvValue(envText, TELEMETRY_ENABLED_KEY));
+}

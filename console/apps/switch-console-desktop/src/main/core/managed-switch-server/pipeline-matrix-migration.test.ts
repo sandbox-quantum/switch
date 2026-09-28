@@ -17,6 +17,9 @@ const dockerRunOneOffMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 const prepareUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve(null)));
 const finishUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock('./console-register', () => ({
+  readRegister: vi.fn(async () => ({ self: 'me', consoles: [], activity: [] })),
+}));
 vi.mock('@shared/app-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
   COMPATIBLE_SWITCH_VERSION: '0.24.0',

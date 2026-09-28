@@ -62,6 +62,10 @@ function sanitiseName(raw: string): string {
   return raw.replace(/\s+/g, '-').replace(NAME_CHARACTERS, '').slice(0, MAX_NAME_LENGTH);
 }
 
+/** Whether the missing user name has been reported: it is asked for on every
+ * managed-server request, and one warning says all there is to say. */
+let userNameMissingReported = false;
+
 function desktopUser(): string {
   try {
     return userInfo().username;
@@ -69,7 +73,10 @@ function desktopUser(): string {
     // A user with no passwd entry (some containers) has no name to give. The
     // Console still works; its register entry just says so rather than
     // inventing one.
-    log.warn('console-identity: could not read the desktop user name', { error });
+    if (!userNameMissingReported) {
+      userNameMissingReported = true;
+      log.warn('console-identity: could not read the desktop user name', { error });
+    }
     return 'unknown';
   }
 }

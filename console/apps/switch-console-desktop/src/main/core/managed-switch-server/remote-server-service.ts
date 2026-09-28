@@ -33,6 +33,7 @@ import {
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
 import { readRegister, writeRecord } from './console-register';
+import { ENV_FILE_NAME } from './constants';
 import { readVersionStatus } from './deployed-version';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
@@ -139,8 +140,8 @@ function noticeForIdleStack(
         : null;
     case 'absent':
       return (
-        `Nothing is set up on ${hostLabel} any more: the server was removed from another ` +
-        `Console or on the host. Starting it sets up a new, empty one.`
+        `Nothing is set up on ${hostLabel} any more: the server was removed. Its activity says ` +
+        `by whom. Starting it sets up a new, empty one.`
       );
     case 'unshared':
       return unsharedStackMessage(hostLabel, stack.ownerDir);
@@ -426,6 +427,12 @@ export class RemoteServerService {
       if (stack.kind === 'unreadable') {
         this.leaveUnanswered(sshHost, wasRunning, stack.reason);
         return;
+      }
+      // The version of a stopped stack is read from this account's `.env`,
+      // which is stale once another account has updated the stack; the
+      // published copy is what the stack was last started with.
+      if (stack.kind === 'present' && stack.source === 'published' && !stack.running) {
+        await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
       }
       const version = await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
       let journal: UpgradeJournal | null;
@@ -732,11 +739,15 @@ export class RemoteServerService {
       });
       if (result.kind === 'connected') {
         this.hosts.set(sshHost, host);
+        // Joined only at this build's pin, so nothing is owed any more —
+        // whatever this Console last saw of the stack before someone else
+        // brought it up to date.
         this.setStatus(sshHost, {
           phase: 'running',
           serverId: result.serverId,
           message: null,
           error: null,
+          upgrade: null,
         });
         this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
@@ -815,18 +826,13 @@ export class RemoteServerService {
       throw new Error(`An operation is already in progress for ${sshHost}.`);
     this.busy.add(sshHost);
     try {
-      // Said on the host only when this Console is still connected to it:
-      // leaving must not wait on, or fail for, a host that is out of reach.
+      // Said on the host whenever it can be reached — a Console left listed
+      // counts as a user for weeks, holding the others' updates and named in
+      // their prompts — but leaving must not wait on, or fail for, a host
+      // that is out of reach. Logged only: the server leaves this Console with
+      // the disconnect, so there is no page left to show a failure on.
       const live = this.hosts.get(sshHost) ?? null;
-      if (live && !hostReachabilityService.isBlocked(sshHost)) {
-        // Logged only: the server leaves this Console with the disconnect, so
-        // there is no page left to show a failure on.
-        await writeRecord(live, 'disconnected').catch((error) => {
-          log.warn(`remote-switch-server: could not record disconnected on ${live.label}`, {
-            error,
-          });
-        });
-      }
+      if (!hostReachabilityService.isBlocked(sshHost)) await this.recordLeaving(sshHost, live);
       this.releaseHost(sshHost, live);
       const server = await getRemoteManagedServer(sshHost);
       if (server) await removeServer(server.id);
@@ -838,6 +844,21 @@ export class RemoteServerService {
       this.lastRecorded.delete(sshHost);
     } finally {
       this.busy.delete(sshHost);
+    }
+  }
+
+  /** Take this Console off the register on `sshHost`, through the live host
+   * when there is one and a host of its own otherwise. */
+  private async recordLeaving(sshHost: string, live: RemoteServerHost | null): Promise<void> {
+    let own: RemoteServerHost | null = null;
+    try {
+      if (!live) own = await createRemoteServerHost(sshHost);
+      const host = live ?? own;
+      if (host) await writeRecord(host, 'disconnected');
+    } catch (error) {
+      log.warn(`remote-switch-server: could not record disconnected on ${sshHost}`, { error });
+    } finally {
+      own?.dispose();
     }
   }
 

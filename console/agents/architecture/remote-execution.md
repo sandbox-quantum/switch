@@ -100,13 +100,13 @@ stack's `.env` and took the running server down. Now:
   container of the stack's own Postgres image, with secrets on stdin, never in
   a command line — see `stack-state.ts`.
 - A start reads the host first (`inspectStack`) and takes the published copy,
-  then this account's `.env`, then this desktop's cache. New credentials are
-  made **only** on a host with nothing of the stack at all. Another account's
-  unpublished stack, or a host that cannot be read with no cache to fall back
-  on, is refused before anything is written. The cache may fill gaps in a
-  partial `.env` only when it agrees with every port and credential the file
-  does carry — a cache from before someone else's reset would otherwise put
-  the old database password back.
+  then this account's `.env`. New credentials are made **only** on a host with
+  nothing of the stack at all. Another account's unpublished stack, or a host
+  that cannot be read, is refused before anything is written — this desktop's
+  cache cannot tell whether someone has reset the stack since, and starting
+  from it, then publishing it, would lock everyone out. The cache may fill
+  gaps in a partial `.env` only when it agrees with every port and credential
+  the file does carry, for the same reason.
 - The published copy is stamped with the creation time of the Postgres volume
   it was written for (after compose up on a first start, when the volume did
   not exist at publish). A copy whose stamp no longer matches is ignored: a
@@ -134,6 +134,9 @@ in that account's working dir. So:
   brought up to date as a start from the host's settings (the connect step
   says so and names who else uses it); a newer one is refused, since its
   database has migrated past anything this build can run.
+- Connect and the version checks go by the version the core container runs
+  when the stack is up, not the one its published settings name: a start that
+  published and then failed leaves the old containers running.
 - At launch or reachability recovery, a running stack behind the pin is updated
   on its own only when no other Console has used it in the last
   `RECENTLY_SEEN_DAYS` (the register on the host says who). Otherwise its
@@ -142,6 +145,13 @@ in that account's working dir. So:
   who it reaches. A register that cannot be read counts as others using it. An
   update this account already started (its journal is there) is resumed
   regardless.
+
+**Usage data on a shared stack.** One "Share usage data" answer covers a
+Console and the server it runs, but a shared server serves everyone using it.
+A start always applies this Console's "no"; it applies a "yes" only where that
+takes nobody's "no" away — the stack already shares, or no other Console has
+used it lately (an unreadable register counts as others). The page's notice
+offers a restart to apply a "no", never to switch sharing on over others.
 
 **Identity is shared; attribution is not.** Everyone signs in as the stack's one
 seeded admin — sessions are owner-only on the server with no admin override, so
@@ -165,12 +175,15 @@ per-person accounts would hide each person's sessions from the others. Instead:
 **Several Consoles, one agent.** Under one account, each Console holds its own
 row for the same agent and writes the agent's one watcher on the host. Model
 and instructions come from the agent's config file on the host, so they agree.
-Auto-approve lives in each row, so the watcher's saved spec on the host is
-what they share: every watcher write takes auto-approve from it and brings the
-row in line, except the write that follows the person changing it
-(`pushRemoteAutoApprove`). When the watcher is not starting sessions — stopped,
-or automatic sessions off — nothing rewrites the spec now, so that change goes
-into it directly (`recordAutoApproveOnHost`).
+Auto-approve lives in each row, so what they share is the last choice a person
+made, kept beside the watcher (`auto-approve.json`): every watcher write takes
+auto-approve from it and brings the row in line, except the write that follows
+the person changing it (`pushRemoteAutoApprove`), which becomes the new choice.
+When the watcher is not starting sessions — stopped, or automatic sessions off
+— nothing rewrites the spec now, so the change goes into the choice and the
+spec directly (`recordAutoApproveOnHost`), before the row. Only an explicit
+change writes the choice: a saved spec is written from whichever row wrote the
+watcher last — an older Console's too — so it is never taken for one.
 
 Two Consoles under one account acting on one session do not collide: prompts
 queue in the session's SDK host and run in turn, and either one's interrupt or

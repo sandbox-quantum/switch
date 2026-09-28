@@ -110,6 +110,7 @@ function present(running: boolean): StackOnHost {
     source: 'published',
     running,
     published: true,
+    runningVersion: null,
   };
 }
 
@@ -118,6 +119,7 @@ function fakeHost() {
     label: 'vm-1',
     detectDocker: vi.fn(() => Promise.resolve({ available: true, version: '27.0.0' })),
     establishNetworking: vi.fn(() => Promise.resolve()),
+    writeFile: vi.fn((_name: string, _content: string, _mode?: number) => Promise.resolve()),
     dispose: vi.fn(),
   };
 }
@@ -288,6 +290,21 @@ describe('disconnect', () => {
     expect(service.getStatuses()).toEqual([]);
     // The renderer is told the stack is no longer this Console's to show.
     expect(emitted.at(-1)).toMatchObject({ sshHost: 'vm-1', phase: 'stopped', serverId: null });
+  });
+
+  it('leaves the register of a stopped server too, through a host of its own', async () => {
+    // Left listed, this Console would count as a user for two weeks — holding
+    // the others' updates and named in their prompts.
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    getRemoteManagedServer.mockResolvedValue(RECORD);
+    const service = await loadService();
+
+    await service.disconnect('vm-1');
+
+    expect(writeRecord).toHaveBeenCalledExactlyOnceWith(host, 'disconnected');
+    expect(host.dispose).toHaveBeenCalledOnce();
+    expect(removeServer).toHaveBeenCalledExactlyOnceWith('srv-1');
   });
 
   it('refuses while another operation on the host is running', async () => {
@@ -614,6 +631,53 @@ describe('a host coming back while an operation starts', () => {
 
     joined();
     expect(await connecting).toMatchObject({ kind: 'connected' });
+  });
+});
+
+describe('a stopped stack another account updated', () => {
+  it('reads its version from the published settings, not this account’s stale copy', async () => {
+    const host = fakeHost();
+    const order: string[] = [];
+    host.writeFile.mockImplementation(async (name: string) => void order.push(`write ${name}`));
+    readVersionStatus.mockImplementation(async () => {
+      order.push('version');
+      return { deployedVersion: '0.11.0', drift: null };
+    });
+    createRemoteServerHost.mockResolvedValue(host);
+    inspectStack.mockResolvedValue(present(false));
+    const service = await loadService();
+
+    await boot(service);
+
+    expect(host.writeFile).toHaveBeenCalledWith('.env', 'PUBLISHED\n', 0o600);
+    expect(order.indexOf('write .env')).toBeLessThan(order.indexOf('version'));
+  });
+});
+
+describe('connecting after the stack was brought up to date elsewhere', () => {
+  it('drops the update this Console last saw owed', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    // At launch the stack was stopped and behind the pin.
+    inspectStack.mockResolvedValue(present(false));
+    readVersionStatus.mockResolvedValueOnce({
+      deployedVersion: '0.10.0',
+      drift: { deployed: '0.10.0', expected: '0.11.0', direction: 'upgrade' },
+    } as never);
+    const service = await loadService();
+    await service.initialize();
+    await expect(service.ensureReady('vm-1', 'Team server')).rejects.toThrow(/stopped/);
+
+    // Someone else started it at the pin; this Console joins it.
+    connectStack.mockResolvedValue({
+      kind: 'connected',
+      serverId: 'srv-1',
+      deployedVersion: '0.11.0',
+    });
+    expect(await service.connect('vm-1', 'Team server')).toMatchObject({ kind: 'connected' });
+
+    expect(service.getStatus('vm-1').upgrade).toBeNull();
+    await expect(service.ensureReady('vm-1', 'Team server')).resolves.toBeUndefined();
   });
 });
 
