@@ -468,6 +468,16 @@ class CollaborationBridgeLifecycleService:
                 connection_config=connection_config,
             )
 
+    def is_connected(self, bridge_id: str) -> bool:
+        """Whether a running bridge has finished starting.
+
+        `get_adapter` answers as soon as a bridge is launched, but its adapter
+        is started in the bridge's own task a few database reads later. An
+        event handed to it in between reaches an adapter that has not yet been
+        given its callbacks.
+        """
+        return bridge_id in self._connected
+
     def iter_adapters(self) -> Iterator[PlatformAdapter]:
         """The live adapter of every running bridge, as a snapshot.
 

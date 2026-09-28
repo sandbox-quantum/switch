@@ -288,3 +288,23 @@ class TestDelivery:
         adapter = _shared_adapter()
         with pytest.raises(RuntimeError, match="not connected"):
             await adapter.dispatch_event(envelope_type="events", payload=_update())
+
+
+async def test_a_claim_on_a_bridge_that_never_started_fails_loud() -> None:
+    """Absorbing it quietly would lose the chat's room: a claim arrives once."""
+    adapter = _shared_adapter()
+    adapter.attach_shared_connection(await _client())
+
+    with pytest.raises(RuntimeError, match="has not started"):
+        await adapter.dispatch_event(
+            envelope_type="events",
+            payload=_update(
+                message={
+                    "message_id": 9,
+                    "date": 0,
+                    "chat": {"id": -1001, "type": "supergroup", "title": "Acme"},
+                    "from": {"id": 42, "is_bot": False, "first_name": "Ada"},
+                    "text": f"/start@{_USERNAME} c1token",
+                }
+            ),
+        )
