@@ -4,7 +4,10 @@ import logging
 from typing import TYPE_CHECKING, Literal, Unpack
 
 from switch_core.agent_display_name import agent_label_with_identifier
-from switch_core.bridges.agent.commands import dispatch_admin_command
+from switch_core.bridges.agent.commands import (
+    dispatch_admin_command,
+    resolve_command_target,
+)
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
@@ -28,9 +31,11 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.document_store import DocumentStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.transport import InboundMessage, RoomRef
 
@@ -65,6 +70,7 @@ class AdminClient(ClientBase[ClientConfig]):
         document_store: DocumentStore,
         reference_store: ReferenceStore,
         agent_session_store: AgentSessionStore,
+        external_user_store: ExternalUserStore,
         room_service: RoomService,
         frontend_base_url: str | None,
         **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
@@ -78,6 +84,16 @@ class AdminClient(ClientBase[ClientConfig]):
         self._reference_store = reference_store
         self._agent_session_store = agent_session_store
         self._room_service = room_service
+        # The same resolver the agent clients use, so a command aimed at an
+        # agent is judged by exactly the rules a message to it would be.
+        self._addressing = AddressingResolver(
+            room_store=room_store,
+            room_role_store=room_role_store,
+            client_store=self.client_store,
+            agent_store=agent_store,
+            external_user_store=external_user_store,
+            live_agent_ids=lambda: connections.live_agent_ids(),
+        )
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )
@@ -108,6 +124,38 @@ class AdminClient(ClientBase[ClientConfig]):
 
     async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         await dispatch_admin_command(self, room, event)
+
+    async def command_refusal(self, event: CommandEvent, room_id: str) -> str | None:
+        """The refusal to post for a command aimed at an agent the sender may
+        not address, or None when it may go ahead.
+
+        Commands act on an agent as surely as a message to it does — an alias
+        changes how it is addressed, an invite puts it in a room — so the
+        agent's addressing policy governs both. A target that resolves to no
+        agent is not refused here: the handler runs and gives its own "no such
+        agent" notice, which is the more useful answer and leaks nothing, since
+        the policy could not have applied to a nonexistent agent anyway.
+        """
+        async with self.session_factory() as session:
+            target = await resolve_command_target(self, session, room_id, event.args)
+            if target is None:
+                return None
+            decision = await self._addressing.permitted(
+                session,
+                agent=target,
+                room_id=room_id,
+                sender=event.user_id,
+            )
+        if decision.allowed:
+            return None
+        logger.warning(
+            "Command %s from %s refused: sender may not address %s in room %s",
+            event.command,
+            event.user_id,
+            target.name,
+            room_id,
+        )
+        return decision.refusal
 
     async def reply_command(
         self,

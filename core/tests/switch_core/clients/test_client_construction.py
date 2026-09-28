@@ -66,8 +66,12 @@ def test_every_registered_client_type_constructs(cls: type) -> None:
         ):
             continue
         # A plain object() stands in for a collaborator, but a few are strings
-        # the constructor manipulates on the way in.
-        collaborators[name] = "" if "str" in str(param.annotation) else object()
+        # the constructor manipulates on the way in. Match the annotation
+        # exactly: a substring test also catches every collaborator whose type
+        # name merely contains "str" (ConnectionRegistry, AgentStore).
+        annotation = str(param.annotation).replace(" ", "")
+        is_str = annotation in {"str", "str|None", "None|str"}
+        collaborators[name] = "" if is_str else object()
 
     client = cls(config=cls.config_class(), **base, **collaborators)
 
