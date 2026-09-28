@@ -63,6 +63,7 @@ const started: StartLocalServerResult = {
   kind: 'started',
   serverId: 'local',
   telemetryEnabled: false,
+  warning: null,
 };
 
 /** A start that runs the upgrade the way the pipeline does: announce, then work. */

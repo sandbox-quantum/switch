@@ -233,6 +233,9 @@ export type StartLocalServerResult =
        * record what the server is now doing without probing for what it just
        * wrote. */
       telemetryEnabled: boolean;
+      /** Something the start could not do that does not undo it, for the
+       * server page to say; null when there is nothing to say. */
+      warning: string | null;
     }
   | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string }
   | { kind: 'version-downgrade'; deployed: string; expected: string }

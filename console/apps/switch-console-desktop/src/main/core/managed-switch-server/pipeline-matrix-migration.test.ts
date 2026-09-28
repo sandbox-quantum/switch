@@ -132,6 +132,7 @@ describe('startStack across the Matrix boundary', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     // The old stack comes up and is drained before the new compose file lands:
     // that file is what removes the homeserver being read from.
@@ -188,6 +189,7 @@ describe('startStack across the Matrix boundary', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     expect(dockerRunOneOffMock).not.toHaveBeenCalled();
   });

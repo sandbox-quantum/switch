@@ -65,7 +65,7 @@ async function readSubagentSwitchId(
  * - `host`: the choice on the host, when there is one, and this Console's row
  *   is brought in line with it. Everything but a change to auto-approve.
  * - `this-console`: this Console's row, because the person using it has just
- *   changed it — and that becomes the choice on the host.
+ *   changed it; {@link keepAutoApproveChoice} has put it on the host first.
  */
 export type AutoApproveSource = 'host' | 'this-console';
 
@@ -119,20 +119,10 @@ async function adoptHostAutoApprove(
   await updateAgent({ agentId, autoApprove: chosen === 'full-access' });
 }
 
-/**
- * Keep a person's auto-approve choice on the host, for an agent whose watcher
- * is not starting sessions — stopped, or connected with automatic sessions off
- * — so nothing is about to rewrite it: into the choice every Console on the
- * account takes, and into the watcher's saved spec, so the next session it
- * starts runs with it.
- *
- * Takes the value rather than reading the row, so the caller can put it on the
- * host before the row: a row changed for a host that could not be reached
- * would be put back by the next watcher write.
- */
-export async function recordAutoApproveOnHost(
+async function writeAutoApproveChoice(
   agentId: string,
-  autoApprove: boolean
+  autoApprove: boolean,
+  what: 'spec' | 'choice-only'
 ): Promise<void> {
   const agent = await getAgentById(agentId);
   if (!agent) throw new Error(`Agent ${agentId} does not exist.`);
@@ -146,8 +136,34 @@ export async function recordAutoApproveOnHost(
     RECORD_AUTO_APPROVE_CHOICE,
     root,
     runtimeModeFor(autoApprove),
-    'spec',
+    what,
   ]);
+}
+
+/**
+ * Keep a person's auto-approve choice on the host, where every Console on the
+ * account takes it from — ahead of the push that rewrites the watcher, so a
+ * watcher write racing that push takes the new value rather than putting the
+ * old one back.
+ *
+ * Takes the value rather than reading the row, so the caller can put it on the
+ * host before the row.
+ */
+export async function keepAutoApproveChoice(agentId: string, autoApprove: boolean): Promise<void> {
+  await writeAutoApproveChoice(agentId, autoApprove, 'choice-only');
+}
+
+/**
+ * {@link keepAutoApproveChoice}, and the watcher's saved spec too, for an
+ * agent whose watcher is not starting sessions — stopped, or connected with
+ * automatic sessions off — so nothing is about to rewrite the spec, and the
+ * next session it starts should run with the value.
+ */
+export async function recordAutoApproveOnHost(
+  agentId: string,
+  autoApprove: boolean
+): Promise<void> {
+  await writeAutoApproveChoice(agentId, autoApprove, 'spec');
 }
 
 /**
@@ -297,15 +313,6 @@ export async function configureSharedWatcher(
   const ownWatcher = !name || name === agent.name;
   if (ownWatcher && autoApprove === 'host') {
     await adoptHostAutoApprove(agentId, ctx, root, config);
-  } else if (ownWatcher) {
-    // The spec itself is written just below, from this row.
-    await ctx.exec('node', [
-      '-e',
-      RECORD_AUTO_APPROVE_CHOICE,
-      root,
-      config.start.input.runtimeMode,
-      'choice-only',
-    ]);
   }
   await runSharedHostCommand(transport, { ctx, root, entrypoint }, config, '--ensure-watch', false);
 }

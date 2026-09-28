@@ -319,7 +319,7 @@ export async function adoptRunningStack(
  * no compose file; rewriting an existing one is a start's business. A
  * published stack is past the Matrix line, so this build's file serves it.
  */
-async function bringWorkingDirInStep(
+export async function bringWorkingDirInStep(
   host: ServerHost,
   stack: Extract<StackOnHost, { kind: 'present' }>
 ): Promise<void> {
@@ -335,7 +335,8 @@ async function bringWorkingDirInStep(
  * One answer covers a Console and the server it runs, but a shared server
  * serves everyone using it (CHOO-2893). A start always applies this Console's
  * "no". It applies a "yes" only where that takes nobody's "no" away: the stack
- * already shares, or nobody else has used it lately. A register that cannot be
+ * already shares, or nobody else has used it lately — including through a
+ * stack since reset, whose register carries on. A register that cannot be
  * read counts as others using it — the guess that cannot be defended is the one
  * in favour.
  */
@@ -344,8 +345,10 @@ async function shareUsageData(
   plan: StartPlan,
   consent: boolean
 ): Promise<boolean> {
-  if (!consent || host.sharedState === null || plan.kind !== 'adopt') return consent;
-  if (telemetryRequested(plan.stack.raw)) return true;
+  if (!consent || host.sharedState === null) return consent;
+  // Whatever the start's plan: the register outlives a reset, and a stack
+  // with partial settings is someone's stack all the same.
+  if (plan.kind === 'adopt' && telemetryRequested(plan.stack.raw)) return true;
   try {
     const others = othersRecentlySeen(await readRegister(host.sharedState), new Date());
     if (others.length === 0) return true;
@@ -507,14 +510,23 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   );
   await composeUp(host, onLog, checkoutRoot !== null);
   // Bookkeeping for a copy published before its database existed. The stack
-  // is up by now, so failing here would report a start that happened as one
-  // that did not; an unstamped copy is trusted as before, so it is logged.
+  // is up by now, so failing here must not report a start that happened as one
+  // that did not; but an unstamped copy is trusted as before, so the page says
+  // what that leaves open.
+  let warning: string | null = null;
   if (host.sharedState !== null && !stamped) {
-    await stampPublishedEnv(host.sharedState).catch((error: unknown) => {
-      log.warn(`managed-switch-server: could not stamp the published settings on ${host.label}`, {
+    try {
+      await stampPublishedEnv(host.sharedState);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log.error(`managed-switch-server: could not stamp the published settings on ${host.label}`, {
         error,
       });
-    });
+      warning =
+        `Started, but its shared settings on ${host.label} could not be stamped with its ` +
+        `database (${reason}). Until the next start stamps them, a reset from a Console older ` +
+        `than sharing could leave them looking current to the others.`;
+    }
   }
 
   // Make the published ports reachable from the desktop (no-op locally; a
@@ -530,7 +542,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
 
   const serverId = await registerAndSignIn(ref, serverName, settings, activate, onMessage);
   if (upgrade) await finishUpgrade(host);
-  return { kind: 'started', serverId, telemetryEnabled };
+  return { kind: 'started', serverId, telemetryEnabled, warning };
 }
 
 export type ConnectStackOptions = {
@@ -636,7 +648,11 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   }
 
   const serverId = await registerAndSignIn(ref, serverName, settings, true, onMessage);
-  return { kind: 'connected', serverId, deployedVersion: stack.env.version };
+  return {
+    kind: 'connected',
+    serverId,
+    deployedVersion: stack.runningVersion ?? stack.env.version,
+  };
 }
 
 /** Stop the stack's containers and tear down networking (leaves data + config). */

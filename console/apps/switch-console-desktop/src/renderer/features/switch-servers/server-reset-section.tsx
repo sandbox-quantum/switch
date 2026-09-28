@@ -11,8 +11,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import type { StackConsole } from '@shared/core/managed-switch-server/managed-switch-server';
-import { affectedSentence } from './shared-consoles';
 
 /**
  * Throwing away a managed stack, at the very bottom of its server's page.
@@ -24,7 +22,7 @@ import { affectedSentence } from './shared-consoles';
 export function ServerResetSection({
   dialogTitle,
   shared,
-  others,
+  affected,
   disabled,
   onConfirm,
 }: {
@@ -33,8 +31,9 @@ export function ServerResetSection({
   /** Whether other people can be using the stack: true for a remote one, which
    * everyone with access to its host can connect to (CHOO-2893). */
   shared: boolean;
-  /** The other Consoles seen on it recently, whom the confirmation names. */
-  others: StackConsole[];
+  /** Who else it reaches, for the confirmation to name — or that it could not
+   * be told; null when nobody. */
+  affected: string | null;
   disabled: boolean;
   onConfirm: () => void;
 }) {
@@ -76,7 +75,7 @@ export function ServerResetSection({
             {shared && (
               <DialogDescription className="mt-2">
                 It is deleted for <strong className="text-foreground">everyone who uses it</strong>,
-                not only for this Console. {affectedSentence(others, new Date())}
+                not only for this Console. {affected}
               </DialogDescription>
             )}
           </DialogContentArea>

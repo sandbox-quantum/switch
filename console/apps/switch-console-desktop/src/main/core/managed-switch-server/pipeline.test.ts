@@ -150,6 +150,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     expect(writeFile).toHaveBeenCalledWith(ENV_FILE_NAME, expect.any(String), 0o600);
     expect(composeUpMock).toHaveBeenCalledOnce();
@@ -162,6 +163,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
   });
 
@@ -176,6 +178,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
   });
 
@@ -187,6 +190,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     // Degraded, but disclosed — a transient probe failure must not make the app
     // unstartable.
@@ -204,6 +208,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
   });
 
@@ -261,6 +266,7 @@ describe('startStack checkout build', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
 
     const override = writeFile.mock.calls.find(
@@ -283,6 +289,7 @@ describe('startStack checkout build', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     expect(logWarn).toHaveBeenCalled();
   });
@@ -299,6 +306,7 @@ describe('startStack checkout build', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: true,
+      warning: null,
     });
     expect(buildEnvFileMock).toHaveBeenCalledWith(
       expect.objectContaining({ telemetryEnabled: true })

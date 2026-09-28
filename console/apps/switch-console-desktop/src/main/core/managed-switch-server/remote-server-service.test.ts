@@ -38,6 +38,7 @@ const writeRecord = vi.hoisted(() =>
   vi.fn((_host: unknown, _action: unknown) => Promise.resolve())
 );
 const readRegister = vi.hoisted(() => vi.fn());
+const stateVolumeExists = vi.hoisted(() => vi.fn(async () => true));
 const readUpgradeJournal = vi.hoisted(() => vi.fn(() => Promise.resolve(null)));
 
 vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
@@ -47,12 +48,19 @@ vi.mock('./host/remote-host', () => ({ createRemoteServerHost }));
 vi.mock('./stack-state', async (importOriginal) => ({
   ...(await importOriginal<typeof StackState>()),
   inspectStack,
+  stateVolumeExists,
 }));
 vi.mock('@shared/app-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
   COMPATIBLE_SWITCH_VERSION: '0.11.0',
 }));
 vi.mock('./pipeline', () => ({
+  bringWorkingDirInStep: async (
+    host: { writeFile: (...args: unknown[]) => Promise<void> },
+    stack: { source: string; raw: string }
+  ) => {
+    if (stack.source === 'published') await host.writeFile('.env', stack.raw, 0o600);
+  },
   connectStack,
   adoptRunningStack,
   startStack,
@@ -193,7 +201,12 @@ describe('connect', () => {
     const starting = fakeHost();
     createRemoteServerHost.mockResolvedValueOnce(joining).mockResolvedValueOnce(starting);
     connectStack.mockResolvedValue({ kind: 'behind', deployed: '0.10.0', expected: '0.11.0' });
-    startStack.mockResolvedValue({ kind: 'started', serverId: 'srv-1', telemetryEnabled: false });
+    startStack.mockResolvedValue({
+      kind: 'started',
+      serverId: 'srv-1',
+      telemetryEnabled: false,
+      warning: null,
+    });
     const service = await loadService();
 
     expect(await service.connect('vm-1', 'Team server')).toEqual({
@@ -305,6 +318,19 @@ describe('disconnect', () => {
     expect(writeRecord).toHaveBeenCalledExactlyOnceWith(host, 'disconnected');
     expect(host.dispose).toHaveBeenCalledOnce();
     expect(removeServer).toHaveBeenCalledExactlyOnceWith('srv-1');
+  });
+
+  it('creates no register just to leave one where the stack never had any', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    getRemoteManagedServer.mockResolvedValue(RECORD);
+    stateVolumeExists.mockResolvedValueOnce(false);
+    const service = await loadService();
+
+    await service.disconnect('vm-1');
+
+    expect(writeRecord).not.toHaveBeenCalled();
+    expect(removeServer).toHaveBeenCalledOnce();
   });
 
   it('refuses while another operation on the host is running', async () => {
@@ -678,6 +704,26 @@ describe('connecting after the stack was brought up to date elsewhere', () => {
 
     expect(service.getStatus('vm-1').upgrade).toBeNull();
     await expect(service.ensureReady('vm-1', 'Team server')).resolves.toBeUndefined();
+  });
+});
+
+describe('a start that could not do everything', () => {
+  it('says on the server page what it left open', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    startStack.mockResolvedValue({
+      kind: 'started',
+      serverId: 'srv-1',
+      telemetryEnabled: false,
+      warning: 'Started, but its shared settings could not be stamped.',
+    });
+    const service = await loadService();
+
+    expect(await service.start('vm-1', 'Team server')).toMatchObject({ kind: 'started' });
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'running',
+      notice: 'Started, but its shared settings could not be stamped.',
+    });
   });
 });
 

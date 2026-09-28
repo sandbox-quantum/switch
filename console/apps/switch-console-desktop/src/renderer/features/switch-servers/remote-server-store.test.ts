@@ -12,6 +12,7 @@ const rpcRemote = vi.hoisted(() => ({
   register: vi.fn(),
   start: vi.fn(),
   stop: vi.fn(),
+  reset: vi.fn(),
 }));
 const agentsLoad = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const serversInit = vi.hoisted(() => vi.fn(() => Promise.resolve()));
@@ -163,6 +164,38 @@ describe('connect', () => {
 
     expect(store.isTransitioning('vm-1')).toBe(false);
     expect(store.error).toBeTruthy();
+  });
+});
+
+describe('deleting a server for everyone', () => {
+  it('resets its stack and then leaves it, forgetting what it knew of the host', async () => {
+    // Left on the register, this Console would count as a user for two weeks,
+    // holding the others' updates; and a stale register kept here would decide
+    // the "for everyone?" question on the next server on this host.
+    const store = new RemoteServerStore();
+    await store.loadRegister('vm-1');
+
+    expect(await store.deleteForEveryone('vm-1', 'srv-1')).toBe(true);
+
+    expect(rpcRemote.reset).toHaveBeenCalledWith('vm-1');
+    expect(rpcRemote.disconnect).toHaveBeenCalledWith('vm-1');
+    expect(rpcRemote.reset.mock.invocationCallOrder[0]).toBeLessThan(
+      rpcRemote.disconnect.mock.invocationCallOrder[0]!
+    );
+    expect(forgetRemovedServer).toHaveBeenCalledWith('srv-1');
+    expect(agentsLoad).toHaveBeenCalledOnce();
+    expect(store.registerFor('vm-1')).toBeNull();
+  });
+
+  it('keeps the server when its stack could not be reset', async () => {
+    rpcRemote.reset.mockRejectedValueOnce(new Error('host unreachable'));
+    const store = new RemoteServerStore();
+
+    expect(await store.deleteForEveryone('vm-1', 'srv-1')).toBe(false);
+
+    expect(rpcRemote.disconnect).not.toHaveBeenCalled();
+    expect(forgetRemovedServer).not.toHaveBeenCalled();
+    expect(store.error).toMatch(/not deleted/);
   });
 });
 

@@ -33,7 +33,6 @@ import {
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
 import { readRegister, writeRecord } from './console-register';
-import { ENV_FILE_NAME } from './constants';
 import { readVersionStatus } from './deployed-version';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
@@ -47,6 +46,7 @@ import {
 import { remoteServerStateDir } from './paths';
 import {
   adoptRunningStack,
+  bringWorkingDirInStep,
   type ConnectStackResult,
   connectStack,
   resetStack,
@@ -58,6 +58,7 @@ import { clearSecrets } from './secrets';
 import {
   inspectStack,
   probeFromStack,
+  stateVolumeExists,
   type StackOnHost,
   type StackStateHost,
   unsharedStackMessage,
@@ -74,6 +75,10 @@ const RECHECK_INTERVAL_MS = 30_000;
  * does nothing but use the server inside the register's two-week window,
  * without a container run on the host at every launch and re-check. */
 const SIGHTING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** How long leaving waits to take this Console off a host's register. Leaving
+ * is local; the record is a courtesy to the others and not worth a hang. */
+const LEAVE_RECORD_TIMEOUT_MS = 20_000;
 
 function initialStatus(sshHost: string): RemoteServerStatus {
   return {
@@ -430,9 +435,17 @@ export class RemoteServerService {
       }
       // The version of a stopped stack is read from this account's `.env`,
       // which is stale once another account has updated the stack; the
-      // published copy is what the stack was last started with.
-      if (stack.kind === 'present' && stack.source === 'published' && !stack.running) {
-        await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
+      // published copy is what the stack was last started with. A read that
+      // cannot bring it in step still reports what it can.
+      if (stack.kind === 'present' && !stack.running) {
+        await bringWorkingDirInStep(host, stack).catch((error: unknown) => {
+          log.warn(
+            `remote-switch-server: could not refresh this account's settings on ${sshHost}`,
+            {
+              error,
+            }
+          );
+        });
       }
       const version = await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
       let journal: UpgradeJournal | null;
@@ -667,10 +680,9 @@ export class RemoteServerService {
           drift: null,
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
+          notice: result.warning,
         });
-        if (this.refused.delete(sshHost)) {
-          for (const listener of this.upgradeListeners) listener(result.serverId);
-        }
+        this.releaseRefused(sshHost, result.serverId);
         await this.record(sshHost, host, 'started');
       }
       reportManagedServerStart('remote', result);
@@ -687,6 +699,13 @@ export class RemoteServerService {
       this.busy.delete(sshHost);
       this.startAborts.delete(sshHost);
     }
+  }
+
+  /** Tell those {@link ensureReady} turned away for `sshHost` that its stack
+   * is at this build's pin now. */
+  private releaseRefused(sshHost: string, serverId: string): void {
+    if (!this.refused.delete(sshHost)) return;
+    for (const listener of this.upgradeListeners) listener(serverId);
   }
 
   /** Record why a host's upgrade did not finish. A start that was not an
@@ -749,6 +768,9 @@ export class RemoteServerService {
           error: null,
           upgrade: null,
         });
+        // Sessions and watchers turned away while an update was owed can run
+        // now; the ones waiting out that update carry on by themselves.
+        this.releaseRefused(sshHost, result.serverId);
         this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
         await this.record(sshHost, host, 'connected');
@@ -819,7 +841,8 @@ export class RemoteServerService {
    * for everyone else (CHOO-2893): close the forward, remove the server
    * record — its agents are unlinked and kept, as for any server — and drop
    * this desktop's copy of the stack's credentials, which it no longer needs.
-   * Nothing on the host is touched, so this needs no connection.
+   * On the host only this Console's entry in the register changes, and only
+   * when the host can be reached in good time: leaving never waits on it.
    */
   async disconnect(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost))
@@ -848,17 +871,29 @@ export class RemoteServerService {
   }
 
   /** Take this Console off the register on `sshHost`, through the live host
-   * when there is one and a host of its own otherwise. */
+   * when there is one and a host of its own otherwise — given up after
+   * {@link LEAVE_RECORD_TIMEOUT_MS}, and never creating a register where the
+   * stack has none. */
   private async recordLeaving(sshHost: string, live: RemoteServerHost | null): Promise<void> {
-    let own: RemoteServerHost | null = null;
+    const opened: { host: RemoteServerHost | null } = { host: null };
+    const record = async () => {
+      const host = live ?? (opened.host = await createRemoteServerHost(sshHost));
+      if (await stateVolumeExists(host)) await writeRecord(host, 'disconnected');
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`no answer within ${LEAVE_RECORD_TIMEOUT_MS / 1000}s`)),
+        LEAVE_RECORD_TIMEOUT_MS
+      );
+    });
     try {
-      if (!live) own = await createRemoteServerHost(sshHost);
-      const host = live ?? own;
-      if (host) await writeRecord(host, 'disconnected');
+      await Promise.race([record(), timeout]);
     } catch (error) {
       log.warn(`remote-switch-server: could not record disconnected on ${sshHost}`, { error });
     } finally {
-      own?.dispose();
+      clearTimeout(timer);
+      opened.host?.dispose();
     }
   }
 

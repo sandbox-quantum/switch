@@ -13,9 +13,8 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
-import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import { remoteServerStore } from './remote-server-store';
-import { affectedSentence } from './shared-consoles';
+import { whoElseSentence } from './shared-consoles';
 import { switchServersStore } from './switch-servers-store';
 
 type DeleteServerModalArgs = {
@@ -104,17 +103,17 @@ export const DeleteServerModal = observer(function DeleteServerModal({
     if (!server || !typeConfirmed) return;
     setIsDeleting(true);
     setError(null);
-    const ok =
-      remoteHost && removal === 'disconnect'
+    const ok = !remoteHost
+      ? await switchServersStore.deleteServer(serverId)
+      : removal === 'disconnect'
         ? await remoteServerStore.disconnect(remoteHost, serverId)
-        : await switchServersStore.deleteServer(serverId);
+        : await remoteServerStore.deleteForEveryone(remoteHost, serverId);
     if (ok) {
       onSuccess();
     } else {
       setError(
-        (remoteHost && removal === 'disconnect'
-          ? remoteServerStore.errorText
-          : switchServersStore.errorText) ?? 'Could not remove the server.'
+        (remoteHost ? remoteServerStore.errorText : switchServersStore.errorText) ??
+          'Could not remove the server.'
       );
       setIsDeleting(false);
     }
@@ -142,9 +141,9 @@ export const DeleteServerModal = observer(function DeleteServerModal({
     linkedAgents === 0
       ? 'No agents are linked to it.'
       : `${linkedAgents} linked ${linkedAgents === 1 ? 'agent' : 'agents'} will be unlinked but kept — you can re-link them to another server.`;
-  const others = remoteHost
-    ? othersRecentlySeen(remoteServerStore.registerFor(remoteHost), new Date())
-    : [];
+  const affected = remoteHost
+    ? whoElseSentence(remoteServerStore.registerFor(remoteHost), new Date())
+    : null;
 
   const title = remoteHost
     ? `Remove “${server.name}”?`
@@ -203,9 +202,7 @@ export const DeleteServerModal = observer(function DeleteServerModal({
             itself isn’t touched — you can connect to it again later.
           </p>
         )}
-        {destroying && remoteHost && affectedSentence(others, new Date()) && (
-          <p className="text-sm text-foreground-muted">{affectedSentence(others, new Date())}</p>
-        )}
+        {destroying && affected && <p className="text-sm text-foreground-muted">{affected}</p>}
         <p className="text-sm text-foreground-muted">{agentsNote}</p>
 
         {needsTypeConfirm && (

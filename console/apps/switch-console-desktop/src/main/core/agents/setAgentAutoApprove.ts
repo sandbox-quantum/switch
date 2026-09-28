@@ -1,4 +1,4 @@
-import { recordAutoApproveOnHost } from '@main/core/sdk-host/shared-watcher';
+import { keepAutoApproveChoice, recordAutoApproveOnHost } from '@main/core/sdk-host/shared-watcher';
 import {
   listAutoSessionAgentIds,
   listStoppedControllerAgentIds,
@@ -13,22 +13,21 @@ export type AgentAutoApproveParams = { agentId: string; enabled: boolean };
 /**
  * Toggle an agent's per-agent bypass-permissions setting (CHOO-1664).
  *
- * Writes the agent row, then makes the change reach auto-started sessions:
- * - Local agents need nothing extra — the in-process auto-session watcher reads
- *   `agent.autoApprove` fresh each time it spawns a session.
- * - Remote agents bake the setting into the VM watcher's launch spec. When the
- *   watcher may start sessions (auto_session on, and nobody stopped it),
- *   re-ensure it so the spec file is rewritten with the new value; the running
- *   sidecar re-reads it live and applies it to the next auto-started session
- *   without a restart. Otherwise nothing re-ensures it now — a stopped watcher
- *   is not rewritten — but the saved spec is still updated: every other write
- *   of a remote watcher takes auto-approve from that spec, because other
- *   Consoles on the same account share it (CHOO-2893), so a value left only in
- *   this row would be put back by the next start.
+ * - A local agent, or one with no Switch identity yet, has no watcher on a
+ *   host to agree with: the row is all there is, read fresh at each spawn and
+ *   written into the first watcher.
+ * - A remote agent's watchers are shared by every Console on the account
+ *   (CHOO-2893), which take auto-approve from the choice kept on the host. So
+ *   the choice goes on the host before the row, and the row never claims a
+ *   value the host did not take. Where the watcher may start sessions (auto
+ *   session on, nobody stopped it) it is then rewritten from the row, and the
+ *   running sidecar applies the value to its next session without a restart.
+ *   Otherwise nothing is about to rewrite it — a stopped watcher is not — so
+ *   the value goes into its saved spec directly.
  *
- * Reaching the host is allowed to throw: if the VM is unreachable the setting
- * cannot take effect, and the caller should surface that rather than pretend it
- * did. The row is left as it was, so it does not claim a change the host lacks.
+ * Reaching the host is allowed to throw, and the caller should surface it:
+ * before the choice is kept nothing has changed; after, the choice and the row
+ * hold the new value and only the running watcher lags, which the error says.
  */
 export async function setAgentAutoApprove(params: AgentAutoApproveParams): Promise<void> {
   const agent = await getAgentById(params.agentId);
@@ -38,13 +37,10 @@ export async function setAgentAutoApprove(params: AgentAutoApproveParams): Promi
       throw new Error(`No agent with id ${params.agentId}`);
     }
   };
-  if ((await getRemoteAgentLocation(agent)) === null) {
+  if (!agent.switchAgentId || (await getRemoteAgentLocation(agent)) === null) {
     await setRow(params.enabled);
     return;
   }
-  // Every later write of the watcher takes auto-approve from the host, so the
-  // row never holds a value the host does not: a change the host did not take
-  // would be put back there, with only a log line to say so.
   const [spawning, stopped] = await Promise.all([
     listAutoSessionAgentIds(),
     listStoppedControllerAgentIds(),
@@ -54,13 +50,16 @@ export async function setAgentAutoApprove(params: AgentAutoApproveParams): Promi
     await setRow(params.enabled);
     return;
   }
-  // The push writes the watcher from the row, so the row goes first — and back
-  // if the push does not reach the host.
+  await keepAutoApproveChoice(agent.id, params.enabled);
   await setRow(params.enabled);
   try {
     await pushRemoteAutoApprove(agent.id);
   } catch (error) {
-    await setRow(agent.autoApprove);
-    throw error;
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Auto-approve is saved, but the agent's watcher on its host could not be updated yet ` +
+        `(${reason}). It runs its next sessions with the new setting once it is.`,
+      { cause: error }
+    );
   }
 }

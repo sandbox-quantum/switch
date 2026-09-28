@@ -692,6 +692,18 @@ describe('usage data on a shared stack', () => {
     expect(telemetryOf()).toBe(true);
   });
 
+  it('keeps sharing off for a stack started afresh where others were using the one before', async () => {
+    // A reset keeps the register, and whoever said no there has not changed
+    // their answer by the server being reset.
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    telemetryConsentMock.mockResolvedValue(true);
+    readRegisterMock.mockResolvedValue(bobRecently);
+
+    await startStack(startOptions(sharedHost().host));
+
+    expect(telemetryOf()).toBe(false);
+  });
+
   it('keeps sharing off when it cannot tell who uses the stack', async () => {
     inspectStackMock.mockResolvedValue(present({ raw: 'TELEMETRY_ENABLED=false\n' }));
     telemetryConsentMock.mockResolvedValue(true);
@@ -713,14 +725,19 @@ describe('stamping the published settings', () => {
     expect(stampPublishedEnvMock).not.toHaveBeenCalled();
   });
 
-  it('does not fail a start that happened because the stamp could not be written', async () => {
+  it('does not fail a start that happened because the stamp could not be written, and says what it leaves open', async () => {
     // compose up has restarted the stack for everyone by then; reporting a
     // failed start would strand this Console without its forward or sign-in.
     inspectStackMock.mockResolvedValue(present());
     stampPublishedEnvMock.mockRejectedValueOnce(new Error('helper container timed out'));
 
-    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
-    expect(logWarn).toHaveBeenCalledWith(
+    const result = await startStack(startOptions(sharedHost().host));
+
+    expect(result).toMatchObject({ kind: 'started' });
+    expect(result.kind === 'started' && result.warning).toMatch(
+      /could not be stamped with its database \(helper container timed out\)/
+    );
+    expect(logError).toHaveBeenCalledWith(
       expect.stringMatching(/could not stamp the published settings on vm-1/),
       expect.anything()
     );

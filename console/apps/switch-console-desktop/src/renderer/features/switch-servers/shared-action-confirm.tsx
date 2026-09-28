@@ -11,9 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import { remoteServerStore } from './remote-server-store';
-import { affectedSentence } from './shared-consoles';
+import { sharedWithOthers, whoElseSentence } from './shared-consoles';
 
 /** A lifecycle action that reaches everyone using a shared remote server. */
 export type SharedAction = 'stop' | 'restart';
@@ -33,20 +32,22 @@ export type SharedAction = 'stop' | 'restart';
 export function useSharedActionConfirm(sshHost: string | null): {
   request: (action: SharedAction, run: () => void) => void;
   dialog: ReactNode;
+  /** Whether an action here reaches anyone else, as the confirmation decides it. */
+  shared: boolean;
+  /** Who else it reaches, for a notice that names them; null when nobody. */
+  who: string | null;
 } {
   const [pending, setPending] = useState<{ action: SharedAction; run: () => void } | null>(null);
   const register = sshHost ? remoteServerStore.registerFor(sshHost) : null;
-  const others = othersRecentlySeen(register, new Date());
-  const unknown = sshHost !== null && register === null;
+  const now = new Date();
+  const shared = sshHost !== null && sharedWithOthers(register, now);
+  const who = sshHost !== null ? whoElseSentence(register, now) : null;
 
   const request = (action: SharedAction, run: () => void) => {
-    if (sshHost !== null && (others.length > 0 || unknown)) setPending({ action, run });
+    if (shared) setPending({ action, run });
     else run();
   };
 
-  const who = unknown
-    ? 'Switch Console could not check who else uses it.'
-    : affectedSentence(others, new Date());
   const dialog = (
     <Dialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
       <DialogContent>
@@ -84,5 +85,5 @@ export function useSharedActionConfirm(sshHost: string | null): {
     </Dialog>
   );
 
-  return { request, dialog };
+  return { request, dialog, shared, who };
 }

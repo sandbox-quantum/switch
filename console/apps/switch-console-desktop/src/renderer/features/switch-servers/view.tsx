@@ -30,7 +30,6 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
 import { LocalServerControls } from './LocalServerControls';
@@ -52,7 +51,6 @@ import { ServerSectionTitlebar } from './server-section-titlebar';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
 import { useSharedActionConfirm } from './shared-action-confirm';
-import { affectedSentence } from './shared-consoles';
 import { SharedConsolesSection } from './shared-consoles-section';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
@@ -101,8 +99,6 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // (CHOO-2893), so restarting it from a notice reaches them too.
   const remoteHost = server?.managementKind === 'remote' ? (server.sshHost ?? null) : null;
   const confirm = useSharedActionConfirm(remoteHost);
-  const register = remoteHost ? remoteServerStore.registerFor(remoteHost) : null;
-  const others = othersRecentlySeen(register, new Date());
   const showEditServerModal = useShowModal('addServerModal');
   const showRenameServerModal = useShowModal('renameServerModal');
   const showDeleteServerModal = useShowModal('deleteServerModal');
@@ -309,7 +305,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           upgrade={serverUpgrade(server)}
           progress={serverProgress(server)}
           disabled={stackTransitioning}
-          affected={remoteHost ? affectedSentence(others, new Date()) : null}
+          affected={confirm.who}
           onRestart={() =>
             // A held update names who it reaches on its own button; a stopped
             // server reaches nobody.
@@ -327,8 +323,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             running: server.managed && isManagedRunning(server),
             deployed: serverDeployedTelemetry(server),
             consent: telemetry?.enabled ?? true,
-            // Unknown counts as shared, as it does for the start that applies it.
-            sharedWithOthers: remoteHost !== null && (register === null || others.length > 0),
+            sharedWithOthers: confirm.shared,
           })}
           disabled={stackTransitioning}
           onRestart={() => confirm.request('restart', () => restartStack(server))}
@@ -402,11 +397,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                 : 'Reset server on this computer'
             }
             shared={server.managementKind === 'remote'}
-            others={
-              server.managementKind === 'remote' && server.sshHost
-                ? othersRecentlySeen(remoteServerStore.registerFor(server.sshHost), new Date())
-                : []
-            }
+            affected={confirm.who}
             disabled={stackTransitioning}
             onConfirm={() => {
               if (server.managementKind === 'remote' && server.sshHost) {

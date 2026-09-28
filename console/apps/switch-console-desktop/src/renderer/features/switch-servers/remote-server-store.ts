@@ -336,6 +336,30 @@ export class RemoteServerStore {
     }
   }
 
+  /**
+   * Delete the server on `sshHost` for everyone: reset its stack — its data,
+   * its agents — and then leave it, so this Console also stops counting as one
+   * of its users (CHOO-2893). The reset keeps the register, which says who did
+   * it. Returns false when it failed, with `error` saying why; a server whose
+   * stack could not be reset is kept.
+   */
+  async deleteForEveryone(sshHost: string, serverId: string): Promise<boolean> {
+    runInAction(() => {
+      this.busyHosts.add(sshHost);
+      this.error = null;
+      this.errorDetail = null;
+    });
+    try {
+      await rpc.remoteSwitchServer.reset(sshHost);
+    } catch (cause) {
+      this.setError(cause, 'Could not shut down the server’s stack, so it was not deleted.');
+      return false;
+    } finally {
+      runInAction(() => this.busyHosts.delete(sshHost));
+    }
+    return this.disconnect(sshHost, serverId);
+  }
+
   /** Forget what was read about a host this Console no longer uses. */
   forget(sshHost: string): void {
     runInAction(() => {

@@ -35,6 +35,7 @@ const m = vi.hoisted(() => {
     journal: vi.fn(),
     establish: vi.fn(),
     register: vi.fn(),
+    connect: vi.fn(),
     start: vi.fn<(opts: StartStackOptions) => Promise<StartLocalServerResult>>(),
   };
 });
@@ -64,6 +65,7 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 vi.mock('./stack-state', async (importOriginal) => ({
   ...(await importOriginal<typeof StackState>()),
   inspectStack: m.inspect,
+  stateVolumeExists: async () => true,
 }));
 vi.mock('./console-register', () => ({ writeRecord: vi.fn(), readRegister: m.register }));
 vi.mock('./paths', () => ({ remoteServerStateDir: (slug: string) => `/user-data/remote/${slug}` }));
@@ -76,9 +78,15 @@ vi.mock('./managed-upgrade', async (importOriginal) => ({
   readUpgradeJournal: m.journal,
 }));
 vi.mock('./pipeline', () => ({
+  bringWorkingDirInStep: async (
+    host: { writeFile: (...args: unknown[]) => Promise<void> },
+    stack: { source: string; raw: string }
+  ) => {
+    if (stack.source === 'published') await host.writeFile('.env', stack.raw, 0o600);
+  },
   startStack: m.start,
   adoptRunningStack: m.adopt,
-  connectStack: vi.fn(),
+  connectStack: m.connect,
   stopStack: vi.fn(),
   resetStack: vi.fn(),
 }));
@@ -114,7 +122,7 @@ function present(running: boolean): StackOnHost {
 }
 
 function startedOn(serverId: string): StartLocalServerResult {
-  return { kind: 'started', serverId, telemetryEnabled: false };
+  return { kind: 'started', serverId, telemetryEnabled: false, warning: null };
 }
 
 /** A start that runs the upgrade the way the pipeline does: announce, then work. */
@@ -382,4 +390,26 @@ it('asks rather than updates when it cannot tell who uses the server', async () 
 
   await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(/Others use it too/);
   expect(m.start).not.toHaveBeenCalled();
+});
+
+it('lets turned-away sessions run once a Connect finds the stack brought up to date elsewhere', async () => {
+  // At launch the stack is stopped and behind: sessions are turned away.
+  m.inspect.mockResolvedValue(present(false));
+  const service = new RemoteServerService();
+  const upgraded = vi.fn();
+  service.onUpgradeFinished(upgraded);
+  await service.initialize();
+  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(/stopped/);
+
+  // Someone else started it at the pin; this Console joins it.
+  m.connect.mockResolvedValue({
+    kind: 'connected',
+    serverId: 'srv-builder',
+    deployedVersion: '0.11.0',
+  });
+  m.version.mockResolvedValue(inStep);
+  await service.connect('builder', 'Builder');
+
+  expect(upgraded).toHaveBeenCalledExactlyOnceWith('srv-builder');
+  await expect(service.ensureReady('builder', 'Builder')).resolves.toBeUndefined();
 });

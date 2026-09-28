@@ -118,7 +118,8 @@ stack's `.env` and took the running server down. Now:
   which is what lets several accounts run one stack.
 - **Connect** joins a running stack without writing its settings differently or
   running compose. **Disconnect** leaves it running for everyone else; only
-  **Delete for everyone** resets it.
+  **Delete for everyone** resets it. Both take this Console off the register,
+  so it stops counting as a user; leaving does not wait on the host for that.
 - A Console re-reads the host at launch, on reachability recovery, and when a
   running stack stops answering (rate-limited), so a stack another Console
   stopped, restarted on new ports or reset shows as it is. The status carries a
@@ -178,10 +179,11 @@ and instructions come from the agent's config file on the host, so they agree.
 Auto-approve lives in each row, so what they share is the last choice a person
 made, kept beside the watcher (`auto-approve.json`): every watcher write takes
 auto-approve from it and brings the row in line, except the write that follows
-the person changing it (`pushRemoteAutoApprove`), which becomes the new choice.
-When the watcher is not starting sessions — stopped, or automatic sessions off
-— nothing rewrites the spec now, so the change goes into the choice and the
-spec directly (`recordAutoApproveOnHost`), before the row. Only an explicit
+the person changing it (`pushRemoteAutoApprove`). A change goes on the host
+before the row (`keepAutoApproveChoice`), so a watcher write racing it takes
+the new value; when the watcher is not starting sessions — stopped, or
+automatic sessions off — nothing rewrites the spec now, so the change goes
+into the choice and the spec together (`recordAutoApproveOnHost`). Only an explicit
 change writes the choice: a saved spec is written from whichever row wrote the
 watcher last — an older Console's too — so it is never taken for one.
 

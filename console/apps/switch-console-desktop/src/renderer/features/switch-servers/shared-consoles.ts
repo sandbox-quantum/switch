@@ -1,8 +1,10 @@
 import { formatDistanceStrict } from 'date-fns';
-import type {
-  StackActivityAction,
-  StackActivityEntry,
-  StackConsole,
+import {
+  othersRecentlySeen,
+  type StackActivityAction,
+  type StackActivityEntry,
+  type StackConsole,
+  type StackRegister,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 
 /**
@@ -43,6 +45,25 @@ export function affectedSentence(others: StackConsole[], now: Date): string | nu
     .join('; ');
   const more = others.length > 3 ? `; and ${others.length - 3} more` : '';
   return `Also used recently by ${who}${more}.`;
+}
+
+/**
+ * Whether an action on a shared server reaches anyone else: others have used
+ * it lately, or who uses it has not been read — which counts as others, as it
+ * does in the main process.
+ */
+export function sharedWithOthers(register: StackRegister | null, now: Date): boolean {
+  return register === null || othersRecentlySeen(register, now).length > 0;
+}
+
+/**
+ * Who else an action on a shared server reaches, for its confirmation or
+ * notice: each other Console with when it was last seen, or that it could not
+ * be told. Null when nobody else uses it.
+ */
+export function whoElseSentence(register: StackRegister | null, now: Date): string | null {
+  if (register === null) return 'Switch Console could not check who else uses it.';
+  return affectedSentence(othersRecentlySeen(register, now), now);
 }
 
 const ACTION_WORDS: Record<StackActivityAction, string> = {
