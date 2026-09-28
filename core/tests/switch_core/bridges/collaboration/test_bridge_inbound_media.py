@@ -30,8 +30,6 @@ class _FakePuppet:
         filename,
         mimetype,
         size,
-        *,
-        metered,
         msgtype,
         caption=None,
         thread_root_id=None,
@@ -53,7 +51,7 @@ class _FakePuppet:
         return f"$evt-{len(self.media) - 1}"
 
     async def send_message(
-        self, matrix_room_id, content, *, metered, format=None, thread_root_id=None
+        self, matrix_room_id, content, format=None, thread_root_id=None
     ):  # noqa: ANN001, ANN201, A002
         self.messages.append({"content": content, "thread_root_id": thread_root_id})
         return "$evt-text"

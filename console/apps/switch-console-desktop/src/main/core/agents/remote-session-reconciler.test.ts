@@ -1,5 +1,9 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import {
+  HostUnreachableError,
+  unknownHostReachability,
+} from '@shared/core/remote-hosts/reachability';
+import {
   DISCOVERY_MAX_BACKOFF_MS,
   DISCOVERY_MS,
   remoteSessionReconciler,
@@ -279,4 +283,36 @@ it('waits longer after each failed round and returns to its pace once one succee
   } finally {
     vi.useRealTimers();
   }
+});
+
+const downHost = new HostUnreachableError({
+  ...unknownHostReachability('hoot-agent-host'),
+  status: 'unreachable',
+  lastError: 'Connection lost before handshake',
+  lastCheckedAt: '2026-09-27T10:52:57.945Z',
+});
+
+it('does not report a host that is down, which its agents already show', async () => {
+  mocks.list.mockRejectedValueOnce(new Error('Temporarily unavailable'));
+  await tick();
+  expect(remoteSessionReconciler.errors()).toHaveLength(1);
+  mocks.list.mockRejectedValueOnce(downHost);
+  await tick();
+  expect(remoteSessionReconciler.errors()).toEqual([]);
+});
+
+it('does not report a room lookup that failed only because a host is down', async () => {
+  mocks.list.mockResolvedValue([{ ...session, roomIds: ['room'] }]);
+  mocks.room.mockRejectedValueOnce(downHost);
+  await tick();
+  expect(mocks.create).not.toHaveBeenCalled();
+  expect(remoteSessionReconciler.errors()).toEqual([]);
+});
+
+it('reports a failure in its own words, without the exception class', async () => {
+  mocks.list.mockRejectedValueOnce(new TypeError('Host listing was not valid JSON.'));
+  await tick();
+  expect(remoteSessionReconciler.errors()).toEqual([
+    { agentId: 'local', message: 'Host listing was not valid JSON.' },
+  ]);
 });

@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   readFailure: vi.fn(),
   exec: vi.fn(),
   specialization: vi.fn(),
+  definition: vi.fn(),
+  behavior: {} as Record<string, unknown>,
   ready: vi.fn(),
 }));
 
@@ -75,12 +77,17 @@ vi.mock('@main/core/agent-runtime/impl/provider-adapter-registry', () => ({
   },
 }));
 vi.mock('@main/core/agents/agent-launch-config', () => ({
-  agentLaunchSpecialization: mocks.specialization,
+  agentLaunchConfig: async (agentId: string) => ({
+    specialization: await mocks.specialization(agentId),
+    definition: await mocks.definition(agentId),
+  }),
 }));
 vi.mock('@main/core/dependencies/host-dependency-store', () => ({
   hostDependencyStore: { getSelection: async () => undefined },
 }));
-vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin: () => ({ behavior: {} }) }));
+vi.mock('@main/core/providers/plugin-registry', () => ({
+  getPlugin: () => ({ behavior: mocks.behavior }),
+}));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
 
 const { SharedAgentRuntime, buildSharedHostConfig } = await import('./shared-agent-runtime');
@@ -104,6 +111,8 @@ beforeEach(() => {
   mocks.persistedRoom.mockResolvedValue(null);
   vi.clearAllMocks();
   mocks.specialization.mockResolvedValue({});
+  mocks.definition.mockResolvedValue(undefined);
+  mocks.behavior = {};
   mocks.agent.mockResolvedValue({
     id: 'agent-1',
     name: 'scout',
@@ -250,6 +259,49 @@ it('reads updated model, effort and instructions for each launch', async () => {
   expect(second.start.input.model).toEqual({ id: 'second-model', options: { effort: 'high' } });
   expect(second.execution?.context).toContain('Updated instructions');
   expect(second.execution?.context).not.toContain('First instructions');
+});
+
+it('runs a session as the agent definition built from its config file', async () => {
+  mocks.definition.mockResolvedValue({ description: 'Reviews diffs', prompt: 'Be careful.' });
+  const config = await buildSharedHostConfig(
+    session,
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  expect(config.start.input.agentDefinition).toEqual({
+    description: 'Reviews diffs',
+    prompt: 'Be careful.',
+  });
+  expect(config.start.input.agentName).toBeTruthy();
+  // Nothing on the host's disk is named: the definition file is not read.
+  expect(config.execution?.agentDefinition).toBeUndefined();
+});
+
+it('runs a subagent watched under its parent from its own definition file', async () => {
+  // The parent's config describes the parent, not the subagent.
+  mocks.behavior = {
+    repoAgents: { definitionPath: (name: string) => `.claude/agents/${name}.md` },
+  };
+  mocks.definition.mockResolvedValue({ description: 'Parent', prompt: 'Parent prompt.' });
+  const config = await buildSharedHostConfig(
+    { ...session, agentName: 'helper' },
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  expect(config.start.input.agentDefinition).toBeUndefined();
+  expect(config.execution?.agentDefinition).toEqual({
+    name: 'helper',
+    path: '.claude/agents/helper.md',
+  });
+});
+
+it('names the agent and the setting when a value cannot be launched with', async () => {
+  mocks.definition.mockResolvedValue({ description: 'd', prompt: 'p', effort: 'High' });
+  await expect(
+    buildSharedHostConfig(session, { sessionPath: '/work', sessionEnvVars: {} }, {
+      kind: 'local',
+    } as LocationTransport)
+  ).rejects.toThrow(/Agent scout has settings its session cannot start with \(effort:/);
 });
 
 it('opens the session while auth is pending and submits the initial prompt only after readiness', async () => {

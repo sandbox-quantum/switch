@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { log } from '@main/lib/logger';
-import { READ_JSON } from './remote-json';
+import { WATCHER_ROOT } from './state-roots';
 
 /**
  * Console's connection to an agent's sidecar on its SSH host.
@@ -15,19 +15,11 @@ import { READ_JSON } from './remote-json';
  * on first use and again after it drops.
  */
 
-const WATCHER_ROOT_SCRIPT = String.raw`${READ_JSON}
-const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const WATCHER_ROOT_SCRIPT = String.raw`${WATCHER_ROOT}
+const fs = require('node:fs'), path = require('node:path');
 const [identity, file] = process.argv.slice(1);
 const base = path.join(require('node:os').homedir(), '.local', 'state', 'switch', 'sdk-watchers');
-let root = path.join(base, crypto.createHash('sha256').update(identity).digest('hex'));
-if (fs.existsSync(base)) {
-  const matches = fs.readdirSync(base).filter((name) => {
-    try { return readJson(path.join(base, name, 'config.json')).session.agentId === identity; }
-    catch (e) { if (e.code === 'ENOENT') return false; throw e; }
-  });
-  if (matches.length > 1) throw new Error('Competing saved watchers require explicit cleanup.');
-  if (matches.length) root = path.join(base, matches[0]);
-}
+const root = watcherRoot(base, identity);
 try { process.stdout.write(fs.readFileSync(path.join(root, file), 'utf8')); }
 catch (e) { if (e.code === 'ENOENT') process.stdout.write('null'); else throw e; }
 `;

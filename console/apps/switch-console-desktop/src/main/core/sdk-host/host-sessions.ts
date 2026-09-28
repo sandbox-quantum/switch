@@ -6,6 +6,7 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { READ_JSON } from './remote-json';
+import { IS_STATE_ROOT } from './state-roots';
 
 /**
  * The sessions an agent has on its host, read from the hosts' own state.
@@ -15,7 +16,7 @@ import { READ_JSON } from './remote-json';
  * finds them. One `node` run per call, locally or over the agent's SSH
  * connection: the same script either way.
  */
-export const LIST_SCRIPT = String.raw`${READ_JSON}
+export const LIST_SCRIPT = String.raw`${READ_JSON}${IS_STATE_ROOT}
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -38,7 +39,7 @@ const alive = (root) => {
   } catch { return false; }
 };
 let names = [];
-try { names = fs.readdirSync(base); } catch {}
+try { names = fs.readdirSync(base).filter(isStateRoot); } catch {}
 const found = [];
 for (const name of names) {
   const root = path.join(base, name);

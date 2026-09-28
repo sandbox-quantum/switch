@@ -95,6 +95,13 @@ class RoomCreateConfig(BaseModel):
     observe_config: dict[str, object] | None = None
     admin_mode: bool = False
     created_by: str | None = None
+    # Set when an agent operation creates the room; see the `Room` columns.
+    created_by_agent_id: str | None = None
+    parent_room_id: str | None = None
+    run_id: str | None = None
+    kickoff_hash: str | None = None
+    # The template the room came from, for runs to show; see `Room`.
+    template_name: str | None = None
     # Optional group to file the room under at creation (navigation layer).
     group_id: str | None = None
     # Authorization owner (the acting user, or an agent's owner for MCP-created
@@ -533,6 +540,11 @@ class RoomService:
                 protection_config=config.protection_config,
                 observe_config=config.observe_config,
                 created_by=config.created_by,
+                created_by_agent_id=config.created_by_agent_id,
+                parent_room_id=config.parent_room_id,
+                run_id=config.run_id,
+                kickoff_hash=config.kickoff_hash,
+                template_name=config.template_name,
                 owner_id=config.owner_id,
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,

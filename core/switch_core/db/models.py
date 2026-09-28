@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from enum import StrEnum
 
 from sqlalchemy import (
     DDL,
@@ -640,6 +639,9 @@ class Room(TenantScoped, Base):
         # and the ON DELETE SET NULL when a group is removed both scan the
         # table. Mirrors ix_agents_parent_agent_id.
         Index("ix_rooms_group_id", "group_id"),
+        # A run is listed, checked and stopped by its root on every agent
+        # create and every look at Recently used.
+        Index("ix_rooms_run_id", "run_id"),
         UniqueConstraint(
             "tenant_id", "matrix_room_id", name="uq_rooms_tenant_matrix_room_id"
         ),
@@ -654,6 +656,18 @@ class Room(TenantScoped, Base):
             ["room_groups.tenant_id", "room_groups.id"],
             name="fk_rooms_group",
             ondelete="SET NULL (group_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_rooms_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "parent_room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_rooms_parent_room",
+            ondelete="SET NULL (parent_room_id)",
         ),
     )
 
@@ -673,6 +687,23 @@ class Room(TenantScoped, Base):
     created_by: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
+    # The agent that created the room through an agent operation. NULL for a
+    # room a person created. `created_by` is the agent's owner in both cases.
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Where an agent-created room sits in its run (see `agent_runs`): the
+    # room the agent was working in when it asked, and the root of the chain,
+    # a room a person made. NULL for a person's room, which is its own root.
+    parent_room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The template the room came from, when it came from one: its registry
+    # name, or the name the creator gave a pasted document.
+    template_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A fingerprint of the kickoff an agent posted here. Never shown; it is
+    # how the same request made twice on one path is recognised.
+    kickoff_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a run's root only: whether agents may keep creating rooms in the
+    # run. NULL means running. See `agent_runs.RunControl`.
+    run_control: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
@@ -982,6 +1013,12 @@ class Template(TenantScoped, Base):
         # scoping the name to the owner already scopes it to the tenant.
         UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
         UniqueConstraint("id", "tenant_id", name="uq_templates_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_templates_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1000,6 +1037,10 @@ class Template(TenantScoped, Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # The agent that saved it through an agent operation, NULL for a person.
+    # ``owner_id`` is the agent's owner either way; only this agent may change
+    # or delete what it saved (see ``agent_template_ops``).
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2304,131 +2345,6 @@ for _table, _triggers in (
 ):
     for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
         event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
-
-
-# ── Usage metering ───────────────────────────────────────────────────────────
-
-
-class UsageMetric(StrEnum):
-    """What is counted. Cache reads and writes are kept apart from input
-    tokens because providers price them apart."""
-
-    MESSAGES = "messages"
-    TURNS = "turns"
-    INPUT_TOKENS = "input_tokens"
-    OUTPUT_TOKENS = "output_tokens"
-    CACHE_READ_TOKENS = "cache_read_tokens"
-    CACHE_WRITE_TOKENS = "cache_write_tokens"
-
-
-class TenantUsage(TenantScoped, Base):
-    """What a tenant has consumed, counted as it happens, one row per hour.
-
-    The record that quotas are enforced against and that billing will read,
-    so it is kept apart from the rows it counts: deleting a room cascades to
-    its messages, and a count derived from `messages` would forget usage the
-    tenant has already spent. Written in the same transaction as the thing it
-    counts, so the two cannot disagree.
-
-    Hourly buckets because a budget period is configurable: any period of a
-    whole number of hours is a sum over these rows, while a coarser bucket
-    would fix the shortest period a budget can have.
-
-    `client_id` is who consumed it: the sender of a message, or the client of
-    the agent a turn ran for. No foreign key, so a count outlives the client it
-    names. `model` is empty where a metric has none.
-    """
-
-    __tablename__ = "tenant_usage"
-    __table_args__ = (
-        # Leads on the metric so "this tenant's turns since a moment" — the
-        # shape every budget check asks — is a range scan on the key itself.
-        PrimaryKeyConstraint(
-            "tenant_id", "metric", "bucket_start", "client_id", "model"
-        ),
-        CheckConstraint(
-            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
-            name="ck_tenant_usage_metric",
-        ),
-        CheckConstraint("amount > 0", name="ck_tenant_usage_amount"),
-    )
-
-    metric: Mapped[str] = mapped_column(Text, nullable=False)
-    bucket_start: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    client_id: Mapped[str] = mapped_column(Text, nullable=False)
-    model: Mapped[str] = mapped_column(Text, nullable=False)
-    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
-
-
-# A budget's period is at most a leap year, and its limit at most the largest
-# integer a JavaScript client reads exactly. Both keep the period arithmetic
-# and the gateway's numbers from overflowing.
-MAX_BUDGET_PERIOD_HOURS = 8784
-MAX_BUDGET_AMOUNT = 2**53 - 1
-
-
-class UsageBudget(TenantScoped, Base):
-    """A ceiling on one metric over a repeating period.
-
-    `agent_id` null covers every agent in the tenant; otherwise the one agent.
-    `model` empty covers every model. An agent that has reached any budget
-    covering it is stopped until the period turns over; people are never
-    stopped. A tenant with no budgets is unlimited.
-
-    Periods are whole hours counted from the Unix epoch in UTC, so a daily
-    budget turns over at midnight UTC and every writer agrees when.
-    """
-
-    __tablename__ = "usage_budgets"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_usage_budgets_agent",
-            ondelete="CASCADE",
-        ),
-        CheckConstraint(
-            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
-            name="ck_usage_budgets_metric",
-        ),
-        CheckConstraint(
-            f"amount_limit > 0 AND amount_limit <= {MAX_BUDGET_AMOUNT}",
-            name="ck_usage_budgets_amount_limit",
-        ),
-        CheckConstraint(
-            f"period_hours > 0 AND period_hours <= {MAX_BUDGET_PERIOD_HOURS}",
-            name="ck_usage_budgets_period_hours",
-        ),
-        Index(
-            "uq_usage_budgets_tenant_wide",
-            "tenant_id",
-            "metric",
-            "model",
-            unique=True,
-            postgresql_where=text("agent_id IS NULL"),
-        ),
-        Index(
-            "uq_usage_budgets_agent",
-            "tenant_id",
-            "agent_id",
-            "metric",
-            "model",
-            unique=True,
-            postgresql_where=text("agent_id IS NOT NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    metric: Mapped[str] = mapped_column(Text, nullable=False)
-    model: Mapped[str] = mapped_column(Text, nullable=False)
-    amount_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the

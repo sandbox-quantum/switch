@@ -357,8 +357,8 @@ export const AddAgentModal = observer(function AddAgentModal({
   };
 
   /** Create a brand-new flat agent in the chosen directory (local or remote):
-   * mint its identity, write its `.claude/agents/<name>.md` definition + its
-   * per-agent credentials, and create the row — all via `addAgent`. */
+   * mint its identity, write its config file + its per-agent credentials, and
+   * create the row — all via `addAgent`. */
   const createNewAgent = async () => {
     if (!pickState.serverId || !pickState.providerId) return;
     setCloseGuard(true);

@@ -38,6 +38,11 @@ export const sharedConfigSchema = z.strictObject({
       codexConfig: z.string(),
       skill: z.string(),
       context: z.string(),
+      /**
+       * A definition on the host's disk to run as, named by an earlier Console.
+       * Sessions saved then still relaunch from it; a current Console hands the
+       * definition over in `start.input` instead.
+       */
       agentDefinition: z
         .strictObject({ name: z.string().min(1), path: z.string().min(1) })
         .optional(),

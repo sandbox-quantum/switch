@@ -60,8 +60,7 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
         <TooltipContent>
           {status.kind === 'auth-failed'
             ? `SSH authentication to ${sshHost} failed — work is paused until you retry`
-            : `Host ${sshHost} is unreachable — work is paused`}
-          {reachability.lastError ? ` · ${reachability.lastError}` : ''}
+            : `Host ${sshHost} is unreachable — work is paused until it answers`}
         </TooltipContent>
       </Tooltip>
     );

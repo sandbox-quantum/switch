@@ -197,15 +197,16 @@ describe('addAgent', () => {
     expect(await fs.read('.claude/agents/codex-hoot.md')).toBeNull();
   });
 
-  it('writes both credentials and an on-disk definition for a repo-agents provider', async () => {
+  it('writes credentials and a config file, and no provider definition', async () => {
     const fs = h.state.workspace as PluginFs;
 
     await addAgent(params({ providerId: 'claude', name: 'cc-hoot' }));
 
     expect((await credsOf(fs, 'cc-hoot')).SWITCH_API_TOKEN).toBe('tok-123');
-    const definition = await fs.read('.claude/agents/cc-hoot.md');
-    expect(definition).toContain('name: cc-hoot');
-    expect(definition).toContain('description: Codex running in repo');
+    const config = JSON.parse((await fs.read('.switch/config/cc-hoot.json')) ?? '{}');
+    expect(config.description).toBe('Codex running in repo');
+    // Launch builds the definition from the config file; nothing reads this.
+    expect(await fs.read('.claude/agents/cc-hoot.md')).toBeNull();
   });
 
   it('records the agent’s instructions in its committed config file', async () => {
@@ -215,8 +216,22 @@ describe('addAgent', () => {
 
     const config = JSON.parse((await fs.read('.switch/config/cc-hoot.json')) ?? '{}');
     expect(config.instructions).toBe('Be careful.');
-    // And it reaches the provider's own file, which is what actually runs.
-    expect(await fs.read('.claude/agents/cc-hoot.md')).toContain('Be careful.');
+  });
+
+  it('starts from what it was created with, whatever an earlier agent left behind', async () => {
+    // A leftover definition under the same name used to be taken as a hand
+    // edit, replacing everything typed into the form.
+    const fs = h.state.workspace as PluginFs;
+    await fs.write(
+      '.claude/agents/cc-hoot.md',
+      '---\nname: cc-hoot\ndescription: Old\n---\n\nOld instructions.\n'
+    );
+
+    await addAgent(params({ providerId: 'claude', name: 'cc-hoot', instructions: 'New.' }));
+
+    const config = JSON.parse((await fs.read('.switch/config/cc-hoot.json')) ?? '{}');
+    expect(config.instructions).toBe('New.');
+    expect(config.description).toBe('Codex running in repo');
   });
 
   it('git-ignores the credentials directory so the token never enters VCS', async () => {

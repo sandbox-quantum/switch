@@ -49,6 +49,7 @@ class TemplateListing:
     size_bytes: int
     created_at: object
     updated_at: object
+    created_by_agent_id: str | None = None
 
 
 class TemplateStore:
@@ -131,6 +132,7 @@ class TemplateStore:
                 func.octet_length(Template.content).label("size_bytes"),
                 Template.created_at,
                 Template.updated_at,
+                Template.created_by_agent_id,
             )
             .where(*conditions)
             .order_by(Template.created_at.desc(), Template.id.asc())

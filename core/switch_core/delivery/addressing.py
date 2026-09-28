@@ -417,6 +417,14 @@ class AddressingResolver:
             return SenderPrincipal("user", external_user.id, claimants, None)
         if client.type == "admin":
             person = platform_on_behalf_of(content or {})
+            if person is not None and person.agent_id is not None:
+                # The message speaks for an agent, so the policy is asked what
+                # it would say to that agent. An agent that no longer exists
+                # leaves a bare platform message, which is denied by default.
+                speaker = await self._agent_store.get(session, person.agent_id)
+                if speaker is not None:
+                    return SenderPrincipal("agent", speaker.id, [], speaker.owner_id)
+                person = None
             return SenderPrincipal(
                 "platform",
                 client.id,

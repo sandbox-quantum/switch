@@ -3,6 +3,7 @@ import { err, ok } from '@switch-console/shared';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import { readSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
@@ -19,9 +20,11 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
+import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
 import { detectSwitchAgent } from './detect';
 import { detectSwitchAgentRemote } from './detect-remote';
+import { importAgentConfig } from './import-agent-config';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeAgentNeutralSettings } from './write-switch-settings';
 
@@ -185,12 +188,30 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     }
   }
 
+  const name = basenameFromAnyPath(params.dir) || params.providerId;
+
+  // Every agent has a config file. This directory was set up outside this
+  // Console, so whatever its Claude Code definition holds becomes the config.
+  // Written before the agent row, so a failure here leaves no agent behind that
+  // has none.
+  const workspace = await resolveWorkspaceFsFor(sshHost, params.dir);
+  try {
+    await importAgentConfig({
+      workspaceFs: workspace.fs,
+      repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
+      name,
+      providerConfig: null,
+    });
+  } finally {
+    workspace.close();
+  }
+
   const location = await ensureLocation({ sshHost, dir: params.dir, name: params.name });
 
   const agent = await createAgent({
     id: params.id ?? randomUUID(),
     locationId: location.id,
-    name: basenameFromAnyPath(params.dir) || params.providerId,
+    name,
     providerId: params.providerId,
     switchAgentId: switchAgent.agentId,
     apiEndpoint: switchAgent.apiEndpoint,

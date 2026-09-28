@@ -402,8 +402,9 @@ async def create_room_from_yaml(
       body is the template text.  Only defaults-only templates work here
       (no way to pass inputs).
     * **JSON** (``application/json``): ``{"yaml": "<template text>",
-      "inputs": {...}}`` where ``inputs`` supplies values for declared
-      ``params:``.
+      "inputs": {...}, "template_name": "..."}`` where ``inputs`` supplies
+      values for declared ``params:`` and ``template_name`` is what the run is
+      listed under in Recently used (the document's own name when absent).
     """
     content_type = request.headers.get("content-type", "")
     try:
@@ -415,9 +416,13 @@ async def create_room_from_yaml(
             if not isinstance(text, str):
                 raise ValueError("'yaml' must be a string")
             inputs = payload.get("inputs")
+            template_name = payload.get("template_name")
+            if template_name is not None and not isinstance(template_name, str):
+                raise ValueError("'template_name' must be a string")
         else:
             text = (await request.body()).decode("utf-8")
             inputs = None
+            template_name = None
         inputs = await rooms_yaml.resolve_defaults(text, inputs)
         builtins = await rooms_yaml.builtins_for(
             user_id=user.id, name=user.name, email=user.email, text=text, inputs=inputs
@@ -430,6 +435,7 @@ async def create_room_from_yaml(
                 user_id=user.id,
                 is_admin=is_admin,
                 creator_name=builtins["$creator"],
+                template_name=template_name or parsed.spec.group.name,
             )
         return await rooms_yaml.provision(
             parsed.spec,
@@ -437,6 +443,7 @@ async def create_room_from_yaml(
             user_id=user.id,
             is_admin=is_admin,
             creator_name=builtins["$creator"],
+            template_name=template_name or parsed.spec.name,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

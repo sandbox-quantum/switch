@@ -24,6 +24,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
+import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
 import { SidebarItemMiniButton, SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent, roomAgentGroupKey } from './sidebar-store';
 
@@ -142,6 +143,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                   sshHost={location.data?.sshHost ?? null}
                   agentId={agent.providerId ?? null}
                 />
+                <DiscoveryFailureIndicator agentId={agent.id} label={label} />
                 {agent.providerId && (
                   <ProviderIssueIndicator
                     providerId={agent.providerId}

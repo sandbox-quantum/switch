@@ -33,7 +33,6 @@ from switch_core.bridges.agent.protocol.types import (
     TaskFinalisePayload,
     TaskUpdatePayload,
 )
-from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
     PLATFORM_MARKER,
     platform_on_behalf_of,
@@ -58,7 +57,6 @@ from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -278,7 +276,6 @@ class AgentClient(ClientBase[ClientConfig]):
             external_user_store=external_user_store,
             live_connection_ids=connections.live_connection_ids,
         )
-        self._budget_guard = BudgetGuard(BudgetStore())
         self._room_meta: dict[str, RoomMeta | None] = {}
         # In-flight multi-attachment groups, by group id, with their safety-net
         # timers. Both are cleared when a group completes or times out, so a
@@ -348,9 +345,7 @@ class AgentClient(ClientBase[ClientConfig]):
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
-        await self.send_message(
-            room.room_id, greeting, format="markdown", metered=False
-        )
+        await self.send_message(room.room_id, greeting, format="markdown")
 
     async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
         """Forget the room's events, everywhere this agent could still read them.
@@ -862,11 +857,7 @@ class AgentClient(ClientBase[ClientConfig]):
         """Post a command result as this agent (an agent-owned command like
         `!run-cmd` answers in the agent's own voice, not as a system message)."""
         await self.send_message(
-            room_id,
-            body,
-            format=format,
-            thread_root_id=thread_root_id,
-            metered=False,
+            room_id, body, format=format, thread_root_id=thread_root_id
         )
 
     async def _resolve_room_meta(self, matrix_room_id: str) -> RoomMeta | None:
@@ -1135,9 +1126,7 @@ class AgentClient(ClientBase[ClientConfig]):
     async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
-        await self.send_message(
-            room.room_id, "Working on it.", format="markdown", metered=False
-        )
+        await self.send_message(room.room_id, "Working on it.", format="markdown")
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
@@ -1333,8 +1322,8 @@ class AgentClient(ClientBase[ClientConfig]):
     ) -> _GateOutcome:
         """Apply the scoped addressing policy to a message that tags this agent.
 
-        When the sender is not permitted by the agent's policy, or the agent
-        has reached a budget covering it, the message is demoted to unaddressed room chatter and the caller is handed a refusal
+        When the sender is not permitted by the agent's policy, the message is
+        demoted to unaddressed room chatter and the caller is handed a refusal
         to post (once, guarded by AUTO_REPLY_FLAG so two agents can't
         ping-pong). Zero cost for the common case: only messages that already
         tag this agent are ever checked, and open policies short-circuit.
@@ -1343,19 +1332,10 @@ class AgentClient(ClientBase[ClientConfig]):
             session, agent, event.sender, meta.room_id, event.content
         )
         if decision.allowed:
-            try:
-                await self._budget_guard.require_within(
-                    session, tenant_id=self.tenant_id, agent_id=agent.id
-                )
-            except BudgetExceeded as exc:
-                refusal = str(exc)
-            else:
-                return _GateOutcome(addressed=True, refusal=None)
-        else:
-            refusal = decision.refusal
+            return _GateOutcome(addressed=True, refusal=None)
         if self._triggered_by_auto_reply(event):
             return _GateOutcome(addressed=False, refusal=None)
-        return _GateOutcome(addressed=False, refusal=refusal)
+        return _GateOutcome(addressed=False, refusal=decision.refusal)
 
     @staticmethod
     def _triggered_by_auto_reply(event: InboundMessage) -> bool:
@@ -1379,7 +1359,6 @@ class AgentClient(ClientBase[ClientConfig]):
             mentions=[event.sender],
             thread_root_id=thread_root_id,
             extra_content={AUTO_REPLY_FLAG: True},
-            metered=False,
         )
 
     def _args_tag_my_name(self, text: str) -> bool:

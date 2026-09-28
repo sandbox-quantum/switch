@@ -21,6 +21,7 @@ import {
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { log } from '@main/lib/logger';
 import { clearStaleOwners } from './local-host-owners';
+import { isStateRootName } from './state-roots';
 
 /**
  * Local hosts belong to Console's process tree: a local agent must not answer
@@ -59,14 +60,18 @@ export function savedAgentId(root: string): string | null {
 }
 
 /**
- * Resolves the watcher state root for an agent, adopting a directory saved
- * under an earlier key so a rename does not strand its journal.
+ * Resolves the watcher state root for an agent: the directory keyed by its
+ * identity, and no other is read while that one holds a configuration.
+ * Otherwise a directory saved under an earlier key is adopted, so a rename
+ * does not strand its journal. The same rule as `WATCHER_ROOT` on a host.
  */
 export function localWatcherRoot(identity: string): string {
   const base = localStateBase('sdk-watchers');
   const keyed = join(base, createHash('sha256').update(identity).digest('hex'));
-  if (!existsSync(base)) return keyed;
-  const matches = readdirSync(base).filter((name) => savedAgentId(join(base, name)) === identity);
+  if (existsSync(join(keyed, 'config.json')) || !existsSync(base)) return keyed;
+  const matches = readdirSync(base)
+    .filter(isStateRootName)
+    .filter((name) => savedAgentId(join(base, name)) === identity);
   if (matches.length > 1) throw new Error('Competing saved watchers require explicit cleanup.');
   return matches[0] ? join(base, matches[0]) : keyed;
 }
@@ -80,7 +85,7 @@ function localWatcherRoots(identity: string): string[] {
   const base = localStateBase('sdk-watchers');
   const roots = new Set([join(base, createHash('sha256').update(identity).digest('hex'))]);
   if (existsSync(base))
-    for (const name of readdirSync(base))
+    for (const name of readdirSync(base).filter(isStateRootName))
       if (savedAgentId(join(base, name)) === identity) roots.add(join(base, name));
   return [...roots];
 }

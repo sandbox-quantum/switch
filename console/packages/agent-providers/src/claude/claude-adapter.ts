@@ -396,6 +396,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       ...(input.agentName ? { agent: input.agentName } : {}),
+      ...(input.agentName && input.agentDefinition
+        ? { agents: { [input.agentName]: input.agentDefinition } }
+        : {}),
       ...(input.model ? { model: input.model.id } : {}),
       ...(effort ? { effort } : {}),
       ...(input.resume ? { resume: nativeSessionId } : { sessionId: nativeSessionId }),

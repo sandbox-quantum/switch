@@ -24,17 +24,33 @@ ADMIN_MARKER = "com.switch.admin"
 #
 # Value: {} for the platform's own message, or {"on_behalf_of": {"user_id",
 # "name"}} when it speaks with a person's authority (a template's kickoff).
-# The authority is per message: the addressed agent's policy is evaluated
-# for that person when the event arrives, and nothing is granted beyond it.
-# Only server-side code writes the marker.
+# With an "agent_id" as well, the message speaks for that agent: a kickoff in
+# a room an agent created. The authority is per message: the addressed
+# agent's policy is evaluated for that person or agent when the event
+# arrives, and nothing is granted beyond it. Only server-side code writes
+# the marker.
 PLATFORM_MARKER = "com.switch.platform"
 
 
 class OnBehalfOf(NamedTuple):
-    """The person a platform message carries the authority of."""
+    """Whose authority a platform message carries.
+
+    A person, or an agent when ``agent_id`` is set. For an agent, ``user_id``
+    is its owner and ``name`` is the agent's name. The distinction matters to
+    addressing: a message for an agent is judged as that agent speaking, so
+    it cannot wake an agent that answers only its owner.
+    """
 
     user_id: str
     name: str
+    agent_id: str | None = None
+
+    @property
+    def label(self) -> str:
+        """How a message names whom it speaks for. A person is written as a
+        mention. An agent is not: the mention would address it, and it would
+        wake on the kickoff of the room it has just created."""
+        return self.name if self.agent_id is not None else f"@{self.name}"
 
 
 def platform_replies_in_channel(content: Mapping[str, object]) -> bool:
@@ -60,7 +76,12 @@ def platform_on_behalf_of(content: Mapping[str, object]) -> OnBehalfOf | None:
     name = person.get("name")
     if not isinstance(user_id, str) or not user_id:
         return None
-    return OnBehalfOf(user_id, name if isinstance(name, str) and name else user_id)
+    agent_id = person.get("agent_id")
+    return OnBehalfOf(
+        user_id,
+        name if isinstance(name, str) and name else user_id,
+        agent_id if isinstance(agent_id, str) and agent_id else None,
+    )
 
 
 class AdminMessageType(StrEnum):
@@ -73,6 +94,7 @@ class AdminMessageType(StrEnum):
     COMMAND_RESULT = "command_result"
     SELF_MENTION_UNALIASED = "self_mention_unaliased"
     NO_AGENTS = "no_agents"
+    RUN_NOTICE = "run_notice"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:

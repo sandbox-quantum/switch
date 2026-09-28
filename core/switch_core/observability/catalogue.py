@@ -92,7 +92,10 @@ DB_POOL_IN_USE = _spec(
     "switch.db.pool.in_use",
     "gauge",
     "{connection}",
-    "Connections checked out of the pool right now.",
+    "The most connections checked out of the pool at once since the last "
+    "reading — a peak, not a snapshot. Exhaustion here is a burst that fills and "
+    "drains the pool inside a few hundred milliseconds, which a value sampled "
+    "once a minute would step straight over.",
 )
 DB_POOL_SIZE = _spec(
     "switch.db.pool.size",
@@ -105,6 +108,21 @@ DB_POOL_OVERFLOW = _spec(
     "gauge",
     "{connection}",
     "Connections open beyond the pool's nominal size.",
+)
+# The pool gauges say how full the pool got; this says when full stopped being
+# enough. The pool queues rather than sheds when saturated, so a request that
+# waited out `db_pool_timeout` without a connection is the failure a peak at the
+# ceiling only implies. Counted on the request path, which is where every
+# observed timeout has originated — auth resolves a token against the database
+# before the handler runs, so a saturated pool surfaces there first. A
+# background loop that times out is logged, not counted here.
+DB_POOL_TIMEOUTS = _spec(
+    "switch.db.pool.timeouts",
+    "sum",
+    "{timeout}",
+    "Requests that gave up waiting for a pooled connection. Loud where a pool "
+    "at its ceiling is only suggestive: this is a request that got no connection "
+    "at all within the timeout.",
 )
 # The pool gauges say whether connections are scarce; this says whether the
 # database is slow, which is the other half and the one a slow request is
@@ -311,6 +329,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
+        DB_POOL_TIMEOUTS,
         DB_QUERY_DURATION,
         MESSAGES_SENT,
         MESSAGES_DELIVERED,

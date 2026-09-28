@@ -58,7 +58,6 @@ from switch_core.bridges.agent.registration_bootstrap import (
     resolve_registration_owner_id,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.budgets import BudgetGuard
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
@@ -80,7 +79,6 @@ from switch_core.db.models import (
     Task,
     Tool,
     User,
-    require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import (
@@ -89,7 +87,6 @@ from switch_core.db.stores.agent_runtime_state_store import (
 from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
-from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -115,6 +112,7 @@ from switch_core.transport import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.agent_runs import RunService
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
@@ -291,7 +289,6 @@ class ProtocolService:
         self.room_role_store = RoomRoleStore()
         self.room_group_store = RoomGroupStore()
         self.message_store = MessageStore()
-        self.budget_guard = BudgetGuard(BudgetStore())
         self.user_store = UserStore()
         self.room_store = room_store
         self.room_service = room_service
@@ -996,23 +993,9 @@ class ProtocolService:
     async def require_room_member(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """Get room and verify agent is a member. Raises PermissionError if not."""
         async with self.session_factory() as session:
-            return await self._room_member_in(session, agent_id, room_id)
-
-    async def require_room_poster(self, agent_id: str, room_id: str) -> RoomDescriptor:
-        """`require_room_member`, and raise `BudgetExceeded` if the agent has
-        reached a budget covering it. One session for both, so a post still
-        costs one pool checkout."""
-        async with self.session_factory() as session:
-            room = await self._room_member_in(session, agent_id, room_id)
-            await self.budget_guard.require_within(
-                session, tenant_id=require_tenant_id(), agent_id=agent_id
+            found = await self.room_store.get_with_membership(
+                session, room_id, agent_id
             )
-        return room
-
-    async def _room_member_in(
-        self, session: AsyncSession, agent_id: str, room_id: str
-    ) -> RoomDescriptor:
-        found = await self.room_store.get_with_membership(session, room_id, agent_id)
         if found is None:
             raise ValueError(f"Room not found: {room_id}")
         room, is_member = found
@@ -1160,7 +1143,7 @@ class ProtocolService:
         bridges — the resource manager isn't a bridge participant, so its own
         notices wouldn't reach Slack/Mattermost."""
         try:
-            await client.send_message(matrix_room_id, body, metered=False)
+            await client.send_message(matrix_room_id, body)
         except Exception:
             logger.exception(
                 "Failed to post agent activity notice to %s", matrix_room_id
@@ -1213,7 +1196,7 @@ class ProtocolService:
         logger.debug(
             "[AGENT-MSG] agent=%s room=%s content=%s", agent_id, room_id, content[:80]
         )
-        room = await self.require_room_poster(agent_id, room_id)
+        room = await self.require_room_member(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
@@ -1223,10 +1206,7 @@ class ProtocolService:
                 client, room.matrix_room_id, thread_id
             )
         event_id = await client.send_message(
-            room.matrix_room_id,
-            content,
-            thread_root_id=thread_root_id,
-            metered=True,
+            room.matrix_room_id, content, thread_root_id=thread_root_id
         )
         if event_id is None:
             raise ValueError("Failed to send message")
@@ -1288,7 +1268,7 @@ class ProtocolService:
                     f"attachment '{filename}' is {len(data)} bytes, over the "
                     f"{max_bytes}-byte limit (AGENT_MEDIA_MAX_BYTES)"
                 )
-        room = await self.require_room_poster(agent_id, room_id)
+        room = await self.require_room_member(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
@@ -1320,7 +1300,6 @@ class ProtocolService:
                     if group_id is not None
                     else None
                 ),
-                metered=True,
             )
             if event_id is None:
                 raise ValueError(f"Failed to send media message for '{filename}'")
@@ -1588,9 +1567,7 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        await client.send_message(
-            room.matrix_room_id, f"*{detail}*", format="markdown", metered=True
-        )
+        await client.send_message(room.matrix_room_id, f"*{detail}*", format="markdown")
 
     async def set_runtime_state(
         self,
@@ -2169,10 +2146,9 @@ class ProtocolService:
         """Delegate a task from one agent to another.
 
         Returns task_id and the performer's reachability status at delegation time.
-        Raises ValueError if agents or room not found, or agents not in room,
-        and `BudgetExceeded` if either agent has reached a budget covering it.
+        Raises ValueError if agents or room not found, or agents not in room.
         """
-        room = await self.require_room_poster(requester_id, room_id)
+        room = await self.require_room_member(requester_id, room_id)
 
         async with self.session_factory() as session:
             performer = await self.agent_store.get(session, performer_id)
@@ -2193,9 +2169,6 @@ class ProtocolService:
                 room_id=room.id,
                 group_id=room_row.group_id if room_row is not None else None,
                 sender_agent_id=requester_id,
-            )
-            await self.budget_guard.require_within(
-                session, tenant_id=require_tenant_id(), agent_id=performer_id
             )
 
         async with self.session_factory() as session:
@@ -2326,9 +2299,7 @@ class ProtocolService:
                     "outcome": outcome,
                 },
             )
-            await client.send_message(
-                room.matrix_room_id, outcome, format="markdown", metered=True
-            )
+            await client.send_message(room.matrix_room_id, outcome, format="markdown")
 
     async def cancel_task(self, agent_id: str, task_id: str, reason: str) -> None:
         """Cancel a task (requester only)."""
@@ -2480,9 +2451,14 @@ class ProtocolService:
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
         aliases: dict[str, str] | None = None,
+        from_room_id: str | None = None,
     ) -> RoomCreateResult:
         """Create a room. The caller agent's owner_id is used as the acting
         user for attachment authorization and as the new room's owner.
+
+        `from_room_id` is the room the agent is working in: the new room goes
+        into that room's run (see `agent_runs`), and is refused if the run is
+        paused or stopped or the agent is already creating a room.
 
         `group_name`, when given, files the room under an existing room group;
         it is resolved to a group id here (agents work in names, not ids)."""
@@ -2497,49 +2473,60 @@ class ProtocolService:
                 session, agent_id
             )
             group_id = await self._resolve_group_name(session, group_name)
+            owner = await session.get(User, agent.owner_id) if agent.owner_id else None
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
                 f"Agent {agent_id} has no owner_id and cannot attach references "
                 "or packages on creation"
             )
 
-        config = RoomCreateConfig(
-            name=name,
-            description=description,
-            agent_names=agent_names,
-            include_subagents_for=include_subagents_for,
-            join_event_listeners=join_event_listeners,
-            user_names=user_names,
-            channel_type=channel_type,  # type: ignore[arg-type]
-            bridge_id=bridge_id,
-            internal_only=internal_only,
-            admin_mode=admin_mode,
-            protection_config=security_config,
-            instructions=instructions,
-            created_by=agent.owner_id,
-            created_by_kind="agent",
-            owner_id=agent.owner_id,
-            group_id=group_id,
-            read_visibility=read_visibility,
-            write_visibility=write_visibility,
-            reference_ids=reference_ids,
-            package_ids=package_ids,
-            linked_rooms=(
-                [LinkedRoomSpec(**lr) for lr in linked_rooms] if linked_rooms else None
-            ),
-            roles=([RoleSpec(**r) for r in roles] if roles else None),
-            aliases=aliases,
-            acting_user_id=agent.owner_id,
-            acting_is_admin=owner_is_admin,
-        )
-        try:
-            result = await self.room_service.create_room(config)
-        except ValueError as e:
-            raise ValueError(f"Failed to create room: {str(e)}") from e
-        except PermissionError as e:
-            raise PermissionError(str(e)) from e
-        except RuntimeError as e:
-            raise RuntimeError(f"Room service error: {str(e)}") from e
+        async with self.run_service().agent_creating(
+            agent,
+            owner_name=owner.name if owner else None,
+            from_room_id=from_room_id,
+        ) as origin:
+            config = RoomCreateConfig(
+                name=name,
+                description=description,
+                agent_names=agent_names,
+                include_subagents_for=include_subagents_for,
+                join_event_listeners=join_event_listeners,
+                user_names=user_names,
+                channel_type=channel_type,  # type: ignore[arg-type]
+                bridge_id=bridge_id,
+                internal_only=internal_only,
+                admin_mode=admin_mode,
+                protection_config=security_config,
+                instructions=instructions,
+                created_by=agent.owner_id,
+                created_by_kind="agent",
+                created_by_agent_id=agent.id,
+                parent_room_id=origin.parent_room_id,
+                run_id=origin.run_id,
+                owner_id=agent.owner_id,
+                group_id=group_id,
+                read_visibility=read_visibility,
+                write_visibility=write_visibility,
+                reference_ids=reference_ids,
+                package_ids=package_ids,
+                linked_rooms=(
+                    [LinkedRoomSpec(**lr) for lr in linked_rooms]
+                    if linked_rooms
+                    else None
+                ),
+                roles=([RoleSpec(**r) for r in roles] if roles else None),
+                aliases=aliases,
+                acting_user_id=agent.owner_id,
+                acting_is_admin=owner_is_admin,
+            )
+            try:
+                result = await self.room_service.create_room(config)
+            except ValueError as e:
+                raise ValueError(f"Failed to create room: {str(e)}") from e
+            except PermissionError as e:
+                raise PermissionError(str(e)) from e
+            except RuntimeError as e:
+                raise RuntimeError(f"Room service error: {str(e)}") from e
         return result
 
     async def _resolve_group_name(
@@ -2640,6 +2627,17 @@ class ProtocolService:
             return await self.room_service.add_users_to_room(room_id, user_names)
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
+
+    def run_service(self) -> RunService:
+        """Runs over this service's stores; see ``agent_runs``."""
+        from switch_core.agent_runs import RunService
+
+        return RunService(
+            room_store=self.room_store,
+            agent_store=self.agent_store,
+            session_factory=self.session_factory,
+            client_lifecycle=self.client_lifecycle,
+        )
 
     def room_yaml_service(self) -> RoomYamlService:
         """The template engine over this service's collaborators.

@@ -995,7 +995,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       }
       const result =
         createdRoom.current ??
-        (await rpc.switchServers.createRoomFromTemplate(serverId, coreYaml, inputs));
+        (await rpc.switchServers.createRoomFromTemplate(serverId, coreYaml, inputs, loaded.name));
       createdRoom.current = result;
       setRoomStatus('created');
       // The room exists whether or not the sidebar refreshes.

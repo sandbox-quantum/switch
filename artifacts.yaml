@@ -60,13 +60,13 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.28.0
+    version: 0.28.1
     declared_in: core/pyproject.toml
     published_as: switch-core
 
   switch-console:
     description: The desktop app.
-    version: 0.37.0
+    version: 0.37.2
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.

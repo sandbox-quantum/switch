@@ -47,7 +47,7 @@ export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose 
           <span className="font-medium text-foreground">{agentLabel}</span> will be removed from
           Switch Console.{' '}
           {onThisMachine
-            ? 'Its sessions stop, and the credentials and definition files Console provisioned for it are deleted. The working directory itself, and everything else in it, are left alone.'
+            ? 'Its sessions stop, and the credentials and settings files Console provisioned for it are deleted. The working directory itself, and everything else in it, are left alone.'
             : `It keeps running on ${sshHost}, with its automatic sessions and for anyone else who uses it there, unless you choose below.`}
         </p>
 
@@ -71,7 +71,7 @@ export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose 
               <span className="text-sm font-medium">Also remove it from {sshHost}</span>
               <span className="text-xs text-foreground-muted">
                 {deleteInSwitch ? <>Deleting it in Switch removes it from {sshHost} too. </> : null}
-                Stops it running there and deletes the credentials and definition files Console
+                Stops it running there and deletes the credentials and settings files Console
                 provisioned in <code className="break-all">{dir}</code>; the rest of the directory
                 is left alone. Anyone else using this agent on {sshHost} loses it too — an agent you
                 loaded rather than created is usually best left running.
