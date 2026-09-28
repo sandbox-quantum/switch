@@ -311,6 +311,11 @@ def create_messaging_install_router(
             # other customer's delivery. The log is where it is visible.
             logger.warning("Dropped a %s event: %s", platform, failure)
             return Response(status_code=200)
+        except MessagingInstallError as failure:
+            # The installer cannot read this event yet — Telegram's, before its
+            # bot has said who it is. Transient, so the platform should retry.
+            logger.error("Could not read a %s event yet: %s", platform, failure)
+            return Response(status_code=503)
         except WebhookBridgeUnavailable as failure:
             # Deliberately a 503: the platform retrying is the right behaviour
             # while a bridge restarts, and a 200 here would drop a real message

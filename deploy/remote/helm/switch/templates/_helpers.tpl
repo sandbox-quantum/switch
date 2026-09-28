@@ -76,6 +76,10 @@ SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required
 DISCORD_APP_CLIENT_SECRET: {{ required "secrets.discordAppClientSecret is required when switchCore.discordApp.enabled" .Values.secrets.discordAppClientSecret | b64enc | quote }}
 DISCORD_APP_BOT_TOKEN: {{ required "secrets.discordAppBotToken is required when switchCore.discordApp.enabled" .Values.secrets.discordAppBotToken | b64enc | quote }}
 {{- end }}
+{{- if .Values.switchCore.telegramApp.enabled }}
+TELEGRAM_APP_BOT_TOKEN: {{ required "secrets.telegramAppBotToken is required when switchCore.telegramApp.enabled" .Values.secrets.telegramAppBotToken | b64enc | quote }}
+TELEGRAM_APP_WEBHOOK_SECRET: {{ required "secrets.telegramAppWebhookSecret is required when switchCore.telegramApp.enabled" .Values.secrets.telegramAppWebhookSecret | b64enc | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -764,6 +768,22 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: DISCORD_APP_MEMBERS
   value: "true"
 {{- end }}
+{{- end }}
+{{- if .Values.switchCore.telegramApp.enabled }}
+{{- if not (or .Values.switchCore.slackApp.enabled .Values.switchCore.discordApp.enabled) }}
+- name: MESSAGING_PUBLIC_URL
+  value: {{ required "switchCore.telegramApp.messagingPublicUrl is required when switchCore.telegramApp.enabled" .Values.switchCore.telegramApp.messagingPublicUrl | quote }}
+{{- end }}
+- name: TELEGRAM_APP_BOT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TELEGRAM_APP_BOT_TOKEN
+- name: TELEGRAM_APP_WEBHOOK_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TELEGRAM_APP_WEBHOOK_SECRET
 {{- end }}
 {{- end }}
 
