@@ -1013,6 +1013,9 @@ export interface InstalledApp {
   id: string;
   platform: string;
   external_workspace_id: string;
+  // What a person calls it — a chat's room, or the workspace an OAuth install
+  // came from — while it still has one. Null once it has ended.
+  name: string | null;
   // "active", "disconnected" (ended here) or "revoked" (ended at the
   // platform). The last two are kept apart because an operator whose
   // connection stopped working needs to know which of the two it was.

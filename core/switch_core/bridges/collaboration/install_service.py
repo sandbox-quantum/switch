@@ -942,6 +942,29 @@ class MessagingInstallService:
         """
         return await self._store.list_for_tenant(session)
 
+    async def install_names(self, session: AsyncSession) -> dict[str, str]:
+        """What a person calls each of the bound tenant's installs that still
+        has a name, by install id.
+
+        A claimed chat is a room, so it is called what its room is called. An
+        OAuth install is its own bridge, named for the workspace it came from.
+        An ended install has let go of both and is left to be shown by its id.
+        """
+        names: dict[str, str] = {}
+        for install_id, platform, room, bridge in await self._store.names_for_tenant(
+            session
+        ):
+            name = room if self._installs_by_claim(platform) else bridge
+            if name:
+                names[install_id] = name
+        return names
+
+    def _installs_by_claim(self, platform: str) -> bool:
+        try:
+            return self._installers.get(platform).installs_by_claim
+        except MessagingInstallError:
+            return False
+
     # ── Ending an install ────────────────────────────────────────────────────
 
     async def disconnect(self, *, tenant_id: str, install_id: str) -> MessagingInstall:

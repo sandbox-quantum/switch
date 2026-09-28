@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_service import MessagingInstallService
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import User, require_tenant_id
+from switch_core.db.models import MessagingInstall, User, require_tenant_id
 from switch_core.db.stores.messaging_install_store import MessagingInstallNotFound
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import get_install_service, get_session
@@ -85,6 +85,10 @@ class InstalledApp(BaseModel):
     id: str
     platform: str
     external_workspace_id: str
+    # What a person calls it — a chat's room, or the workspace an OAuth
+    # install came from — while it still has one. An ended install is shown by
+    # its id.
+    name: str | None
     status: str
     scopes: str
     bridge_id: str | None
@@ -244,12 +248,27 @@ async def list_installs(
         return InstalledApps(installs=[])
     # A member sees the chats of claim-based platforms, which are rooms they
     # may disconnect, and not the OAuth workspaces, which are an admin's.
+    names = await service.install_names(session)
     return InstalledApps(
         installs=[
-            InstalledApp.model_validate(install, from_attributes=True)
+            _installed(install, names.get(install.id))
             for install in await service.list_installs(session)
             if is_admin or _installs_by_claim_or_gone(service, install.platform)
         ]
+    )
+
+
+def _installed(install: MessagingInstall, name: str | None) -> InstalledApp:
+    return InstalledApp(
+        id=install.id,
+        platform=install.platform,
+        external_workspace_id=install.external_workspace_id,
+        name=name,
+        status=install.status,
+        scopes=install.scopes,
+        bridge_id=install.bridge_id,
+        installed_at=install.installed_at,
+        ended_at=install.ended_at,
     )
 
 
@@ -315,7 +334,8 @@ async def disconnect_install(
     )
     await session.commit()
     logger.info("User %s disconnected messaging install %s", user.id, install_id)
-    return InstalledApp.model_validate(ended, from_attributes=True)
+    # Ended, so it has let go of whatever it was called.
+    return _installed(ended, None)
 
 
 @router.delete("/{platform}/installs")
@@ -347,9 +367,4 @@ async def disconnect_platform(
     except MessagingInstallError as failure:
         raise HTTPException(status_code=502, detail=str(failure)) from failure
     logger.info("User %s disconnected %d %s chat(s)", user.id, len(ended), platform)
-    return InstalledApps(
-        installs=[
-            InstalledApp.model_validate(install, from_attributes=True)
-            for install in ended
-        ]
-    )
+    return InstalledApps(installs=[_installed(install, None) for install in ended])

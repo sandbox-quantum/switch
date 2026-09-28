@@ -79,6 +79,7 @@ const PLATFORM_COPY: Record<string, Copy> = {
       "the app itself: a Microsoft admin removes \"Agent Switch\" in the " +
       "Teams admin center, and the enterprise application in the Microsoft " +
       "Entra admin center, to take it out of the organisation entirely.",
+    rooms: CONNECTION_ROOMS("organisation"),
   },
 };
 const DEFAULT_COPY: Copy = {
@@ -88,6 +89,12 @@ const DEFAULT_COPY: Copy = {
     "created is removed.",
   rooms: CONNECTION_ROOMS("workspace"),
 };
+
+/** What `platform` calls the place an install goes into: a Discord server,
+ *  a Telegram chat, a Slack workspace. */
+export function installNoun(platform: string): string {
+  return (PLATFORM_COPY[platform] ?? DEFAULT_COPY).noun;
+}
 
 interface Props {
   install: InstalledApp | null;
@@ -130,7 +137,8 @@ export default function DisconnectAppDialog({
       <DialogContent>
         <DialogContentText>
           Disconnect Switch from the {platformLabel(install?.platform ?? "")}{" "}
-          {copy.noun} <b>{install?.external_workspace_id}</b>? {copy.effect}
+          {copy.noun} <b>{install?.name ?? install?.external_workspace_id}</b>?{" "}
+          {copy.effect}
         </DialogContentText>
         <DialogContentText sx={{ mt: 2 }}>{copy.rooms}</DialogContentText>
         {error && (
