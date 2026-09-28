@@ -163,6 +163,19 @@ class Revocation:
 
 
 @dataclass(frozen=True)
+class ClaimLink:
+    """What a person needs to claim a chat: the link, and the bare code.
+
+    The link adds the bot to a group and claims it in one step. A channel has
+    no such link — Telegram carries no state when a bot is added to one — so
+    the code is posted there by hand, as `/connect <code>`.
+    """
+
+    url: str
+    code: str
+
+
+@dataclass(frozen=True)
 class WebhookTarget:
     """Where one verified event goes: a tenant, a bridge, and its live adapter.
 
@@ -264,20 +277,71 @@ class MessagingInstallService:
         which they could name another.
         """
         installer = self._installers.get(platform)
+        token = await self._mint_state(session, platform=platform, user_id=user_id)
+        return installer.authorize_url(
+            state=token, redirect_uri=self._redirect_uri(platform)
+        )
+
+    async def begin_claim(
+        self, session: AsyncSession, *, platform: str, user_id: str
+    ) -> ClaimLink:
+        """`begin`, for a platform installed by claim: the link and its code."""
+        installer = self._installers.get(platform)
+        token = await self._mint_state(session, platform=platform, user_id=user_id)
+        return ClaimLink(
+            url=installer.authorize_url(
+                state=token, redirect_uri=self._redirect_uri(platform)
+            ),
+            code=token,
+        )
+
+    async def _mint_state(
+        self, session: AsyncSession, *, platform: str, user_id: str
+    ) -> str:
+        installer = self._installers.get(platform)
         state = await self._store.start_install(
             session, platform=platform, user_id=user_id
         )
         signed = InstallState(
             tenant_id=state.tenant_id, state_id=state.id, platform=platform
         )
-        token = (
-            mint_compact(signed, secret=self._secret)
-            if installer.state_format == "compact"
-            else mint(signed, secret=self._secret)
+        if installer.state_format == "compact":
+            return mint_compact(signed, secret=self._secret)
+        return mint(signed, secret=self._secret)
+
+    async def platform_connected(self, session: AsyncSession, *, platform: str) -> bool:
+        """Whether the bound tenant already has a bridge for a claim-based platform.
+
+        The line between an admin's action and a member's: connecting the
+        first chat creates the tenant's connection; every later one is a room.
+        """
+        return (
+            await self._store.bridge_for_platform(session, platform=platform)
+            is not None
         )
-        return installer.authorize_url(
-            state=token, redirect_uri=self._redirect_uri(platform)
-        )
+
+    async def install_platform(self, session: AsyncSession, *, install_id: str) -> str:
+        """Which platform one of the bound tenant's installs belongs to, or raise."""
+        return (await self._store.get(session, install_id=install_id)).platform
+
+    async def disconnect_platform(
+        self, *, tenant_id: str, platform: str
+    ) -> list[MessagingInstall]:
+        """Disconnect every live install of a platform, which removes its bridge.
+
+        One at a time through `disconnect`, so each leaves its chat before its
+        row ends and the last takes the bridge. A failure stops here with the
+        rest still connected, to be retried, rather than half-reporting success.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            install_ids = [
+                install.id
+                for install in await self._store.list_active(session, platform=platform)
+            ]
+        return [
+            await self.disconnect(tenant_id=tenant_id, install_id=install_id)
+            for install_id in install_ids
+        ]
 
     async def complete(
         self, *, platform: str, code: str, state_token: str

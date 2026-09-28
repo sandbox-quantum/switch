@@ -889,9 +889,25 @@ export interface InstalledApp {
   ended_at: string | null;
 }
 
-export async function fetchInstallablePlatforms(): Promise<string[] | null> {
-  const res = await fetchJson<{ platforms: string[] }>("/messaging-apps");
-  return res === null ? null : res.platforms;
+// A platform installed by claiming a chat (Telegram) rather than by OAuth, and
+// what the signed-in person may do with it. Worked out by the server because
+// the split — an admin connects the first chat, members the rest — is the
+// organisation's, and this dashboard knows only the operator bit.
+export interface ClaimablePlatform {
+  platform: string;
+  connected: boolean;
+  can_add_chat: boolean;
+  can_disconnect_all: boolean;
+}
+
+export interface InstallablePlatforms {
+  // OAuth platforms, offered to the operator only.
+  platforms: string[];
+  claimable: ClaimablePlatform[];
+}
+
+export async function fetchInstallablePlatforms(): Promise<InstallablePlatforms | null> {
+  return fetchJson<InstallablePlatforms>("/messaging-apps");
 }
 
 export async function fetchInstalledApps(): Promise<InstalledApp[] | null> {
@@ -910,6 +926,28 @@ export async function beginAppInstall(platform: string): Promise<string> {
     "POST",
   );
   return res.authorize_url;
+}
+
+// A link that adds the bot to a group and connects it, and the bare code a
+// channel admin posts as `/connect <code>` instead. Both work once, for ten
+// minutes.
+export interface ChatClaim {
+  url: string;
+  code: string;
+}
+
+export async function beginChatClaim(platform: string): Promise<ChatClaim> {
+  return jsonRequest<ChatClaim>(`/messaging-apps/${platform}/claim`, "POST");
+}
+
+// Disconnects every chat of a claim-based platform, which removes its
+// connection. Throws with the platform's refusal if a chat could not be left.
+export async function disconnectAllChats(platform: string): Promise<InstalledApp[]> {
+  const res = await jsonRequest<{ installs: InstalledApp[] }>(
+    `/messaging-apps/${platform}/installs`,
+    "DELETE",
+  );
+  return res.installs;
 }
 
 // Throwing, because 502 here means the platform refused to revoke, nothing was

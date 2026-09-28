@@ -122,6 +122,7 @@ def _chat_of(payload: Mapping[str, object]) -> dict[str, Any] | None:
 class TelegramAppInstaller(MessagingAppInstaller):
     platform: ClassVar[str] = "telegram"
     state_format = "compact"
+    installs_by_claim = True
     # With Group Privacy off the bot hears everything in every chat it is in,
     # claimed or not.
     expects_unowned_events = True
