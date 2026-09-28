@@ -63,6 +63,7 @@ vi.mock('./shared-agent-runtime', () => ({
 }));
 vi.mock('./shared-host-deployment', () => ({
   deploySharedHost: mocks.deploy,
+  resolveWatcherRoot: async () => ({ ctx, root }),
   runSharedHostCommand: mocks.runCommand,
 }));
 vi.mock('./legacy-sidecar', () => ({ stopLegacySidecar: mocks.stopLegacySidecar }));
@@ -93,6 +94,15 @@ function savedSpec(runtimeMode: string) {
     join(root, 'config.json'),
     JSON.stringify({ session: { agentId: 'switch-agent-1' }, start: { input: { runtimeMode } } })
   );
+}
+
+/** A person's choice, kept beside the watcher by a sharing-aware Console. */
+function chosen(runtimeMode: string) {
+  writeFileSync(join(root, 'auto-approve.json'), JSON.stringify({ runtimeMode, at: 'then' }));
+}
+
+function readChoice(): { runtimeMode: string } {
+  return JSON.parse(readFileSync(join(root, 'auto-approve.json'), 'utf8'));
 }
 
 function readSpec(): { start: { input: { runtimeMode: string } } } {
@@ -130,6 +140,7 @@ it('takes auto-approve from the host when another Console changed it', async () 
   // on since. Restarting must not turn it back off.
   mocks.agent.mockResolvedValue(agent(false));
   savedSpec('full-access');
+  chosen('full-access');
 
   await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
 
@@ -141,6 +152,19 @@ it('takes auto-approve from the host when another Console changed it', async () 
 it('leaves the row alone when it already agrees with the host', async () => {
   mocks.agent.mockResolvedValue(agent(true));
   savedSpec('full-access');
+  chosen('full-access');
+
+  await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
+
+  expect(writtenMode()).toBe('full-access');
+  expect(mocks.updateAgent).not.toHaveBeenCalled();
+});
+
+it('does not take a saved spec for a choice when nobody made one', async () => {
+  // An older Console wrote the spec from its own row and never kept a choice:
+  // a change this row holds that the spec missed must not be reverted.
+  mocks.agent.mockResolvedValue(agent(true));
+  savedSpec('approval-required');
 
   await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
 
@@ -171,11 +195,14 @@ it('writes this Console’s value when the person using it has just changed it',
 
   expect(writtenMode()).toBe('full-access');
   expect(mocks.updateAgent).not.toHaveBeenCalled();
+  // And it becomes the choice the account's other Consoles take.
+  expect(readChoice().runtimeMode).toBe('full-access');
 });
 
 it('does not take a subagent watcher’s setting for its parent’s', async () => {
   mocks.agent.mockResolvedValue(agent(false));
   savedSpec('full-access');
+  chosen('full-access');
   // A subagent watcher reads its Switch id from the credentials file.
   const readId = vi.spyOn(ctx, 'exec');
   readId.mockImplementation(async (command: string, args: string[]) => {
@@ -196,20 +223,25 @@ it('does not take a subagent watcher’s setting for its parent’s', async () =
   readId.mockRestore();
 });
 
-it('records a changed setting in the saved spec while no watcher runs', async () => {
-  mocks.agent.mockResolvedValue(agent(true));
+it('keeps a changed setting on the host for a watcher that starts no sessions', async () => {
+  mocks.agent.mockResolvedValue(agent(false));
   savedSpec('approval-required');
 
-  await recordAutoApproveOnHost('agent-1');
+  // The value is the one just chosen, which the row does not hold yet.
+  await recordAutoApproveOnHost('agent-1', true);
 
   expect(readSpec().start.input.runtimeMode).toBe('full-access');
+  expect(readChoice().runtimeMode).toBe('full-access');
   expect(mocks.runCommand).not.toHaveBeenCalled();
+  // A small edit beside the watcher: nothing is deployed for it.
+  expect(mocks.deploy).not.toHaveBeenCalled();
 });
 
 it('has nothing to record for an agent that has never had a watcher', async () => {
   mocks.agent.mockResolvedValue(agent(true));
+  rmSync(root, { recursive: true, force: true });
 
-  await recordAutoApproveOnHost('agent-1');
+  await recordAutoApproveOnHost('agent-1', true);
 
   expect(() => readSpec()).toThrow(/ENOENT/);
 });

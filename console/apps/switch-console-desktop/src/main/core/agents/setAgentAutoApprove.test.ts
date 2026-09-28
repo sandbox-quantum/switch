@@ -1,95 +1,108 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const updateAgent = vi.fn(
-  async ({ agentId, autoApprove }): Promise<{ id: string; autoApprove?: boolean } | undefined> => ({
-    id: agentId,
-    autoApprove,
+const calls = vi.hoisted(() => [] as string[]);
+const agentRow = vi.hoisted(() => ({
+  current: { id: 'agent-1', autoApprove: false } as
+    | { id: string; autoApprove: boolean }
+    | undefined,
+}));
+const updateAgent = vi.hoisted(() =>
+  vi.fn(async ({ agentId, autoApprove }: { agentId: string; autoApprove: boolean }) => {
+    calls.push(`row ${autoApprove}`);
+    return { id: agentId, autoApprove };
   })
 );
-const getRemoteAgentLocation = vi.fn();
-const listAutoSessionAgentIds = vi.fn();
-const listStoppedControllerAgentIds = vi.fn(async (): Promise<string[]> => []);
-const pushRemoteAutoApprove = vi.fn(async (_id: string) => {});
-const recordAutoApproveOnHost = vi.fn(async (_id: string) => {});
+const getRemoteAgentLocation = vi.hoisted(() => vi.fn());
+const listAutoSessionAgentIds = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
+const listStoppedControllerAgentIds = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
+const pushRemoteAutoApprove = vi.hoisted(() =>
+  vi.fn(async (_id: string) => void calls.push('push'))
+);
+const recordAutoApproveOnHost = vi.hoisted(() =>
+  vi.fn(async (_id: string, autoApprove: boolean) => void calls.push(`host ${autoApprove}`))
+);
 
-vi.mock('./updateAgent', () => ({ updateAgent: (p: unknown) => updateAgent(p) }));
-vi.mock('./agent-location', () => ({
-  getRemoteAgentLocation: (a: unknown) => getRemoteAgentLocation(a),
-}));
+vi.mock('./getAgentById', () => ({ getAgentById: async () => agentRow.current }));
+vi.mock('./updateAgent', () => ({ updateAgent }));
+vi.mock('./agent-location', () => ({ getRemoteAgentLocation }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
-  listAutoSessionAgentIds: () => listAutoSessionAgentIds(),
-  listStoppedControllerAgentIds: () => listStoppedControllerAgentIds(),
+  listAutoSessionAgentIds,
+  listStoppedControllerAgentIds,
 }));
-vi.mock('./remote-watcher', () => ({
-  pushRemoteAutoApprove: (id: string) => pushRemoteAutoApprove(id),
-}));
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({
-  recordAutoApproveOnHost: (id: string) => recordAutoApproveOnHost(id),
-}));
+vi.mock('./remote-watcher', () => ({ pushRemoteAutoApprove }));
+vi.mock('@main/core/sdk-host/shared-watcher', () => ({ recordAutoApproveOnHost }));
 
 import { setAgentAutoApprove } from './setAgentAutoApprove';
 
 describe('setAgentAutoApprove', () => {
   beforeEach(() => {
-    updateAgent.mockClear();
-    getRemoteAgentLocation.mockReset();
-    listAutoSessionAgentIds.mockReset();
-    listStoppedControllerAgentIds.mockReset();
+    vi.clearAllMocks();
+    calls.length = 0;
+    agentRow.current = { id: 'agent-1', autoApprove: false };
+    getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1' });
+    listAutoSessionAgentIds.mockResolvedValue([]);
     listStoppedControllerAgentIds.mockResolvedValue([]);
-    pushRemoteAutoApprove.mockClear();
-    recordAutoApproveOnHost.mockClear();
   });
 
-  it('writes the agent row and does not touch a local agent (read fresh at spawn)', async () => {
+  it('writes the row and nothing else for a local agent (read fresh at spawn)', async () => {
     getRemoteAgentLocation.mockResolvedValue(null);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
 
-    expect(updateAgent).toHaveBeenCalledWith({ agentId: 'agent-1', autoApprove: true });
-    expect(pushRemoteAutoApprove).not.toHaveBeenCalled();
-    expect(recordAutoApproveOnHost).not.toHaveBeenCalled();
+    expect(calls).toEqual(['row true']);
   });
 
-  it('pushes this Console’s value to a remote agent whose watcher is running (auto_session on)', async () => {
-    getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1' });
+  it('pushes this Console’s value to a watcher that starts sessions, the row first', async () => {
+    // The push writes the watcher from the row.
     listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
-
-    await setAgentAutoApprove({ agentId: 'agent-1', enabled: false });
-
-    // Pushed, not re-ensured: a re-ensure takes the host's value, which is the
-    // one the person just changed.
-    expect(pushRemoteAutoApprove).toHaveBeenCalledWith('agent-1');
-    expect(recordAutoApproveOnHost).not.toHaveBeenCalled();
-  });
-
-  it('records the value on the host for a remote agent with auto_session off', async () => {
-    // Nothing is running to refresh, but the saved spec is what the next
-    // watcher — this Console's or another's — takes its setting from.
-    getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1' });
-    listAutoSessionAgentIds.mockResolvedValue([]);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
 
-    expect(recordAutoApproveOnHost).toHaveBeenCalledWith('agent-1');
-    expect(pushRemoteAutoApprove).not.toHaveBeenCalled();
+    expect(calls).toEqual(['row true', 'push']);
   });
 
-  it('records the value on the host for a stopped watcher, which nothing rewrites until it starts', async () => {
-    // Pushing goes through the watcher's own write, which a stopped one skips —
-    // and its next start takes the host's value, so a value left only in this
-    // row would be put back.
-    getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1' });
+  it('puts the row back when the push does not reach the host', async () => {
+    // Left changed, the next watcher write would revert it from the host with
+    // only a log line to say so.
+    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
+    pushRemoteAutoApprove.mockRejectedValueOnce(new Error('host unreachable'));
+
+    await expect(setAgentAutoApprove({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
+      /host unreachable/
+    );
+
+    expect(calls).toEqual(['row true', 'row false']);
+  });
+
+  it('keeps the choice on the host first for a watcher that starts no sessions', async () => {
+    await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
+
+    expect(recordAutoApproveOnHost).toHaveBeenCalledWith('agent-1', true);
+    expect(calls).toEqual(['host true', 'row true']);
+  });
+
+  it('keeps the choice on the host for a stopped watcher, which nothing rewrites until it starts', async () => {
     listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
     listStoppedControllerAgentIds.mockResolvedValue(['agent-1']);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
 
-    expect(recordAutoApproveOnHost).toHaveBeenCalledWith('agent-1');
+    expect(calls).toEqual(['host true', 'row true']);
     expect(pushRemoteAutoApprove).not.toHaveBeenCalled();
   });
 
+  it('leaves the row alone when the host could not keep the choice', async () => {
+    recordAutoApproveOnHost.mockRejectedValueOnce(new Error('host unreachable'));
+
+    await expect(setAgentAutoApprove({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
+      /host unreachable/
+    );
+
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
   it('throws when the agent does not exist', async () => {
-    updateAgent.mockResolvedValueOnce(undefined);
+    agentRow.current = undefined;
 
     await expect(setAgentAutoApprove({ agentId: 'ghost', enabled: true })).rejects.toThrow(
       /No agent with id ghost/
