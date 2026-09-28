@@ -393,19 +393,28 @@ export class SwitchServersStore {
   async deleteServer(serverId: string): Promise<boolean> {
     this.clearError();
     const server = this.servers.find((s) => s.id === serverId);
+    const remoteHost =
+      server?.managed && server.managementKind === 'remote' ? server.sshHost : null;
     try {
-      if (server?.managed) {
-        if (server.managementKind === 'remote' && server.sshHost) {
-          await rpc.remoteSwitchServer.reset(server.sshHost);
-        } else {
-          await rpc.localSwitchServer.reset();
-        }
-      }
+      if (remoteHost) await rpc.remoteSwitchServer.reset(remoteHost);
+      else if (server?.managed) await rpc.localSwitchServer.reset();
     } catch (cause) {
       this.setError(cause, 'Could not shut down the server’s stack, so it was not deleted.');
       return false;
     }
-    await this.removeServer(serverId);
+    if (!remoteHost) {
+      await this.removeServer(serverId);
+      return this.error === null;
+    }
+    // Deleting a shared server also leaves it, so this Console stops counting
+    // as one of its users (CHOO-2893) — the reset itself keeps the register,
+    // which says who did it.
+    try {
+      await rpc.remoteSwitchServer.disconnect(remoteHost);
+      await this.forgetRemovedServer(serverId);
+    } catch (cause) {
+      this.setError(cause, 'Could not remove the server.');
+    }
     return this.error === null;
   }
 

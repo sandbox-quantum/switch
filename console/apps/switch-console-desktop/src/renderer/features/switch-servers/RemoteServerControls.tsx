@@ -2,26 +2,13 @@ import { Info, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogContentArea,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import { LogTail } from './log-tail';
 import { remoteServerStore } from './remote-server-store';
 import { phaseLabel, StackAction, StackSection, StackStatusRow } from './server-stack-section';
-import { affectedSentence, sharedWithSentence } from './shared-consoles';
-
-/** A lifecycle action that reaches the other people using the server. */
-type SharedAction = 'stop' | 'restart';
+import { useSharedActionConfirm } from './shared-action-confirm';
+import { sharedWithSentence } from './shared-consoles';
 
 /**
  * Lifecycle for a managed Switch stack running in Docker on an SSH host. The
@@ -37,7 +24,7 @@ export const RemoteServerControls = observer(function RemoteServerControls({
 }) {
   const store = remoteServerStore;
   const [showActivity, setShowActivity] = useState(false);
-  const [confirming, setConfirming] = useState<SharedAction | null>(null);
+  const confirm = useSharedActionConfirm(sshHost);
 
   useEffect(() => {
     void store.init();
@@ -48,14 +35,6 @@ export const RemoteServerControls = observer(function RemoteServerControls({
   // A remote stack is shared by everyone with access to its host (CHOO-2893):
   // stopping or restarting it here stops or restarts it for them.
   const others = othersRecentlySeen(store.registerFor(sshHost), new Date());
-  const runShared = (action: SharedAction) => {
-    if (action === 'stop') void store.stop(sshHost);
-    else void store.start(sshHost, name);
-  };
-  const requestShared = (action: SharedAction) => {
-    if (others.length > 0) setConfirming(action);
-    else runShared(action);
-  };
 
   const status = store.statusFor(sshHost);
   const hostBlocked = store.isHostBlocked(sshHost);
@@ -99,13 +78,13 @@ export const RemoteServerControls = observer(function RemoteServerControls({
               <StackAction
                 label="Restart"
                 disabled={transitioning}
-                onClick={() => requestShared('restart')}
+                onClick={() => confirm.request('restart', () => void store.start(sshHost, name))}
               />
               <StackAction
                 label="Stop"
                 danger
                 disabled={transitioning}
-                onClick={() => requestShared('stop')}
+                onClick={() => confirm.request('stop', () => void store.stop(sshHost))}
               />
             </>
           ) : (
@@ -168,40 +147,7 @@ export const RemoteServerControls = observer(function RemoteServerControls({
         {showActivity && logs.length > 0 && <LogTail lines={logs} placeholder={null} />}
       </div>
 
-      <Dialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <TriangleAlert className="size-4 text-amber-500" />
-            <DialogTitle>
-              {confirming === 'stop'
-                ? `Stop the server on ${sshHost} for everyone?`
-                : `Restart the server on ${sshHost} for everyone?`}
-            </DialogTitle>
-          </DialogHeader>
-          <DialogContentArea>
-            <DialogDescription>
-              {affectedSentence(others, new Date())}{' '}
-              {confirming === 'stop'
-                ? 'Their agents stop answering until someone starts it again. Its rooms, agents and data are kept.'
-                : 'Their agents stop answering while it restarts, and it comes back on the version this Console runs.'}
-            </DialogDescription>
-          </DialogContentArea>
-          <DialogFooter>
-            <DialogClose render={<Button variant="outline" size="sm" />}>Cancel</DialogClose>
-            <Button
-              variant={confirming === 'stop' ? 'destructive' : 'default'}
-              size="sm"
-              onClick={() => {
-                const action = confirming;
-                setConfirming(null);
-                if (action) runShared(action);
-              }}
-            >
-              {confirming === 'stop' ? 'Stop for everyone' : 'Restart for everyone'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {confirm.dialog}
     </StackSection>
   );
 });

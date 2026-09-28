@@ -51,6 +51,7 @@ import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
+import { useSharedActionConfirm } from './shared-action-confirm';
 import { affectedSentence } from './shared-consoles';
 import { SharedConsolesSection } from './shared-consoles-section';
 import { switchRoomsStore } from './switch-rooms-store';
@@ -96,6 +97,12 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const serverId = useServerId();
   const store = switchServersStore;
   const server = store.servers.find((s) => s.id === serverId);
+  // A remote server is shared by everyone with access to its host
+  // (CHOO-2893), so restarting it from a notice reaches them too.
+  const remoteHost = server?.managementKind === 'remote' ? (server.sshHost ?? null) : null;
+  const confirm = useSharedActionConfirm(remoteHost);
+  const register = remoteHost ? remoteServerStore.registerFor(remoteHost) : null;
+  const others = othersRecentlySeen(register, new Date());
   const showEditServerModal = useShowModal('addServerModal');
   const showRenameServerModal = useShowModal('renameServerModal');
   const showDeleteServerModal = useShowModal('deleteServerModal');
@@ -302,15 +309,14 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           upgrade={serverUpgrade(server)}
           progress={serverProgress(server)}
           disabled={stackTransitioning}
-          affected={
-            server.managementKind === 'remote' && server.sshHost
-              ? affectedSentence(
-                  othersRecentlySeen(remoteServerStore.registerFor(server.sshHost), new Date()),
-                  new Date()
-                )
-              : null
+          affected={remoteHost ? affectedSentence(others, new Date()) : null}
+          onRestart={() =>
+            // A held update names who it reaches on its own button; a stopped
+            // server reaches nobody.
+            isManagedRunning(server) && serverUpgrade(server)?.state !== 'held'
+              ? confirm.request('restart', () => restartStack(server))
+              : restartStack(server)
           }
-          onRestart={() => restartStack(server)}
         />
 
         {/* Same placement, and for the same reason: a consent decision that has
@@ -321,10 +327,13 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             running: server.managed && isManagedRunning(server),
             deployed: serverDeployedTelemetry(server),
             consent: telemetry?.enabled ?? true,
+            // Unknown counts as shared, as it does for the start that applies it.
+            sharedWithOthers: remoteHost !== null && (register === null || others.length > 0),
           })}
           disabled={stackTransitioning}
-          onRestart={() => restartStack(server)}
+          onRestart={() => confirm.request('restart', () => restartStack(server))}
         />
+        {confirm.dialog}
 
         {detailsVisible && unreachable && <ServerUnreachableCard serverId={serverId} />}
 

@@ -8,6 +8,9 @@ const getActiveServerId = vi.hoisted(() => vi.fn());
 const setActiveServer = vi.hoisted(() => vi.fn());
 const removeServer = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
+const remoteReset = vi.hoisted(() => vi.fn());
+const remoteDisconnect = vi.hoisted(() => vi.fn());
+const localReset = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
@@ -23,6 +26,8 @@ vi.mock('@renderer/lib/ipc', () => ({
       removeServer,
       addServer,
     },
+    remoteSwitchServer: { reset: remoteReset, disconnect: remoteDisconnect },
+    localSwitchServer: { reset: localReset },
   },
 }));
 vi.mock('@renderer/features/remote-hosts/host-reachability-store', () => ({
@@ -539,5 +544,47 @@ describe('the error banner', () => {
     await store.recoverStale();
 
     expect(store.error).toBe('Invalid email or password');
+  });
+});
+
+describe('deleting a server for everyone', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listServers.mockResolvedValue([]);
+    getActiveServerId.mockResolvedValue(null);
+  });
+
+  it('resets a shared remote server and then leaves it, so this Console stops counting as a user', async () => {
+    const store = newStore([remoteServer('srv-1', 'vm-1')]);
+
+    expect(await store.deleteServer('srv-1')).toBe(true);
+
+    expect(remoteReset).toHaveBeenCalledWith('vm-1');
+    expect(remoteDisconnect).toHaveBeenCalledWith('vm-1');
+    expect(remoteReset.mock.invocationCallOrder[0]).toBeLessThan(
+      remoteDisconnect.mock.invocationCallOrder[0]!
+    );
+    // The disconnect removes the record; it is not removed twice.
+    expect(removeServer).not.toHaveBeenCalled();
+  });
+
+  it('keeps the server when its stack could not be reset', async () => {
+    remoteReset.mockRejectedValueOnce(new Error('host unreachable'));
+    const store = newStore([remoteServer('srv-1', 'vm-1')]);
+
+    expect(await store.deleteServer('srv-1')).toBe(false);
+
+    expect(remoteDisconnect).not.toHaveBeenCalled();
+    expect(removeServer).not.toHaveBeenCalled();
+  });
+
+  it('removes an external server by its record alone', async () => {
+    const store = newStore([server('srv-2')]);
+
+    expect(await store.deleteServer('srv-2')).toBe(true);
+
+    expect(removeServer).toHaveBeenCalledWith('srv-2');
+    expect(remoteReset).not.toHaveBeenCalled();
+    expect(localReset).not.toHaveBeenCalled();
   });
 });
