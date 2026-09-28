@@ -249,6 +249,19 @@ BRIDGE_CALL_DURATION = _spec(
     "platform",
     "kind",
 )
+BRIDGE_THROTTLE_HELD = _spec(
+    "switch.bridge.throttle.held",
+    "histogram",
+    "s",
+    "How long a publication was held back by a platform rate limit, recorded "
+    "each time one is refused for it. `delivery` separates a bot one tenant "
+    "owns from a shared app bot, where one tenant's burst holds back every "
+    "other tenant's — a rising `shared` reading is what says per-tenant "
+    "fairness has started to matter.",
+    "platform",
+    "delivery",
+    bounds=(1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0),
+)
 
 # ── Agent protocol ───────────────────────────────────────────────────────────
 # The agent-side counterpart to the delivery counters above. An event that
@@ -364,6 +377,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGE_ERRORS,
         BRIDGES_RUNNING,
         BRIDGE_CALL_DURATION,
+        BRIDGE_THROTTLE_HELD,
         AGENT_EVENTS_DROPPED,
         AGENT_CONNECTIONS_EXPIRED,
         AGENTS_CONNECTED,

@@ -371,6 +371,21 @@ class MessagingAppInstaller(ABC):
         """
         return None
 
+    def shared_connection(self) -> object | None:
+        """The deployment-level connection this platform's bridges run on, if any.
+
+        `None` for a platform whose bridges each hold their own credential.
+        A platform with one app-wide bot returns what its bridges attach to,
+        and the install service hands it to a bridge the first time it
+        delivers that bridge an event — which is how a bridge registered after
+        boot gets one.
+
+        Raise :class:`MessagingInstallError` if it exists but cannot be used
+        yet; the event is then refused as retryable rather than delivered to a
+        bridge that could not act on it.
+        """
+        return None
+
     @abstractmethod
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
         """Render a grant as the connection config this platform's adapter takes.

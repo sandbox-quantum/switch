@@ -214,6 +214,15 @@ class TelegramAppInstaller(MessagingAppInstaller):
             ),
         )
 
+    def shared_connection(self) -> TelegramAppClient:
+        """The shared bot, once it has said who it is.
+
+        Handed to a bridge before its first update is dispatched, so a bridge
+        created by a claim at runtime has a bot to answer with.
+        """
+        self._client.require_ready()
+        return self._client
+
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
         """No token and no username: both come from the shared bot."""
         return {"event_delivery": "shared"}
