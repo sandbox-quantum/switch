@@ -30,21 +30,23 @@ interface Props {
  *  consent screen to send the browser to, only a link that opens the
  *  platform's own chat picker, and a code for the one kind of chat the link
  *  cannot reach. A channel carries no state when a bot is added to it, so its
- *  admin adds the bot and then posts the code. Either works once, for ten
- *  minutes, which is said here because a link that quietly stopped working
- *  looks exactly like one that never did. */
+ *  admin adds the bot by its handle and then posts the code. The handle is
+ *  shown whole because Telegram's search does not find a bot by part of it.
+ *  The link and code work once, for ten minutes, which is said here because a
+ *  link that quietly stopped working looks exactly like one that never did. */
 export default function ClaimChatDialog({ platform, claim, onClose }: Props) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const command = claim ? `/connect ${claim.code}` : "";
+  const handle = claim?.bot_handle ?? "";
   const name = titleCase(platform);
 
-  const copy = async () => {
-    await navigator.clipboard.writeText(command);
-    setCopied(true);
+  const copy = async (text: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopied(text);
   };
 
   const close = () => {
-    setCopied(false);
+    setCopied(null);
     onClose();
   };
 
@@ -72,22 +74,30 @@ export default function ClaimChatDialog({ platform, claim, onClose }: Props) {
 
           <Stack spacing={1}>
             <Typography variant="body2">
-              For a channel, add the bot as an administrator with permission to
-              post, then post this in the channel:
+              For a channel, open its Administrators, choose Add Admin, and
+              search for the bot by its full username:
             </Typography>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Box
-                component="code"
-                sx={{ ...MONO_SX, px: 1, py: 0.5, borderRadius: 1, bgcolor: "action.hover" }}
-              >
-                {command}
-              </Box>
-              <Tooltip title={copied ? "Copied" : "Copy"}>
-                <IconButton size="small" onClick={copy} aria-label="Copy the command">
-                  <ContentCopyOutlined fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Stack>
+            <Copyable
+              text={handle}
+              label="Copy the bot's username"
+              copied={copied}
+              onCopy={copy}
+            />
+            <Typography variant="body2">
+              Keep its permission to post, save, then post this in the channel:
+            </Typography>
+            <Copyable
+              text={command}
+              label="Copy the command"
+              copied={copied}
+              onCopy={copy}
+            />
+            <Typography variant="body2" color="text.secondary">
+              Agents can always post to the channel. For posts in the channel to
+              reach agents, turn on Sign Messages and Show Authors&apos;
+              Profiles in its settings, and post as yourself rather than as the
+              channel.
+            </Typography>
           </Stack>
 
           <Alert severity="info" variant="outlined">
@@ -101,5 +111,43 @@ export default function ClaimChatDialog({ platform, claim, onClose }: Props) {
         <Button onClick={close}>Close</Button>
       </DialogActions>
     </Dialog>
+  );
+}
+
+function Copyable({
+  text,
+  label,
+  copied,
+  onCopy,
+}: {
+  text: string;
+  label: string;
+  copied: string | null;
+  onCopy: (text: string) => void;
+}) {
+  return (
+    <Stack direction="row" alignItems="center" spacing={1}>
+      <Box
+        component="code"
+        sx={{
+          ...MONO_SX,
+          px: 1,
+          py: 0.5,
+          borderRadius: 1,
+          bgcolor: "action.hover",
+        }}
+      >
+        {text}
+      </Box>
+      <Tooltip title={copied === text ? "Copied" : "Copy"}>
+        <IconButton
+          size="small"
+          onClick={() => onCopy(text)}
+          aria-label={label}
+        >
+          <ContentCopyOutlined fontSize="small" />
+        </IconButton>
+      </Tooltip>
+    </Stack>
   );
 }

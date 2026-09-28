@@ -448,6 +448,17 @@ class MessagingAppInstaller(ABC):
         """
         return None
 
+    def bot_handle(self) -> str:
+        """The name a person searches for to add the bot to a chat by hand.
+
+        Shown beside the claim link, for a chat the link cannot reach. Only a
+        claim-based platform is asked; any other has no bot to add by hand.
+        """
+        raise MessagingInstallError(
+            f"{self.platform} is not installed by claiming a chat, so it has no "
+            "bot to add by hand"
+        )
+
     def shared_connection(self) -> object | None:
         """The deployment-level connection this platform's bridges run on, if any.
 

@@ -77,7 +77,9 @@ class _Service:
         if self.not_ready:
             raise MessagingInstallError("the bot has not connected yet")
         return ClaimLink(
-            url="https://t.me/switch_app_bot?startgroup=c1code", code="c1code"
+            url="https://t.me/switch_app_bot?startgroup=c1code",
+            code="c1code",
+            bot_handle="@switch_app_bot",
         )
 
     async def begin(self, session: Any, *, platform: str, user_id: str) -> str:
@@ -168,6 +170,7 @@ class TestClaimLinks:
         )
         assert started.url.startswith("https://t.me/")
         assert started.code == "c1code"
+        assert started.bot_handle == "@switch_app_bot"
 
     async def test_a_member_cannot_turn_it_on(self) -> None:
         with pytest.raises(HTTPException) as refused:

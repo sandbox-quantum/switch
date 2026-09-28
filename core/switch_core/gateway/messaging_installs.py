@@ -63,10 +63,12 @@ class InstallablePlatforms(BaseModel):
 
 
 class ClaimStart(BaseModel):
-    """A link that adds the bot to a group and claims it, and its bare code."""
+    """A link that adds the bot to a group and claims it, its bare code, and
+    the bot's handle for adding it to a channel by hand."""
 
     url: str
     code: str
+    bot_handle: str
 
 
 class InstalledApp(BaseModel):
@@ -191,7 +193,7 @@ async def begin_claim(
         raise HTTPException(status_code=503, detail=str(failure)) from failure
     await session.commit()
     logger.info("Started a %s claim for user %s", platform, user.id)
-    return ClaimStart(url=link.url, code=link.code)
+    return ClaimStart(url=link.url, code=link.code, bot_handle=link.bot_handle)
 
 
 @router.post("/{platform}/install")
