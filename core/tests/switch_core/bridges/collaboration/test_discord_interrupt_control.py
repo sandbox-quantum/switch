@@ -44,6 +44,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
 )
 
+from .session_fixtures import _item, _turn
 from .test_discord_activity_view import (
     STATUS_MESSAGE_ID,
     _guild_with,
@@ -68,7 +69,6 @@ from .test_discord_sdk_only import (
     _http_error,
     _Webhook,
 )
-from .test_session_activity import _item, _turn
 
 RUNNING_TURN = "turn-running"
 OTHER_TURN = "turn-next"

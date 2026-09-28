@@ -10,12 +10,10 @@ import { getAgentById } from './getAgentById';
  * without the caller knowing where the provider keeps it.
  *
  * All of it is stored in one place — the agent's committed config file — and
- * rendered from there into whatever the provider actually reads: a repo-agent
- * definition on disk (Claude Code: `.claude/agents/<name>.md`), or a launch
- * profile built at spawn (Codex: `~/.codex/<name>.config.toml`). Which of those
- * a provider uses still matters to the caller, because only the second is read
- * once at spawn and so cannot reach a running session, but it is no longer
- * where the values live.
+ * turned into whatever the provider takes when a session launches: the agent
+ * definition the session runs as (Claude Code), or a launch profile (Codex:
+ * `~/.codex/<name>.config.toml`). Either way a change reaches the next session,
+ * not one already running.
  *
  * A provider with neither has no advanced configuration and the section renders
  * nothing.

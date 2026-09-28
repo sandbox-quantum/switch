@@ -7,6 +7,7 @@ import type {
   DeployedTelemetry,
   DockerAvailability,
   LocalServerStatus,
+  ManagedServerUpgrade,
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -81,6 +82,11 @@ export class LocalServerStore {
   /** Set when the stack's switch-core differs from the version this build pins. */
   get drift(): SwitchVersionDrift | null {
     return this.status?.drift ?? null;
+  }
+
+  /** Set while the stack is behind this build's pin and not yet upgraded. */
+  get upgrade(): ManagedServerUpgrade | null {
+    return this.status?.upgrade ?? null;
   }
 
   /** What the running stack is doing about usage data, or null when nothing is

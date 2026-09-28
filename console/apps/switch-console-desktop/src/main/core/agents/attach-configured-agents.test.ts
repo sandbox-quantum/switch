@@ -2,15 +2,23 @@ import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * A {@link PluginFs} that fails any write. Attaching adopts another install's
- * directory, so every write is a bug — this turns "should not write" into a
- * test failure at the point of the write rather than an assertion after it.
+ * A {@link PluginFs} that fails any write but an agent config file. Attaching
+ * adopts another install's directory, so any other write is a bug — this turns
+ * "should not write" into a test failure at the point of the write rather than
+ * an assertion after it.
  */
-function readOnlyFs(seed: Record<string, string>): PluginFs {
+function readOnlyFs(seed: Record<string, string>): PluginFs & { files: Map<string, string> } {
   const files = new Map<string, string>(Object.entries(seed));
   return {
+    files,
     read: (p) => Promise.resolve(files.get(p) ?? null),
-    write: (p) => Promise.reject(new Error(`attach wrote to the workspace: ${p}`)),
+    write: (p, content) => {
+      if (!p.startsWith('.switch/config/')) {
+        return Promise.reject(new Error(`attach wrote to the workspace: ${p}`));
+      }
+      files.set(p, content);
+      return Promise.resolve();
+    },
     delete: (p) => Promise.reject(new Error(`attach deleted from the workspace: ${p}`)),
     exists: (p) => Promise.resolve(files.has(p)),
     list: (dir) => {
@@ -82,6 +90,7 @@ vi.mock('./agent-workspace-fs', () => ({
 }));
 vi.mock('@main/core/providers/plugin-registry', () => ({
   listPlugins: () => [{ metadata: { id: 'codex' }, behavior: {} }],
+  getPlugin: () => ({ behavior: {} }),
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   agentExistsOnServer: h.agentExistsOnServer,
@@ -136,12 +145,26 @@ describe('attachConfiguredAgents', () => {
     );
   });
 
-  it('writes nothing to the working directory', async () => {
-    // The workspace belongs to whichever install set the agent up. Any write
-    // here rejects, so this passing means attach touched none of their state.
+  it('writes nothing to the working directory but a missing config file', async () => {
+    // The workspace belongs to whichever install set the agent up. Any other
+    // write here rejects, so this passing means attach touched none of their
+    // state — and every agent has a config file.
     await expect(
       attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]))
     ).resolves.toMatchObject({ success: true });
+    expect(await h.state.workspace?.read('.switch/config/theirs.json')).not.toBeNull();
+  });
+
+  it('leaves an existing config file alone', async () => {
+    const existing = JSON.stringify({ instructions: 'Theirs.', rendered: { x: 'y' } });
+    h.state.workspace = readOnlyFs({
+      '.switch/agents/theirs.json': creds('sw-theirs'),
+      '.switch/config/theirs.json': existing,
+    });
+
+    await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
+
+    expect(await h.state.workspace.read('.switch/config/theirs.json')).toBe(existing);
   });
 
   it('fails loudly when the identity no longer exists on the server', async () => {

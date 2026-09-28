@@ -76,12 +76,7 @@ def _fake_bridge(
         recorded=recorded,
         sent_content=sent_content,
         pending=pending,
-        # The demo trigger is looked for on this path now, ahead of the relay.
-        # No demo configured, which is every deployment but a developer's, and
-        # the real method short-circuits on that before touching anything else.
-        _session_demo=None,
     )
-    bridge._handle_session_demo = MethodType(BridgeCore._handle_session_demo, bridge)
     return bridge
 
 
@@ -246,10 +241,6 @@ class TestCommandResultThreadingRace:
             _session_factory=lambda: _NullSession(),
             _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
             _matrix_event_for_external_post=_matrix_event_for_external_post,
-            _session_demo=None,
-        )
-        bridge._handle_session_demo = MethodType(
-            BridgeCore._handle_session_demo, bridge
         )
         bridge._prerecord_message_map = MethodType(
             BridgeCore._prerecord_message_map, bridge

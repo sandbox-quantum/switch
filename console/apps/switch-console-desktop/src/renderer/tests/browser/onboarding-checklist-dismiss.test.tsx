@@ -34,9 +34,9 @@ vi.mock('@renderer/lib/ipc', () => ({
       reset: vi.fn(),
       resetField: vi.fn(),
     },
-    switchSetup: {
-      listAgentTypeAvailability: vi.fn(() => Promise.resolve([])),
-      listAgentTypeAvailabilityRemote: vi.fn(() => Promise.resolve([])),
+    agentTypes: {
+      listAvailability: vi.fn(() => Promise.resolve([])),
+      listAvailabilityRemote: vi.fn(() => Promise.resolve([])),
     },
   },
 }));

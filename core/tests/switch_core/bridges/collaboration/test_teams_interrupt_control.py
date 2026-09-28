@@ -45,7 +45,7 @@ from switch_core.bridges.collaboration.teams.cards import (
     read_interrupt_action,
 )
 
-from .test_session_activity import _item, _turn
+from .session_fixtures import _item, _turn
 from .test_teams_adapter import _card_text
 from .test_teams_card_buttons import (
     CARD_ID,

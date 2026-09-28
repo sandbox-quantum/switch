@@ -22,10 +22,10 @@ def _no_connections() -> SimpleNamespace:
     contribute nothing.
     """
     return SimpleNamespace(
-        live_agent_ids=lambda: set(),
+        live_connection_ids=lambda: set(),
         is_live=lambda _agent_id: False,
         live_in_room=lambda _agent_id, _room_id: False,
-        has_session_in=lambda _agent_id, _room_id: False,
+        claimant_of=lambda _agent_id, _room_id: None,
         can_spawn_for=lambda _agent_id, _room_id: False,
         for_agent=lambda _agent_id: [],
     )
@@ -79,7 +79,7 @@ def _admin_client(
     async def _list_roles(_session, _room_id):  # type: ignore[no-untyped-def]
         return roles
 
-    async def _has_live_holder(_session, role_id, _alive=()):  # type: ignore[no-untyped-def]
+    async def _has_live_holder(_session, role_id, _live_conns=()):  # type: ignore[no-untyped-def]
         return role_id in live_role_ids
 
     async def _get_by_name_insensitive(_session, name):  # type: ignore[no-untyped-def]

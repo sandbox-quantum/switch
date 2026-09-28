@@ -320,7 +320,7 @@ class _ActivityStream:
 
 
 class SlackAdapter(CollaborationAdapter):
-    publishes_sdk_sessions: ClassVar[bool] = True
+    draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
     #: Cheap on a stream in a way it never was on an edit. An append is rate

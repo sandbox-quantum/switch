@@ -12,6 +12,7 @@ import { sessionRoomChangedChannel } from '@shared/core/switch-rooms/switchRoomE
 export class SwitchRoomsStore {
   /** sessionId → connected room id. */
   private roomBySession = new Map<string, string>();
+  private associatedRooms = new Map<string, string>();
   private loaded = false;
   /** Why the initial connection seed failed, when it did. Non-null means the
    * session→room mapping is incomplete and must not be read as authoritative. */
@@ -22,8 +23,10 @@ export class SwitchRoomsStore {
 
     events.on(sessionRoomChangedChannel, ({ sessionId, roomId }) => {
       runInAction(() => {
-        if (roomId) this.roomBySession.set(sessionId, roomId);
-        else this.roomBySession.delete(sessionId);
+        if (roomId) {
+          this.roomBySession.set(sessionId, roomId);
+          this.associatedRooms.set(sessionId, roomId);
+        } else this.roomBySession.delete(sessionId);
       });
     });
   }
@@ -46,6 +49,7 @@ export class SwitchRoomsStore {
           this.seedError = null;
           for (const { sessionId, roomId } of connections) {
             this.roomBySession.set(sessionId, roomId);
+            this.associatedRooms.set(sessionId, roomId);
           }
         });
       })
@@ -58,6 +62,15 @@ export class SwitchRoomsStore {
           );
         });
       });
+  }
+
+  rememberRooms(rooms: Record<string, string>): void {
+    for (const [sessionId, roomId] of Object.entries(rooms))
+      this.associatedRooms.set(sessionId, roomId);
+  }
+
+  associatedRoomForSession(sessionId: string): string | null {
+    return this.roomBySession.get(sessionId) ?? this.associatedRooms.get(sessionId) ?? null;
   }
 
   /** The room a session is currently connected to, or null. */

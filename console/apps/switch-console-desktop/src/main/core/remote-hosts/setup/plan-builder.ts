@@ -7,7 +7,7 @@
  * declared once, in one place:
  *
  *   1. core host tools, in dependency order (git → node)
- *   2. per agent type: its CLI, then the Switch connector plugin
+ *   2. per agent type: its CLI
  *
  * Rebuilding is **merge, not replace**. A plan is rebuilt whenever the set of
  * known dependencies changes (a new agent type ships, say), and discarding the
@@ -16,14 +16,11 @@
  */
 
 import {
-  agentPluginStepId,
   isStepInFlight,
   type HostSetupPlan,
   type HostSetupStep,
   type HostSetupStepKind,
 } from '@shared/core/remote-hosts/setup';
-
-export { agentPluginStepId };
 
 /** A dependency Switch Console knows how to check on the host. */
 export type PlannableDependency = {
@@ -31,9 +28,8 @@ export type PlannableDependency = {
   name: string;
 };
 
-/** A supported CLI and whether it needs a separately installed connector. */
+/** A supported agent CLI. */
 export type PlannableAgentType = {
-  connectorRequired: boolean;
   agentId: string;
   name: string;
 };
@@ -89,16 +85,6 @@ export function buildSetupPlan(input: BuildPlanInput): HostSetupPlan {
         dependsOn: coreDependencies.some((d) => d.id === 'node') ? ['node'] : [],
       })
     );
-    if (agent.connectorRequired)
-      steps.push(
-        blankStep(
-          agentPluginStepId(agent.agentId),
-          'agent-plugin',
-          `${agent.name} · Switch connector`,
-          now,
-          { dependsOn: [agent.agentId] }
-        )
-      );
   }
 
   return {

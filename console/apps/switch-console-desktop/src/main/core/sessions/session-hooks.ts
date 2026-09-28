@@ -1,6 +1,5 @@
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { log } from '@main/lib/logger';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
  * In-process hook bus for session/agent runtime events. Distinct from the
@@ -11,10 +10,6 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 export type SessionHookMap = {
   /** The session row was deleted outside the sessionService delete path. */
   'session:deleted': (sessionId: string) => void | Promise<void>;
-  'session:input-submitted': (params: {
-    sessionId: string;
-    providerId: AgentProviderId;
-  }) => void | Promise<void>;
 };
 
 class SessionHooks implements Hookable<SessionHookMap> {

@@ -11,7 +11,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from switch_core.bridges.agent.operations.callctx import current_call_context
+from switch_core.bridges.agent.operations.callctx import (
+    CallerSession,
+    current_call_context,
+)
+from switch_core.bridges.agent.protocol.event_buffer import Reader
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -58,14 +62,51 @@ def session_key() -> str | None:
     return bound.session_key if bound is not None else None
 
 
-async def _bound_rooms() -> set[str]:
+def caller_session() -> CallerSession | None:
+    """The SDK session this call was made by, when the caller named one.
+
+    None for a caller that identified itself with a bare connection or an MCP
+    transport session — which is most of them, and stays supported.
+    """
+    bound = current_call_context()
+    return bound.session if bound is not None else None
+
+
+def counting_reader() -> Reader | None:
+    """Who a room's unread count belongs to while this caller is in it.
+
+    The session when the caller named one. A controller connection carries
+    every session of an agent, so asking which of them read a room would get
+    the same answer for all of them, and one session's reading would clear a
+    count another was owed. Otherwise the connection or transport session,
+    which for a caller with no session of its own is the only identity there
+    is — and the one thing in the room.
+    """
+    caller = caller_session()
+    if caller is not None:
+        return Reader(id=caller.id, is_session=True)
+    key = session_key()
+    return Reader(id=key, is_session=False) if key is not None else None
+
+
+async def bound_rooms() -> set[str]:
     """The rooms this caller is bound to, empty when it is bound to none.
 
-    The live connection is asked first: a connection that has claimed a room is
-    in it, whether or not anything was ever written to a table. The table is
-    consulted only for callers that predate connections (an MCP transport
-    session), and goes away with them.
+    A caller that named its session is answered from that session's own
+    binding, and only from it. This is the one place the distinction has to be
+    made: a controller connection carries the rooms of every session behind it,
+    so asking the connection would hand this caller its siblings' rooms and
+    turn a perfectly well-specified call into "several rooms, pick one".
+
+    Otherwise the live connection is asked, then the table. A connection that
+    has claimed a room is in it whether or not anything was ever written down;
+    the table is consulted only for callers that predate connections (an MCP
+    transport session), and goes away with them.
     """
+    caller = caller_session()
+    if caller is not None:
+        return {caller.room_id} if caller.room_id is not None else set()
+
     key = session_key()
     if not key:
         return set()
@@ -85,7 +126,15 @@ async def _bound_rooms() -> set[str]:
 
 async def require_connected_room() -> str:
     """The room this caller is bound to, or a clear error saying it is not."""
-    rooms = await _bound_rooms()
+    return sole_connected_room(await bound_rooms())
+
+
+def sole_connected_room(rooms: set[str]) -> str:
+    """The one room in `rooms`, or a clear error saying why there is not one.
+
+    Split from `require_connected_room` for callers that need the whole bound
+    set as well and must not pay for reading it twice.
+    """
     if not rooms:
         raise ValueError("Not connected to a room. Call connect_to_room first.")
     if len(rooms) > 1:
@@ -102,5 +151,5 @@ async def connected_room() -> str | None:
     The non-raising counterpart of `require_connected_room`, for operations
     that work without a room but say something extra when there is one.
     """
-    rooms = await _bound_rooms()
+    rooms = await bound_rooms()
     return next(iter(rooms)) if len(rooms) == 1 else None

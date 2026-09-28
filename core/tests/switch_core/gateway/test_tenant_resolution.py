@@ -585,6 +585,32 @@ class TestARequestHoldsOneConnection:
         assert response.status_code == 200, response.text
         assert response.json()["db_tenant_id"] == TENANT_ZERO_ID
 
+    async def test_authenticated_user_stays_attached_for_endpoint_writes(
+        self, one_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_user(
+            one_connection_session_factory, name="editable", tenant_id=TENANT_ZERO_ID
+        )
+        token = create_jwt(user_id, "editable@example.invalid", "user", _SECRET, None)
+        app = _app(one_connection_session_factory)
+
+        @app.post("/rename")
+        async def rename(
+            user: Annotated[User, Depends(get_current_user)],
+            session: Annotated[AsyncSession, Depends(gw_deps.get_session)],
+        ) -> dict:
+            assert not session.in_transaction()
+            user.name = "Updated"
+            await session.commit()
+            return {"id": user.id}
+
+        async with _client(app, token) as client:
+            response = await client.post("/rename")
+        assert response.status_code == 200, response.text
+        async with one_connection_session_factory() as db:
+            user = await db.get(User, user_id)
+            assert user.name == "Updated"
+
 
 class TestTenantListingHoldsOneConnectionAtATime:
     """§7, pinned the same way as `TestARequestHoldsOneConnection` above: a

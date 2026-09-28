@@ -1,15 +1,15 @@
 import { isDeepEqual } from '../deep-equal';
-import type { ServerEvent, Snapshot } from './contract';
+import type { Snapshot, SnapshotNotice } from './contract';
 import { commandStatusSchema, serverEventSchema, snapshotSchema } from './validation';
 
-export type TranscriptNotice = Extract<ServerEvent['body'], { type: 'notice' }> & {
-  afterItemId: string | null;
-};
+export type TranscriptNotice = SnapshotNotice;
+
+/** How many recent notices a snapshot carries, so a reopened view still shows why a turn failed. */
+const SNAPSHOT_NOTICES = 50;
 
 /** The server already filters this projection for the viewer. Sequence gaps are valid. */
 export class SessionReplica {
   private value: Snapshot;
-  readonly notices: TranscriptNotice[] = [];
 
   constructor(input: unknown) {
     this.value = snapshotSchema.parse(input);
@@ -19,6 +19,10 @@ export class SessionReplica {
 
   snapshot(): Snapshot {
     return structuredClone(this.value);
+  }
+
+  get notices(): TranscriptNotice[] {
+    return this.value.notices;
   }
 
   apply(input: unknown): boolean {
@@ -91,7 +95,14 @@ export class SessionReplica {
       case 'command.result':
         break; // Only the server confirms shared command status.
       case 'notice':
-        this.notices.push({ ...body, afterItemId: this.value.items.at(-1)?.itemId ?? null });
+        this.value.notices.push({
+          level: body.level,
+          code: body.code,
+          message: body.message,
+          afterItemId: this.value.items.at(-1)?.itemId ?? null,
+        });
+        if (this.value.notices.length > SNAPSHOT_NOTICES)
+          this.value.notices.splice(0, this.value.notices.length - SNAPSHOT_NOTICES);
         break;
     }
     this.value.session.pendingRequestIds = this.value.requests

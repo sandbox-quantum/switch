@@ -14,7 +14,6 @@ that file is a byte-identical lift and cannot be edited here.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
@@ -33,10 +32,6 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_request,
     render_turn_with_request,
 )
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
-)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -48,15 +43,8 @@ from switch_core.sessions.contract import (
     SnapshotRequest,
     TurnUpsert,
 )
-from switch_core.sessions.projection import SessionProjection
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
-ACTIVITY_PATH = (
-    REPO_ROOT / "console/packages/shared/src/session-v1/examples.activity.json"
-)
-EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
-
-TURN = "turn-activity"
+from .session_fixtures import _item, _items, _turn, open_request
 
 # What a whole streamed message may weigh, measured against a real workspace
 # and documented by Slack nowhere. A hundred cards — the two fifty-card pages a
@@ -75,42 +63,6 @@ ACCEPTED_BYTES = 257_615
 # was not, so this many bytes of detail is known to have gone through on that
 # path while the blocks around it did too.
 POST_ACCEPTED_BYTES = 50 * 4_743
-
-
-async def _projection(*streams: str) -> SessionProjection:
-    source = FixtureEventSource.from_examples(
-        ACTIVITY_PATH, events=streams or ("turnActivity",)
-    )
-    return await project(source, source.session_id)
-
-
-async def _items() -> list[Item]:
-    return (await _projection()).turn_activity(TURN)
-
-
-def _turn(status: str = "running") -> TurnUpsert:
-    """The turn itself, which is what says whether any of this is still moving."""
-    return TurnUpsert.model_validate(
-        {"type": "turn.upsert", "turnId": TURN, "status": status, "commandId": None}
-    )
-
-
-def _item(**fields: object) -> Item:
-    """One item, spelled out, for the shapes the recording has no case for."""
-    return Item.model_validate(
-        {
-            "itemId": "item-made-up",
-            "turnId": TURN,
-            "revision": 1,
-            "kind": "tool-activity",
-            "status": "completed",
-            "title": "Did a thing",
-            "text": "",
-            "attachments": [],
-            "origin": None,
-            **fields,
-        }
-    )
 
 
 def _blocks(items: list[Item]) -> str:
@@ -157,76 +109,6 @@ def _state(items: list[Item], turn: TurnUpsert) -> str:
     text = block["elements"][0]["text"]
     assert isinstance(text, str)
     return text
-
-
-# ── What the fold hands the renderer ─────────────────────────────────────────
-
-
-async def test_the_recorded_turn_folds_to_its_latest_revision_of_each_item() -> None:
-    """Eleven items from twenty-one upserts, each showing where it got to."""
-    items = await _items()
-
-    assert [(item.item_id, item.status) for item in items] == [
-        ("item-asked", "completed"),
-        ("item-search", "completed"),
-        ("item-read-test", "completed"),
-        ("item-read-conftest", "completed"),
-        ("item-grep", "completed"),
-        ("item-suite", "failed"),
-        ("item-run", "failed"),
-        ("item-read-session", "completed"),
-        ("item-blame", "declined"),
-        ("item-said", "completed"),
-        ("item-write", "in-progress"),
-    ]
-    said = next(item for item in items if item.item_id == "item-said")
-    assert said.text.endswith("Pinning the fixture to one user per test fixes it.")
-
-
-async def test_an_item_revised_in_place_keeps_the_position_it_opened_in() -> None:
-    """Otherwise a tool that takes a minute jumps to the end when it finishes.
-
-    `item-search` opens before `item-run` and is revised after it, so a fold
-    that ordered by last touch would print the search below the test run and
-    tell the reader the agent searched after it had already run the tests.
-    """
-    items = await _items()
-
-    assert [item.item_id for item in items].index("item-search") < [
-        item.item_id for item in items
-    ].index("item-run")
-
-
-async def test_a_turn_is_only_its_own_items() -> None:
-    projection = await _projection()
-
-    assert projection.turn_activity("turn-nobody-ran") == []
-    assert len(projection.turn_activity(TURN)) == 11
-
-
-async def test_the_recording_says_where_its_turn_got_to() -> None:
-    """The turn's own state, which is a separate upsert from any of its items."""
-    running = await _projection()
-    stopped = await _projection("turnActivity", "turnEnd")
-
-    assert running.turn(TURN) is not None
-    assert running.turn(TURN).status == "running"  # type: ignore[union-attr]
-    assert stopped.turn(TURN).status == "interrupted"  # type: ignore[union-attr]
-    assert stopped.turn("turn-nobody-ran") is None
-
-
-async def test_the_end_of_the_recording_closes_the_request_it_was_waiting_on() -> None:
-    """Interrupted with the permission unanswered, which is why the edit hangs."""
-    stopped = await _projection("turnActivity", "turnEnd")
-    request = stopped.request("request-activity")
-
-    assert request is not None
-    assert (request.state, request.result.outcome) == (  # type: ignore[union-attr]
-        "closed",
-        "interrupted",
-    )
-    assert stopped.open_requests() == []
-    assert [item.status for item in stopped.turn_activity(TURN)][-1] == "in-progress"
 
 
 # ── Saying, and doing ────────────────────────────────────────────────────────
@@ -644,9 +526,7 @@ REFERENCE = RequestReference(token="opaque-token", handle="R1")
 
 
 async def _request() -> SnapshotRequest:
-    source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
-    projection = await project(source, source.session_id)
-    return projection.open_requests()[0]
+    return open_request()
 
 
 async def test_a_turn_with_a_request_is_one_message_not_two() -> None:

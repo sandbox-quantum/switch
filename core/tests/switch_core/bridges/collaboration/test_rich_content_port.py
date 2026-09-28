@@ -2,9 +2,8 @@
 platform without a card or activity renderer of its own gets for free.
 
 `SlackAdapter`'s own overrides are exercised through the existing turn and
-card tests (`test_session_activity.py`, `test_session_card_posting.py`,
-`test_session_requests.py`) — they already run real Block Kit through
-`post_blocks` / `update_blocks`. This file is the seam itself: what a
+card tests (`test_session_activity.py`, `test_session_slack_requests.py`) —
+they already run real Block Kit through `post_blocks` / `update_blocks`. This file is the seam itself: what a
 platform gets if it implements nothing beyond the port.
 """
 
@@ -12,7 +11,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,15 +23,8 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_summary
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
-)
 
-from .test_session_activity import _item, _turn
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
+from .session_fixtures import _item, _turn, open_request
 
 
 class _BareAdapter(CollaborationAdapter):
@@ -103,9 +94,7 @@ def _rich_escape(adapter: _BareAdapter) -> Callable[[str], str]:
 
 
 async def _request_card() -> RequestCard:
-    source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
-    projection = await project(source, "session-demo")
-    request = projection.open_requests()[0]
+    request = open_request()
     return RequestCard(request, RequestReference(token="tok", handle="R1"))
 
 

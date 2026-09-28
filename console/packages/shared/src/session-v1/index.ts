@@ -6,8 +6,11 @@ export {
   commandStatusSchema,
   sessionSchema,
   eventBytes,
+  heldDeliveriesSchema,
   hostEventSchema,
   parseHostEvent,
+  roomBindingSchema,
+  roomMessageReceiptSchema,
   serverEventSchema,
   snapshotSchema,
 } from './validation';

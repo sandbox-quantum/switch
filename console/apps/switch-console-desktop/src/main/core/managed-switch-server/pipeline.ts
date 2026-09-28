@@ -23,6 +23,7 @@ import { buildEnvFile } from './env-file';
 import { apiUrlFor, gatewayUrlFor } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
+import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, resolvePorts } from './ports';
 import { clearSecrets, loadOrCreateSecrets } from './secrets';
@@ -41,10 +42,16 @@ export type StartStackOptions = {
   ref: ManagedServerRef;
   /** Display name for the registered server record. */
   serverName: string;
+  /** Whether to make this the active server. False for an upgrade Console runs
+   * on its own, which must not switch the user away from what they have open. */
+  activate: boolean;
   /** Coarse step messages for the UI ("Pulling images…"). */
   onMessage: (message: string) => void;
   /** Live compose output lines for the UI log tail. */
   onLog: (line: string) => void;
+  /** Fired before a start that moves the stack forward to this build's pin, so
+   * the supervisor can hold sessions until it finishes. */
+  onUpgrade: (upgrade: OwedUpgrade) => void;
   /** Aborts an in-flight health wait (stop/cancel/quit). */
   signal: AbortSignal;
   /** Dev-only: root of the Switch checkout to build the stack's images from,
@@ -119,16 +126,18 @@ async function refuseDowngrade(
 }
 
 /**
- * Full start pipeline: detect Docker → refuse a downgrade → GHCR login →
- * materialise compose + `.env` → `compose up` → establish networking →
- * health-gate → register + activate → silent admin sign-in → reconcile agent
- * servers. Returns without registering anything if Docker is unavailable, the
- * stack is newer than this build, or it never turns healthy.
+ * Full start pipeline: detect Docker → refuse a downgrade → back up and
+ * journal an upgrade → GHCR login → materialise compose + `.env` → `compose up`
+ * → establish networking → health-gate → register (+ activate) → silent admin
+ * sign-in → reconcile agent servers → close the upgrade journal. Returns
+ * without registering anything if Docker is unavailable, the stack is newer
+ * than this build, or it never turns healthy.
  *
  * Doubles as the update path: the `.env` and compose file are re-materialised
  * from this build every time, so `compose up -d` on an already-running stack
  * re-pulls the newly pinned tags and recreates only the changed containers,
- * leaving the data volumes in place for switch-core to migrate forward.
+ * leaving the data volumes in place for switch-core to migrate forward. A
+ * stack behind the pin has its database dumped first (see managed-upgrade.ts).
  *
  * With `checkoutRoot` set (dev only) the images are built from that working
  * tree on every start instead of pulled, and tagged {@link CHECKOUT_IMAGE_TAG}
@@ -182,7 +191,8 @@ async function migrateOffMatrix(
 }
 
 export async function startStack(opts: StartStackOptions): Promise<StartLocalServerResult> {
-  const { host, ref, serverName, onMessage, onLog, signal, checkoutRoot } = opts;
+  const { host, ref, serverName, activate, onMessage, onLog, onUpgrade, signal, checkoutRoot } =
+    opts;
 
   const docker = await host.detectDocker();
   if (!docker.available) {
@@ -192,6 +202,10 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   onMessage('Checking the deployed version…');
   const downgrade = await refuseDowngrade(host, checkoutRoot);
   if (downgrade) return downgrade;
+
+  // Back the database up before anything can migrate it: the Matrix backfill
+  // below already starts the stack, and the rewrite after it moves the pin.
+  const upgrade = await prepareUpgrade(host, checkoutRoot, onMessage, onUpgrade);
 
   // Copy the homeserver's history across before the upgrade removes the only
   // thing that can read it. Runs against the stack as currently deployed, so
@@ -220,7 +234,6 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
       namespace: RELEASE_REPO_OWNER,
       ports,
       secrets,
-      sessionDemo: checkoutRoot !== null,
       telemetryEnabled,
     }),
     0o600
@@ -245,7 +258,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   }
 
   const server = await ensureManagedServer({ name: serverName, gatewayUrl, apiUrl }, ref);
-  await setActiveServerId(server.id);
+  if (activate) await setActiveServerId(server.id);
 
   // Switch Console generated the admin password, so sign in on the user's behalf
   // rather than showing a login wall for a secret they never saw. A failure here
@@ -260,6 +273,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   }
 
   await resolveAgentServers();
+  if (upgrade) await finishUpgrade(host);
   return { kind: 'started', serverId: server.id, telemetryEnabled };
 }
 
@@ -276,4 +290,6 @@ export async function resetStack(host: ServerHost): Promise<void> {
   await host.teardownNetworking();
   await clearSecrets(host);
   await clearPorts(host);
+  // Nothing is left to resume. The backups stay on disk.
+  await finishUpgrade(host);
 }

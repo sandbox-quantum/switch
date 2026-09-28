@@ -327,7 +327,7 @@ function summariseValues(fields: { key: string; label: string }[], saved: FormSt
  *
  * `providerSessionId` is the test rather than "is provisioned": a remote session
  * is provisioned at creation so it can carry room traffic, but its agent process
- * is only launched when the terminal is first opened. Counting those would claim
+ * is only launched when the session is first opened. Counting those would claim
  * a running session that does not exist — and restarting one cannot resume a
  * conversation that never started. Read from the session store rather than
  * queried, so it tracks sessions coming and going; call only from an `observer`.

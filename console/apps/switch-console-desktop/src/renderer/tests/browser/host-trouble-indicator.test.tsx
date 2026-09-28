@@ -38,13 +38,6 @@ vi.mock('@renderer/features/remote-hosts/host-setup-store', () => ({
   },
 }));
 
-/**
- * An out-of-date connector on the agent's own row (CHOO-1809).
- *
- * Asked for so a stale Switch connector is visible without opening every host
- * page. It is strictly lower priority than the trouble icons: an old connector
- * still works, so it must never take the place of the reason an agent is stuck.
- */
 import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
 import { TooltipProvider } from '@renderer/lib/ui/tooltip';
 import type { HostSetupPlan, HostSetupStep } from '@shared/core/remote-hosts/setup';
@@ -94,19 +87,11 @@ function plan(steps: HostSetupStep[]): HostSetupPlan {
   };
 }
 
-/** A healthy host running Claude Code, with the connector optionally behind. */
-function healthyPlan(pluginPatch: Partial<HostSetupStep> = {}): HostSetupPlan {
+/** A healthy host running Claude Code. */
+function healthyPlan(): HostSetupPlan {
   return plan([
     step({}),
     step({ id: 'claude', kind: 'agent-cli', name: 'Claude Code', version: '2.1.0' }),
-    step({
-      id: 'claude:plugin',
-      kind: 'agent-plugin',
-      name: 'Switch connector',
-      version: '0.7.7',
-      dependsOn: ['claude'],
-      ...pluginPatch,
-    }),
   ]);
 }
 
@@ -125,16 +110,19 @@ const icons = (el: HTMLElement) => [...el.querySelectorAll('svg')].length;
 const shows = (el: HTMLElement, label: string) =>
   el.querySelector(`[aria-label="${label}"]`) !== null;
 
-describe('the update indicator', () => {
-  it('appears when this agent’s connector is behind', async () => {
-    stores.plans.set('dev-vm', healthyPlan({ latestVersion: '0.8.0', updateAvailable: true }));
+/**
+ * Trouble on the agent's own row (CHOO-1809). Only deviation shows: a healthy
+ * host adds nothing, and a newer release of an agent CLI is not trouble.
+ */
+describe('a healthy host', () => {
+  it('stays away when everything is current', async () => {
+    // A tick on every healthy row is noise that trains people to stop reading.
+    stores.plans.set('dev-vm', healthyPlan());
 
-    expect(shows(await render(indicator()), 'Connector update available')).toBe(true);
+    expect(icons(await render(indicator()))).toBe(0);
   });
 
   it('ignores the agent CLI being behind, which is not a problem here', async () => {
-    // A newer `claude` does not stop the agent working on this host, and a mark
-    // in the sidebar reads as something needing attention.
     stores.plans.set(
       'dev-vm',
       plan([
@@ -147,35 +135,13 @@ describe('the update indicator', () => {
           latestVersion: '2.2.0',
           updateAvailable: true,
         }),
-        step({
-          id: 'claude:plugin',
-          kind: 'agent-plugin',
-          name: 'Switch connector',
-          version: '0.7.7',
-          dependsOn: ['claude'],
-        }),
       ])
     );
 
     expect(icons(await render(indicator()))).toBe(0);
   });
 
-  it('stays away when everything is current', async () => {
-    // A tick on every healthy row is noise that trains people to stop reading.
-    stores.plans.set('dev-vm', healthyPlan());
-
-    expect(icons(await render(indicator()))).toBe(0);
-  });
-
-  it('stays away when the newer version is not actually known', async () => {
-    stores.plans.set('dev-vm', healthyPlan({ latestVersion: null, updateAvailable: true }));
-
-    expect(icons(await render(indicator()))).toBe(0);
-  });
-
   it('ignores another agent type being out of date', async () => {
-    // Codex being stale is not this Claude Code agent's problem, exactly as a
-    // missing Codex is not.
     stores.plans.set(
       'dev-vm',
       plan([
@@ -196,7 +162,7 @@ describe('the update indicator', () => {
   });
 
   it('says nothing for a local agent, which has no host', async () => {
-    stores.plans.set('dev-vm', healthyPlan({ latestVersion: '0.8.0', updateAvailable: true }));
+    stores.plans.set('dev-vm', healthyPlan());
 
     const el = await render(<HostTroubleIndicator sshHost={null} agentId="claude" />);
 
@@ -204,12 +170,8 @@ describe('the update indicator', () => {
   });
 });
 
-/**
- * Priority. An available update is information; unreachable and setup-required
- * are reasons the agent cannot work, and they win.
- */
-describe('what the indicator shows first', () => {
-  it('reports the host being down rather than an available update', async () => {
+describe('what the indicator shows', () => {
+  it('reports the host being down', async () => {
     stores.reachability.set('dev-vm', {
       sshHost: 'dev-vm',
       status: 'unreachable',
@@ -220,34 +182,20 @@ describe('what the indicator shows first', () => {
       nextProbeAt: null,
       probing: false,
     });
-    stores.plans.set('dev-vm', healthyPlan({ latestVersion: '0.8.0', updateAvailable: true }));
+    stores.plans.set('dev-vm', healthyPlan());
 
-    const el = await render(indicator());
-
-    expect(shows(el, 'Host unavailable')).toBe(true);
-    expect(shows(el, 'Update available')).toBe(false);
+    expect(shows(await render(indicator()), 'Host unavailable')).toBe(true);
   });
 
-  it('reports missing setup rather than an available update', async () => {
+  it('reports missing setup', async () => {
     stores.plans.set(
       'dev-vm',
       plan([
         step({ id: 'node', name: 'Node.js', state: 'pending', outcome: 'missing' }),
         step({ id: 'claude', kind: 'agent-cli', name: 'Claude Code' }),
-        step({
-          id: 'claude:plugin',
-          kind: 'agent-plugin',
-          name: 'Switch connector',
-          latestVersion: '0.8.0',
-          updateAvailable: true,
-          dependsOn: ['claude'],
-        }),
       ])
     );
 
-    const el = await render(indicator());
-
-    expect(shows(el, 'Setup required')).toBe(true);
-    expect(shows(el, 'Update available')).toBe(false);
+    expect(shows(await render(indicator()), 'Setup required')).toBe(true);
   });
 });

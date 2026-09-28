@@ -5,7 +5,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
-import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { report } from '@renderer/lib/telemetry/report';
 import {
   deriveOnboardingSteps,

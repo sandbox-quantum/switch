@@ -59,10 +59,7 @@ describe('resolveAgentLaunchProfile', () => {
     expect(profile!.files[0].relativePath).toBe(`.codex/${profile!.args[1]}.config.toml`);
   });
 
-  it('registers no MCP server — the connector plugin ships that', () => {
-    // The Switch server lives in the plugin's bundled `.mcp.json`, so a session
-    // has it whether or not Switch Console launched it. Writing it here as well
-    // would restrict nothing and duplicate the declaration.
+  it('registers no MCP server — the session host supplies that', () => {
     const profile = resolveAgentLaunchProfile(codexPlugin, {
       slug: 'codex-hoot',
       workingDir: WD,

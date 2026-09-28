@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner } from './process-fence';
+import type { SessionLinks } from './session-channel';
 
 function alive(pid: number): boolean {
   try {
@@ -40,6 +41,12 @@ export async function superviseSharedHost(input: {
   /** The bundle this supervisor respawns, recorded so a later deployment can
    * tell its own host apart from one an earlier build left running. */
   build: string;
+  /**
+   * Handed each host as it is spawned, with an IPC channel open to it, for a
+   * parent that talks to its sessions directly. Null where nothing in this
+   * process does, and the host is then started without one.
+   */
+  links: SessionLinks | null;
 }): Promise<void> {
   const directory = join(input.root, 'supervisor');
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -63,8 +70,9 @@ export async function superviseSharedHost(input: {
       const child = spawn(input.executable, input.args, {
         detached: true,
         env: input.env,
-        stdio: ['ignore', log.fd, log.fd],
+        stdio: input.links ? ['ignore', log.fd, log.fd, 'ipc'] : ['ignore', log.fd, log.fd],
       });
+      input.links?.attach(input.root, child);
       const exited = once(child, 'exit');
       await log.close();
       const stop = () => child.kill('SIGTERM');

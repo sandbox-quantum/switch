@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
+import { requireHttpMcp } from '../acp-mcp';
 import type {
   ModelSelection,
   ProviderAdapter,
@@ -183,12 +184,17 @@ export class CursorAdapter implements ProviderAdapter {
     try {
       const initialized = await client.request<{
         agentInfo?: { version: string };
-        agentCapabilities?: { loadSession?: boolean };
+        agentCapabilities?: { loadSession?: boolean; mcpCapabilities?: { http?: boolean } };
       }>('initialize', {
         protocolVersion: 1,
         clientInfo: { name: 'switch-console', version: '0.1.0' },
         clientCapabilities: {},
       });
+      requireHttpMcp(
+        'Cursor CLI',
+        input.mcpServers,
+        initialized.agentCapabilities?.mcpCapabilities?.http
+      );
       await client.request('authenticate', { methodId: 'cursor_login' });
       const mcpServers = Object.entries(input.mcpServers).map(([name, server]) =>
         server.transport === 'stdio'
@@ -633,7 +639,13 @@ export class CursorAdapter implements ProviderAdapter {
       }
     this.cancelApprovals(state);
     state.turn = null;
-    this.emit(state, { type: 'turn.completed', turnId, outcome, ...(message ? { message } : {}) });
+    this.emit(state, {
+      type: 'turn.completed',
+      turnId,
+      outcome,
+      ...(message ? { message } : {}),
+      usage: [],
+    });
     if (!state.turn)
       this.emit(state, {
         type: 'session.state.changed',
@@ -683,6 +695,7 @@ export class CursorAdapter implements ProviderAdapter {
         turnId: input.turnId,
         outcome: 'error',
         message: reason,
+        usage: [],
       });
     this.sessions.delete(id);
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });

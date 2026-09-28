@@ -102,7 +102,7 @@ async def test_migrations_match_the_models(migrated_url: str) -> None:
                 text(
                     "SELECT c.relrowsecurity AND EXISTS (SELECT 1 FROM pg_policy p "
                     "WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation') "
-                    "FROM pg_class c WHERE c.oid = 'session_activity_posts'::regclass"
+                    "FROM pg_class c WHERE c.oid = 'approval_request_posts'::regclass"
                 )
             )
             assert protected

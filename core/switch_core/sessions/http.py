@@ -1,7 +1,7 @@
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 
 
 async def session_error_response(request: Request, error: Exception) -> JSONResponse:

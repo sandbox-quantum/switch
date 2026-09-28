@@ -49,7 +49,5 @@ When adding a provider:
 2. add the id to `AGENT_PROVIDER_IDS` and a display entry to `AGENT_PROVIDERS` in
    `src/shared/core/providers/agent-provider-registry.ts`
 3. add any required env passthrough in `src/main/core/sdk-host/agent-env.ts`
-4. declare the provider's `hooks` capability in the plugin if it supports explicit events;
-   `src/main/core/agent-hooks/` writes the config files from that declaration
-5. update renderer surfaces that assume provider metadata
-6. add tests for non-standard spawn or detection behavior
+4. update renderer surfaces that assume provider metadata
+5. add tests for non-standard spawn or detection behavior

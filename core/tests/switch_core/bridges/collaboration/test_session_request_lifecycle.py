@@ -1,9 +1,8 @@
 """A request card, as the request behind it moves on.
 
-`test_session_slack_requests.py` posts the card and `test_session_answers.py`
-reads a press back off it. This is the third side: the recorded
-`answerLifecycle` stream driven through the projection, and what the card says
-at each point it stops.
+`test_session_slack_requests.py` posts the card. This is the other side: the
+recorded `answerLifecycle` stream replayed onto the request, and what the card
+says at each point it stops.
 
 The rule under most of it: a request that was not answered must never read as
 though it was.
@@ -12,36 +11,16 @@ though it was.
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-import pytest
-
-from switch_core.bridges.collaboration.adapter import RequestCard, RichContentFailed
-from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.session.renderers.slack import (
     render_approval,
     render_approval_text,
 )
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
-)
-from switch_core.bridges.collaboration.slack.adapter import (
-    SlackAdapter,
-    SlackConnectionConfig,
-    SlackUser,
-)
-from switch_core.db.models import SessionRequestPost
-from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.contract import SnapshotRequest
-from switch_core.sessions.projection import SessionProjection
 
-from .slack_fakes import FakeWebClient
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
+from .session_fixtures import EXAMPLES_PATH, requests_through
 
 REFERENCE = RequestReference(token="opaque-token", handle="R42")
 
@@ -50,21 +29,9 @@ REFERENCE = RequestReference(token="opaque-token", handle="R42")
 ACCEPTED, IN_FLIGHT, SETTLED = 11, 12, 13
 
 
-async def _projection(*, through: int) -> SessionProjection:
-    """The demo session with the recorded lifecycle replayed up to `through`."""
-    recorded = json.loads(EXAMPLES_PATH.read_text())
-    source = FixtureEventSource(
-        recorded["initialSnapshot"],
-        [e for e in recorded["answerLifecycle"] if e["sequence"] <= through],
-        session_id="session-demo",
-    )
-    return await project(source, "session-demo")
-
-
 async def _request(*, through: int) -> SnapshotRequest:
-    request = (await _projection(through=through)).request("request-demo")
-    assert request is not None
-    return request
+    """The demo request with the recorded lifecycle replayed up to `through`."""
+    return requests_through(EXAMPLES_PATH, "answerLifecycle", through)["request-demo"]
 
 
 def _settle(request: SnapshotRequest, **outcome: Any) -> SnapshotRequest:
@@ -241,182 +208,3 @@ async def test_an_answer_with_no_result_admits_it_does_not_know() -> None:
         "Answered by actor-demo from Mattermost, but the host did not say "
         "which option was chosen."
     )
-
-
-# ── The edit ─────────────────────────────────────────────────────────────────
-
-
-def _post() -> SessionRequestPost:
-    return SessionRequestPost(
-        bridge_id="bridge-1",
-        token=REFERENCE.token,
-        handle=REFERENCE.handle,
-        external_channel_id="C1",
-        external_post_id="C1:111.0",
-        room_id="room-demo",
-        # The thread the card was posted into, in the form the platform itself
-        # uses for a message: Slack's inbound path stores a thread root as
-        # `channel:ts`, not a bare id.
-        thread_id="C1:100.0",
-        session_id="session-demo",
-        epoch="epoch-demo",
-        request_id="request-demo",
-        revision=1,
-    )
-
-
-class _JustThisRow(SessionRequestPostStore):
-    """The one row the redraw writes back to, with no database under it.
-
-    A redraw brings the row up to the revision the card now shows, so it has to
-    reach a row. That it reaches the *right* one, and that the write survives,
-    is `test_session_card_posting.py`'s claim and is made against real
-    Postgres. This file is about what the channel is left showing, so here the
-    store only has to hand the row over.
-    """
-
-    def __init__(self, row: SessionRequestPost) -> None:
-        self._row = row
-
-    async def get_by_token(
-        self, session: Any, bridge_id: str, token: str
-    ) -> SessionRequestPost | None:
-        return self._row if token == self._row.token else None
-
-
-class _NoDatabase:
-    """A session that goes through the motions and stores nothing."""
-
-    async def __aenter__(self) -> _NoDatabase:
-        return self
-
-    async def __aexit__(self, *exc: Any) -> bool:
-        return False
-
-    async def commit(self) -> None:
-        return None
-
-
-def _cards(adapter: SlackAdapter, post: SessionRequestPost) -> SessionRequestCards:
-    """A refresh needs none of the posting half, so it is given none of it."""
-    return SessionRequestCards(
-        adapter,
-        bridge_id="bridge-1",
-        posts=_JustThisRow(post),
-        session_factory=cast(Any, _NoDatabase),
-        surface="slack",
-    )
-
-
-def _adapter() -> tuple[SlackAdapter, FakeWebClient]:
-    adapter = SlackAdapter(
-        config=SlackConnectionConfig(
-            bot_token="xoxb-test", app_token="xapp-test", workspace_id="T123"
-        )
-    )
-    client = FakeWebClient()
-    adapter._web_client = client  # type: ignore[assignment]
-    adapter._channel_type_cache["C1"] = "channel"
-    return adapter, client
-
-
-async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
-    """One message per request, not a running commentary in the channel."""
-    request = await _request(through=SETTLED)
-    adapter, client = _adapter()
-    post = _post()
-
-    await _cards(adapter, post).refresh(post, request, agent_name="agent")
-
-    assert len(client.updated) == 1
-    edit = client.updated[0]
-    assert edit["channel"] == "C1"
-    assert edit["ts"] == "111.0"
-    summary = "✅ R42 · Allow once · actor-demo from Mattermost."
-    plan = edit["blocks"][0]
-    assert len(edit["blocks"]) == 1
-    assert plan["type"] == "plan"
-    assert plan["title"] == summary
-    assert plan["block_id"] == f"switch-request:{post.token}"
-    task = plan["tasks"][0]
-    assert task["status"] == "complete"
-    assert "Run project tests" in str(task["details"])
-    assert task["title"] == "pnpm test"
-    assert "pnpm test" not in str(task["details"])
-    assert task["details"]["elements"][0]["type"] == "rich_text_preformatted"
-    assert edit["text"] == summary
-    assert client.posted == []
-
-
-async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
-    """The card is stuck showing buttons. Saying nothing leaves it looking live.
-
-    Raises on every attempt — a caller retrying publication has to see the
-    failure to know to retry — but the reply is only posted once: a card
-    stuck at the same revision and state would otherwise get the same notice
-    again on every retry.
-
-    The notice goes into the conversation the card is in, which is the thread
-    it was posted into where there was one. Slack would have put it in the
-    same place either way; Teams would not, because there a reply is addressed
-    to the conversation and the card's own id is not one.
-    """
-    request = await _request(through=SETTLED)
-    adapter, client = _adapter()
-    client.update_error = "message_not_found"
-    post = _post()
-
-    cards = _cards(adapter, post)
-    for _ in range(2):
-        with pytest.raises(RichContentFailed):
-            await cards.refresh(post, request, agent_name="agent")
-
-    assert client.updated == []
-    assert len(client.posted) == 1
-    reply = client.posted[0]
-    assert reply["thread_ts"] == "100.0"
-    assert "R42" in reply["text"]
-    assert "could not be updated" in reply["text"]
-    assert "Allow once · actor-demo from Mattermost." in reply["text"]
-
-
-async def test_a_card_posted_at_the_channel_root_is_replied_to_under_itself() -> None:
-    """With no thread to reply into, the card itself is the thread to start.
-
-    This is the branch that keeps the flat-channel platforms reading the way
-    they did: the notice hangs off the card rather than landing loose in the
-    channel above it.
-    """
-    request = await _request(through=SETTLED)
-    adapter, client = _adapter()
-    client.update_error = "message_not_found"
-    post = _post()
-    post.thread_id = None
-
-    with pytest.raises(RichContentFailed):
-        await _cards(adapter, post).refresh(post, request, agent_name="agent")
-
-    assert len(client.posted) == 1
-    assert client.posted[0]["thread_ts"] == "111.0"
-
-
-async def test_resolved_plan_uses_display_name_and_keeps_slack_mention_in_details() -> (
-    None
-):
-    request = await _request(through=SETTLED)
-    adapter, client = _adapter()
-    adapter._user_cache["UOWNER123"] = SlackUser(
-        name="owner", display_name="Example Owner"
-    )
-    await adapter.update_rich(
-        "C1",
-        "agent",
-        "C1:111.0",
-        RequestCard(request, REFERENCE, responder_external_id="UOWNER123"),
-        None,
-    )
-    plan = client.updated[0]["blocks"][0]
-    assert "Example Owner" in plan["title"]
-    assert "<@" not in plan["title"]
-    elements = plan["tasks"][0]["details"]["elements"][-1]["elements"]
-    assert {"type": "user", "user_id": "UOWNER123"} in elements

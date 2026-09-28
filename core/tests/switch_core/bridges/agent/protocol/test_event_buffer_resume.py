@@ -143,6 +143,26 @@ def test_retention_window_expires_events_and_flags_a_gap(
         buf.read_from(AGENT, 0)
 
 
+def test_a_quiet_agent_stops_serving_an_event_when_its_window_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing else appends for this agent, so nothing else can expire it."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "switch_core.bridges.agent.protocol.event_buffer.time.monotonic",
+        lambda: clock["now"],
+    )
+
+    buf = EventBuffer(retention_seconds=60)
+    buf.enqueue(AGENT, ROOM_A, _message("only"))
+
+    clock["now"] += 61
+
+    assert buf.read_from(AGENT, 1) == []
+    with pytest.raises(CursorExpiredError):
+        buf.read_from(AGENT, 0)
+
+
 def test_confirming_does_not_discard_events_for_other_readers() -> None:
     buf = EventBuffer()
     buf.enqueue(AGENT, ROOM_A, _message("one"))

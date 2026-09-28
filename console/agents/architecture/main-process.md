@@ -13,7 +13,7 @@ Two names in this list are easy to misread, because one of them changed meaning:
 - **providers** is the CLI-tool registry (claude, codex, …). Upstream called that concept
   an "agent"; it was renamed to free the name for the Switch-agent concept above.
 
-- **agent-hooks** — HTTP hook server for agent callbacks, event enrichment, OS notifications, hook config writer (`hook-config-service.ts`), per-tool trust services (`claude-trust-service.ts`, `cursor-trust-service.ts`, `dir-trust-service.ts`)
+- **agent-hooks** — per-tool trust services (`claude-trust-service.ts`, `codex-trust-service.ts`, `cursor-trust-service.ts`, `dir-trust-service.ts`), agent-event status derivation and OS notifications (`derive-agent-status.ts`, `notification.ts`). Terminal sessions and their HTTP hook server were removed; SDK sessions report status through `src/main/core/sdk-host/`
 - **agent-runtime** — Provider adapters, launch profiles and status mapping
 - **agents** — The Switch-agent domain: create/rename/delete, directory detection (`detect.ts`), onboarding, remote agent discovery and reconciliation, Switch credential/settings files
 - **app** — App lifecycle service and controller

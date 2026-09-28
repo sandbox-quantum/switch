@@ -43,12 +43,25 @@ export function sessionStatus(sessionID: string, status: 'busy' | 'idle'): Openc
   return opencodeEvent('session.status', { sessionID, status: { type: status } });
 }
 
+export interface FakeTokens {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache: { read: number; write: number };
+}
+
+const NO_TOKENS: FakeTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+
+/** Assistant messages always carry a model and a token count, as OpenCode's do. */
 export function messageUpdated(
   sessionID: string,
   id: string,
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant',
+  tokens: FakeTokens = NO_TOKENS,
+  model = { providerID: 'opencode', modelID: 'big-pickle' }
 ): OpencodeEvent {
-  return opencodeEvent('message.updated', { sessionID, info: { id, role } });
+  const info = role === 'assistant' ? { id, role, ...model, tokens } : { id, role };
+  return opencodeEvent('message.updated', { sessionID, info });
 }
 
 export function textPart(

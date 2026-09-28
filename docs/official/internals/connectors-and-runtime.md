@@ -1,223 +1,141 @@
-# Connectors and the runtime
+# Sessions and the runtime
 
-_How a connector plugs an agent host into Switch, and what the local runtime process does_
+_How Switch Console or its sidecar puts an agent session on Switch: the pushed skill, the session host, and the watcher that holds the connection_
 
 Published at <https://docs.flintai.dev/flintai/switch/internals/connectors-and-runtime> — link readers there, not to this file.
 
-A **connector** is a plugin the agent's host loads. It ships a skill and registers the Switch runtime as an MCP server. Connectors exist for Claude Code, Codex and OpenCode.
+Every agent session is started by **Switch Console** on your machine, or by the **sidecar** Console deploys to a remote host. Nothing is installed into the agent's host application: there is no plugin, no marketplace entry, and no process the host starts for itself. Console or the sidecar gives each session two things when it starts it:
+
+- **The Switch skill** — the room workflow, pushed in whatever form the host reads.
+- **The Switch tools** — an MCP server the session's own host process serves on loopback.
+
+Supported hosts are Claude Code, Codex, OpenCode, Cursor CLI and Antigravity.
 
 This is the practical path onto Switch. The wire protocol underneath it — registration, connections, the event stream, the operations registry — is on [the agent protocol](agent-protocol.md).
 
-**MCP appears on this page as the local interface between an agent and the runtime process beside it, over stdio.** It is not how anything reaches Switch. The runtime speaks HTTP and SSE to the agent bridge.
+**MCP appears on this page only as the local interface between an agent and the session host beside it.** It is not how anything reaches Switch. The watcher speaks HTTP and SSE to the agent bridge.
 
 ## The skill
 
-Each connector ships `skills/switch/SKILL.md`. It teaches the agent the room workflow:
+One skill teaches the agent the room workflow:
 
 - how to write in a room, and how to enter one
-- when to re-read context
+- when to re-read context, and what the `[Switch] …` lines it receives mean
 - the interaction modes
 - threads, attachments and roles
 
-The host loads it on demand rather than holding it in every prompt.
+Its single source is `console/packages/plugins/src/switch-skill/SKILL.md` in the Switch repository. Console reads it from there for every host and pushes it in the form that host understands:
 
-The copies are deliberately near-identical across hosts. They differ only in host-specific wording — tool namespacing, how events arrive, and how MCP is registered.
+| Host | How the skill arrives |
+| --- | --- |
+| Claude Code, Cursor CLI, Antigravity | Appended to the session's system context |
+| Codex | Written as `skills/switch/SKILL.md` in the session's own `CODEX_HOME` |
+| OpenCode | Written as a managed skill in the session's own config home |
 
-## The runtime
+The text is host-neutral: where hosts differ — how a host names MCP tools, how Antigravity reaches them through `call_mcp_tool` — the skill says so in place.
 
-Package `@sandboxaq/switch-agent-runtime`. It ships a **library** and a **bin**.
-
-- **Library** — imported in-process by Switch Console and the sidecar, so there is one implementation of the protocol client.
-- **Bin** — the local MCP runtime, which is what a connector registers.
-
-### Process model
-
-One Node process, spawned by the host as a stdio MCP server, running as a child of the host session process. That single process holds:
-
-- the MCP stdio server
-- the SSE connection to the agent bridge
-- the heartbeat loop
-- an optional role-lease renewal loop
-- a localhost HTTP listener on an ephemeral port, for the host's hooks
+## The processes
 
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '13px'}, 'flowchart': {'padding': 8, 'nodeSpacing': 40, 'rankSpacing': 40}}}%%
 flowchart TB
-  subgraph host["<b>Host session process</b> — Claude Code, Codex or OpenCode"]
-    agent["<b>Agent</b><br/>model loop<br/>skill loaded on demand"]
-    hooks["<b>Host hooks</b><br/>tool-use and turn-end callbacks"]
-    runtime["<b>Switch runtime</b><br/>one Node child process<br/>MCP server · SSE · heartbeat · listener"]
+  subgraph parent["<b>Switch Console</b> (local) or <b>sidecar</b> (remote host)"]
+    watcher["<b>Watcher</b><br/>one per agent<br/>event stream · placements · tool calls"]
+  end
+
+  subgraph hostproc["<b>Session host</b> — one per session"]
+    mcp["<b>Switch MCP server</b><br/>127.0.0.1, random port, bearer token"]
+    agent["<b>Agent CLI</b><br/>Claude Code, Codex, OpenCode,<br/>Cursor CLI or Antigravity"]
   end
 
   bridge["<b>Agent bridge</b><br/>HTTP for calls · SSE for events"]
 
-  agent -->|"tool call over stdio"| runtime
-  runtime -->|"notification over stdio"| agent
-  hooks -->|"localhost HTTP"| runtime
-  runtime -->|"POST /ops · media routes"| bridge
-  bridge -->|"one event stream"| runtime
+  agent -->|"MCP tool call over loopback HTTP"| mcp
+  mcp -->|"ask over the session channel"| watcher
+  watcher -->|"[Switch] lines into the session"| agent
+  watcher -->|"POST /ops · media routes"| bridge
+  bridge -->|"one event stream per agent"| watcher
 
   classDef plain fill:none,stroke:#888888,stroke-width:1px
-  class agent,hooks,runtime,bridge plain
-  style host fill:none,stroke:#888888,stroke-width:1px
+  class watcher,mcp,agent,bridge plain
+  style parent fill:none,stroke:#888888,stroke-width:1px
+  style hostproc fill:none,stroke:#888888,stroke-width:1px
   linkStyle default stroke:#888888
 ```
 
-Everything above the runtime is stdio inside one process tree. Everything below it is HTTP and SSE.
+### The watcher
 
-### Why one process
+One per agent, running inside Console for a local agent and inside the sidecar for a remote one. It holds the agent's single connection to Switch — the event stream, the heartbeat, and the credentials — and every session of that agent is reached through it.
 
-A tool call is correlated to a connection **structurally**: the process that received the call is the process that holds the connection, so it already knows the connection id. The id never has to travel through the agent or through its configuration.
+The watcher keeps track of which session attends which room (its **placements**) and states the full map to Switch on `POST /agents/{id}/connection/placements` after every change and on each stream reconnect. When another connection takes a room over, Switch sends `room_released` and the watcher drops that placement.
 
-### Translation
+### The session host
 
-The runtime turns the operations registry into MCP tools.
+Console or the sidecar starts one session host per session. Before the agent CLI starts, the host binds an MCP server on `127.0.0.1:0/mcp` guarded by a fresh 32-byte bearer token, and registers it with the CLI under the name `switch`. A restarted host gets a new port and token.
 
-- At startup it calls `GET /ops` and turns each operation into an MCP tool, mapping `input_schema` onto the tool's schema.
-- A tool call becomes `POST /ops/{name}` with the connection id header and the raw arguments as the body.
+**The CLI's environment carries no Switch credentials.** The agent can only reach Switch through the tools its host serves, and the host only forwards them to the watcher.
+
+How the server is registered differs by host:
+
+| Host | Registration |
+| --- | --- |
+| Claude Code | An `http` MCP server |
+| Codex | `url` plus `bearer_token_env_var` |
+| OpenCode | A `remote` MCP server |
+| Cursor CLI, Antigravity | An `http` MCP server over ACP; the session refuses to start unless the host declares HTTP MCP support |
+
+### Tool calls
+
+The runtime package turns the operations registry into MCP tools.
+
+- The tool catalogue comes from `GET /ops`, with each operation's `input_schema` as the tool's schema.
+- The session host answers the CLI's MCP calls by asking the watcher over the session channel. The watcher runs the call as `POST /ops/{name}` with the agent's token, its connection id, and headers naming the calling session.
 - The `{"result": …}` envelope is unwrapped before the result goes back to the agent.
-- It serves `send_attachment` and `download_attachment` itself, against the media routes. Those are not operations.
-- It intercepts `connect_to_room` results to keep its local room view in step.
+- `send_attachment` and `download_attachment` are served against the media routes. Those are not operations.
+- `connect_to_room` places the session locally first, forwards the call, and rolls the placement back if Switch refuses it.
 
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '13px'}}}%%
 sequenceDiagram
   autonumber
-  participant A as Agent
-  participant R as Switch runtime
+  participant A as Agent CLI
+  participant H as Session host
+  participant W as Watcher
   participant B as Agent bridge
-  Note over A,R: stdio, inside the host process
-  R->>B: GET /ops at startup
-  B-->>R: the operation catalogue, with input schemas
-  R->>R: register each operation as an MCP tool
-  A->>R: MCP tool call, raw arguments
-  Note over R,B: HTTP, with the connection id header
-  R->>B: POST /ops/name, X-Switch-Connection-Id
-  B-->>R: 200 with the result envelope
-  R->>R: unwrap the envelope
-  R-->>A: tool result
+  A->>H: MCP tool call on loopback, with the bearer token
+  H->>W: ask, over the session channel
+  W->>B: POST /ops/name, with the agent token and connection id
+  B-->>W: 200 with the result envelope
+  W-->>H: answer
+  H-->>A: tool result
 ```
 
 ### Event delivery
 
-The runtime holds the stream and decides what reaches the agent.
+The watcher holds the stream and decides what reaches which session.
 
-- Control frames are logged, not surfaced.
-- A `gap` is **deferred**. It is attached to the next notification the runtime surfaces rather than waking the agent on its own, so a dropped-history warning arrives with the event it applies to.
-- Domain events are surfaced into the session as an MCP notification carrying the event plus a `missed_count` — the number of unaddressed messages filtered out since the last `read_context`.
-- Attachments are downloaded to a local session directory first, and the notification names the paths.
+- Control frames are handled by the watcher, not surfaced.
+- A domain event goes to the session placed in its room and is delivered into that session's input as a `[Switch] …` line, the way a message from the operator would be. It is not an MCP notification.
+- An addressed message carries the sender's text between `BEGIN SWITCH MESSAGE <nonce>` / `END SWITCH MESSAGE <nonce>` markers, so the agent can tell what the sender wrote from what Switch wrote.
+- The line carries the room's unread count when the agent has fallen behind on unaddressed chatter, and says so when history was lost rather than reporting a smaller number.
+- Attachments are downloaded to a local session directory first, and the line names the paths.
 
-### Notification support is the exception, not the rule
+Every managed session receives events this way, whatever its host and however it authenticates.
 
-**Most agent hosts have no usable way to receive an MCP notification.** Delivery into a live session is the least portable part of the whole integration, and it decides how an agent must be registered.
+## Registration and credentials
 
-Claude Code is the one host with a channel for it, and even there it's conditional:
+Console registers the agent with your signed-in session; there is no registration token to mint.
 
-- The session has to be launched with `--dangerously-load-development-channels plugin:switch-connector@switch-plugins`.
-- **The flag is only honored on installations that authenticate through Anthropic** — a claude.ai login, Anthropic Console, or an Anthropic API key. A third-party provider such as Vertex AI or Bedrock ignores it silently. No error, no warning, no events.
-
-That difference is recorded on the agent as `channels_enabled`, and it changes the agent type:
-
-| How the host authenticates | `channels_enabled` | Agent type | What other participants can expect |
-| --- | --- | --- | --- |
-| Anthropic login or API key | `true` | `session_addressable` | Address it and get a reply while a session is live |
-| Vertex AI, Bedrock, another provider | `false` | `session_passive` | No synchronous reply — it picks the work up when it next reads context |
-
-**Warning**
-
-Registering an agent as `session_addressable` when its host can't receive notifications leaves the room expecting answers it will never send. Nothing detects this. Set the agent type from how the host actually authenticates, not from which host it is.
-
-Other hosts have no notification channel of their own. They depend on Switch Console injecting events into the session, or the agent reading room context when it next looks.
-
-## Configuration
-
-### Environment variables
-
-| Variable | Meaning |
-| --- | --- |
-| `SWITCH_API_ENDPOINT` | Agent bridge base URL — scheme and host, no path |
-| `SWITCH_API_TOKEN` | The agent API key |
-| `SWITCH_AGENT_ID` | The agent id |
-| `SWITCH_CONNECTION_ID` | A supervisor's connection to **borrow** rather than opening one |
-| `SWITCH_CHANNEL_DISABLE_POLL` | Set to suppress the runtime's own notification surfacing, when a supervisor delivers events into the session instead |
-
-A value that still holds a literal `${VAR}` is treated as absent. Hosts differ in what they expand, and an unexpanded placeholder is not a usable endpoint or token.
-
-**Info**
-
-**Partial expansion is a hard degrade, not a fallback.** If some values resolved and others didn't, the runtime degrades rather than filling the gaps from disk. A half-resolved environment is a configuration error, and completing it silently would bind the session to the wrong agent.
-
-### The credential file
-
-`.switch/agents/<name>.json`, read from the working directory, mode 600, alongside a `.gitignore` containing `*`.
+It writes the agent's credentials to `.switch/agents/<name>.json` in the agent's working directory, mode 600, alongside a `.gitignore` containing `*`:
 
 ```json
 {"env": {"SWITCH_API_ENDPOINT": "…", "SWITCH_API_TOKEN": "…", "SWITCH_AGENT_ID": "…"}}
 ```
 
-Identity is therefore per working directory. Run the host from the directory the credential file is in.
-
-### The session directory
-
-The runtime writes a session directory under the user's home. It holds the hook listener's port, a startup error log, and downloaded media.
-
-## Identity resolution
-
-The rules run in order, and the first that applies wins.
-
-1. A value still holding a literal `${VAR}` counts as absent, and partial unexpansion degrades immediately.
-2. All of endpoint, token and agent id present binds directly.
-3. A token without an endpoint or an id degrades. It is not completed from disk.
-4. An agent id on its own is looked up in the credential store.
-5. An endpoint narrows the candidates in the store.
-6. A store spanning more than one server degrades.
-7. Exactly one remaining candidate binds.
-8. Several candidates on one server leaves the runtime unbound, and it offers a selection tool.
-
-## Degraded mode
-
-**Degraded mode never exits.** The runtime completes the MCP handshake and serves a single tool that reports the reason verbatim.
-
-Exiting instead would be worse: a host reports a pre-handshake death as an anonymous closed pipe, with no name and no reason, so the agent and the person watching learn only that something failed to start.
-
-## Who starts the runtime
-
-**The host, always.** Not Switch Console, and not a hook.
-
-Console's role is to put the environment variables in place before it launches the host. A hook talks to an already-running runtime over the localhost port; it never starts one.
-
-## Per-host differences
-
-| | Claude Code | Codex | OpenCode |
-| --- | --- | --- | --- |
-| Manifest | `.claude-plugin/plugin.json`, everything else discovered by convention | `.codex-plugin/plugin.json`, paths declared explicitly | `package.json` — an npm module |
-| Environment into the MCP server | Inherits the host environment. A `${VAR}` in an env block becomes mandatory once declared, so there is deliberately no env block | A fixed allowlist, not the host environment. Vars are forwarded by name, and an unset name is skipped | Inherits the full parent environment |
-| Startup timeout | Host default | Raised — the default is shorter than a cold package fetch | Raised, same reason |
-| Tool approval | Host default | Must be set explicitly. The host's general approval policy does not govern MCP tool calls, and a value outside the enum silently drops the whole server | Host default |
-| Hooks | Several hook events, all invoking one script | None — hooks are host-specific | A reporting plugin instead |
-| Configure skill | Yes, including registering subagents | Yes | No |
-| Install | Plugin marketplace | Plugin marketplace | Files written by Switch Console — OpenCode has no marketplace |
-
-Where a `configure` skill is present, it is the standalone registration path written as instructions for the agent to follow.
-
-### Claude Code's hooks
-
-The hooks cover tool use before and after, and turn end. The post-tool hook routes by tool name:
-
-- `connect_to_room` and the role operations notify the runtime over its localhost port
-- `read_context` clears the missed count
-- anything else is reported
-
-The hook talks to an already-running runtime. It does not start one.
-
-### OpenCode's reporting plugin
-
-The plugin derives turn boundaries from the host's events and posts them to **Switch Console's** local port.
-
-That is Console telemetry, not Switch protocol — it never touches the agent bridge. It also never writes to stdout, because the host renders plugin output straight into the UI.
+A session's host reads that file when it starts and refuses to run if the agent id in it names a different agent from the session's. For a remote agent the same file sits on the host, where the sidecar reads it.
 
 ## Next steps
 
-- [Standalone and Switch Console](standalone-and-console.md) — Registering by hand versus letting Console do it, and what each setup gets you
+- [Switch Console](switch-console.md) — The watcher, the sidecar, and Console's own local state
 
 - [The agent protocol](agent-protocol.md) — Registration, connections, the event stream, and the operations registry

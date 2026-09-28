@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -25,6 +25,9 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.room_service import RoomService
 from switch_core.telemetry import TelemetryService
 
+if TYPE_CHECKING:
+    from switch_core.session_activity.outcomes import ApprovalOutcomes
+
 _state: dict[str, Any] = {}
 
 
@@ -46,6 +49,7 @@ def init_dependencies(
     bridge_store: CollaborationBridgeStore,
     session_factory: Any,
     config: Any,
+    approval_outcomes: ApprovalOutcomes,
     telemetry: TelemetryService | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -83,6 +87,7 @@ def init_dependencies(
         bridge_store=bridge_store,
         session_factory=session_factory,
         config=config,
+        approval_outcomes=approval_outcomes,
         telemetry=telemetry,
     )
 

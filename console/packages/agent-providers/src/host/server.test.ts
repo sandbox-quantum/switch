@@ -4,7 +4,9 @@ import { adapterFor, startSchema } from './server';
 it.each(['gemini', 'future-provider'])(
   'rejects unsupported execution provider %s explicitly',
   (provider) => {
-    expect(() => adapterFor(provider)).toThrow(`Unsupported execution provider: ${provider}`);
+    expect(() => adapterFor(provider, undefined, '')).toThrow(
+      `Unsupported execution provider: ${provider}`
+    );
     expect(startSchema.shape.provider.safeParse(provider).success).toBe(false);
   }
 );

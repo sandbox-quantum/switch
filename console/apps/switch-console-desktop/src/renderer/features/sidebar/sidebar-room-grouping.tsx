@@ -18,9 +18,9 @@ import { cn } from '@renderer/utils/utils';
 import { SidebarItemMiniButton, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent, UNASSIGNED_ROOM_KEY } from './sidebar-store';
 
-/** Current room of a session, from the live connection set reported by the hook. */
+/** Sidebar placement remembers the last room even after its delivery ownership is lost. */
 export function sessionRoomId(session: SessionStore): string | null {
-  return roomConnectionsStore.roomForSession(session.data.id);
+  return roomConnectionsStore.associatedRoomForSession(session.data.id);
 }
 
 export function roomLabel(roomKey: string): string {

@@ -9,8 +9,8 @@ import type { AgentDefaults } from '@shared/core/switch-servers/switch-servers';
  * `dir`. The name is `<provider-slug>.<repo-slug>.<user-slug>`, where the prefix
  * is the provider's display name slugified — `codex`, `claude-code`, `grok`, etc.
  * — so the default reflects the chosen agent type (CHOO-1436). The per-user
- * suffix keeps two developers registering from the same repo from colliding (see
- * the `configure` skill). Falls back to the bare provider slug if the repo/user
+ * suffix keeps two developers registering from the same repo from colliding.
+ * Falls back to the bare provider slug if the repo/user
  * parts both slug to empty.
  */
 export function suggestAgentDefaults(dir: string, providerId: AgentProviderId): AgentDefaults {

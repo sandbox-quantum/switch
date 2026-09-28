@@ -267,7 +267,7 @@ def _ephemeral(text: str) -> dict[str, Any]:
 
 
 class MattermostAdapter(CollaborationAdapter):
-    publishes_sdk_sessions: ClassVar[bool] = True
+    draws_session_activity: ClassVar[bool] = True
 
     #: A problem somebody has to act on still gets its own reply, so it
     #: notifies rather than arriving as a silent edit to a status the reader

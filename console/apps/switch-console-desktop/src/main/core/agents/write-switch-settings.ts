@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
-  RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,
-  SWITCH_CONNECTOR_TOOL_RULES,
+  RECOGNISED_SWITCH_TOOL_RULES,
+  SWITCH_TOOL_RULES,
 } from '@switch-console/core/agents/plugins';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
@@ -20,11 +20,11 @@ export interface SwitchSettingsCredentials {
 }
 
 /**
- * Merge the `SWITCH_*` env block (and the connector tool-allow rules) into a
+ * Merge the `SWITCH_*` env block (and the Switch tool-allow rules) into a
  * settings file, returning the new file text.
  *
  * The file is merged, not clobbered: unrelated top-level keys and any other
- * `env` entries the user already has are preserved. The connector MCP tools are
+ * `env` entries the user already has are preserved. The Switch MCP tools are
  * unioned into `permissions.allow` so they are auto-approved ("don't ask").
  *
  * **No token is written, and one already present is removed** (CHOO-1962). This
@@ -83,7 +83,7 @@ export function mergeSwitchSettings(
     ...existing,
     permissions: {
       ...currentPerms,
-      allow: [...new Set([...currentAllow, ...SWITCH_CONNECTOR_TOOL_RULES])],
+      allow: [...new Set([...currentAllow, ...SWITCH_TOOL_RULES])],
     },
     env,
   };
@@ -163,7 +163,7 @@ export function mergeSwitchApiEndpoint(
 
 /**
  * Reverse of {@link mergeSwitchSettings}: strip the `SWITCH_*` env block and the
- * connector tool-allow rules that provisioning added, returning what to do with
+ * Switch tool-allow rules that provisioning added, returning what to do with
  * the file. Every other key — user env entries, other `permissions.allow` rules,
  * `hooks`, and any unrelated top-level keys — is preserved byte-for-byte.
  *
@@ -229,7 +229,7 @@ export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSe
   if (perms && Array.isArray(perms.allow)) {
     const allow = (perms.allow as unknown[])
       .map(String)
-      .filter((rule) => !RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES.includes(rule));
+      .filter((rule) => !RECOGNISED_SWITCH_TOOL_RULES.includes(rule));
     if (allow.length > 0) {
       perms.allow = allow;
     } else {
@@ -248,12 +248,12 @@ export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSe
 
 /**
  * Write the `SWITCH_*` env block into a local directory's
- * `.claude/settings.local.json`, the same file the switch-connector
- * `configure` skill writes.
+ * `.claude/settings.local.json`, the Claude Code settings file every session in
+ * the directory reads.
  *
  * No token: it lives in the per-agent `.switch/agents/<slug>.json` alone. Claude
  * Code reads this file natively, so the endpoint and agent id being here is what
- * lets a session started by hand know which agent it is.
+ * lets any session in the directory know which agent it is.
  */
 export async function writeSwitchSettings(params: {
   dir: string;
@@ -282,7 +282,7 @@ export async function writeSwitchSettings(params: {
 
 /**
  * Write an agent's Switch credentials to its provider-neutral per-agent file
- * `.switch/agents/<slug>.json` (CHOO-1440), alongside the connector-owned
+ * `.switch/agents/<slug>.json` (CHOO-1440), alongside
  * `.claude/settings.local.json`. Switch Console injects this file's env at launch, so
  * it is the authoritative per-agent identity — letting multiple agents share a
  * location without colliding on the single `settings.local.json` identity.

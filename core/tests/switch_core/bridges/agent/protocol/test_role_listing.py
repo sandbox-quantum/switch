@@ -37,12 +37,12 @@ class _FakeRoomRoleStore:
         return list(self._roles)
 
     async def live_leases_for_room(
-        self, _session: Any, _room_id: str, _alive: Any = ()
+        self, _session: Any, _room_id: str, _live_conns: Any = ()
     ) -> dict[str, list[Any]]:
         return {k: list(v) for k, v in self._leases.items()}
 
     async def get_agent_live_lease(
-        self, _session: Any, _agent_id: str, _alive: Any = ()
+        self, _session: Any, _agent_id: str, _live_conns: Any = ()
     ) -> Any | None:
         return self._my_lease
 
@@ -56,7 +56,7 @@ class _FakeAgentStore:
 
 
 class _FakeAgentSessionStore:
-    """Maps transport_session_id -> (agent_id, room_id) it is connected to."""
+    """Where a transport session is, by its binding."""
 
     def __init__(self, bindings: dict[str, tuple[str, str]]) -> None:
         self._bindings = bindings
@@ -84,10 +84,16 @@ def _role(
 
 
 def _lease(
-    role_id: str, agent_id: str, transport_session_id: str | None
+    role_id: str,
+    agent_id: str,
+    transport_session_id: str | None,
+    session_id: str | None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        role_id=role_id, agent_id=agent_id, transport_session_id=transport_session_id
+        role_id=role_id,
+        agent_id=agent_id,
+        transport_session_id=transport_session_id,
+        session_id=session_id,
     )
 
 
@@ -97,6 +103,7 @@ def _build_service(
     leases: dict[str, list[Any]],
     agents: dict[str, Any],
     bindings: dict[str, tuple[str, str]],
+    sdk_rooms: dict[str, str],
     rooms: dict[str, Any],
     my_lease: Any | None = None,
 ) -> ProtocolService:
@@ -104,6 +111,15 @@ def _build_service(
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
     svc.connections = ConnectionRegistry()
+    # Where each holding session connected, as `connect_to_room` placed it.
+    for session_id, room_id in sdk_rooms.items():
+        holder = next(
+            lease.agent_id
+            for held in leases.values()
+            for lease in held
+            if lease.session_id == session_id
+        )
+        svc.connections.place_session(holder, session_id, room_id, f"conn-{session_id}")
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = _FakeRoomRoleStore(roles, leases, my_lease)  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]
@@ -113,15 +129,55 @@ def _build_service(
 
 
 class TestListRoomRoles:
+    async def test_a_session_holder_is_located_by_its_own_room(self) -> None:
+        """Where the connection cannot answer and the session can.
+
+        Both holders took their seat over the same controller connection, so
+        that connection carries both rooms and naming one from it would put
+        half the holders in the wrong place. The seat records which session
+        took it, and a session is in one room.
+        """
+        role = _role("role-w", "worker", False, "do the work")
+        leases = {
+            "role-w": [
+                _lease("role-w", "a-here", "conn-shared", "sdk-here"),
+                _lease("role-w", "a-elsewhere", "conn-shared", "sdk-elsewhere"),
+            ]
+        }
+        svc = _build_service(
+            roles=[role],
+            leases=leases,
+            agents={
+                "a-here": SimpleNamespace(name="alice"),
+                "a-elsewhere": SimpleNamespace(name="bob"),
+            },
+            bindings={"conn-shared": ("a-here", "room-1")},
+            sdk_rooms={"sdk-here": "room-1", "sdk-elsewhere": "room-2"},
+            rooms={
+                "room-1": SimpleNamespace(name="This Room"),
+                "room-2": SimpleNamespace(name="Other Room"),
+            },
+        )
+
+        result = await svc.list_room_roles("viewer", "room-1")
+
+        by_name = {h["name"]: h for h in result[0]["held_by"]}
+        assert by_name["alice"]["present_here"] is True
+        assert by_name["bob"] == {
+            "name": "bob",
+            "present_here": False,
+            "session_room": "Other Room",
+        }
+
     async def test_holder_locations_here_elsewhere_and_unbound(self) -> None:
         # Shared role with three holders: one connected here, one attending
         # another room, one whose session can't be located.
         role = _role("role-w", "worker", False, "do the work")
         leases = {
             "role-w": [
-                _lease("role-w", "a-here", "tx-here"),
-                _lease("role-w", "a-elsewhere", "tx-elsewhere"),
-                _lease("role-w", "a-unbound", None),
+                _lease("role-w", "a-here", "tx-here", None),
+                _lease("role-w", "a-elsewhere", "tx-elsewhere", None),
+                _lease("role-w", "a-unbound", None, None),
             ]
         }
         svc = _build_service(
@@ -136,6 +192,7 @@ class TestListRoomRoles:
                 "tx-here": ("a-here", "room-1"),
                 "tx-elsewhere": ("a-elsewhere", "room-2"),
             },
+            sdk_rooms={},
             rooms={
                 "room-1": SimpleNamespace(name="This Room"),
                 "room-2": SimpleNamespace(name="Other Room"),
@@ -172,6 +229,7 @@ class TestListRoomRoles:
             leases={},
             agents={},
             bindings={},
+            sdk_rooms={},
             rooms={"room-1": SimpleNamespace(name="This Room")},
         )
 
@@ -182,12 +240,13 @@ class TestListRoomRoles:
 
     async def test_exclusive_held_by_other_blocks_assume(self) -> None:
         role = _role("role-m", "manager", True, "coordinate")
-        leases = {"role-m": [_lease("role-m", "holder", "tx-h")]}
+        leases = {"role-m": [_lease("role-m", "holder", "tx-h", None)]}
         svc = _build_service(
             roles=[role],
             leases=leases,
             agents={"holder": SimpleNamespace(name="dan")},
             bindings={"tx-h": ("holder", "room-1")},
+            sdk_rooms={},
             rooms={"room-1": SimpleNamespace(name="This Room")},
         )
 

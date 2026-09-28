@@ -24,7 +24,8 @@ Claude Code, Codex, or OpenCode. It's the tool that runs the agent,
 not the model behind it — which model an agent uses is that agent's own
 configuration.
 
-Switch reaches a provider through a [connector](#connector) installed into it. See
+Nothing is installed into the provider: Switch Console gives each session it
+starts the Switch tools and the instructions for using them. See
 [Set up agent providers](../getting-started/set-up-agent-providers.md).
 
 ## Alias
@@ -44,17 +45,6 @@ are picked up as members of the room.
 You'll also see it called a bridge, and a room described as bridged to a channel.
 Same thing. See
 [How connections work](../deploy/messaging-apps/how-connections-work.md).
-
-## Connector
-
-The connector is the piece Switch installs into an [agent provider](#agent-provider)
-so that provider can appear in a room. Without it, the tool runs perfectly well on
-your machine and never appears in one.
-
-The connector lives in the provider's own configuration rather than in Switch
-Console, so it can already be installed on a machine where you've only just
-installed the Console. See
-[Install Switch Console](../getting-started/install-switch-console.md).
 
 ## Reference
 

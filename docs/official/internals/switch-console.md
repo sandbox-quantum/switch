@@ -43,21 +43,20 @@ sequenceDiagram
   participant P as Person in Slack
   participant S as switch-core
   participant C as Console watcher
-  participant V as Agent provider
-  participant R as Session runtime
+  participant V as Agent session
   P->>S: mentions the agent in a channel
   S->>S: no live session for that agent in that room
-  C->>S: notices the room activity
-  C->>V: start a session
-  V->>R: session comes up
-  R->>S: connects to the agent bridge, claims the room
-  Note over C,R: Nobody opened Console or started this session by hand
-  S->>R: delivers the addressed message
-  R->>S: agent answers into the room
+  S->>C: the addressed message, on the agent's event stream
+  C->>V: start a session, with the Switch skill and tools
+  C->>S: place the session in the room, claim the room
+  Note over C,V: Nobody opened Console or started this session by hand
+  C->>V: deliver the message as a [Switch] line
+  V->>C: agent answers through its Switch tools
+  C->>S: post the reply into the room
   S->>P: reply reaches Slack
 ```
 
-The session's runtime is the connector process that runs beside the agent and speaks HTTP and SSE to the agent bridge. It holds the event stream and claims the room the message arrived in.
+The watcher holds the agent's event stream and claims the room the message arrived in for the session it started; that session reaches Switch through the MCP tools its own host serves, which the watcher runs over HTTP. [Sessions and the runtime](connectors-and-runtime.md) covers the details.
 
 ### One implementation, two process trees
 

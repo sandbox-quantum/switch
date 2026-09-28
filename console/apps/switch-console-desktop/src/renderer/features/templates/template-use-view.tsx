@@ -33,8 +33,8 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
-import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -995,7 +995,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       }
       const result =
         createdRoom.current ??
-        (await rpc.switchServers.createRoomFromTemplate(serverId, coreYaml, inputs));
+        (await rpc.switchServers.createRoomFromTemplate(serverId, coreYaml, inputs, loaded.name));
       createdRoom.current = result;
       setRoomStatus('created');
       // The room exists whether or not the sidebar refreshes.

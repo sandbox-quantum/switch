@@ -1,9 +1,8 @@
 """An approval, from the recorded session fixture to a Slack card.
 
-This is the whole path in one test file: the fixture goes in through the
-transport seam, the projection decides the room may see it, the Slack renderer
-turns it into Block Kit, and the adapter posts it. Nothing in here reaches
-Slack's API, but everything up to the call does.
+This is the whole path in one test file: the recorded request goes in, the
+Slack renderer turns it into Block Kit, and the adapter posts it. Nothing in
+here reaches Slack's API, but everything up to the call does.
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ import asyncio
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,24 +34,16 @@ from switch_core.bridges.collaboration.session.text import (
     AnswerPart,
     parse_text_answer,
 )
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
-)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
 from switch_core.sessions.contract import (
     ApprovalOption,
-    parse_snapshot,
 )
-from switch_core.sessions.projection import SessionProjection
 
+from .session_fixtures import open_request
 from .slack_fakes import FakeWebClient
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
 
 REFERENCE = RequestReference(token="opaque-token", handle="R42")
 
@@ -64,11 +54,6 @@ def _run(coro: Any) -> Any:
         return loop.run_until_complete(coro)
     finally:
         loop.close()
-
-
-def _projection() -> SessionProjection:
-    source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
-    return _run(project(source, "session-demo"))
 
 
 def _adapter() -> tuple[SlackAdapter, FakeWebClient]:
@@ -83,40 +68,11 @@ def _adapter() -> tuple[SlackAdapter, FakeWebClient]:
     return adapter, client
 
 
-# ── What is waiting on someone ───────────────────────────────────────────────
-
-
-def test_the_fixture_approval_is_open_and_named() -> None:
-    projection = _projection()
-
-    assert [request.request_id for request in projection.open_requests()] == [
-        "request-demo"
-    ]
-
-
-def test_a_settled_request_is_hidden_without_being_lost() -> None:
-    """The only thing filtered here is whether anyone is still being asked.
-
-    The contract used to say which room a request was addressed to, and this is
-    where that was applied. It is gone: choosing who sees a session's request
-    needs to know the agent and the rooms it is in, which is Switch's to know
-    and not something a host can be trusted to decide for it. What a room is
-    shown is now decided above this, and the replica still holds everything
-    either way.
-    """
-    recorded = json.loads(EXAMPLES_PATH.read_text())
-    recorded["initialSnapshot"]["requests"][0]["state"] = "resolved"
-    projection = SessionProjection(parse_snapshot(recorded["initialSnapshot"]))
-
-    assert projection.open_requests() == []
-    assert projection.request("request-demo") is not None
-
-
 # ── The card ─────────────────────────────────────────────────────────────────
 
 
 def test_the_approval_renders_a_button_per_option() -> None:
-    request = _projection().open_requests()[0]
+    request = open_request()
 
     message = render_approval(request, REFERENCE)
     actions = next(block for block in message.blocks if block["type"] == "actions")
@@ -137,7 +93,7 @@ def test_the_approval_renders_a_button_per_option() -> None:
 
 def test_the_button_payload_carries_only_an_opaque_reference() -> None:
     """A callback payload is not a place to keep anything worth stealing."""
-    request = _projection().open_requests()[0]
+    request = open_request()
 
     message = render_approval(request, REFERENCE)
     actions = next(block for block in message.blocks if block["type"] == "actions")
@@ -150,7 +106,7 @@ def test_the_button_payload_carries_only_an_opaque_reference() -> None:
 
 def test_the_card_says_how_to_answer_in_words() -> None:
     """A card can fail to render, and a person can prefer typing."""
-    request = _projection().open_requests()[0]
+    request = open_request()
 
     message = render_approval(request, REFERENCE)
 
@@ -174,7 +130,7 @@ def test_what_the_card_tells_you_to_type_is_what_the_grammar_reads() -> None:
     example is the last of them — the handle alone is the thing to type first,
     not a whole answer.
     """
-    request = _projection().open_requests()[0]
+    request = open_request()
 
     footer = _footer_of(render_approval(request, REFERENCE))
     spans = re.findall(r"`([^`]+)`", footer)
@@ -198,7 +154,7 @@ FORGERY = "<!channel> & <https://example.test|click>"
 
 
 def _forged() -> Any:
-    request = _projection().open_requests()[0]
+    request = open_request()
     content = request.content
     return request.model_copy(
         update={
@@ -259,7 +215,7 @@ def test_an_approval_that_offers_no_options_makes_the_card_say_so() -> None:
     wants at least one element in one, so the whole card is likely rejected and
     the request never appears at all. It is not appended now.
     """
-    request = _projection().open_requests()[0]
+    request = open_request()
     empty = request.model_copy(
         update={"content": request.content.model_copy(update={"options": []})}
     )
@@ -279,7 +235,7 @@ def test_no_option_count_makes_the_card_offer_an_answer_it_would_refuse() -> Non
     than the string means the next shape that cannot be answered fails here
     instead of in a workspace.
     """
-    request = _projection().open_requests()[0]
+    request = open_request()
 
     for count in range(4):
         options = [
@@ -307,7 +263,7 @@ def test_no_option_count_makes_the_card_offer_an_answer_it_would_refuse() -> Non
 
 def test_an_approval_with_more_options_than_slack_renders_is_refused() -> None:
     """Loudly, rather than quietly dropping the option someone needed."""
-    request = _projection().open_requests()[0]
+    request = open_request()
     options = [
         ApprovalOption(
             option_id=f"option-{index}", label=f"Option {index}", decision="accept"
@@ -328,7 +284,7 @@ SLACK_SECTION_LIMIT = 3000
 
 
 def _oversized(title: str, detail: str, *, options: int = 2) -> Any:
-    request = _projection().open_requests()[0]
+    request = open_request()
     content = request.content
     return request.model_copy(
         update={
@@ -385,7 +341,7 @@ def test_the_text_fallback_is_bounded_by_the_same_budgets() -> None:
 
 
 def test_the_card_reaches_slack_with_its_blocks_and_a_text_fallback() -> None:
-    request = _projection().open_requests()[0]
+    request = open_request()
     message = render_approval(request, REFERENCE)
     adapter, client = _adapter()
 
@@ -539,7 +495,7 @@ def test_an_interactive_envelope_that_is_not_a_press_is_left_alone() -> None:
 
 def test_the_card_and_the_press_agree_on_the_option() -> None:
     """The loop: the renderer writes the control, the handler reads it back."""
-    request = _projection().open_requests()[0]
+    request = open_request()
     message = render_approval(request, REFERENCE)
     actions = next(block for block in message.blocks if block["type"] == "actions")
     deny = actions["elements"][1]

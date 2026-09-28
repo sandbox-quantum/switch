@@ -30,23 +30,26 @@ export type RepoAgentDefinition = {
 
 /**
  * The MCP permission rules that keep a Switch agent connected to the platform:
- * the connector's MCP server. Used both as `tools` allowlist entries (so an
- * agent that restricts its tools stays Switch-capable) and as `permissions.allow`
- * entries (so the connector's tools are auto-approved — "don't ask"). Authored
- * once here so every provider's onboarding path agrees.
+ * the `switch` MCP server the session host registers for every managed
+ * session. Used both as `tools` allowlist entries (so an agent that restricts
+ * its tools stays Switch-capable) and as `permissions.allow` entries (so the
+ * Switch tools are auto-approved). Authored once here so every provider's
+ * onboarding path agrees.
  */
-export const SWITCH_CONNECTOR_TOOL_RULES = ['mcp__plugin_switch-connector_switch'] as const;
+export const SWITCH_TOOL_RULES = ['mcp__switch'] as const;
 
 /**
  * Every rule Switch Console has ever authored, including ones it no longer writes.
  * The paths that strip Switch Console's own contributions back out — the subagent
  * form's read-back and the teardown that removes Switch settings — match against
- * this, so a working directory set up before the connector's two MCP servers
- * became one runtime is still cleaned up completely instead of keeping a rule
- * that names a server nobody registers.
+ * this, so a working directory set up by an older Console is still cleaned up
+ * completely instead of keeping a rule that names a server nobody registers.
+ * The `mcp__plugin_switch-connector_*` rules named the retired connector
+ * plugin's MCP servers.
  */
-export const RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES: readonly string[] = [
-  ...SWITCH_CONNECTOR_TOOL_RULES,
+export const RECOGNISED_SWITCH_TOOL_RULES: readonly string[] = [
+  ...SWITCH_TOOL_RULES,
+  'mcp__plugin_switch-connector_switch',
   'mcp__plugin_switch-connector_switch-channel',
 ];
 
@@ -116,6 +119,13 @@ export type RepoAgentAttributeValue = string | string[] | number | boolean | nul
 export type RepoAgentAttributes = Record<string, RepoAgentAttributeValue>;
 
 /**
+ * The definition a session runs as, in the shape the provider's SDK takes it.
+ * Provider-specific; JSON-serialisable, since it travels in the launch spec to
+ * the host that starts the session.
+ */
+export type RepoAgentLaunchDefinition = Record<string, string | string[] | number | boolean>;
+
+/**
  * How an agent provider creates, runs, and credentials the named agents defined
  * in a working directory. Switch Console has no notion of "subagents" — it just asks
  * a provider to create and run an agent with a given name in a directory, and to
@@ -151,6 +161,11 @@ export type IRepoAgentsBehavior = {
   renderDefinition(attributes: RepoAgentAttributes): string;
   /** The definition file's path, relative to the working directory. */
   definitionPath(name: string): string;
+  /**
+   * The definition a session runs as, built from these attributes and handed to
+   * the provider's SDK directly, so nothing is read from disk at launch. Pure.
+   */
+  launchDefinition(attributes: RepoAgentAttributes): RepoAgentLaunchDefinition;
   /** Create or overwrite a named agent's on-disk definition from its attributes
    * (workspace scope). `attributes.name` selects the agent. */
   writeDefinition(workspaceFs: PluginFs, attributes: RepoAgentAttributes): Promise<void>;

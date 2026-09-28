@@ -10,11 +10,16 @@ vi.mock('node:fs/promises', async (original) => ({
   realpath: async (path: string) => path,
 }));
 const servers: FakeAppServer[] = [];
+/** What the fake agent declares in `initialize`. */
+const acp = { http: true };
 vi.mock('node:child_process', () => ({
   spawn: () => {
     const server = new FakeAppServer();
     server.replyAlways('initialize', () => ({
-      agentCapabilities: { sessionCapabilities: { resume: {} } },
+      agentCapabilities: {
+        sessionCapabilities: { resume: {} },
+        ...(acp.http ? { mcpCapabilities: { http: true } } : {}),
+      },
     }));
     server.replyAlways('authenticate', () => ({}));
     server.replyAlways('session/new', () => ({
@@ -33,6 +38,7 @@ vi.mock('node:child_process', () => ({
 const { createAntigravityAdapter } = await import('./antigravity-adapter');
 beforeEach(() => {
   servers.length = 0;
+  acp.http = true;
 });
 async function setup(resume = false, switchRegistered = true) {
   const adapter = createAntigravityAdapter();
@@ -344,4 +350,48 @@ it('keeps approval for Switch metadata when Switch was not registered by the ses
     },
   });
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
+});
+
+const httpSwitch = {
+  switch: {
+    transport: 'http' as const,
+    url: 'http://127.0.0.1:4567/mcp',
+    headers: { Authorization: 'Bearer per-session' },
+  },
+};
+
+it('registers an HTTP MCP server with its headers when the agent declares HTTP', async () => {
+  const adapter = createAntigravityAdapter();
+  await adapter.startSession({
+    sessionId: 'http',
+    cwd: '/work',
+    runtimeMode: 'approval-required',
+    env: {},
+    mcpServers: httpSwitch,
+  });
+  expect(servers.at(-1)!.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
+    mcpServers: [
+      {
+        name: 'switch',
+        type: 'http',
+        url: 'http://127.0.0.1:4567/mcp',
+        headers: [{ name: 'Authorization', value: 'Bearer per-session' }],
+      },
+    ],
+  });
+});
+
+it('refuses to start a session whose HTTP MCP servers the agent cannot reach', async () => {
+  acp.http = false;
+  const adapter = createAntigravityAdapter();
+  await expect(
+    adapter.startSession({
+      sessionId: 'no-http',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: {},
+      mcpServers: httpSwitch,
+    })
+  ).rejects.toThrow('Antigravity does not declare MCP over HTTP');
+  expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(false);
 });

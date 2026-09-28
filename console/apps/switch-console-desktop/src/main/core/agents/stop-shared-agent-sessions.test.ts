@@ -6,11 +6,15 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   snapshot: vi.fn(),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  fetchSdkSessions: mocks.list,
-  fetchSdkSnapshot: mocks.snapshot,
-  submitSdkCommand: mocks.submit,
-  fetchSdkCommandStatus: mocks.status,
+vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
+vi.mock('@main/core/sdk-host/host-journal', () => ({
+  JournalUnavailableError: class extends Error {},
+}));
+vi.mock('@main/core/sdk-host/transcripts', () => ({ currentSnapshot: mocks.snapshot }));
+vi.mock('@main/core/sdk-host/session-commands', () => ({
+  CommandNotRecordedError: class extends Error {},
+  submitSessionCommand: mocks.submit,
+  sessionCommandStatus: mocks.status,
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: async () => ({ id: 'server' }),

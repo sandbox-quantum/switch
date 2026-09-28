@@ -66,7 +66,7 @@ async function watcherRoot(switchAgentId: string) {
     join(root, 'config.json'),
     JSON.stringify({ session: { agentId: switchAgentId } })
   );
-  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true }));
+  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: true }));
   return root;
 }
 
@@ -80,6 +80,7 @@ it.skipIf(process.platform === 'win32')(
       await expect.poll(() => child.exitCode).not.toBeNull();
       expect(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).toEqual({
         enabled: false,
+        spawn: false,
       });
     } finally {
       if (child.exitCode === null) child.kill('SIGKILL');
@@ -94,7 +95,10 @@ it.skipIf(process.platform === 'win32')('leaves a remote agent’s watcher runni
   try {
     await reapDetachedLocalWatchers();
     expect(child.exitCode).toBeNull();
-    expect(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).toEqual({ enabled: true });
+    expect(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).toEqual({
+      enabled: true,
+      spawn: true,
+    });
   } finally {
     child.kill('SIGKILL');
   }
@@ -112,6 +116,7 @@ it.skipIf(process.platform === 'win32')(
       await reapDetachedLocalWatchers();
       expect(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).toEqual({
         enabled: true,
+        spawn: true,
       });
     } finally {
       unrelated.kill('SIGKILL');
@@ -122,7 +127,10 @@ it.skipIf(process.platform === 'win32')(
 it('leaves a root alone when no agent claims it rather than guessing', async () => {
   const root = await watcherRoot('switch-agent-unknown');
   await reapDetachedLocalWatchers();
-  expect(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).toEqual({ enabled: true });
+  expect(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).toEqual({
+    enabled: true,
+    spawn: true,
+  });
 });
 
 it('does nothing when no watcher state was ever written', async () => {

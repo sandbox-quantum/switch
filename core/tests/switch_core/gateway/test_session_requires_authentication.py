@@ -49,6 +49,9 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     ("POST", "/auth/login"),
     ("GET", "/auth/oidc/callback"),
     ("POST", "/tenants/{tenant_id}/switch"),
+    # Locks the caller's `users` row, which has no tenant, while it creates a
+    # workspace that has none yet either.
+    ("POST", "/tenants"),
 }
 
 # Every route that does not resolve a tenant, for any reason. `get_current_user`
@@ -155,9 +158,9 @@ def test_every_route_taking_the_session_also_authenticates() -> None:
     )
 
 
-def test_the_routes_with_no_tenant_bound_are_exactly_these_three() -> None:
+def test_the_routes_with_no_tenant_bound_are_exactly_these() -> None:
     """The exemption above is not a list to grow casually: `get_system_session`
-    exists so that adding a fourth is a visible act, not a signature nobody
+    exists so that adding another is a visible act, not a signature nobody
     reads."""
     assert {
         route.key for route in ROUTES if get_system_session in route.calls

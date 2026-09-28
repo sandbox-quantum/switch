@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { agentEvents } from '@main/core/agents/agent-events';
+import { getAgentLocation } from '@main/core/agents/agent-location';
+import { resolveWorkspaceFsFor } from '@main/core/agents/agent-workspace-fs';
 import { createAgent } from '@main/core/agents/createAgent';
 import { getLocationAgentsOnServer } from '@main/core/agents/getAgents';
+import { importAgentConfig } from '@main/core/agents/import-agent-config';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import { fetchAgentDetail } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import type { Agent } from '@shared/core/agents/agents';
@@ -28,6 +32,20 @@ export async function adoptSubagent(
   const remote = await fetchAgentDetail(server, switchAgentId);
   if (remote.id !== switchAgentId)
     throw new Error('Switch returned a different subagent identity.');
+  // Every agent has a config file; a subagent's comes from its own definition.
+  // Written before the row, so a failure leaves no agent behind that has none.
+  const location = await getAgentLocation(parent);
+  const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  try {
+    await importAgentConfig({
+      workspaceFs: workspace.fs,
+      repoAgents: getPlugin(parent.providerId).behavior.repoAgents ?? null,
+      name,
+      providerConfig: parent.providerConfig,
+    });
+  } finally {
+    workspace.close();
+  }
   const agent = await createAgent({
     id: randomUUID(),
     locationId: parent.locationId,

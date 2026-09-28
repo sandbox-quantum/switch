@@ -1,4 +1,3 @@
-import type { ClientCommand } from '@switch-console/shared/session-v1';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
@@ -1121,12 +1120,14 @@ function toRoomResult(json: RoomJson): TemplateProvisionResult {
 export async function createRoomFromTemplate(
   server: SwitchServer,
   yamlText: string,
-  inputs: Record<string, string | number | boolean>
+  inputs: Record<string, string | number | boolean>,
+  /** The template's display name, so the run it starts says where it came from. */
+  templateName?: string
 ): Promise<ProvisionFromTemplateResult> {
   const res = await gatewayFetch(server, '/rooms/from-yaml', {
     authenticated: true,
     method: 'POST',
-    body: { yaml: yamlText, inputs },
+    body: { yaml: yamlText, inputs, ...(templateName ? { template_name: templateName } : {}) },
   });
   const json = (await res.json()) as
     | RoomJson
@@ -1146,6 +1147,142 @@ export async function createRoomFromTemplate(
     };
   }
   return { kind: 'room', ...toRoomResult(json) };
+}
+
+// ── Template runs ───────────────────────────────────────────────────────────
+
+/** `paused` waits for its owner to continue it; `stopped` refuses further
+ * agent room creation for good. */
+export type TemplateRunState = 'running' | 'paused' | 'stopped';
+
+/** One room of a run, the root included. */
+export type TemplateRunRoom = {
+  id: string;
+  name: string;
+  /** Null for the root room. */
+  parentRoomId: string | null;
+  /** Null when a person created the room. */
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
+  templateName: string | null;
+  createdAt: string;
+  archived: boolean;
+};
+
+/**
+ * A chain of rooms that started in one room a person made: every room an
+ * agent created from there, and every room those rooms' agents created.
+ */
+export type TemplateRun = {
+  rootRoomId: string;
+  rootRoomName: string;
+  /** The person who made the root room, or the agent that did. */
+  startedByName: string | null;
+  /** The first template used in the run. */
+  templateName: string | null;
+  startedAt: string;
+  lastActivityAt: string;
+  state: TemplateRunState;
+  /** An agent is mid-turn in one of the run's rooms right now. */
+  working: boolean;
+  /** Why the run is paused or stopped, as a sentence. */
+  reason: string | null;
+  /** Who stopped or continued it. Null when the server paused it. */
+  changedByName: string | null;
+  /** The room a paused request would have repeated. */
+  pausedRepeatOf: string | null;
+  /** Whether the signed-in user may stop or continue it. */
+  canControl: boolean;
+  /** In creation order, the root first. */
+  rooms: TemplateRunRoom[];
+};
+
+type TemplateRunRoomJson = {
+  id: string;
+  name: string;
+  parent_room_id: string | null;
+  created_by_agent_id: string | null;
+  created_by_agent_name: string | null;
+  template_name: string | null;
+  created_at: string;
+  archived: boolean;
+};
+
+type TemplateRunJson = {
+  root_room_id: string;
+  root_room_name: string;
+  started_by_name: string | null;
+  template_name: string | null;
+  started_at: string;
+  last_activity_at: string;
+  state: TemplateRunState;
+  working?: boolean;
+  reason: string | null;
+  changed_by_name: string | null;
+  paused_repeat_of: string | null;
+  can_control: boolean;
+  rooms: TemplateRunRoomJson[];
+};
+
+function toTemplateRun(json: TemplateRunJson): TemplateRun {
+  return {
+    rootRoomId: json.root_room_id,
+    rootRoomName: json.root_room_name,
+    startedByName: json.started_by_name ?? null,
+    templateName: json.template_name,
+    startedAt: json.started_at,
+    lastActivityAt: json.last_activity_at,
+    state: json.state,
+    working: json.working ?? false,
+    reason: json.reason,
+    changedByName: json.changed_by_name,
+    pausedRepeatOf: json.paused_repeat_of,
+    canControl: json.can_control,
+    rooms: (json.rooms ?? []).map((r) => ({
+      id: r.id,
+      name: r.name,
+      parentRoomId: r.parent_room_id,
+      createdByAgentId: r.created_by_agent_id,
+      createdByAgentName: r.created_by_agent_name,
+      templateName: r.template_name,
+      createdAt: r.created_at,
+      archived: r.archived,
+    })),
+  };
+}
+
+/**
+ * The runs the signed-in user may see, newest activity first
+ * (`GET /template-runs`). Null when the server does not support the endpoint
+ * (404): a server from before runs were recorded.
+ */
+export async function fetchTemplateRuns(server: SwitchServer): Promise<TemplateRun[] | null> {
+  try {
+    const res = await gatewayFetch(server, '/template-runs', { authenticated: true });
+    const json = (await res.json()) as TemplateRunJson[];
+    return json.map(toTemplateRun);
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+/**
+ * Stop or continue a run (`POST /template-runs/{root}/stop` or `/continue`).
+ * The server answers 403 when the user may not control it, 404 for an unknown
+ * run and 409 for one already stopped; the `detail` says which.
+ */
+export async function changeTemplateRun(
+  server: SwitchServer,
+  rootRoomId: string,
+  action: 'stop' | 'continue'
+): Promise<TemplateRun> {
+  const res = await gatewayFetch(
+    server,
+    `/template-runs/${encodeURIComponent(rootRoomId)}/${action}`,
+    { authenticated: true, method: 'POST' }
+  );
+  return toTemplateRun((await res.json()) as TemplateRunJson);
 }
 
 // ── Stored templates (template registry) ────────────────────────────────────
@@ -1526,118 +1663,4 @@ export async function createRoom(
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
-}
-
-export async function fetchSdkSessions(server: SwitchServer): Promise<unknown> {
-  return (await gatewayFetch(server, '/sessions', { authenticated: true })).json();
-}
-export async function fetchSdkSnapshot(server: SwitchServer, sessionId: string): Promise<unknown> {
-  return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}`, {
-      authenticated: true,
-    })
-  ).json();
-}
-export async function fetchSdkEvents(
-  server: SwitchServer,
-  sessionId: string,
-  after: number
-): Promise<unknown> {
-  return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, {
-      authenticated: true,
-    })
-  ).json();
-}
-export async function fetchSdkCommandStatus(
-  server: SwitchServer,
-  sessionId: string,
-  commandId: string
-): Promise<unknown> {
-  return (
-    await gatewayFetch(
-      server,
-      `/sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}`,
-      { authenticated: true }
-    )
-  ).json();
-}
-export async function submitSdkCommand(
-  server: SwitchServer,
-  command: ClientCommand
-): Promise<unknown> {
-  return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(command.sessionId)}/commands`, {
-      authenticated: true,
-      method: 'POST',
-      body: {
-        commandId: command.commandId,
-        epoch: command.epoch,
-        surface: 'console',
-        roomId: null,
-        body: command.body,
-      },
-    })
-  ).json();
-}
-
-export async function reconcileSdkCommand(
-  server: SwitchServer,
-  command: ClientCommand
-): Promise<unknown> {
-  return (
-    await gatewayFetch(
-      server,
-      `/sessions/${encodeURIComponent(command.sessionId)}/commands/reconcile`,
-      {
-        authenticated: true,
-        method: 'POST',
-        body: {
-          commandId: command.commandId,
-          epoch: command.epoch,
-          surface: 'console',
-          roomId: null,
-          body: command.body,
-        },
-      }
-    )
-  ).json();
-}
-
-export async function uploadSdkAttachment(
-  server: SwitchServer,
-  sessionId: string,
-  file: {
-    attachmentId: string;
-    name: string;
-    mimeType: string;
-    data: string;
-  }
-): Promise<unknown> {
-  if (file.data.length > 14 * 1024 * 1024) throw new Error('Attachment exceeds 10 MiB.');
-  return (
-    await gatewayFetch(
-      server,
-      `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(file.attachmentId)}`,
-      {
-        authenticated: true,
-        method: 'PUT',
-        body: { name: file.name, mimeType: file.mimeType, data: file.data },
-      }
-    )
-  ).json();
-}
-
-export async function retireSdkSession(
-  server: SwitchServer,
-  sessionId: string,
-  epoch: string
-): Promise<unknown> {
-  return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/retire`, {
-      authenticated: true,
-      method: 'POST',
-      body: { epoch },
-    })
-  ).json();
 }

@@ -13,14 +13,6 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
-/**
- * An agent type is two things, and the page has to admit it (CHOO-1809).
- *
- * The CLI and its Switch connector were one row with one badge and one button.
- * That hid which half needed work, and left the connector with no controls of
- * its own — there was no way to update it, and "Switch setup required" named no
- * action you could take.
- */
 vi.mock('@renderer/lib/components/agent-icon', () => ({
   AgentIcon: () => null,
 }));
@@ -58,24 +50,8 @@ function step(patch: Partial<HostSetupStep>): HostSetupStep {
   };
 }
 
-function agentRow(
-  cli: Partial<HostSetupStep>,
-  plugin: Partial<HostSetupStep> | null
-): AgentTypeRow {
-  return {
-    agentId: 'claude',
-    name: 'Claude Code',
-    cli: step(cli),
-    plugin: plugin
-      ? step({
-          id: 'claude:plugin',
-          kind: 'agent-plugin',
-          name: 'Claude Code · Switch connector',
-          dependsOn: ['claude'],
-          ...plugin,
-        })
-      : null,
-  };
+function agentRow(cli: Partial<HostSetupStep>): AgentTypeRow {
+  return { agentId: 'claude', name: 'Claude Code', cli: step(cli) };
 }
 
 async function render(node: React.ReactNode): Promise<HTMLDivElement> {
@@ -121,53 +97,36 @@ const recheckButtons = (el: HTMLElement) => [
   ...el.querySelectorAll<HTMLButtonElement>('button[aria-label^="Re-check"]'),
 ];
 
-describe('the connector as its own row', () => {
-  it('shows the connector beneath the CLI', async () => {
-    const el = await render(view(agentRow({ state: 'satisfied' }, { state: 'satisfied' })));
+describe('an agent type row', () => {
+  it('shows the CLI with its own re-check', async () => {
+    const el = await render(view(agentRow({ state: 'satisfied' })));
 
     expect(text(el)).toContain('Claude Code');
-    expect(text(el)).toContain('Switch connector');
+    expect(recheckButtons(el)).toHaveLength(1);
   });
 
-  it('gives each half its own re-check', async () => {
-    const el = await render(view(agentRow({ state: 'satisfied' }, { state: 'satisfied' })));
-
-    expect(recheckButtons(el)).toHaveLength(2);
-  });
-
-  it('re-checks only the step whose button was clicked', async () => {
-    const onRecheck = vi.fn();
-    const el = await render(
-      view(agentRow({ state: 'satisfied' }, { state: 'satisfied' }), { onRecheck })
-    );
-
-    await act(async () => recheckButtons(el)[1]!.click());
-
-    expect(onRecheck).toHaveBeenCalledExactlyOnceWith('claude:plugin');
-  });
-
-  it('installs the connector, not the CLI, from the connector row', async () => {
+  it('installs the CLI', async () => {
     const onInstall = vi.fn();
     const el = await render(
-      view(agentRow({ state: 'satisfied' }, { state: 'pending', outcome: 'missing' }), {
-        onInstall,
-      })
+      view(agentRow({ state: 'pending', outcome: 'missing' }), { onInstall })
     );
 
     const install = buttons(el).find((b) => b.textContent?.trim() === 'Install');
     await act(async () => install!.click());
 
-    expect(onInstall).toHaveBeenCalledExactlyOnceWith('claude:plugin');
+    expect(onInstall).toHaveBeenCalledExactlyOnceWith('claude');
   });
 
-  it('offers the connector its own update', async () => {
+  it('offers an update when a newer CLI exists', async () => {
     const onUpdate = vi.fn();
     const el = await render(
       view(
-        agentRow(
-          { state: 'satisfied', version: '2.1.0' },
-          { state: 'satisfied', version: '0.7.6', latestVersion: '0.7.7', updateAvailable: true }
-        ),
+        agentRow({
+          state: 'satisfied',
+          version: '2.1.0',
+          latestVersion: '2.2.0',
+          updateAvailable: true,
+        }),
         { onUpdate }
       )
     );
@@ -175,78 +134,17 @@ describe('the connector as its own row', () => {
     const update = buttons(el).find((b) => b.textContent?.trim() === 'Update');
     await act(async () => update!.click());
 
-    expect(onUpdate).toHaveBeenCalledExactlyOnceWith('claude:plugin');
-  });
-
-  it('can update one half while the other is current', async () => {
-    // Two rows, two verdicts: an out-of-date CLI and an out-of-date connector
-    // are different facts and each gets its own button.
-    const el = await render(
-      view(
-        agentRow(
-          { state: 'satisfied', version: '2.1.0', latestVersion: '2.2.0', updateAvailable: true },
-          { state: 'satisfied', version: '0.7.7' }
-        )
-      )
-    );
-
-    expect(labels(el).filter((l) => l === 'Update')).toHaveLength(1);
-  });
-});
-
-/**
- * The connector is installed *by* the agent's own CLI, so with the CLI absent
- * there is nothing to install it with. Offering the button anyway produced a
- * failure that named the connector rather than the missing CLI.
- */
-describe('the connector depends on the CLI', () => {
-  const cliMissing = agentRow(
-    { state: 'pending', outcome: 'missing' },
-    { state: 'pending', outcome: 'missing' }
-  );
-
-  it('offers no install for the connector while the CLI is missing', async () => {
-    const el = await render(view(cliMissing));
-
-    // The CLI's own Install is still offered — exactly one, not two.
-    expect(labels(el).filter((l) => l === 'Install')).toHaveLength(1);
-  });
-
-  it('says what it is waiting for instead', async () => {
-    const el = await render(view(cliMissing));
-
-    expect(text(el)).toContain('Needs Claude Code first');
-  });
-
-  it('offers the connector its actions once the CLI is there', async () => {
-    const el = await render(
-      view(agentRow({ state: 'satisfied' }, { state: 'pending', outcome: 'missing' }))
-    );
-
-    expect(labels(el).filter((l) => l === 'Install')).toHaveLength(1);
-    expect(recheckButtons(el)).toHaveLength(2);
-  });
-});
-
-describe('a plan with no connector step', () => {
-  it('renders the CLI alone rather than an empty sub-row', async () => {
-    // Plans persisted before connector steps existed have no plugin half.
-    const el = await render(view(agentRow({ state: 'satisfied' }, null)));
-
-    expect(text(el)).not.toContain('Switch connector');
-    expect(recheckButtons(el)).toHaveLength(1);
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith('claude');
   });
 });
 
 describe('actions while the host is working', () => {
-  it('withdraws both rows’ actions, keeping only the checks', async () => {
+  it('withdraws the install, keeping only the check', async () => {
     const el = await render(
-      view(agentRow({ state: 'satisfied' }, { state: 'pending', outcome: 'missing' }), {
-        hostBusy: true,
-      })
+      view(agentRow({ state: 'pending', outcome: 'missing' }), { hostBusy: true })
     );
 
     expect(labels(el)).not.toContain('Install');
-    expect(recheckButtons(el)).toHaveLength(2);
+    expect(recheckButtons(el)).toHaveLength(1);
   });
 });

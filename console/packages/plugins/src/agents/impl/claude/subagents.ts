@@ -6,9 +6,10 @@ import {
   type RepoAgentAttributes,
   type RepoAgentDefinition,
   type RepoAgentField,
-  RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,
+  type RepoAgentLaunchDefinition,
+  RECOGNISED_SWITCH_TOOL_RULES,
   SWITCH_AGENT_SETTINGS_DIR,
-  SWITCH_CONNECTOR_TOOL_RULES,
+  SWITCH_TOOL_RULES,
 } from '@switch-console/core/agents/plugins';
 
 /**
@@ -33,15 +34,15 @@ export const CLAUDE_SUBAGENTS = {
 
 const SWITCH_ENV_KEYS = ['SWITCH_API_ENDPOINT', 'SWITCH_API_TOKEN', 'SWITCH_AGENT_ID'] as const;
 
-/** Prefix of the Switch connector's MCP tools. A subagent can only participate
- * in Switch if its tool allowlist grants it (or omits `tools` entirely, which
- * Claude Code reads as "all tools"). */
-const SWITCH_MCP_TOOL_PREFIX = 'mcp__plugin_switch-connector_switch';
+/** Prefix of one tool of the `switch` MCP server. A subagent can only
+ * participate in Switch if its tool allowlist grants the server or one of its
+ * tools (or omits `tools` entirely, which Claude Code reads as "all tools"). */
+const SWITCH_MCP_TOOL_PREFIX = 'mcp__switch__';
 
 /** Rules to strip on read-back, so the form shows only the user's own tools.
  * Wider than what is written, so a definition authored by an older Switch Console
  * does not surface a retired rule as if the user had chosen it. */
-const SWITCH_RULES: readonly string[] = RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES;
+const SWITCH_RULES: readonly string[] = RECOGNISED_SWITCH_TOOL_RULES;
 
 const MD_SUFFIX = '.md';
 
@@ -246,6 +247,57 @@ function parseFrontmatter(content: string): SubagentFrontmatter {
   };
 }
 
+/**
+ * Frontmatter keys the SDK's agent definition has no equivalent for: `color`
+ * only tints the agent's name in the terminal, and `isolation` gives a delegated
+ * subagent its own worktree, which means nothing for the session's own thread.
+ */
+const TERMINAL_ONLY_KEYS = new Set(['color', 'isolation']);
+
+/**
+ * The SDK agent definition for these attributes — the same agent
+ * {@link serializeDefinition} writes to disk, handed over directly instead.
+ *
+ * Mirrors it rule for rule: the Switch tools are merged into a non-empty
+ * `tools` allowlist and never denied, empty values are left out so the
+ * session's own defaults apply, and the description stands in as the prompt
+ * when there are no instructions.
+ */
+function launchDefinitionFor(attributes: RepoAgentAttributes): RepoAgentLaunchDefinition {
+  const description = toScalar(attributes.description).replace(/\s*\r?\n\s*/g, ' ');
+  const definition: RepoAgentLaunchDefinition = {
+    description,
+    prompt: toScalar(attributes[BODY_KEY]) || description,
+  };
+
+  for (const key of FRONTMATTER_FIELD_KEYS) {
+    if (TERMINAL_ONLY_KEYS.has(key)) continue;
+    const raw = attributes[key];
+    if (key === 'tools') {
+      const list = toList(raw);
+      if (list.length > 0) definition.tools = dedupe([...list, ...SWITCH_TOOL_RULES]);
+      continue;
+    }
+    if (key === 'disallowedTools') {
+      const list = toList(raw).filter((t) => !SWITCH_RULES.includes(t));
+      if (list.length > 0) definition.disallowedTools = list;
+      continue;
+    }
+    if (BOOLEAN_KEYS.has(key)) {
+      if (raw === true || raw === 'true') definition[key] = true;
+      continue;
+    }
+    if (NUMBER_KEYS.has(key)) {
+      const n = typeof raw === 'number' ? raw : raw ? Number(raw) : NaN;
+      if (Number.isFinite(n) && n > 0) definition[key] = n;
+      continue;
+    }
+    const scalar = toScalar(raw);
+    if (scalar.length > 0) definition[key] = scalar;
+  }
+  return definition;
+}
+
 /** The markdown body after the leading frontmatter fence (empty when none). */
 function extractBody(content: string): string {
   const normalised = content.replace(/^﻿/, '');
@@ -282,7 +334,7 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
     if (key === 'tools') {
       const list = toList(raw);
       if (list.length > 0) {
-        lines.push(`tools: ${dedupe([...list, ...SWITCH_CONNECTOR_TOOL_RULES]).join(', ')}`);
+        lines.push(`tools: ${dedupe([...list, ...SWITCH_TOOL_RULES]).join(', ')}`);
       }
       continue;
     }
@@ -316,7 +368,9 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
 function isEligible(tools: string[] | null): boolean {
   // No `tools` line → inherits every tool (including the Switch MCP tools).
   if (tools === null) return true;
-  return tools.some((tool) => tool.startsWith(SWITCH_MCP_TOOL_PREFIX));
+  return tools.some(
+    (tool) => SWITCH_RULES.includes(tool) || tool.startsWith(SWITCH_MCP_TOOL_PREFIX)
+  );
 }
 
 function asNonEmptyString(value: unknown): string | null {
@@ -487,6 +541,10 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
 
   definitionPath(name: string): string {
     return definitionRelPath(name);
+  },
+
+  launchDefinition(attributes: RepoAgentAttributes): RepoAgentLaunchDefinition {
+    return launchDefinitionFor(attributes);
   },
 
   async writeDefinition(workspaceFs, attributes: RepoAgentAttributes): Promise<void> {

@@ -25,38 +25,28 @@ function buildCodexArgs(autoApprove: boolean): string[] {
 /**
  * The registry's argv fields describe the plugin rather than driving it, so
  * nothing at runtime notices when the two disagree. Codex is the entry worth
- * pinning: its flags suppress approval prompts and bypass hook trust, so a
- * stale mirror misrepresents how much access a session is launched with.
+ * pinning: its flags suppress approval prompts, so a stale mirror
+ * misrepresents how much access a session is launched with.
  */
 describe('codex registry metadata matches the argv the plugin builds', () => {
-  it('emits the mirrored defaultArgs and autoApproveFlag', () => {
+  it('emits the mirrored autoApproveFlag', () => {
     const def = getProvider('codex')!;
     const args = buildCodexArgs(true);
 
-    expect(def.defaultArgs).toBeDefined();
     expect(def.autoApproveFlag).toBeDefined();
-    expect(containsSequence(args, def.defaultArgs!)).toBe(true);
     expect(containsSequence(args, splitFlag(def.autoApproveFlag!))).toBe(true);
   });
 
   it('leaves the sandbox to the user config on both sides of the mirror', () => {
     // Auto-approve means unattended approvals, not unattended filesystem and
-    // network access. Codex runs hooks outside the sandbox, so Switch Console's
-    // loopback hook curls do not need one relaxed on their behalf.
+    // network access.
     const def = getProvider('codex')!;
 
     expect(def.autoApproveFlag).not.toContain('sandbox_mode');
     expect(buildCodexArgs(true).join(' ')).not.toContain('sandbox_mode');
   });
 
-  it('emits defaultArgs on a session that does not auto-approve', () => {
-    // Hook trust belongs in defaultArgs, not autoApproveFlag: Codex silently
-    // skips hooks it has no trust entry for, so gating it on auto-approve
-    // leaves a default session running none of Switch Console's hooks.
-    const def = getProvider('codex')!;
-    const args = buildCodexArgs(false);
-
-    expect(containsSequence(args, def.defaultArgs!)).toBe(true);
-    expect(args).not.toContain('-c');
+  it('adds no approval override on a session that does not auto-approve', () => {
+    expect(buildCodexArgs(false)).not.toContain('-c');
   });
 });

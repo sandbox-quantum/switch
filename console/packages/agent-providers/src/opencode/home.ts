@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { parse, type ParseError } from 'jsonc-parser/lib/esm/main.js';
-import { linkHomeAsset, optionalText } from '../host/provider-home';
+import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
 import type { OpencodeConfigFile } from './config';
 import type { OpencodeSkill } from './server';
 
@@ -52,8 +52,10 @@ export async function prepareOpencodeHome(
           ? inherited.permission
           : { ...config.permission, ...object(inherited.permission) },
     };
-    for (const name of ['skills', 'agents', 'commands', 'plugins'])
+    for (const name of ['agents', 'commands', 'plugins'])
       await linkHomeAsset(join(source, name), join(target, name));
+    await mkdir(join(target, 'skills'));
+    await linkSkills(join(source, 'skills'), join(target, 'skills'));
     // Managed skills use a separate search directory so user files are never overwritten.
     const nativeSkills = object(inherited.skills);
     const paths = nativeSkills.paths ?? [];

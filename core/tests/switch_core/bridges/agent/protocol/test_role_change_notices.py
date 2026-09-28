@@ -77,18 +77,24 @@ class _FakeRoomRoleStore:
         return self._role
 
     async def get_agent_live_lease(
-        self, _session: Any, _agent_id: str, _alive: Any = ()
+        self, _session: Any, _agent_id: str, _live_conns: Any = ()
     ) -> Any | None:
         return self._agent_lease
 
     async def acquire_lease(
-        self, _session: Any, role: Any, agent_id: str, _tx: str | None, _alive: Any = ()
+        self,
+        _session: Any,
+        role: Any,
+        agent_id: str,
+        _tx: str | None,
+        _session_id: str | None,
+        _live_conns: Any = (),
     ) -> Any:
         self.acquired = True
         return SimpleNamespace(role_id=role.id, agent_id=agent_id)
 
     async def agent_room_role(
-        self, _session: Any, _room_id: str, _agent_id: str, _alive: Any = ()
+        self, _session: Any, _room_id: str, _agent_id: str, _live_conns: Any = ()
     ) -> str | None:
         return self._lease_role_name
 
@@ -127,7 +133,7 @@ class TestAssumeNotice:
         store = _FakeRoomRoleStore(role=_ROLE, agent_lease=None)
         svc = _build_service(role_store=store, client=client, members=["a1"])
 
-        result = await svc.assume_room_role("a1", "room-1", "manager", "tx-1")
+        result = await svc.assume_room_role("a1", "room-1", "manager", "tx-1", None)
 
         assert result == {"role": "manager", "instructions": "coordinate"}
         assert store.acquired is True
@@ -139,7 +145,7 @@ class TestAssumeNotice:
         store = _FakeRoomRoleStore(role=_ROLE, agent_lease=prior)
         svc = _build_service(role_store=store, client=client, members=["a1"])
 
-        await svc.assume_room_role("a1", "room-1", "manager", "tx-1")
+        await svc.assume_room_role("a1", "room-1", "manager", "tx-1", None)
 
         assert store.acquired is True
         assert client.sent == []

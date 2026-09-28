@@ -7,7 +7,7 @@
  * for detail — so a host reads like the rest of the product.
  */
 
-import { GitBranch, Package, Puzzle, RefreshCw, Server } from 'lucide-react';
+import { GitBranch, Package, RefreshCw, Server } from 'lucide-react';
 import { Loader2 } from 'lucide-react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { Button } from '@renderer/lib/ui/button';
@@ -55,6 +55,7 @@ function Row({
   icon,
   name,
   subtitle,
+  status,
   progress,
   badge,
   highlighted,
@@ -64,6 +65,8 @@ function Row({
   icon: React.ReactNode;
   name: string;
   subtitle?: string | null;
+  /** A status line beside the subtitle, such as the CLI's sign-in state. */
+  status?: React.ReactNode;
   /** What the running command last printed. Takes the subtitle's place while it runs. */
   progress?: string | null;
   badge: BadgeSpec;
@@ -92,7 +95,14 @@ function Row({
           {progress ? (
             <span className="truncate font-mono text-[11px] text-foreground-muted">{progress}</span>
           ) : (
-            subtitle && <span className="truncate text-xs text-foreground-muted">{subtitle}</span>
+            (subtitle || status) && (
+              <span className="flex min-w-0 items-center gap-2">
+                {subtitle && (
+                  <span className="truncate text-xs text-foreground-muted">{subtitle}</span>
+                )}
+                {status}
+              </span>
+            )
           )}
         </span>
       </button>
@@ -312,20 +322,7 @@ function StepControls({
   );
 }
 
-/**
- * An agent type: its CLI, and its Switch connector indented beneath it.
- *
- * The two were one row with one badge and one button, on the theory that a user
- * thinks of an agent type as a single thing. That hid which half needed work and
- * gave the connector no controls of its own — you could not update it, and its
- * "Switch setup required" state named no action.
- *
- * They are now separate rows, with the connector indented under the CLI to show
- * what it hangs off. That relationship is real, not decorative: the connector is
- * installed *by* the CLI, so with the CLI absent there is nothing to install it
- * with — the sub-row says what it is waiting for instead of offering a button
- * that would fail.
- */
+/** An agent type: its CLI row. */
 export function AgentTypeRowItem({
   row,
   currentStepId,
@@ -338,9 +335,10 @@ export function AgentTypeRowItem({
   onUpdate,
   onRecheck,
   onOpen,
+  signIn,
 }: {
   row: AgentTypeRow;
-  /** The step the plan says is in flight — highlights that row, not both. */
+  /** The step the plan says is in flight. */
   currentStepId: string | null;
   installingStepId: string | null;
   /** The step whose update is in flight, if any. */
@@ -349,72 +347,38 @@ export function AgentTypeRowItem({
   recheckingStepId: string | null;
   /** True while any operation is running on this host. */
   hostBusy: boolean;
-  /** A row covers two steps, so it asks per step which one is talking. */
+  /** What the step's command is doing right now, if anything. */
   activityFor: (stepId: string) => string | null;
   onInstall: (stepId: string) => void;
   onUpdate: (stepId: string) => void;
   onRecheck: (stepId: string) => void;
   onOpen: () => void;
+  /** Whether the CLI is signed in on this host, when that can be asked. */
+  signIn?: React.ReactNode;
 }) {
-  const plugin = row.plugin;
-  // The connector is installed through the agent's own CLI. Until that exists,
-  // an Install button here is an offer we cannot honour.
-  const cliReady = row.cli.state === 'satisfied';
   return (
-    <>
-      <Row
-        icon={<AgentIcon id={row.agentId} size={16} />}
-        name={row.name}
-        subtitle={versionSubtitle(row.cli)}
-        progress={activityFor(row.cli.id)}
-        badge={stepBadge(row.cli)}
-        highlighted={currentStepId === row.cli.id}
-        action={
-          <StepControls
-            step={row.cli}
-            installing={installingStepId === row.cli.id}
-            updating={updatingStepId === row.cli.id}
-            rechecking={recheckingStepId === row.cli.id}
-            hostBusy={hostBusy}
-            label={row.name}
-            onInstall={() => onInstall(row.cli.id)}
-            onUpdate={() => onUpdate(row.cli.id)}
-            onRecheck={() => onRecheck(row.cli.id)}
-          />
-        }
-        onClick={onOpen}
-      />
-
-      {plugin && (
-        // Indented and rule-marked, so the connector reads as belonging to the
-        // CLI above rather than as a seventh thing on the host.
-        <div className="ml-6 border-l border-border pl-3">
-          <Row
-            icon={<Puzzle className="size-4 text-foreground-muted" />}
-            name="Switch connector"
-            subtitle={cliReady ? versionSubtitle(plugin) : `Needs ${row.name} first`}
-            progress={activityFor(plugin.id)}
-            badge={stepBadge(plugin)}
-            highlighted={currentStepId === plugin.id}
-            action={
-              cliReady ? (
-                <StepControls
-                  step={plugin}
-                  installing={installingStepId === plugin.id}
-                  updating={updatingStepId === plugin.id}
-                  rechecking={recheckingStepId === plugin.id}
-                  hostBusy={hostBusy}
-                  label={`the ${row.name} Switch connector`}
-                  onInstall={() => onInstall(plugin.id)}
-                  onUpdate={() => onUpdate(plugin.id)}
-                  onRecheck={() => onRecheck(plugin.id)}
-                />
-              ) : null
-            }
-            onClick={onOpen}
-          />
-        </div>
-      )}
-    </>
+    <Row
+      icon={<AgentIcon id={row.agentId} size={16} />}
+      name={row.name}
+      subtitle={versionSubtitle(row.cli)}
+      status={signIn}
+      progress={activityFor(row.cli.id)}
+      badge={stepBadge(row.cli)}
+      highlighted={currentStepId === row.cli.id}
+      action={
+        <StepControls
+          step={row.cli}
+          installing={installingStepId === row.cli.id}
+          updating={updatingStepId === row.cli.id}
+          rechecking={recheckingStepId === row.cli.id}
+          hostBusy={hostBusy}
+          label={row.name}
+          onInstall={() => onInstall(row.cli.id)}
+          onUpdate={() => onUpdate(row.cli.id)}
+          onRecheck={() => onRecheck(row.cli.id)}
+        />
+      }
+      onClick={onOpen}
+    />
   );
 }

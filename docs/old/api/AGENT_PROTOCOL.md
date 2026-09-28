@@ -112,11 +112,14 @@ selects *events within them*.
 | `all` | every event in subscribed rooms, each carrying `addressed` |
 | `addressed` | only addressed messages, task events, and opted-in room joins |
 
-A session uses `single` + `all` — it needs unaddressed traffic for context and
-for missed-message counts. A daemon uses `all` + `addressed` — it is watching
-for a reason to start a session, not following conversations. This is what
-makes the separate `/notifications` endpoint and the second notification builder
-(CHOO-1810) removable — neither has actually been removed yet.
+A session uses `single` + `all` — it needs unaddressed traffic for context. The
+count of what it missed no longer depends on that: it is derived from the
+buffer per room, so a connection under `addressed` is counted the same way and
+its filtered-out traffic is not lost to the tally. A daemon uses `all` +
+`addressed` — it is watching for a reason to start a session, not following
+conversations. This is what makes the separate `/notifications` endpoint and
+the second notification builder (CHOO-1810) removable — neither has actually
+been removed yet.
 
 ### 2.4 Room slots
 
@@ -129,6 +132,10 @@ makes the separate `/notifications` endpoint and the second notification builder
   dark on R** — it receives nothing for R until the claim is released.
 - When the claiming connection dies, coverage returns to the `all` connection
   automatically.
+- Subscribing a `single`-scope connection to a new room **replaces** the room
+  it held. Where the connection carries several sessions, it holds the union of
+  their rooms and each is released by the session leaving it, not by the next
+  subscription.
 
 Exactly one recipient per room at all times: no duplicate delivery, no
 coordination needed for handoff in either direction.
@@ -158,6 +165,17 @@ room and nothing says why. A **dead** incumbent is not an eviction and is not
 reported: `claimant_of` filters on liveness, so a restart meeting its own stale
 connection displaces nobody.
 
+**The slot is also enforced between sessions sharing a connection.** The rule
+above is about connections, and the registry can only evict by connection: two
+sessions of one agent arriving over the same controller connection look to it
+like the incumbent re-claiming its own room, so nothing is evicted and both sit
+in the room receiving the same events. `bind_room` therefore takes the room off
+any other *running* session of the agent and returns the one it displaced,
+which `connect_to_room` reports in the same `warning`, naming the session
+rather than a connection. A session whose host lease has lapsed is left alone —
+nothing routes to it, and announcing an eviction to a host that stopped days
+ago is noise.
+
 ### 2.5 Sessions are not a server concept
 
 Switch models connections, not sessions. Whether a client runs one PTY or ten
@@ -169,8 +187,19 @@ stays structural (each session's stream and MCP live in one process), failure
 is isolated (the daemon dying does not disconnect running sessions), and a bare
 terminal session with no daemon works identically.
 
-A client may later multiplex sessions behind one connection. Switch does not
-need to change for that.
+**A client may multiplex sessions behind one connection, and this did need
+changing.** Switch still models no session of its own, but it does now hold the
+SDK sessions a supervisor runs, and those were identified by their connection:
+one unique index said a connection named at most one session, and every
+room-scoped question was answered from the connection. Both had to go. A
+connection's rooms are the union of its sessions' rooms, so it answers "which
+room did this caller mean" for all of them at once and for none of them
+correctly. What identifies a caller is its session id behind the host-and-epoch
+fence; the connection is the route its events take. Where a caller names no
+session — every client predating the selector — the connection is still the
+answer, and two such callers behind one connection are genuinely
+indistinguishable: a room command that matches both is refused with
+`FENCING_REQUIRED` rather than delivered to a guess.
 
 ---
 
@@ -244,10 +273,25 @@ Never silent is not the same as immediate. A gap is reported to the *client*
 the moment it is detected, but a client must not wake its agent for one on its
 own: the only available response is to re-read context, and the agent cannot
 know whether anything it cared about was dropped, so an interrupt per hiccup
-buys a turn spent on a maybe. Clients hold the reason and attach it to the next
-event they surface — still ahead of any reply that stale context could skew,
-at no cost of its own. A gap that is never followed by a surfaced event is one
-the agent had no turn to misuse anyway; it stays in the client's log.
+buys a turn spent on a maybe. What the agent is eventually told rides out on
+the next event it is woken for, in the unread count for the room the gap
+applies to (§6.1) — still ahead of any reply that stale context could skew, at
+no cost of its own. A gap that is never followed by a surfaced event is one the
+agent had no turn to misuse anyway; it stays in the client's log.
+
+The server does the attaching, not the client. A client only ever sees what its
+own connection was sent, so a gap it holds cannot say which room lost what, and
+a count it keeps answers a different question from "how far behind is this
+agent in this room". Both are derived from the buffer instead.
+
+A restart is the one loss that no room escapes. The buffer is in memory, so
+every room of that agent loses what it was caught up through — not only the
+rooms the reconnecting connection names, which for a connection watching all
+rooms is none of them, and whose sessions claim theirs afterwards. The gap
+frame says so with `all_rooms`, and the server holds the agent to it: a room
+counted for the first time after a restart starts unknown as well, and is
+answered with "cannot be said" rather than a count of what is left, until
+somebody reads it and a baseline can be established again.
 
 ### 4.3 Confirmation
 
@@ -444,6 +488,7 @@ data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channe
 | `bridge_id` | string \| null | collaboration bridge, if any |
 | `channel_type` | string \| null | `channel_public`, `channel_private`, `direct` |
 | `payload` | object | per type |
+| `missed` | `{count, reason}` \| absent | how far behind the reader is on unaddressed chatter in this event's room, as of this event. Only on events the agent is woken for. `count` is null when nothing can be stated and `reason` says why; a `reason` beside a number means the number is a floor, because history was dropped |
 
 ### 6.2 `message`
 
@@ -509,7 +554,7 @@ New, carried on the same stream:
 |---|---|---|
 | `connection_state` | `connection_id`, `agent_id`, `scope`, `filter`, `spawn_capable`, `rooms`, `cursor`, `protocol`, `heartbeat_interval_seconds`, `server`, `client` | first event on every stream |
 | `subscription_changed` | `rooms`, `reason` | scope changed — including a room going dark because another connection claimed it |
-| `gap` | `from_sequence`, `resumed_at`, `reason` | events were dropped; re-read context. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
+| `gap` | `from_sequence`, `resumed_at`, `rooms`, `all_rooms`, `reason` | events were dropped; re-read context. `rooms` names which rooms lost them, so a client with a dozen has something to act on. `all_rooms` is true when the loss is not confined to the named rooms — a server restart takes every room's history with it, including rooms this connection has yet to claim, and a connection watching all rooms names none of its own. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
 | `evicted` | `reason` | this connection lost its slot or was taken over; it must stop acting |
 
 `gap` and `evicted` exist so that degradation is always visible. A client that
@@ -546,7 +591,7 @@ one registry**:
 
 - **MCP** — the tool surface an agent model calls.
 - **HTTP** — `POST /agents/{agent_id}/ops/{operation}`, arguments as the JSON
-  body, `X-Switch-Connection-Id` naming the caller's connection.
+  body, and a header selector naming what the caller is bound to (§7.1).
 
 **Operation names are the MCP tool names verbatim.** A runtime translating
 between the two is `POST /ops/${toolName}` and nothing more — no mapping table
@@ -572,12 +617,40 @@ parameters, read straight off the registry.
 
 An operation needs two things about its caller: **which agent** (the bearer
 token) and **which session or connection** it belongs to. Over MCP the latter
-is the transport session; over HTTP it is the connection id. Both are derived
-by the server — from the credential and the header — never taken from the
-request body.
+is the transport session. Over HTTP the caller names it in headers — never in
+the request body — and may name it two ways:
 
-A connection id belonging to a different agent, or to one that has died, is
-**refused**, not silently treated as "no connection".
+- **The connection selector.** `X-Switch-Connection-Id`, naming an open
+  connection of the authenticated agent.
+- **The session selector.** `X-Switch-Session-Id` together with
+  `X-Switch-Session-Host-Id` and `X-Switch-Session-Epoch`, naming a session of
+  the authenticated agent. All three are required: the host and the epoch are
+  the fence the session's own endpoints already enforce, and a bare session id
+  would be a name anyone could claim. The server answers the selector with the
+  connection that session bound.
+
+While a session owns at most one connection the two resolve to the same thing,
+so a caller may move from one selector to the other without anything else
+changing.
+
+The session selector can only be sent by a caller that is told what it is. A
+session's id and host id are fixed for its life, but its epoch is re-minted
+server-side whenever it recovers, so the three cannot be read once at startup
+and held — a supervisor that shares a connection between several sessions has
+to keep telling each of them which generation it is in, and the client has to
+re-read that on every call. A caller nobody supervises knows none of the three
+and sends its connection id alone, which is what the connection selector is
+for. Sending nothing is never the right answer to not knowing: an incomplete
+selector is refused, and a supervised caller that fell back to its connection
+would resolve to whichever of the connection's sessions bound last.
+
+Both are derived by the server — from the credential and the headers — and
+neither may be approximately right. A selector naming another agent's or
+another tenant's session or connection, an incomplete session selector, a
+session that has bound no connection, a connection that has died, and a
+request whose two selectors disagree are all **refused**, not silently treated
+as "no connection". An incomplete selector is `400`; a cross-agent session is
+`403` and an unknown one `404`; everything else is `409`.
 
 ### 7.2 The operations
 
@@ -911,7 +984,7 @@ three renews is unaffected and unaware.
    | `AgentClient._is_available` | a covering connection means reachable |
    | `AgentClient` "sessions elsewhere" / `bound_here` | connection rooms merged with the bound rooms |
    | `auto_session` spawn reply | any live connection counts as watching |
-   | `room_role_store` (6 predicates + `acquire_lease`) | `last_seen_at` fresh **OR** `agent_id` in `alive_agent_ids` |
+   | `room_role_store` (6 predicates + `acquire_lease`) | `last_seen_at` fresh **OR** `agent_id` in `alive_agent_ids` — *superseded, see below* |
    | `assemble_agent_detail` | connections listed as sessions, `lifecycle: "connection"` |
 
    Neither arm alone is correct while both kinds of client exist. Stage C
@@ -921,9 +994,21 @@ three renews is unaffected and unaware.
    `connections` is a **required** argument on `compute_agent_statuses` and
    `assemble_agent_detail`: a call site that forgot it would report a migrated
    agent as offline, and nothing at the call site would show it. Pass an empty
-   registry to mean "DB arm only". The store-level predicates default
-   `alive_agent_ids` to empty, since the store is a query layer with no registry
-   to hand and its own tests exercise the freshness rule directly.
+   registry to mean "DB arm only".
+
+   **The role-lease arm has since been replaced.** Once one connection can
+   serve several sessions of an agent, "the agent has a live connection" is
+   permanently true and no seat would ever be freed, so liveness is now keyed
+   to the holder that took the seat, not to the agent. A lease is live while
+   its own `last_seen_at` is fresh, **or** the SDK session it names still holds
+   a current host lease, **or** — for a lease naming no session — the
+   connection it was assumed over is still up. `/leases/renew` carries
+   `X-Switch-Connection-Id` so a beat renews the seat its sender holds and no
+   other, and only a process that owns its connection beats at all: a seat
+   taken by a supervised SDK session is kept alive by that session's lease
+   instead. The store's liveness argument is the set of live *connection* ids
+   and is required, not defaulted, so no call site can quietly ask the narrower
+   question.
 
    One registry is created in `main.py` and injected into `AgentClient`,
    `AdminClient` and the bridge app — the Matrix clients are wired before the

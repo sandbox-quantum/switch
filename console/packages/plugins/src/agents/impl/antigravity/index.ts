@@ -17,9 +17,6 @@ export const plugin = definePlugin(
     effort: {
       kind: 'none',
     },
-    hooks: {
-      kind: 'none',
-    },
     hostDependency: {
       id: 'antigravity',
       binaryNames: ['antigravity-acp'],
@@ -63,7 +60,6 @@ export const plugin = definePlugin(
       kind: 'resumable',
     },
     repoAgents: { kind: 'none' },
-    switchSetup: { kind: 'none' },
   },
   { icon }
 );

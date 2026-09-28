@@ -130,9 +130,7 @@ describe('resolveReadiness — the agent-creation gate', () => {
         step('git', 'satisfied'),
         step('node', 'satisfied'),
         step('claude', 'satisfied', 'agent-cli'),
-        step('claude:plugin', 'satisfied', 'agent-plugin'),
         step('codex', 'pending', 'agent-cli'),
-        step('codex:plugin', 'pending', 'agent-plugin'),
       ]);
 
     it('allows creating an agent of an installed type while another type is missing', () => {
@@ -150,23 +148,7 @@ describe('resolveReadiness — the agent-creation gate', () => {
 
       expect(readiness.blocked).toBe(true);
       expect(readiness.scope).toBe('agent-type');
-      expect(readiness.missing).toEqual(['codex', 'codex:plugin']);
-    });
-
-    it('reports an installed CLI with a missing connector as still not ready', () => {
-      // The agent would start and have no Switch tools, which is the stale-green
-      // this rewrite exists to remove.
-      const p = plan([
-        step('git', 'satisfied'),
-        step('claude', 'satisfied', 'agent-cli'),
-        step('claude:plugin', 'pending', 'agent-plugin'),
-      ]);
-
-      const readiness = resolveReadiness(statusFor(p, 'claude'), p, 'claude', false);
-
-      expect(readiness.blocked).toBe(true);
-      expect(readiness.scope).toBe('agent-type');
-      expect(readiness.missing).toEqual(['claude:plugin']);
+      expect(readiness.missing).toEqual(['codex']);
     });
 
     it('blames the host, not the agent type, when a prerequisite is missing', () => {
@@ -192,9 +174,8 @@ describe('resolveReadiness — the agent-creation gate', () => {
      *
      * That reading was wrong in the direction this whole gate exists to prevent.
      * No steps does not mean nothing to satisfy — it means nobody looked for
-     * this type's CLI or its Switch connector. An agent whose connector is
-     * absent starts and has no Switch tools, which is precisely the silent
-     * failure being designed out. Louis hit it: a host reading Ready let an
+     * this type's CLI, which is precisely the silent failure being designed
+     * out. Louis hit it: a host reading Ready let an
      * agent be created for a type that was not set up on it.
      */
     it('refuses a type the plan has never looked for, even on a ready host', () => {
@@ -215,11 +196,7 @@ describe('resolveReadiness — the agent-creation gate', () => {
     });
 
     it('still allows a type the plan checked and found complete', () => {
-      const p = plan([
-        step('git', 'satisfied'),
-        step('claude', 'satisfied', 'agent-cli'),
-        step('claude:plugin', 'satisfied', 'agent-plugin'),
-      ]);
+      const p = plan([step('git', 'satisfied'), step('claude', 'satisfied', 'agent-cli')]);
 
       expect(resolveReadiness(statusFor(p, 'claude'), p, 'claude', false).blocked).toBe(false);
     });
@@ -273,16 +250,14 @@ describe('stepsNeedingObservation', () => {
 
   it('leaves other agent types alone', () => {
     // The point of the change: choosing Codex must not drag Claude Code's CLI
-    // and connector into the probe.
+    // into the probe.
     const p = plan([
       observed('git', '2026-08-06T11:00:00.000Z'),
       observed('claude', '2026-08-06T11:00:00.000Z', 'agent-cli'),
-      observed('claude:plugin', '2026-08-06T11:00:00.000Z', 'agent-plugin'),
       observed('codex', '2026-08-06T11:00:00.000Z', 'agent-cli'),
-      observed('codex:plugin', '2026-08-06T11:00:00.000Z', 'agent-plugin'),
     ]);
 
-    expect(stepsNeedingObservation(p, 'codex', NOW)).toEqual(['git', 'codex', 'codex:plugin']);
+    expect(stepsNeedingObservation(p, 'codex', NOW)).toEqual(['git', 'codex']);
   });
 
   it('still includes the host prerequisites — they gate every type', () => {

@@ -351,6 +351,13 @@
       "when": 1789049588650,
       "tag": "0049_shared_sdk_host",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1790248865722,
+      "tag": "0050_drop_session_shell_id",
+      "breakpoints": true
     }
   ]
 }

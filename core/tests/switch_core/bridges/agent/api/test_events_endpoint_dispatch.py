@@ -31,6 +31,8 @@ class _Protocol:
     def __init__(self) -> None:
         self.event_buffer = EventBuffer()
         self.connections = ConnectionRegistry()
+        # No approval outcomes: these tests are about opening the stream.
+        self.approval_outcomes = None
         # Opening and closing a stream reports a session; a reporter with no
         # telemetry service reports nothing, which is what these tests want.
         self.telemetry = None
@@ -49,6 +51,15 @@ class _Protocol:
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         return None
+
+    async def require_recorded_rooms_unmoved(
+        self,
+        agent_id: str,
+        connection: Any,
+        claiming: frozenset[str],
+        dropping: frozenset[str],
+    ) -> None:
+        """No session of this agent is recorded anywhere, so nothing is fenced."""
 
 
 def _agent() -> Any:
@@ -319,6 +330,7 @@ class TestDeclaringARoomAtOpenTakesOver:
             spawn_capable=False,
             cursor=0,
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+            expected_generation=None,
         )
         protocol.connections.claim_room(incumbent, "room-1")
 

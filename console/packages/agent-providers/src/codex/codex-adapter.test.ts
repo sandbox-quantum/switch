@@ -223,6 +223,96 @@ describe('CodexAdapter', () => {
     });
   });
 
+  it("reports each turn's share of the thread's running token total", async () => {
+    const { adapter, server, events } = await start();
+    const breakdown = (input: number, cached: number, output: number) => ({
+      totalTokens: input + output,
+      inputTokens: input,
+      cachedInputTokens: cached,
+      cacheWriteInputTokens: 0,
+      outputTokens: output,
+      reasoningOutputTokens: 0,
+    });
+    const usageUpdate = (turnId: string, input: number, cached: number, output: number) => ({
+      threadId: THREAD,
+      turnId,
+      tokenUsage: {
+        total: breakdown(input, cached, output),
+        last: breakdown(input, cached, output),
+        modelContextWindow: null,
+      },
+    });
+    let native = 0;
+    server.replyAlways('turn/start', () => ({
+      turn: { id: `native-${++native}`, status: 'inProgress' },
+    }));
+
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'one' });
+    server.notify('turn/started', turnNotification('native-1', 'inProgress'));
+    server.notify('thread/tokenUsage/updated', usageUpdate('native-1', 100, 60, 10));
+    server.notify('turn/completed', turnNotification('native-1', 'completed'));
+    await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(1));
+
+    await adapter.setModel('session-1', { id: 'gpt-x', options: {} });
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-2', text: 'two' });
+    server.notify('turn/started', turnNotification('native-2', 'inProgress'));
+    server.notify('thread/tokenUsage/updated', usageUpdate('native-2', 150, 90, 14));
+    server.notify('turn/completed', turnNotification('native-2', 'completed'));
+    await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(2));
+
+    expect(eventsOf(events, 'turn.completed').map((event) => event.usage)).toEqual([
+      [{ model: '', inputTokens: 40, outputTokens: 10, cacheReadTokens: 60, cacheWriteTokens: 0 }],
+      [
+        {
+          model: 'gpt-x',
+          inputTokens: 20,
+          outputTokens: 4,
+          cacheReadTokens: 30,
+          cacheWriteTokens: 0,
+        },
+      ],
+    ]);
+  });
+
+  it("counts a resumed thread from its first report, not from the thread's history", async () => {
+    const { adapter, server, events } = await start();
+    const breakdown = (input: number, output: number) => ({
+      totalTokens: input + output,
+      inputTokens: input,
+      cachedInputTokens: 0,
+      outputTokens: output,
+      reasoningOutputTokens: 0,
+    });
+    server.replyAlways('turn/start', () => ({ turn: { id: 'native-1', status: 'inProgress' } }));
+
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'one' });
+    server.notify('turn/started', turnNotification('native-1', 'inProgress'));
+    server.notify('thread/tokenUsage/updated', {
+      threadId: THREAD,
+      turnId: 'native-1',
+      tokenUsage: {
+        total: breakdown(5000, 900),
+        last: breakdown(120, 30),
+        modelContextWindow: null,
+      },
+    });
+    server.notify('thread/tokenUsage/updated', {
+      threadId: THREAD,
+      turnId: 'native-1',
+      tokenUsage: {
+        total: breakdown(5200, 950),
+        last: breakdown(200, 50),
+        modelContextWindow: null,
+      },
+    });
+    server.notify('turn/completed', turnNotification('native-1', 'completed'));
+    await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(1));
+
+    expect(eventsOf(events, 'turn.completed')[0]?.usage).toEqual([
+      { model: '', inputTokens: 320, outputTokens: 80, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    ]);
+  });
+
   it('binds a turn even when turn/started arrives before the turn/start response', async () => {
     const { adapter, server, events } = await start();
     server.on('message', (message: FakeJsonRpcMessage) => {

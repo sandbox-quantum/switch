@@ -80,6 +80,7 @@ const h = vi.hoisted(() => {
     writeDefinition,
     discoverLocal,
     updateAgent: vi.fn(async () => undefined),
+    importAgentConfig: vi.fn(async (_params: Record<string, unknown>) => false),
     completedGeneration: vi.fn(async () => 0),
     markComplete: vi.fn(async () => undefined),
   };
@@ -100,11 +101,12 @@ vi.mock('./agent-workspace-fs', () => ({
 }));
 vi.mock('./getAgents', () => ({ getAgents: vi.fn(async () => h.state.agents) }));
 vi.mock('./updateAgent', () => ({ updateAgent: h.updateAgent }));
+vi.mock('./import-agent-config', () => ({ importAgentConfig: h.importAgentConfig }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: vi.fn() }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-storage-migration-marker', () => ({
-  AGENT_STORAGE_MIGRATION_GENERATION: 2,
+  AGENT_STORAGE_MIGRATION_GENERATION: 3,
   completedAgentStorageMigrationGeneration: h.completedGeneration,
   markAgentStorageMigrationComplete: h.markComplete,
 }));
@@ -289,7 +291,7 @@ describe('migrateAgentStorage', () => {
   });
 
   it('skips the whole pass (no workspace opened) once the current generation is latched', async () => {
-    h.completedGeneration.mockResolvedValueOnce(2);
+    h.completedGeneration.mockResolvedValueOnce(3);
     const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
 
     await migrateAgentStorage();
@@ -298,17 +300,51 @@ describe('migrateAgentStorage', () => {
     expect(h.markComplete).not.toHaveBeenCalled();
   });
 
-  it('re-running for generation 2 opens no workspace for a provider generation 1 already did', async () => {
-    // Generation 2 only broadened the credential step to providers WITHOUT a
-    // behavior, so re-opening a Claude agent's workspace — an SSH connect and an
-    // SFTP channel for a remote one — could not change anything.
-    h.completedGeneration.mockResolvedValueOnce(1);
-    const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
+  it('re-running after generation 2 skips the credential step but gives every agent a config file', async () => {
+    h.completedGeneration.mockResolvedValueOnce(2);
+    h.state.workspace = fakeFs({ '.claude/settings.local.json': credsJson('sw-1') });
 
     await migrateAgentStorage();
 
-    expect(resolveWorkspaceFsFor).not.toHaveBeenCalled();
+    expect(h.readLaunchEnv).not.toHaveBeenCalled();
+    expect(await h.state.workspace.exists('.switch/agents/cc-hoot-main.json')).toBe(false);
+    expect(h.importAgentConfig).toHaveBeenCalledTimes(1);
     expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('imports each agent’s config from its definition, or from the row without one', async () => {
+    const providerConfig = { version: '2', providerId: 'codex', values: { model: 'gpt-5' } };
+    h.state.agents = [{ ...baseAgent, providerConfig: null }];
+    h.state.workspace = fakeFs({});
+
+    await migrateAgentStorage();
+
+    expect(h.importAgentConfig.mock.calls[0]?.[0]).toMatchObject({
+      name: 'cc-hoot-main',
+      repoAgents: h.defaultRepoAgents,
+      providerConfig: null,
+    });
+
+    vi.clearAllMocks();
+    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot', providerConfig }];
+    h.state.repoAgents = null;
+
+    await migrateAgentStorage();
+
+    expect(h.importAgentConfig.mock.calls[0]?.[0]).toMatchObject({
+      name: 'codex-hoot',
+      repoAgents: null,
+      providerConfig,
+    });
+  });
+
+  it('never writes a provider definition, even for an agent without one', async () => {
+    h.state.workspace = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+
+    await migrateAgentStorage();
+
+    expect(h.writeDefinition).not.toHaveBeenCalled();
+    expect(await h.state.workspace.exists('.claude/agents/cc-hoot-main.md')).toBe(false);
   });
 
   it('re-running for generation 2 still migrates a provider generation 1 skipped', async () => {
@@ -339,7 +375,7 @@ describe('migrateAgentStorage', () => {
       '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
       '.claude/agents/cc-hoot-main.md': '# def',
     });
-    h.readDefinition.mockRejectedValueOnce(new Error('host unreachable'));
+    h.importAgentConfig.mockRejectedValueOnce(new Error('host unreachable'));
 
     await migrateAgentStorage();
 

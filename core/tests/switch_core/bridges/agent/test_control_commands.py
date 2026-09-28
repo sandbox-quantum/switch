@@ -12,16 +12,6 @@ from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.events import CommandEvent
 
 
-@pytest.fixture(autouse=True)
-def legacy_control_path(monkeypatch):
-    async def no_sdk_session(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(
-        commands.SessionAuthority, "submit_room_control", no_sdk_session
-    )
-
-
 def _event() -> CommandEvent:
     return CommandEvent(
         command="reset",
@@ -48,6 +38,8 @@ def _client(
     *,
     command_level: str,
     enqueue: list[Any],
+    placed: str | None = None,
+    relayed: list[Any] | None = None,
 ) -> SimpleNamespace:
     """Minimal AgentClient stand-in for _dispatch_control_command."""
 
@@ -72,7 +64,9 @@ def _client(
     async def _session_factory() -> Any:
         yield SimpleNamespace()
 
-    async def _agent_room_role(_s: Any, _r: str, _a: str, _alive: Any = ()) -> None:
+    async def _agent_room_role(
+        _s: Any, _r: str, _a: str, _live_conns: Any = ()
+    ) -> None:
         return None
 
     return SimpleNamespace(
@@ -84,7 +78,13 @@ def _client(
         _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
         # Presence unions the heartbeat rows with the live connections
         # (CHOO-1857); nothing is connected in these tests.
-        _connections=SimpleNamespace(live_agent_ids=lambda: set()),
+        _connections=SimpleNamespace(
+            live_connection_ids=lambda: set(),
+            session_in_room=lambda _agent, _room: placed,
+            relay_session_command=lambda _agent, frame: (
+                relayed is not None and (relayed.append(frame) or True)
+            ),
+        ),
         _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: enqueue.append((a, k))),
     )
 
@@ -280,3 +280,83 @@ async def test_admin_check_valid_target_stays_silent(
         )
 
     assert reply.bodies == []
+
+
+@pytest.mark.asyncio
+async def test_a_session_in_the_room_is_sent_the_command_through_its_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "slack"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+
+    await _cmd_reset(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    [frame] = relayed
+    assert frame["sessionId"] == "session-1"
+    assert frame["epoch"] == "current"
+    assert frame["body"] == {"type": "session.reset"}
+    assert frame["origin"] == {
+        "surface": "slack",
+        "actorId": "@u:server",
+        "roomId": "room-1",
+        "threadId": "$reset-command",
+        "messageId": "$reset-command",
+    }
+    assert frame["requesterName"] == "louisa"
+    assert reply.bodies[-1].startswith("Resetting my session")
+
+
+@pytest.mark.asyncio
+async def test_a_session_with_no_controller_connected_is_told_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "slack"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+
+    await _cmd_reset(
+        _client(
+            reply, command_level="session_dependent", enqueue=[], placed="session-1"
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    assert "controller is not connected" in reply.bodies[-1]
+
+
+def test_an_interrupt_names_the_current_turn() -> None:
+    frame = commands.room_control_frame(
+        agent_id="a",
+        session_id="s",
+        room_id="r",
+        action="interrupt",
+        actor_id="@u:s",
+        message_id="m",
+        thread_id=None,
+        surface="slack",
+        requester_name="louisa",
+    )
+    assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}

@@ -35,12 +35,6 @@ export const CliAgentsList: React.FC<CliAgentsListProps> = ({
   const allAgents = useMemo(
     () =>
       (agentPayloads ?? [])
-        // Only Switch-supported agent types are shown for now; the others aren't
-        // usable in Switch yet, so surfacing them here would be misleading.
-        .filter(
-          (a) =>
-            a.capabilities.switchSetup.kind !== 'none' || ['antigravity', 'cursor'].includes(a.id)
-        )
         .filter((a) => !normalizedQuery || a.name.toLowerCase().includes(normalizedQuery))
         .sort((a, b) => a.name.localeCompare(b.name)),
     [agentPayloads, normalizedQuery]

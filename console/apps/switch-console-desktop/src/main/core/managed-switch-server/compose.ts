@@ -31,7 +31,11 @@ function baseArgs(host: ServerHost, globalFlags: string[], extraFiles: string[] 
   ];
 }
 
-async function runDocker(host: ServerHost, args: string[], timeout: number): Promise<string> {
+export async function runDocker(
+  host: ServerHost,
+  args: string[],
+  timeout: number
+): Promise<string> {
   const full = [host.dockerBin, ...args];
   try {
     const { stdout } = await host.ctx.exec(host.dockerBin, args, {
@@ -134,6 +138,30 @@ export async function composeDown(host: ServerHost, removeVolumes: boolean): Pro
     [...baseArgs(host, []), 'down', ...(removeVolumes ? ['-v'] : [])],
     5 * 60 * 1000
   );
+}
+
+/**
+ * Bring up one service of the stack as it is currently configured on the host
+ * — the compose file and `.env` already there, not this build's — without its
+ * dependents, and wait for it to report healthy.
+ */
+export async function composeUpService(host: ServerHost, service: string): Promise<void> {
+  log.info(`local-switch-server: docker compose up ${service} (${host.label})`);
+  await runDocker(
+    host,
+    [...baseArgs(host, []), 'up', '-d', '--no-deps', '--wait', service],
+    5 * 60 * 1000
+  );
+}
+
+/** Id of the container running `service`. Throws when there is none. */
+export async function serviceContainerId(host: ServerHost, service: string): Promise<string> {
+  const stdout = await runDocker(host, [...baseArgs(host, []), 'ps', '-q', service], 60_000);
+  const id = stdout.trim();
+  if (!/^[a-f0-9]+$/.test(id)) {
+    throw new Error(`Could not identify the ${service} container on ${host.label}.`);
+  }
+  return id;
 }
 
 /** Service names currently in the `running` state for the managed project. */

@@ -24,9 +24,7 @@ function fakeFs(initial: Record<string, string>): PluginFs & { files: Map<string
   };
 }
 
-// The claude provider declares no switchSetup behavior, so it exercises the
-// default `.claude/settings.local.json` reverse-merge path.
-describe('removeSwitchCredentials (default .claude teardown)', () => {
+describe('removeSwitchCredentials', () => {
   it('deletes a settings file that held only provisioned Switch credentials', async () => {
     const fs = fakeFs({
       [SETTINGS_PATH]: mergeSwitchSettings(null, {
@@ -35,7 +33,7 @@ describe('removeSwitchCredentials (default .claude teardown)', () => {
       }),
     });
 
-    await removeSwitchCredentials('claude', fs);
+    await removeSwitchCredentials(fs);
 
     expect(fs.files.has(SETTINGS_PATH)).toBe(false);
   });
@@ -43,7 +41,7 @@ describe('removeSwitchCredentials (default .claude teardown)', () => {
   it('preserves the user’s own keys, stripping only the Switch block', async () => {
     const fs = fakeFs({
       [SETTINGS_PATH]: JSON.stringify({
-        permissions: { allow: ['Bash', 'mcp__plugin_switch-connector_switch'] },
+        permissions: { allow: ['Bash', 'mcp__switch'] },
         env: {
           EDITOR: 'vim',
           SWITCH_API_ENDPOINT: 'e',
@@ -53,7 +51,7 @@ describe('removeSwitchCredentials (default .claude teardown)', () => {
       }),
     });
 
-    await removeSwitchCredentials('claude', fs);
+    await removeSwitchCredentials(fs);
 
     const parsed = JSON.parse(fs.files.get(SETTINGS_PATH)!) as Record<string, unknown>;
     expect(parsed.env).toEqual({ EDITOR: 'vim' });
@@ -64,14 +62,14 @@ describe('removeSwitchCredentials (default .claude teardown)', () => {
     const original = JSON.stringify({ env: { EDITOR: 'vim' } });
     const fs = fakeFs({ [SETTINGS_PATH]: original });
 
-    await removeSwitchCredentials('claude', fs);
+    await removeSwitchCredentials(fs);
 
     expect(fs.files.get(SETTINGS_PATH)).toBe(original);
   });
 
   it('is a no-op when there is no settings file', async () => {
     const fs = fakeFs({});
-    await expect(removeSwitchCredentials('claude', fs)).resolves.toBeUndefined();
+    await expect(removeSwitchCredentials(fs)).resolves.toBeUndefined();
     expect(fs.files.size).toBe(0);
   });
 });

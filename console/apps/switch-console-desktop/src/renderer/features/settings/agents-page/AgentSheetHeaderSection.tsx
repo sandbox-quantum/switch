@@ -4,9 +4,8 @@ import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import type { AgentPayload } from '@shared/core/providers/agent-payload';
 
 function formatSupportsText(agent: AgentPayload): string {
-  const supportsHooks = agent.capabilities.hooks.kind !== 'none';
   const supportsSessions = agent.capabilities.sessions.kind !== 'stateless';
-  return `Supports: Prompts${supportsHooks ? ', Hooks' : ''}${supportsSessions ? ', Sessions' : ''}`;
+  return `Supports: Prompts${supportsSessions ? ', Sessions' : ''}`;
 }
 
 export const AgentSheetHeaderSection = observer(function AgentSheetHeaderSection({

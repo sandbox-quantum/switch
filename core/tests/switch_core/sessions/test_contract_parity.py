@@ -24,15 +24,12 @@ import pytest
 
 from switch_core.sessions.contract import (
     Item,
-    ServerEvent,
-    Snapshot,
     event_bytes,
     parse_command,
     parse_host_event,
     parse_server_event,
     parse_snapshot,
 )
-from switch_core.sessions.projection import SessionProjection
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
@@ -42,10 +39,6 @@ QUESTIONS_PATH = (
     REPO_ROOT / "console/packages/shared/src/session-v1/examples.questions.json"
 )
 QUESTIONS: dict[str, Any] = json.loads(QUESTIONS_PATH.read_text())
-
-
-def initial() -> Snapshot:
-    return parse_snapshot(EXAMPLES["initialSnapshot"])
 
 
 def item(revision: int, text: str) -> Item:
@@ -64,37 +57,12 @@ def item(revision: int, text: str) -> Item:
     )
 
 
-def event(sequence: int, body: Any) -> ServerEvent:
-    return parse_server_event(
-        {
-            "contractVersion": 1,
-            "eventId": f"event-{sequence}",
-            "sessionId": "session-demo",
-            "sequence": sequence,
-            "occurredAt": "2026-09-07T12:00:00Z",
-            "body": body if isinstance(body, dict) else body.model_dump(by_alias=True),
-        }
-    )
-
-
-def item_upsert(value: Item) -> dict[str, Any]:
-    return {"type": "item.upsert", "item": value.model_dump(by_alias=True)}
-
-
-def test_validates_the_agreed_examples_and_settles_after_submitting() -> None:
+def test_validates_the_agreed_examples() -> None:
     parse_command(EXAMPLES["platformAnswer"])
     parse_host_event(EXAMPLES["hostRequest"])
-
-    projection = SessionProjection(initial())
+    parse_snapshot(EXAMPLES["initialSnapshot"])
     for update in EXAMPLES["answerLifecycle"]:
-        projection.apply(parse_server_event(update))
-
-    snapshot = projection.snapshot
-    assert snapshot.requests[0].state == "resolved"
-    assert snapshot.requests[0].decided_by is not None
-    assert snapshot.requests[0].decided_by.surface == "mattermost"
-    assert snapshot.session.pending_request_ids == []
-    assert snapshot.command_statuses[0].status == "applied"
+        parse_server_event(update)
 
 
 def test_rejects_raw_data_reasoning_items_unsafe_counters_and_oversized_events() -> (
@@ -172,69 +140,6 @@ def test_the_size_cap_counts_the_bytes_the_host_counted() -> None:
     parse_host_event(within_the_cap)
 
 
-def test_replaces_text_ignores_replay_and_accepts_filtered_sequence_gaps() -> None:
-    projection = SessionProjection(initial())
-    projection.apply(event(12, item_upsert(item(1, "Hello"))))
-    projection.apply(event(16, item_upsert(item(2, "Hello world"))))
-    projection.apply(event(16, item_upsert(item(2, "Hello world"))))
-    projection.apply(event(18, item_upsert(item(1, "Hello"))))
-
-    assert len(projection.snapshot.items) == 1
-    assert projection.snapshot.items[0].text == "Hello world"
-    assert projection.through_sequence == 18
-
-
-def test_rejects_conflicting_revisions_and_cross_session_replay() -> None:
-    projection = SessionProjection(initial())
-    projection.apply(event(11, item_upsert(item(1, "Hello"))))
-
-    with pytest.raises(ValueError, match="Conflicting"):
-        projection.apply(event(12, item_upsert(item(1, "Different"))))
-
-    with pytest.raises(ValueError):
-        projection.apply(
-            parse_server_event(
-                {
-                    "contractVersion": 1,
-                    "eventId": "event-12",
-                    "sessionId": "another",
-                    "sequence": 12,
-                    "occurredAt": "2026-09-07T12:00:00Z",
-                    "body": {
-                        "type": "session.connectivity",
-                        "connectivity": "offline",
-                    },
-                }
-            )
-        )
-
-    assert projection.through_sequence == 11
-
-
-def test_keeps_execution_state_on_connection_loss_and_closes_interruptions() -> None:
-    projection = SessionProjection(initial())
-    projection.apply(
-        event(11, {"type": "session.connectivity", "connectivity": "offline"})
-    )
-    projection.apply(
-        event(
-            12,
-            {
-                "type": "request.settled",
-                "requestId": "request-demo",
-                "revision": 2,
-                "outcome": "interrupted",
-                "commandId": None,
-                "result": None,
-            },
-        )
-    )
-
-    assert projection.snapshot.session.status == "running"
-    assert projection.snapshot.requests[0].state == "closed"
-    assert projection.snapshot.requests[0].decided_by is None
-
-
 # ── The shapes `examples.json` has no case for ───────────────────────────────
 
 
@@ -251,24 +156,22 @@ def test_validates_the_recorded_questions_and_settles_the_form() -> None:
     parse_command(QUESTIONS["platformFormAnswer"])
     parse_host_event(QUESTIONS["hostQuestions"])
 
-    projection = SessionProjection(parse_snapshot(QUESTIONS["initialSnapshot"]))
-    for update in QUESTIONS["formAnswerLifecycle"]:
-        projection.apply(parse_server_event(update))
-
+    parse_snapshot(QUESTIONS["initialSnapshot"])
     settled = next(
-        request
-        for request in projection.snapshot.requests
-        if request.request_id == "request-form"
+        body
+        for body in (
+            parse_server_event(update).body
+            for update in QUESTIONS["formAnswerLifecycle"]
+        )
+        if body.type == "request.settled"
     )
-    assert settled.state == "resolved"
-    assert settled.result is not None and settled.result.result is not None
-    assert [answer.question_id for answer in settled.result.result.answers] == [
+    assert settled.request_id == "request-form"
+    assert settled.result is not None
+    assert [answer.question_id for answer in settled.result.answers] == [
         "q-scope",
         "q-checks",
         "q-branch",
     ]
-    # The other card is still open: settling one request settles one request.
-    assert projection.snapshot.session.pending_request_ids == ["request-one"]
 
 
 def test_a_question_with_no_options_still_has_to_invite_an_answer() -> None:
@@ -290,30 +193,3 @@ def test_host_publication_claims_are_rejected() -> None:
     payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
     with pytest.raises(ValueError):
         parse_host_event(payload)
-
-
-def test_cancellation_retains_only_the_matching_deciding_actor() -> None:
-    for command_id in ("answer-demo", None):
-        projection = SessionProjection(initial())
-        projection.apply(parse_server_event(EXAMPLES["answerLifecycle"][1]))
-        projection.apply(
-            event(
-                13,
-                {
-                    "type": "request.settled",
-                    "requestId": "request-demo",
-                    "revision": 2,
-                    "outcome": "cancelled",
-                    "commandId": command_id,
-                    "result": None,
-                },
-            )
-        )
-        request = projection.snapshot.requests[0]
-        assert request.state == "closed"
-        assert request.result.result is None
-        if command_id:
-            assert request.decided_by.command_id == command_id
-            assert request.decided_by.surface == "mattermost"
-        else:
-            assert request.decided_by is None

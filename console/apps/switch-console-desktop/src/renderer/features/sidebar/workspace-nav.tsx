@@ -1,8 +1,10 @@
 import { Bot, DoorOpen, FileText, House } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { isCurrentView, useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
+import { connectionNeedsAttention } from '@shared/core/switch-rooms/connection-health';
 import { SidebarMenu, SidebarMenuButton } from './sidebar-primitives';
 
 /**
@@ -20,6 +22,9 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: roomsParams } = useParams('serverRooms');
   const { params: templatesParams } = useParams('templates');
   const active = switchServersStore.activeServer;
+  const health = useRoomHealth(active?.id ?? null);
+  const warningCount =
+    health.data?.agents.filter((agent) => connectionNeedsAttention(agent.state)).length ?? 0;
   if (!active) return null;
 
   const destinations = [
@@ -39,6 +44,15 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
         >
           <Icon className="size-[15px] shrink-0" />
           {label}
+          {view === 'serverAgents' && (warningCount > 0 || health.isError) && (
+            <span
+              className="ml-auto text-xs text-foreground-warning"
+              title="Agent room connections need attention"
+              aria-label="Agent room connections need attention"
+            >
+              {health.isError ? '!' : warningCount}
+            </span>
+          )}
         </SidebarMenuButton>
       ))}
     </SidebarMenu>

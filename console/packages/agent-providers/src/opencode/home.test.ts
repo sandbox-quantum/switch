@@ -12,6 +12,8 @@ it('preserves native JSONC configuration, skills, MCP, paths and credentials', a
   try {
     await mkdir(join(source, 'skills/user-skill'), { recursive: true });
     await writeFile(join(source, 'skills/user-skill/SKILL.md'), 'User-owned skill');
+    await mkdir(join(source, 'skills/switch'), { recursive: true });
+    await writeFile(join(source, 'skills/switch/SKILL.md'), 'Stale Switch skill');
     const original =
       '{ // Native settings\n "model": "example/model", "mcp": { "user": { "type": "local", "command": ["node", "server.js"] } }, "permission": { "bash": "deny" }, "instructions": ["instructions.md"], "plugin": ["./plugin.js"], }';
     await writeFile(join(source, 'opencode.jsonc'), original);
@@ -29,9 +31,10 @@ it('preserves native JSONC configuration, skills, MCP, paths and credentials', a
     expect(result.permission.bash).toBe('deny');
     expect(result.instructions).toEqual([join(source, 'instructions.md')]);
     expect(result.plugin).toEqual([join(source, 'plugin.js')]);
-    expect(await realpath(join(prepared, 'opencode/skills'))).toBe(
-      await realpath(join(source, 'skills'))
+    expect(await realpath(join(prepared, 'opencode/skills/user-skill'))).toBe(
+      await realpath(join(source, 'skills/user-skill'))
     );
+    await expect(readFile(join(prepared, 'opencode/skills/switch/SKILL.md'))).rejects.toThrow();
     expect(await readFile(join(source, 'opencode.jsonc'), 'utf8')).toBe(original);
     expect(await readFile(join(root, 'auth-sentinel'), 'utf8')).toBe('unchanged');
     expect(await readFile(join(result.skills.paths[0], 'managed/SKILL.md'), 'utf8')).toBe(

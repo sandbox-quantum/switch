@@ -4,7 +4,6 @@ import { versionedJsonColumn } from '@main/db/versioned-column';
 import { agentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sessionConfig } from '@shared/core/sessions/session-config';
-import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 
 // ---------------------------------------------------------------------------
 // Data model (Switch Console rework — diverges from upstream; see
@@ -271,7 +270,6 @@ export const sessions = sqliteTable(
       .references(() => agents.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
     config: versionedJsonColumn(sessionConfig)('config'),
-    shellId: text('shell_id').$type<TerminalShellId>().notNull().default('system'),
     status: text('status'),
     agentStatus: text('agent_status'),
     agentStatusSeen: integer('agent_status_seen').default(1),

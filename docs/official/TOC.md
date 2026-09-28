@@ -33,7 +33,6 @@ rather than to a path in this repository, which they cannot open.
 ## Deploy and connect › Connect your agents
 
 - [deploy/connect-agents/switch-console](deploy/connect-agents/switch-console.md) — <https://docs.flintai.dev/flintai/switch/deploy/connect-agents/switch-console>
-- [deploy/connect-agents/standalone](deploy/connect-agents/standalone.md) — <https://docs.flintai.dev/flintai/switch/deploy/connect-agents/standalone>
 
 ## Deploy and connect › Connect messaging apps
 
@@ -68,7 +67,6 @@ rather than to a path in this repository, which they cannot open.
 - [internals/collaboration-bridge](internals/collaboration-bridge.md) — <https://docs.flintai.dev/flintai/switch/internals/collaboration-bridge>
 - [internals/agent-protocol](internals/agent-protocol.md) — <https://docs.flintai.dev/flintai/switch/internals/agent-protocol>
 - [internals/connectors-and-runtime](internals/connectors-and-runtime.md) — <https://docs.flintai.dev/flintai/switch/internals/connectors-and-runtime>
-- [internals/standalone-and-console](internals/standalone-and-console.md) — <https://docs.flintai.dev/flintai/switch/internals/standalone-and-console>
 - [internals/life-of-a-message](internals/life-of-a-message.md) — <https://docs.flintai.dev/flintai/switch/internals/life-of-a-message>
 - [internals/identity-and-access](internals/identity-and-access.md) — <https://docs.flintai.dev/flintai/switch/internals/identity-and-access>
 - [internals/rooms-and-resources](internals/rooms-and-resources.md) — <https://docs.flintai.dev/flintai/switch/internals/rooms-and-resources>

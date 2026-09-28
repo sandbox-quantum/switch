@@ -1,6 +1,5 @@
 # custom
 runfiles
-connectors/claude-code-plugin/state/
 dump/
 node_modules/
 

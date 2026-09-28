@@ -22,7 +22,7 @@ from typing import Any
 
 from switch_core.bridges.collaboration.adapter import TurnActivity
 
-from .test_session_activity import _item, _turn
+from .session_fixtures import _item, _turn
 from .test_teams_adapter import _card_text, _run
 from .test_teams_sdk_only import (
     AGENT,

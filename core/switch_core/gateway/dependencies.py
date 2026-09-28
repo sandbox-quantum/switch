@@ -119,7 +119,9 @@ async def get_system_session() -> AsyncIterator[AsyncSession]:
     the way `get_current_user` does. `POST /tenants/{id}/switch`
     (`gateway/tenants.py`) is a third, for a different reason — the caller is
     authenticated (`get_authenticated_user_id`) but has, by construction, not
-    yet selected the tenant this session opens for. Named separately from
+    yet selected the tenant this session opens for. `POST /tenants` is a
+    fourth: it locks the caller's `users` row, which carries no tenant, for
+    the length of a creation that has no tenant yet. Named separately from
     `get_session` so that reads as a deliberate, reviewable exception rather
     than an accidentally-unscoped session, and so the guard test above can
     hold for `get_session` without exemptions. Nothing about opening it

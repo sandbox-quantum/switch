@@ -30,7 +30,6 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
 from switch_core.deeplinks import gateway_url_warning
 from switch_core.provisioning import Provisioning
@@ -45,8 +44,11 @@ from switch_core.telemetry.snapshot import PLATFORMS, normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
 
 if TYPE_CHECKING:
+    from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
+    from switch_core.session_activity.listener import SessionActivityListener
+    from switch_core.session_activity.service import SessionActivityService
 
 # Every platform SDK below is registered dynamically (`register_adapter`), so a
 # deployment that only wires up some of the five is plausible even though
@@ -294,7 +296,6 @@ class CollaborationBridgeLifecycleService:
         bridge_store: CollaborationBridgeStore,
         external_user_store: ExternalUserStore,
         bridge_message_map_store: BridgeMessageMapStore,
-        session_request_post_store: SessionRequestPostStore,
         room_store: RoomStore,
         agent_store: AgentStore,
         client_store: ClientStore,
@@ -304,12 +305,14 @@ class CollaborationBridgeLifecycleService:
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
         client_factory: ClientFactory,
+        session_activity_listener: SessionActivityListener,
+        session_activity_service: SessionActivityService,
+        connections: ConnectionRegistry,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
-        self._session_request_post_store = session_request_post_store
         self._room_store = room_store
         self._agent_store = agent_store
         self._client_store = client_store
@@ -320,6 +323,9 @@ class CollaborationBridgeLifecycleService:
         self._session_factory = session_factory
         self._config = config
         self._client_factory = client_factory
+        self._session_activity_listener = session_activity_listener
+        self._session_activity_service = session_activity_service
+        self._connections = connections
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -387,10 +393,6 @@ class CollaborationBridgeLifecycleService:
 
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
-
-    async def refresh_sdk_session(self, session_id: str) -> None:
-        for bridge in self._bridges.values():
-            await bridge.refresh_sdk_session(session_id)
 
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
@@ -824,7 +826,6 @@ class CollaborationBridgeLifecycleService:
                 room_store=self._room_store,
                 external_user_store=self._external_user_store,
                 bridge_message_map_store=self._bridge_message_map_store,
-                session_request_post_store=self._session_request_post_store,
                 agent_store=self._agent_store,
                 client_store=self._client_store,
                 room_service=self._room_service,
@@ -834,8 +835,10 @@ class CollaborationBridgeLifecycleService:
                 matrix_server_name=self._config.matrix_server_name,
                 bridge_client_matrix_user_id=bridge_client_record.matrix_user_id,
                 max_attachment_bytes=self._config.agent_media_max_bytes,
-                session_demo_enabled=self._config.session_demo_enabled,
                 gateway_public_url=self._config.gateway_public_url,
+                session_activity_listener=self._session_activity_listener,
+                session_activity_service=self._session_activity_service,
+                connections=self._connections,
             )
 
             bridge_client = BridgeClient(

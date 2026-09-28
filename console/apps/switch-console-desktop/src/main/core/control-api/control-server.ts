@@ -21,9 +21,9 @@ interface Route {
 }
 
 /**
- * Localhost-only HTTP server for the Console local control API. Modeled on
- * hook-server.ts: binds 127.0.0.1, OS-assigned port, token-gated via the
- * `x-switch-control-token` header.
+ * Localhost-only HTTP server for the Console local control API: binds
+ * 127.0.0.1, OS-assigned port, token-gated via the `x-switch-control-token`
+ * header.
  */
 export class ControlServer {
   private server: http.Server | null = null;

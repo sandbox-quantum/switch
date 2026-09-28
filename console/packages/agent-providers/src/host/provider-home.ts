@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile, symlink } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export async function optionalText(path: string): Promise<string | null> {
@@ -27,6 +27,10 @@ export async function linkHomeAsset(source: string, destination: string): Promis
   await symlink(source, destination, (await lstat(source)).isDirectory() ? 'junction' : 'file');
 }
 
+/**
+ * Link the host's skills one by one, leaving out `switch`: the session is given
+ * Console's copy of that skill, and a stale one beside it would contradict it.
+ */
 export async function linkSkills(source: string, destination: string): Promise<void> {
   let entries: string[];
   try {
@@ -35,6 +39,7 @@ export async function linkSkills(source: string, destination: string): Promise<v
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
+  await mkdir(destination, { recursive: true });
   for (const entry of entries) {
     if (entry === 'switch') continue;
     await linkHomeAsset(join(source, entry), join(destination, entry));

@@ -2,8 +2,8 @@
  * Scratch check: is the Switch skill actually in an isolated session?
  *
  * The adapter points OpenCode at a config home Switch Console writes, which
- * hides the user's own `~/.config/opencode/skills`. The registry supplies the
- * room-workflow skill back; this asserts the session can see it, which no unit
+ * links the user's own skills except `switch`, and supplies the room-workflow
+ * skill as a managed one; this asserts the session can see it, which no unit
  * test can — OpenCode decides what a session may load, not us.
  *
  *   SWITCH_SMOKE=1 pnpm exec vitest run --project node \
@@ -13,7 +13,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createOpencodeAdapter, type ProviderRuntimeEvent } from '@switch-console/agent-providers';
-import { OPENCODE_SKILL_CONTENT } from '@switch-console/plugins/agents/opencode/skill';
+import { SWITCH_SKILL_FILE, SWITCH_SKILL_NAME } from '@switch-console/plugins/switch-skill';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const RUN = process.env.SWITCH_SMOKE === '1';
@@ -32,7 +32,7 @@ describe.skipIf(!RUN)('the Switch skill in an isolated OpenCode session', () => 
 
   it('is listed among the sessionable skills', { timeout: 5 * 60_000 }, async () => {
     const adapter = createOpencodeAdapter({
-      skills: [{ name: 'switch', content: OPENCODE_SKILL_CONTENT }],
+      skills: [{ name: SWITCH_SKILL_NAME, content: SWITCH_SKILL_FILE }],
     });
     const text: string[] = [];
     let done = false;

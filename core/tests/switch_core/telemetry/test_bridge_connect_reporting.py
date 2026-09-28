@@ -87,7 +87,6 @@ def _service_with_telemetry(
         bridge_store=CollaborationBridgeStore(),
         external_user_store=MagicMock(),
         bridge_message_map_store=MagicMock(),
-        session_request_post_store=MagicMock(),
         room_store=RoomStore(),
         agent_store=MagicMock(),
         client_store=client_store if client_store is not None else ClientStore(),
@@ -97,6 +96,9 @@ def _service_with_telemetry(
         session_factory=session_factory,
         config=config,
         client_factory=MagicMock(),
+        session_activity_listener=MagicMock(),
+        session_activity_service=MagicMock(),
+        connections=MagicMock(),
         telemetry=telemetry,
     )
     return service, sink

@@ -35,7 +35,7 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs {
 
 function creds(agentId: string, endpoint = 'https://switch.example.com', token = 'tok-secret') {
   return `${JSON.stringify({
-    permissions: { allow: ['mcp__plugin_switch-connector_switch'] },
+    permissions: { allow: ['mcp__switch'] },
     env: {
       SWITCH_API_ENDPOINT: endpoint,
       SWITCH_API_TOKEN: token,

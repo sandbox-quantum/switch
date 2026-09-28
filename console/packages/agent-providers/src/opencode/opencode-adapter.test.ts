@@ -56,6 +56,98 @@ async function setup(
 }
 
 describe('OpencodeAdapter turn lifecycle', () => {
+  it("reports the turn's tokens per model, counting a streamed message once", async () => {
+    const { adapter, session, recorder } = await setup();
+    const tokens = (input: number, output: number, reasoning: number, read: number) => ({
+      input,
+      output,
+      reasoning,
+      cache: { read, write: 0 },
+    });
+
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'hello' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(messageUpdated(NATIVE, 'msg1', 'assistant', tokens(10, 2, 0, 100)));
+    session.push(messageUpdated(NATIVE, 'msg1', 'assistant', tokens(10, 8, 3, 100)));
+    session.push(
+      messageUpdated(NATIVE, 'msg2', 'assistant', tokens(4, 1, 0, 0), {
+        providerID: 'anthropic',
+        modelID: 'haiku',
+      })
+    );
+    session.push(sessionStatus(NATIVE, 'idle'));
+    const one = await recorder.waitFor('turn.completed', (event) => event.turnId === 't1', 1_000);
+
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't2', text: 'again' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(messageUpdated(NATIVE, 'msg3', 'assistant', tokens(5, 5, 0, 110)));
+    session.push(sessionStatus(NATIVE, 'idle'));
+    const two = await recorder.waitFor('turn.completed', (event) => event.turnId === 't2', 1_000);
+
+    expect(one.usage).toEqual([
+      {
+        model: 'opencode/big-pickle',
+        inputTokens: 10,
+        outputTokens: 11,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 0,
+      },
+      {
+        model: 'anthropic/haiku',
+        inputTokens: 4,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    ]);
+    expect(two.usage).toEqual([
+      {
+        model: 'opencode/big-pickle',
+        inputTokens: 5,
+        outputTokens: 5,
+        cacheReadTokens: 110,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
+  it("counts what a subagent's child session spends, and nothing from unrelated sessions", async () => {
+    const { adapter, session, recorder } = await setup();
+    const tokens = (input: number, output: number) => ({
+      input,
+      output,
+      reasoning: 0,
+      cache: { read: 0, write: 0 },
+    });
+    const sessionCreated = (id: string, parentID?: string) =>
+      opencodeEvent('session.created', {
+        sessionID: id,
+        info: { id, ...(parentID ? { parentID } : {}) },
+      });
+
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'hello' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(messageUpdated(NATIVE, 'msg1', 'assistant', tokens(10, 2)));
+    session.push(sessionCreated('ses_child', NATIVE));
+    session.push(sessionCreated('ses_grandchild', 'ses_child'));
+    session.push(sessionCreated('ses_other'));
+    session.push(messageUpdated('ses_child', 'msg2', 'assistant', tokens(7, 3)));
+    session.push(messageUpdated('ses_grandchild', 'msg3', 'assistant', tokens(1, 1)));
+    session.push(messageUpdated('ses_other', 'msg4', 'assistant', tokens(1000, 1000)));
+    session.push(sessionStatus(NATIVE, 'idle'));
+    const one = await recorder.waitFor('turn.completed', (event) => event.turnId === 't1', 1_000);
+
+    expect(one.usage).toEqual([
+      {
+        model: 'opencode/big-pickle',
+        inputTokens: 18,
+        outputTokens: 6,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
   it('completes a turn on the idle that follows the prompt busy', async () => {
     const { adapter, session, recorder } = await setup();
     await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'hello' });

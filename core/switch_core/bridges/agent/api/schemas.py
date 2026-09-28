@@ -119,6 +119,23 @@ class ConnectionSubscribeRequest(BaseModel):
     # Evict whichever connection currently holds the room. Off by default: the
     # usual cause of a collision is a stale process, and rejecting surfaces it.
     takeover: bool = False
+    # The incarnation the caller believes it holds. A connection id alone says
+    # nothing about *which* client is on it, so without this a client that has
+    # already been displaced can still rewrite the winner's rooms. Optional
+    # because a client built before the fence sends none, which keeps the
+    # unchecked behaviour it has always had.
+    generation: int | None = None
+
+
+class ConnectionPlacementsRequest(BaseModel):
+    """Every session placement on an open connection, replacing what it had."""
+
+    connection_id: str
+    #: Session id to the Switch room id it is working in. Rooms are distinct;
+    #: a session the connection placed before and omits here is unplaced.
+    placements: dict[str, str]
+    #: The incarnation the caller believes it holds, fenced as on subscribe.
+    generation: int | None = None
 
 
 class ConnectionBeatRequest(BaseModel):
@@ -131,6 +148,14 @@ class ConnectionBeatRequest(BaseModel):
 
     connection_id: str
     cursor: int = 0
+    #: The incarnation of the connection this client is attached to, as the
+    #: server told it on `connection_state`. Fences the tick: a client that has
+    #: been displaced still holds the id and the token, and is otherwise
+    #: indistinguishable from the one that replaced it. Null is accepted only
+    #: while the connection's holder is a client built before the fence existed
+    #: — unknown, not current; from a holder that declares the revision which
+    #: carries it, a tick without one is refused.
+    generation: int | None = None
 
 
 class StatusRequest(BaseModel):

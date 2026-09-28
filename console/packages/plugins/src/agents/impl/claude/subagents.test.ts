@@ -203,7 +203,7 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
     expect(await first.read(defRel('reviewer'))).toBe(await second.read(defRel('reviewer')));
   });
 
-  it('always merges the Switch connector tools into a non-empty tools list', async () => {
+  it('always merges the Switch tools into a non-empty tools list', async () => {
     const workspaceFs = fakeFs({});
     await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, {
       name: 'reviewer',
@@ -213,14 +213,14 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
     });
 
     const raw = (await workspaceFs.read(defRel('reviewer'))) ?? '';
-    expect(raw).toContain('tools: Read, Grep, mcp__plugin_switch-connector_switch');
+    expect(raw).toContain('tools: Read, Grep, mcp__switch');
 
     // Read-back strips the Switch rules so the form shows only the user's tools.
     const attrs = await claudeRepoAgentsBehavior.readDefinition(workspaceFs, 'reviewer');
     expect(attrs?.tools).toEqual(['Read', 'Grep']);
   });
 
-  it('strips the retired switch-channel rule an older Switch Console wrote', async () => {
+  it('strips the retired connector-plugin rules an older Switch Console wrote', async () => {
     const workspaceFs = fakeFs({
       [defRel('reviewer')]: [
         '---',
@@ -239,7 +239,8 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
     // And it is not written back: only the rule Switch Console still authors is.
     await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, attrs ?? {});
     const raw = (await workspaceFs.read(defRel('reviewer'))) ?? '';
-    expect(raw).toContain('tools: Read, mcp__plugin_switch-connector_switch\n');
+    expect(raw).toContain('tools: Read, mcp__switch\n');
+    expect(raw).not.toContain('switch-connector');
     expect(raw).not.toContain('switch-channel');
   });
 
@@ -305,5 +306,71 @@ describe('claudeRepoAgentsBehavior.removeLocal', () => {
     await claudeRepoAgentsBehavior.removeLocal(workspaceFs, 'reviewer');
 
     expect(await workspaceFs.exists(neutralRel)).toBe(true);
+  });
+});
+
+describe('claudeRepoAgentsBehavior.launchDefinition', () => {
+  it('builds the same agent the definition file described, for the SDK', () => {
+    expect(
+      claudeRepoAgentsBehavior.launchDefinition({
+        name: 'reviewer',
+        description: 'Reviews diffs',
+        model: 'opus',
+        effort: 'high',
+        permissionMode: 'acceptEdits',
+        maxTurns: 12,
+        background: true,
+        memory: 'project',
+        instructions: 'You are a careful reviewer.',
+      })
+    ).toEqual({
+      description: 'Reviews diffs',
+      prompt: 'You are a careful reviewer.',
+      model: 'opus',
+      effort: 'high',
+      permissionMode: 'acceptEdits',
+      maxTurns: 12,
+      background: true,
+      memory: 'project',
+    });
+  });
+
+  it('keeps the Switch tools in a tools allowlist and out of the deny list', () => {
+    const definition = claudeRepoAgentsBehavior.launchDefinition({
+      name: 'reviewer',
+      description: 'Reviews diffs',
+      tools: ['Read', 'Grep'],
+      disallowedTools: ['Write', 'mcp__switch'],
+    });
+
+    expect(definition.tools).toEqual(['Read', 'Grep', 'mcp__switch']);
+    expect(definition.disallowedTools).toEqual(['Write']);
+  });
+
+  it('leaves out what was not set, so the session keeps its own defaults', () => {
+    expect(
+      claudeRepoAgentsBehavior.launchDefinition({
+        name: 'reviewer',
+        description: 'Reviews diffs',
+        model: '',
+        tools: [],
+        disallowedTools: [],
+        maxTurns: null,
+        background: false,
+        color: 'blue',
+        isolation: 'worktree',
+      })
+    ).toEqual({ description: 'Reviews diffs', prompt: 'Reviews diffs' });
+  });
+
+  it('uses the description as the prompt when there are no instructions', () => {
+    // As the definition file did: its body could not be empty.
+    expect(
+      claudeRepoAgentsBehavior.launchDefinition({
+        name: 'reviewer',
+        description: 'Reviews\ndiffs',
+        instructions: '',
+      })
+    ).toEqual({ description: 'Reviews diffs', prompt: 'Reviews diffs' });
   });
 });

@@ -2,16 +2,23 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
-import { detachedSupervision, ensureSharedProcess } from './launch';
+import { type EnsureSession, serveControl } from './control';
+import {
+  detachedSupervision,
+  ensureSharedProcess,
+  inProcessSupervision,
+  sharedSessionRoot,
+} from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
-import { prepareSharedConfig, sharedConfigSchema } from './shared-config';
-import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
+import { SessionLinks } from './session-channel';
+import { sharedConfigSchema } from './shared-config';
+import { hostSessionProcess } from './shared-host';
 import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
+import { WatcherControl } from './watcher-tools';
 
 const [root, configPath, mode] = process.argv.slice(2);
 if (!root || !configPath)
@@ -19,7 +26,7 @@ if (!root || !configPath)
 async function main(): Promise<void> {
   if (root === '--models') {
     const provider = sharedConfigSchema.shape.start.shape.provider.parse(configPath);
-    const adapter = adapterFor(provider, process.argv[5]);
+    const adapter = adapterFor(provider, process.argv[5], '');
     const sessionId = randomUUID();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -104,12 +111,43 @@ async function main(): Promise<void> {
       env: process.env,
       signal: stop.signal,
       build: process.argv[1]!,
+      links: null,
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
-    await runSharedWatcher(root, config, stop.signal, detachedSupervision(process.argv[1]!));
+    // The sidecar is the parent of the sessions it runs: it talks to each over
+    // IPC, and Console reaches them through its control port.
+    const links = new SessionLinks();
+    const supervision = inProcessSupervision(process.argv[1]!, links);
+    const ensure: EnsureSession = async (input) => {
+      const session = sharedConfigSchema.parse(input.config);
+      return ensureSharedProcess({
+        root: sharedSessionRoot(session.session.sessionId),
+        config: session,
+        resuming: input.resuming,
+        watcher: false,
+        restart: input.restart,
+        supervision,
+      });
+    };
+    // Console's "Reconnect to room" reaches the watcher through the control port.
+    const control = new WatcherControl();
+    // A watcher that stops (disabled, stood down after a takeover, or
+    // signalled) takes the process with it: the control port and every
+    // session host go too, so the supervisor sees a clean exit and does not
+    // start it again.
+    try {
+      await Promise.all([
+        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
+          stop.abort()
+        ),
+        serveControl(resolve(root), links, ensure, control, stop.signal),
+      ]);
+    } finally {
+      await supervision.close();
+    }
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
@@ -125,44 +163,45 @@ async function main(): Promise<void> {
       process.exitCode = code ?? 1;
     });
   } else {
-    const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
-    const authenticate = async () => {
-      if (config.start.provider !== 'claude') return;
-      const readiness = await checkProviderReadiness({
-        provider: config.start.provider,
-        binaryPath: config.execution?.binaryPath ?? 'claude',
-        cwd: input.cwd,
-        env: input.env,
-      });
-      if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
-      if (readiness.status === 'unknown') console.warn(readiness.message);
-    };
+    if (!process.send)
+      throw new Error(
+        'A session host is started by Console or the agent sidecar, which answer its Switch tools; run on its own it has nothing to answer them.'
+      );
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
+    // Started by a parent that talks to it: it goes when the parent goes.
+    process.on('disconnect', () => stop.abort());
     try {
-      await runSharedHost(
-        {
-          root: resolve(root),
-          agentApiUrl,
-          token,
-          session: config.session,
-          resumeOperationId: config.resumeOperationId,
-          authenticate,
-          input,
-          roomConnection: config.roomConnection,
-        },
-        adapterFor(config.start.provider, config.execution?.binaryPath),
-        stop.signal
-      );
+      await hostSessionProcess({
+        root,
+        config,
+        adapter: adapterFor(
+          config.start.provider,
+          config.execution?.binaryPath,
+          config.execution?.skill ?? ''
+        ),
+        port: process,
+        authenticate:
+          config.start.provider === 'claude'
+            ? async (input) => {
+                const readiness = await checkProviderReadiness({
+                  provider: config.start.provider,
+                  binaryPath: config.execution?.binaryPath ?? 'claude',
+                  cwd: input.cwd,
+                  env: input.env,
+                });
+                if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
+                if (readiness.status === 'unknown') console.warn(readiness.message);
+              }
+            : null,
+        signal: stop.signal,
+      });
     } catch (error) {
-      if (!stop.signal.aborted) {
-        if (!(error instanceof SharedHostLeaseExpiredError)) throw error;
-        console.warn(
-          'Shared host lease expired. Execution stopped; reconnecting with saved state.'
-        );
-        process.exitCode = LEASE_EXPIRED_EXIT_CODE;
-      }
+      if (!stop.signal.aborted) throw error;
+    } finally {
+      // The channel would otherwise keep this process alive after the host is done.
+      process.disconnect();
     }
   }
 }

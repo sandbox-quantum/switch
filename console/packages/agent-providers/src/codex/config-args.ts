@@ -23,8 +23,12 @@ function tomlStringTable(values: Record<string, string>): string {
  * registration is a set of `-c mcp_servers.<name>.<key>=<toml>` overrides on
  * the process it is spawned with.
  */
-export function mcpServerConfigArgs(servers: Record<string, McpServerSpec>): string[] {
+export function mcpServerConfigArgs(servers: Record<string, McpServerSpec>): {
+  args: string[];
+  env: Record<string, string>;
+} {
   const args: string[] = [];
+  const env: Record<string, string> = {};
   for (const [name, spec] of Object.entries(servers)) {
     if (!BARE_KEY.test(name)) {
       throw new Error(
@@ -42,13 +46,26 @@ export function mcpServerConfigArgs(servers: Record<string, McpServerSpec>): str
       if (spec.env && Object.keys(spec.env).length > 0) push('env', tomlStringTable(spec.env));
     } else {
       push('url', tomlString(spec.url));
-      if (spec.headers && Object.keys(spec.headers).length > 0) {
-        push('http_headers', tomlStringTable(spec.headers));
+      // A bearer token goes to Codex by the name of the variable holding it
+      // (`bearer_token_env_var`), so the secret is in the app-server's
+      // environment rather than on its command line, where any user on the
+      // machine can read it.
+      const headers = { ...spec.headers };
+      const authorization = Object.keys(headers).find(
+        (header) => header.toLowerCase() === 'authorization'
+      );
+      const bearer = authorization ? /^Bearer (.+)$/.exec(headers[authorization]!) : null;
+      if (authorization && bearer) {
+        const variable = `SWITCH_MCP_${name.toUpperCase().replace(/-/g, '_')}_BEARER_TOKEN`;
+        env[variable] = bearer[1]!;
+        delete headers[authorization];
+        push('bearer_token_env_var', tomlString(variable));
       }
+      if (Object.keys(headers).length > 0) push('http_headers', tomlStringTable(headers));
     }
     push('default_tools_approval_mode', tomlString('approve'));
   }
-  return args;
+  return { args, env };
 }
 
 /** `--enable`/`--disable` pairs for the app-server feature flags a session needs. */

@@ -104,10 +104,8 @@ export function resolveReadiness(
   // A chosen agent type with no steps in the plan is one nobody has looked for.
   // `deriveAgentTypeStatus` falls back to the host's verdict there, which is
   // correct when describing the *host* and wrong as permission to create: it
-  // means this type's CLI and connector were never checked. An agent whose
-  // connector is absent starts with no Switch tools at all, which is the
-  // failure this gate exists to prevent — and "we never looked" is not evidence
-  // against it happening.
+  // means this type's CLI was never checked, and "we never looked" is not
+  // evidence that it is there.
   if (status.kind === 'ready' && agentId && plan && agentTypeSteps(plan, agentId).length === 0) {
     return { blocked: true, checking: false, missing: [], scope: 'agent-type' };
   }

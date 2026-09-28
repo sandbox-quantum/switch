@@ -38,7 +38,6 @@ describe('restoreSession', () => {
         agentId: 'agent-1',
         title: 'Session 1',
         config: null,
-        shellId: 'system',
         status: 'done',
 
         agentStatus: null,

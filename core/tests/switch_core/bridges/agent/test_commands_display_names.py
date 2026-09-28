@@ -96,7 +96,7 @@ def _build_client(
     async def _list_roles(_session, _room_id):  # type: ignore[no-untyped-def]
         return list(roles or [])
 
-    async def _live_holders_for_room(_session, _room_id, _live_ids):  # type: ignore[no-untyped-def]
+    async def _live_holders_for_room(_session, _room_id, _live_conns):  # type: ignore[no-untyped-def]
         return dict(holders or {})
 
     async def _list_for_room(_session, _room_id):  # type: ignore[no-untyped-def]
@@ -118,7 +118,7 @@ def _build_client(
             list_roles=_list_roles, live_holders_for_room=_live_holders_for_room
         ),
         _document_store=SimpleNamespace(list_for_room=_list_for_room),
-        _connections=SimpleNamespace(live_agent_ids=lambda: set()),
+        _connections=SimpleNamespace(live_connection_ids=lambda: set()),
     )
     return client, posted
 

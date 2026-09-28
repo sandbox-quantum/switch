@@ -62,6 +62,13 @@ export interface ServerHost {
    * unreadable file is not the same as an absent one. */
   readFile(relPath: string): Promise<string | null>;
 
+  /** Delete `relPath` under {@link workingDir}. An absent file is not an error. */
+  removeFile(relPath: string): Promise<void>;
+
+  /** Set the permission bits of `relPath` under {@link workingDir} (a file or a
+   * directory), restricting it to the owner on Windows where there are none. */
+  restrictMode(relPath: string, mode: number): Promise<void>;
+
   /**
    * Run a command on the host streaming merged stdout+stderr line-by-line to
    * `onLine`, rooted at {@link workingDir}. Used for the slow `compose up`

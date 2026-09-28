@@ -103,6 +103,7 @@ def _connected(room: str | None) -> ConnectionRegistry:
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
     if room:
         registry.claim_room(conn, room)

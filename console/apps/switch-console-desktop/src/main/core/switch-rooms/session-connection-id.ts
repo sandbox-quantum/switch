@@ -32,11 +32,41 @@ export function sessionConnectionId(sessionId: string): string {
 }
 
 /**
+ * The Switch connection id an agent's controller uses, derived from the Switch
+ * agent id.
+ *
+ * At most one controller connection per agent exists globally; exactly one
+ * while an active owner exists. A random id cannot express that: two Consoles
+ * watching the same agent mint two ids, the server has no way to know they are
+ * the same role, and both connections live — so an addressed message reaches
+ * whichever one the coverage rules happen to favour, and the other quietly
+ * waits forever. Deriving the id from the agent makes the collision the point:
+ * the second controller reopens the first one's connection, which is a takeover
+ * the server can see, arbitrate and report.
+ *
+ * It also survives a restart with no state. A Console that crashes and comes
+ * back recomputes the same id and resumes the same connection rather than
+ * leaving the old one to be swept.
+ */
+export function controllerConnectionId(switchAgentId: string): string {
+  return uuidV5(switchAgentId, CONTROLLER_CONNECTION_NAMESPACE);
+}
+
+/**
  * Namespace for session-derived connection ids. Arbitrary but fixed: changing
  * it re-points every session at a different connection, which is the same
  * breakage this module exists to prevent.
  */
 const SESSION_CONNECTION_NAMESPACE = '37b41592-2345-455b-8b74-545f79dda0c7';
+
+/**
+ * Namespace for controller connection ids. Separate from the session namespace
+ * so that an agent id and a session id that happened to be the same string
+ * could not derive the same connection — a session would then be reopening its
+ * own agent's controller connection, and the two would take it from each other
+ * indefinitely.
+ */
+const CONTROLLER_CONNECTION_NAMESPACE = 'c3f2b0de-2e5a-5a1e-9d4a-1f7c2a6b8e05';
 
 /**
  * RFC 4122 §4.3 name-based UUID, SHA-1 flavour.

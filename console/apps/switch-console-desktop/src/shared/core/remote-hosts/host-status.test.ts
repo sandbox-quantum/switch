@@ -185,9 +185,7 @@ describe('deriveHostStatus', () => {
         step('git', 'satisfied'),
         step('node', 'satisfied'),
         step('claude', 'satisfied', false, 'agent-cli'),
-        step('claude:plugin', 'satisfied', false, 'agent-plugin'),
         step('codex', 'pending', false, 'agent-cli'),
-        step('codex:plugin', 'pending', false, 'agent-plugin'),
       ]);
 
     it('reports ready when only an agent CLI is missing', () => {
@@ -225,9 +223,7 @@ describe('deriveAgentTypeStatus', () => {
     plan([
       step('git', 'satisfied'),
       step('claude', 'satisfied', false, 'agent-cli'),
-      step('claude:plugin', 'satisfied', false, 'agent-plugin'),
       observedMissing('codex', 'agent-cli'),
-      observedMissing('codex:plugin', 'agent-plugin'),
     ]);
 
   it('reports an installed type as ready', () => {
@@ -241,7 +237,7 @@ describe('deriveAgentTypeStatus', () => {
 
     expect(status.kind).toBe('setup-required');
     expect(status.done).toBe(0);
-    expect(status.total).toBe(2);
+    expect(status.total).toBe(1);
   });
 
   it('reports a type nobody has looked at as unchecked, not missing', () => {
@@ -250,11 +246,7 @@ describe('deriveAgentTypeStatus', () => {
     // required" claims knowledge we have not earned.
     const status = deriveAgentTypeStatus(
       reachability('reachable'),
-      plan([
-        step('git', 'satisfied'),
-        step('codex', 'pending', false, 'agent-cli'),
-        step('codex:plugin', 'pending', false, 'agent-plugin'),
-      ]),
+      plan([step('git', 'satisfied'), step('codex', 'pending', false, 'agent-cli')]),
       'codex'
     );
 

@@ -138,25 +138,12 @@ Note the shape of `failure_reason` everywhere: a short enumerated code such as
 a stack trace, or a command's stderr — those are mapped to `error` if they don't
 match a known code.
 
-**Connector**
-
-| Event | Fields, with example values |
-|---|---|
-| `connector_installed` | `agent_type`: `claude` · `target`: `local` · `outcome`: `success` · `failure_reason`: `none` / `unsupported` / `host_cli_missing` / `marketplace_failed` / `install_command_failed` / `update_command_failed` / `uninstall_command_failed` / `files_write_failed` / `files_remove_failed` / `files_unimplemented` / `error` · `duration_ms`: `8421` |
-| `connector_updated` | `agent_type` · `target`: `remote` · `outcome` · `was_reinstall`: `false` · `trigger`: `user` / `catch_up` · `failure_reason` (same set) · `duration_ms` |
-| `connector_uninstalled` | `agent_type` · `target`: `local` · `outcome` · `failure_reason` (same set) · `duration_ms` |
-
-`trigger` on `connector_updated` separates the Update button from the
-once-per-install sweep that brings already-installed connectors up to the
-version a new build ships. Both go through the same code, and the sweep runs
-unattended at launch — without the field its latencies and its failures would be
-read as ones somebody sat through.
-
-`duration_ms` is how long the operation took, in whole milliseconds, measured on
-a monotonic clock around the operation itself. Like `agent_count` and
-`result_count` it is a number rather than a value from a fixed set, so to be
-explicit: it is an elapsed time and nothing else. It names no path, host, command or repository,
-and at this resolution it does not distinguish one machine from another.
+`duration_ms` on `agent_cli_action` is how long the operation took, in whole
+milliseconds, measured on a monotonic clock around the operation itself. Like
+`agent_count` and `result_count` it is a number rather than a value from a fixed
+set, so to be explicit: it is an elapsed time and nothing else. It names no path,
+host, command or repository, and at this resolution it does not distinguish one
+machine from another.
 
 **Servers and sign-in**
 
@@ -190,7 +177,7 @@ agents.
 
 | Event | Fields, with example values |
 |---|---|
-| `host_setup_step` | `step_kind`: `core-dependency` / `agent-cli` / `agent-plugin` / `unknown` · `agent_type` · `action`: `install` / `update` / `skip` · `outcome` |
+| `host_setup_step` | `step_kind`: `core-dependency` / `agent-cli` / `unknown` · `agent_type` · `action`: `install` / `update` / `skip` · `outcome` |
 | `host_onboarded` | `outcome`: `success` · `picked_from_ssh_config`: `true` (**a boolean — the SSH host is never sent**) |
 | `host_removed` | `outcome` |
 

@@ -3,8 +3,9 @@ import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
-import { detachedSupervision, ensureSharedProcess } from './launch';
+import { afterEach, expect, it, vi } from 'vitest';
+import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { SessionLinks } from './session-channel';
 import type { SharedHostConfig } from './shared-config';
 
 const roots: string[] = [];
@@ -95,11 +96,11 @@ it.skipIf(process.platform === 'win32')(
   }
 );
 
-it('refreshes renamed agent configuration without changing the saved session or room', async () => {
+it('refreshes renamed agent configuration without changing the saved session', async () => {
   const input = await fixture();
   input.restart = false;
   input.config.start.input.agentName = 'old-name';
-  input.config.roomConnection = { connectionId: 'connection', rooms: ['room'] };
+  input.config.roomConnection = { connectionId: 'connection' };
   await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
   await mkdir(join(input.root, 'supervisor'));
   await writeFile(
@@ -109,15 +110,30 @@ it('refreshes renamed agent configuration without changing the saved session or 
   input.config = structuredClone(input.config);
   input.config.start.input.agentName = 'new-name';
   input.config.session.hostId = 'proposed-new-host';
-  input.config.roomConnection = { connectionId: 'new-connection', rooms: [] };
+  input.config.roomConnection = { connectionId: 'new-connection' };
   expect(await ensureSharedProcess(input)).toEqual({ created: false });
   const saved = JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8'));
   expect(saved.start.input.agentName).toBe('new-name');
   expect(saved.session.hostId).toBe('host');
-  expect(saved.roomConnection).toEqual({
-    connectionId: 'connection',
-    rooms: ['room'],
-  });
+  expect(saved.roomConnection).toEqual({ connectionId: 'new-connection' });
+});
+
+it('gives a controller the connection it was asked for rather than the one on disk', async () => {
+  const input = await fixture();
+  input.restart = false;
+  input.watcher = true;
+  input.config.roomConnection = { connectionId: 'written-at-first-launch' };
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await mkdir(join(input.root, 'supervisor'));
+  await writeFile(
+    join(input.root, 'supervisor', 'owner.json'),
+    JSON.stringify({ pid: process.pid, build: input.supervision.build })
+  );
+  input.config = structuredClone(input.config);
+  input.config.roomConnection = { connectionId: 'derived-from-the-agent' };
+  expect(await ensureSharedProcess(input)).toEqual({ created: false });
+  const saved = JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8'));
+  expect(saved.roomConnection).toEqual({ connectionId: 'derived-from-the-agent' });
 });
 
 it.skipIf(process.platform === 'win32')(
@@ -187,3 +203,24 @@ it.skipIf(process.platform === 'win32')(
     }
   }
 );
+
+it('stops the hosts it supervises in-process when closed, and starts no more', async () => {
+  const { root, entrypoint } = await fixture();
+  await writeFile(
+    entrypoint,
+    `require('node:fs').writeFileSync(process.argv[2] + '/pid', String(process.pid));
+     setInterval(() => {}, 1000);`
+  );
+  const supervision = inProcessSupervision(entrypoint, new SessionLinks());
+  await supervision.start({ root, configPath: join(root, 'config.json'), watcher: false });
+  const pid = Number(
+    await vi.waitFor(async () => await readFile(join(root, 'pid'), 'utf8'), { timeout: 10000 })
+  );
+
+  await supervision.close();
+
+  expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+  await expect(
+    supervision.start({ root, configPath: join(root, 'config.json'), watcher: false })
+  ).rejects.toThrow('shutting down');
+});

@@ -13,16 +13,14 @@ const CREDS = {
 };
 
 describe('mergeSwitchSettings', () => {
-  it('produces the SWITCH_* env block and connector allow rules from scratch', () => {
+  it('produces the SWITCH_* env block and Switch allow rules from scratch', () => {
     const merged = JSON.parse(mergeSwitchSettings(null, CREDS)) as Record<string, unknown>;
     // No token: it goes to the home-side store, not into a working tree.
     expect(merged.env).toEqual({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
       SWITCH_AGENT_ID: 'agent-123',
     });
-    expect((merged.permissions as { allow: string[] }).allow).toContain(
-      'mcp__plugin_switch-connector_switch'
-    );
+    expect((merged.permissions as { allow: string[] }).allow).toContain('mcp__switch');
   });
 
   it('merges into an existing file, preserving unrelated keys and env entries', () => {

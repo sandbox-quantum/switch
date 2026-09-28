@@ -489,6 +489,34 @@ it('keeps a model notice anchored before messages that arrive later', () => {
   expect(replica.notices[0].afterItemId).toBe('assistant');
 });
 
+it('carries notices in the snapshot, so a view opened later still sees why a turn failed', () => {
+  const replica = new SessionReplica(initial());
+  const sequence = replica.snapshot().throughSequence;
+  replica.apply(
+    event(sequence + 1, {
+      type: 'notice',
+      level: 'error',
+      code: 'PROVIDER_NOTICE',
+      message: 'Model not found: example/model.',
+    })
+  );
+  const reopened = new SessionReplica(replica.snapshot());
+  expect(reopened.notices).toEqual([
+    expect.objectContaining({ level: 'error', message: 'Model not found: example/model.' }),
+  ]);
+});
+
+it('keeps only the newest notices in a snapshot', () => {
+  const replica = new SessionReplica(initial());
+  const sequence = replica.snapshot().throughSequence;
+  for (let index = 1; index <= 60; index++)
+    replica.apply(
+      event(sequence + index, { type: 'notice', level: 'info', code: 'N', message: `n${index}` })
+    );
+  expect(replica.snapshot().notices).toHaveLength(50);
+  expect(replica.snapshot().notices.at(-1)?.message).toBe('n60');
+});
+
 it.each(['gemini', 'antigravity', 'future-provider'])(
   'preserves %s provider names in stored snapshots',
   (provider) => {

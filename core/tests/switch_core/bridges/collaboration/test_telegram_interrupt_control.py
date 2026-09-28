@@ -46,7 +46,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
 )
 from switch_core.bridges.collaboration.telegram.chunking import MAX_MESSAGE
 
-from .test_session_activity import _item, _turn
+from .session_fixtures import _item, _turn
 from .test_telegram_adapter import (
     CHAT_ID,
     _adapter,

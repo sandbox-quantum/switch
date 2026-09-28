@@ -9,7 +9,6 @@ import { asAgentProviderId } from '@shared/core/providers/agent-provider-registr
 import { AgentSheetHeaderSection } from './AgentSheetHeaderSection';
 import { InstalledAgentContent } from './InstalledAgentContent';
 import { InstallSection } from './InstallSection';
-import { SwitchSetupCard } from './SwitchSetupCard';
 
 interface AgentDetailSheetProps {
   agentId: string | null;
@@ -50,7 +49,6 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
                 hideOverrideOptions={!isInstalled}
               />
             </Field>
-            {isInstalled && <SwitchSetupCard agentId={agentId} />}
           </div>
         )}
       </div>

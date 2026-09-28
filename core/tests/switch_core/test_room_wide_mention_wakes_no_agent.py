@@ -102,7 +102,7 @@ async def room(session_factory: async_sessionmaker[AsyncSession]) -> _Room:
         sender, scout, builder, reviewer = agents
         await room_store.set_alias(session, row.id, builder.id, "bob")
         lead = await role_store.define_role(session, row.id, "lead", "lead", True)
-        await role_store.acquire_lease(session, lead, reviewer.id, None)
+        await role_store.acquire_lease(session, lead, reviewer.id, None, None, ())
         await session.commit()
         return _Room(row.id, sender, scout, builder, reviewer)
 
@@ -174,7 +174,7 @@ async def _woken(
         client_store=ClientStore(),
         agent_store=AgentStore(),
         external_user_store=ExternalUserStore(),
-        live_agent_ids=set,
+        live_connection_ids=set,
     )
     woken: set[str] = set()
     async with session_factory() as session:

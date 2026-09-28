@@ -22,15 +22,16 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
     sessionId: '../session',
     sourceHome,
     config: 'model = "test-model"',
-    skill: 'Switch workflow',
   };
   const home = await prepareCodexSessionHome(input);
   expect(parse(await readFile(join(home, 'config.toml'), 'utf8'))).toEqual({
     model: 'test-model',
     model_reasoning_effort: 'high',
   });
-  expect(await readFile(join(home, 'skills/switch/SKILL.md'), 'utf8')).toBe(input.skill);
-  expect(await readdir(home)).toEqual(['auth.json', 'config.toml', 'skills']);
+  expect((await readdir(home)).filter((name) => name !== 'skills')).toEqual([
+    'auth.json',
+    'config.toml',
+  ]);
   if (process.platform !== 'win32')
     expect((await stat(join(home, 'auth.json'))).mode & 0o777).toBe(0o600);
   await writeFile(join(home, 'auth.json'), 'refreshed-fixture');
@@ -53,7 +54,32 @@ it('allows native environment or keychain authentication when no login file exis
       sessionId: 'session',
       sourceHome: join(root, 'missing'),
       config: '',
-      skill: '',
     })
   ).resolves.toEqual(expect.any(String));
+});
+
+it('removes a Switch skill file an earlier build left in the session home', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
+  roots.push(root);
+  const input = { root, sessionId: 'session', sourceHome: join(root, 'missing'), config: '' };
+  const home = await prepareCodexSessionHome(input);
+  await mkdir(join(home, 'skills/switch'), { recursive: true });
+  await writeFile(join(home, 'skills/switch/SKILL.md'), 'old copy');
+  await prepareCodexSessionHome(input);
+  await expect(stat(join(home, 'skills/switch'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('links the user’s own Codex skills into a session home that has no skills folder yet', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
+  roots.push(root);
+  const sourceHome = join(root, 'source');
+  await mkdir(join(sourceHome, 'skills', '.system'), { recursive: true });
+  await writeFile(join(sourceHome, 'skills', '.system', 'SKILL.md'), 'system skill');
+  const home = await prepareCodexSessionHome({
+    root: join(root, 'sessions'),
+    sessionId: 'session',
+    sourceHome,
+    config: '',
+  });
+  expect(await readFile(join(home, 'skills', '.system', 'SKILL.md'), 'utf8')).toBe('system skill');
 });

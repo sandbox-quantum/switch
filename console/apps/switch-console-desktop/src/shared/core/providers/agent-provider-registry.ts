@@ -53,7 +53,6 @@ export type AgentProviderDefinition = {
   alt?: string;
   /** When true, the logo should be colour-inverted in dark mode. */
   invertInDark?: boolean;
-  supportsHooks?: boolean;
 };
 
 /**
@@ -74,11 +73,8 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     commands: ['codex'],
     versionArgs: ['--version'],
     cli: 'codex',
-    // Hook trust is a default arg, not an auto-approve one: Codex skips any hook
-    // it has no persisted trust entry for, and Switch Console's status signals and
-    // rollout-id capture are hooks. Kept in sync with the plugin by the parity
-    // test in src/main/core/providers/provider-argv-parity.test.ts.
-    defaultArgs: ['--dangerously-bypass-hook-trust'],
+    // Kept in sync with the plugin by the parity test in
+    // src/main/core/providers/provider-argv-parity.test.ts.
     autoApproveFlag: '-c approval_policy="never"',
     initialPromptFlag: '',
     resumeFlag: 'resume',
@@ -87,7 +83,6 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     resumeWithoutSessionFlag: 'resume --last',
     icon: 'openai.svg',
     alt: 'Codex',
-    supportsHooks: true,
   },
   {
     id: 'claude',
@@ -106,7 +101,6 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     planActivateCommand: '/plan',
     icon: 'claude.svg',
     alt: 'Claude Code',
-    supportsHooks: true,
   },
   {
     id: 'cursor',
@@ -158,7 +152,6 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     icon: 'opencode.svg',
     iconDark: 'opencode-dark.svg',
     alt: 'OpenCode CLI',
-    supportsHooks: true,
   },
 ];
 

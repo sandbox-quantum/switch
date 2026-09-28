@@ -128,16 +128,16 @@ class AddressingResolver:
         client_store: ClientStore,
         agent_store: AgentStore,
         external_user_store: ExternalUserStore,
-        live_agent_ids: Callable[[], set[str]],
+        live_connection_ids: Callable[[], set[str]],
     ) -> None:
         self._room_store = room_store
         self._room_role_store = room_role_store
         self._client_store = client_store
         self._agent_store = agent_store
         self._external_user_store = external_user_store
-        # A callable rather than a set: a role only routes while its holder's
-        # session is live, and that changes between one message and the next.
-        self._live_agent_ids = live_agent_ids
+        # A callable rather than a set: a role only routes while its holder is
+        # live, and that changes between one message and the next.
+        self._live_connection_ids = live_connection_ids
 
     # ── Addressed ─────────────────────────────────────────────────────────────
 
@@ -257,12 +257,13 @@ class AddressingResolver:
         live lease counts, which makes "held" mean the same thing here as in
         `!roles`: a stale lease — session gone, role auto-released, shown free
         — does not route here. A holder whose session merely hopped to another
-        room still matches, because the renewal loop keeps that lease alive.
+        room still matches, because liveness follows the holder rather than
+        the room it is attending.
         """
         if "@" not in message.body:
             return False
         role_name = await self._room_role_store.agent_room_role(
-            session, room_id, agent.id, self._live_agent_ids()
+            session, room_id, agent.id, self._live_connection_ids()
         )
         if not role_name:
             return False
@@ -416,6 +417,14 @@ class AddressingResolver:
             return SenderPrincipal("user", external_user.id, claimants, None)
         if client.type == "admin":
             person = platform_on_behalf_of(content or {})
+            if person is not None and person.agent_id is not None:
+                # The message speaks for an agent, so the policy is asked what
+                # it would say to that agent. An agent that no longer exists
+                # leaves a bare platform message, which is denied by default.
+                speaker = await self._agent_store.get(session, person.agent_id)
+                if speaker is not None:
+                    return SenderPrincipal("agent", speaker.id, [], speaker.owner_id)
+                person = None
             return SenderPrincipal(
                 "platform",
                 client.id,

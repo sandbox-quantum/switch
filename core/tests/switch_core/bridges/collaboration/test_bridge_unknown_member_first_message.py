@@ -40,11 +40,6 @@ async def _no_text_answer(_msg: object) -> None:
     return None
 
 
-async def _no_session_demo(_msg: object, _room_id: str) -> None:
-    """The demo harness is off in production and off here."""
-    return None
-
-
 class _FakePuppet:
     """Stands in for a ClientBase puppet whose join lands after the invite."""
 
@@ -202,7 +197,6 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         _record_message_map=_record_message_map,
         _adapter=SimpleNamespace(translate_inbound=lambda text: text),
         _handle_text_answer=_no_text_answer,
-        _handle_session_demo=_no_session_demo,
         _channel_to_room={"chan-1": ("room-uuid", MATRIX_ROOM_ID)},
         _channel_locks={},
     )
@@ -246,7 +240,6 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         _record_message_map=_record_message_map,
         _adapter=SimpleNamespace(translate_inbound=lambda text: text),
         _handle_text_answer=_no_text_answer,
-        _handle_session_demo=_no_session_demo,
         _channel_to_room={"chan-1": ("room-uuid", MATRIX_ROOM_ID)},
         _channel_locks={},
     )

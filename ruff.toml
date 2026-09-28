@@ -1,6 +1,6 @@
 # Repo-root ruff config. The core/ project and the connector sub-projects
 # (e.g. internal/connectors/google-adk) each carry their own [tool.ruff]; ruff's
 # hierarchical discovery uses the nearest one for those files. This root config
-# is the fallback for the remaining loose Python (connector hooks, deploy and
+# is the fallback for the remaining loose Python (deploy and
 # internal image/scripts) so lint policy stays consistent across the monorepo.
 extend = "core/pyproject.toml"

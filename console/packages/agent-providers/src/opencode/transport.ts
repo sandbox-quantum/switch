@@ -1,10 +1,16 @@
-import { createOpencodeClient, type Event, type OpencodeClient } from '@opencode-ai/sdk/v2';
+import {
+  createOpencodeClient,
+  type Event,
+  type Message,
+  type OpencodeClient,
+} from '@opencode-ai/sdk/v2';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
 import { ProviderSessionError, ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile, OpencodePermissionRule } from './config';
 import { type OpencodeSkill, startOpencodeServer, stopOpencodeServer } from './server';
 
 export type OpencodeEvent = Event;
+export type OpencodeMessage = Message;
 
 export type OpencodePermissionReply = 'once' | 'always' | 'reject';
 
