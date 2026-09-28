@@ -52,6 +52,8 @@ _BRIDGE_NAME = "Telegram"
 
 _REMOVED_STATUSES = frozenset({"left", "kicked"})
 _PRESENT_STATUSES = frozenset({"member", "administrator"})
+#: Chats the bot being added to is never answered in.
+_UNANSWERED_ADDS = frozenset({"private", "channel"})
 
 #: How long an unclaimed add waits before saying so. Adding the bot through a
 #: Switch link sends the add and the claim a moment apart, possibly delivered
@@ -140,6 +142,11 @@ class TelegramAppInstaller(MessagingAppInstaller):
         picker, adds the bot, and posts the state into the chat it was added to.
         """
         return f"https://t.me/{self._client.bot_username}?startgroup={state}"
+
+    def bot_handle(self) -> str:
+        """`@username`, typed in full: Telegram's search does not find a bot
+        by part of its username."""
+        return f"@{self._client.bot_username}"
 
     async def redeem(self, *, code: str, redirect_uri: str) -> InstallGrant:
         raise MessagingInstallError(
@@ -333,16 +340,19 @@ class TelegramAppInstaller(MessagingAppInstaller):
     ) -> None:
         """Say how to connect an unclaimed chat, or that DMs reach no one.
 
-        The bot being added is answered once, after the grace period, and only
-        if no claim has landed by then. A direct message is answered each time,
-        as the self-registered bridge answers one. Everything else from an
-        unowned chat gets no answer: the bot stays, and stays quiet.
+        The bot being added to a group is answered once, after the grace
+        period, and only if no claim has landed by then. A channel is not
+        answered: every channel is added unclaimed, because its code can only
+        be posted once the bot is in, and a notice there would reach every
+        subscriber. A direct message is answered each time, as the
+        self-registered bridge answers one. Everything else from an unowned
+        chat gets no answer: the bot stays, and stays quiet.
         """
         member = _as_dict(payload.get("my_chat_member"))
         if member is not None:
             chat = _as_dict(member.get("chat")) or {}
             status = (_as_dict(member.get("new_chat_member")) or {}).get("status")
-            if status not in _PRESENT_STATUSES or chat.get("type") == "private":
+            if status not in _PRESENT_STATUSES or chat.get("type") in _UNANSWERED_ADDS:
                 return
             await asyncio.sleep(UNCLAIMED_NOTICE_GRACE)
             if await still_unowned():

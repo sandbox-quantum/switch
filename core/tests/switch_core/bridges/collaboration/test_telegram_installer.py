@@ -370,6 +370,10 @@ class TestTheLink:
         url = installer.authorize_url(state="c1token", redirect_uri="unused")
         assert url == "https://t.me/switch_app_bot?startgroup=c1token"
 
+    async def test_the_handle_is_the_whole_username(self) -> None:
+        installer = await _installer()
+        assert installer.bot_handle() == "@switch_app_bot"
+
     def test_there_is_no_link_before_the_bot_has_connected(self) -> None:
         installer = TelegramAppInstaller(client=_client(), webhook_secret=_SECRET)
         with pytest.raises(TelegramAppNotReady):

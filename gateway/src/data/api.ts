@@ -1064,11 +1064,12 @@ export async function beginAppInstall(platform: string): Promise<string> {
 }
 
 // A link that adds the bot to a group and connects it, and the bare code a
-// channel admin posts as `/connect <code>` instead. Both work once, for ten
-// minutes.
+// channel admin posts as `/connect <code>` instead, after adding the bot by
+// `bot_handle`. The link and code work once, for ten minutes.
 export interface ChatClaim {
   url: string;
   code: string;
+  bot_handle: string;
 }
 
 export async function beginChatClaim(platform: string): Promise<ChatClaim> {

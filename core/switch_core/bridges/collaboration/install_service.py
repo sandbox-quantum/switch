@@ -198,11 +198,13 @@ class ClaimLink:
 
     The link adds the bot to a group and claims it in one step. A channel has
     no such link — Telegram carries no state when a bot is added to one — so
-    the code is posted there by hand, as `/connect <code>`.
+    the code is posted there by hand, as `/connect <code>`, after adding the
+    bot by its handle.
     """
 
     url: str
     code: str
+    bot_handle: str
 
 
 @dataclass(frozen=True)
@@ -339,6 +341,7 @@ class MessagingInstallService:
                 state=token, redirect_uri=self._redirect_uri(platform)
             ),
             code=token,
+            bot_handle=installer.bot_handle(),
         )
 
     async def _mint_state(

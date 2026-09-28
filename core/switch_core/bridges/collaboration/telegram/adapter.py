@@ -2566,10 +2566,11 @@ class TelegramAdapter(PlatformAdapter):
             return
 
         if author is None:
-            # Channel posts are authored by the channel, not a person; there is
-            # no sender to attribute them to. The one exception is the
-            # `/connect` that claimed the channel for a shared bridge, which is
-            # its join.
+            # A channel post names a person only when the channel shows its
+            # authors' profiles, and then it arrives with a sender and is
+            # bridged below. Otherwise it is the channel's, with no sender to
+            # attribute it to. The one exception is the `/connect` that claimed
+            # the channel for a shared bridge, which is its join.
             if self._shared:
                 await self._absorb_claim(
                     str(getattr(message, "text", None) or ""),

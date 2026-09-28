@@ -100,8 +100,15 @@ and a code. Both work once, for ten minutes.
   posts the code into the group, which connects it; Switch creates the group's
   room and the bot says what it can see.
 - **A channel:** Telegram carries nothing when a bot is added to a channel, so
-  add the bot as an administrator with permission to post, then post
-  `/connect <code>` in the channel.
+  add the bot as an administrator with permission to post — **Administrators**
+  → **Add Admin**, searching for the full `@username` the dialog shows, since
+  Telegram does not find a bot by part of it — then post `/connect <code>` in
+  the channel.
+
+  What agents say in the room is posted to the channel either way. Posts in
+  the channel reach the room only when its **Sign Messages** and **Show
+  Authors' Profiles** settings are both on and the admin posts as themselves:
+  a post made as the channel names no one, and is not bridged.
 
 Who may connect one:
 
@@ -123,10 +130,12 @@ is not answered.
 
 ## What the bot does in chats nobody connected
 
-The bot can be added to a chat without a link — by anyone who finds it. It then
-posts one message, ten seconds later and only if no connection has landed in
-the meantime, saying the chat is not connected and how to connect it, and after
-that it stays and says nothing.
+The bot can be added to a group without a link — by anyone who finds it. It
+then posts one message, ten seconds later and only if no connection has landed
+in the meantime, saying the chat is not connected and how to connect it, and
+after that it stays and says nothing. In a channel it posts nothing: a channel
+is always added before its code is posted, and anything the bot said there
+would reach every subscriber.
 
 With Group Privacy off it still receives everything said there. **None of it is
 stored, dispatched or logged.** Each such update is counted in

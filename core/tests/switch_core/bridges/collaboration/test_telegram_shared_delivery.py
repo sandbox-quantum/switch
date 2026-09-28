@@ -20,7 +20,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     WebhookDeliveryUnsupported,
 )
-from switch_core.bridges.collaboration.models import InboundAppJoin
+from switch_core.bridges.collaboration.models import InboundAppJoin, InboundMessage
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
@@ -276,6 +276,36 @@ class TestDelivery:
         )
 
         assert joined == []
+
+    async def test_a_post_signed_with_its_authors_profile_is_bridged(self) -> None:
+        """With Show Authors' Profiles on, a post carries its author as its
+        sender, which is all a message needs to reach the room."""
+        adapter = _shared_adapter()
+        adapter.attach_shared_connection(await _client())
+        seen: list[InboundMessage] = []
+
+        async def on_message(message: InboundMessage) -> None:
+            seen.append(message)
+
+        adapter._on_message = on_message
+
+        await adapter.dispatch_event(
+            envelope_type="events",
+            payload=_update(
+                channel_post={
+                    "message_id": 8,
+                    "date": 0,
+                    "chat": {"id": -1002, "type": "channel", "title": "News"},
+                    "from": {"id": 42, "is_bot": False, "first_name": "Ada"},
+                    "author_signature": "Ada",
+                    "text": "morning all",
+                }
+            ),
+        )
+
+        assert [(m.channel_id, m.sender_id, m.content) for m in seen] == [
+            ("-1002", "42", "morning all")
+        ]
 
     async def test_a_self_registered_bridge_still_refuses_webhooks(self) -> None:
         adapter = TelegramAdapter(

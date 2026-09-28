@@ -201,6 +201,15 @@ class TestUnclaimedChats:
         await _answer(installer, _added(), owned=True)
         assert bot.sent == []
 
+    async def test_a_channel_add_says_nothing(self) -> None:
+        """A channel's code is posted after the bot is in, so every channel is
+        added unclaimed, and a notice there reaches every subscriber."""
+        installer, bot = await _installer()
+        await _answer(
+            installer, _added(chat_type="channel", status="administrator"), owned=False
+        )
+        assert bot.sent == []
+
     async def test_leaving_is_not_answered(self) -> None:
         installer, bot = await _installer()
         await _answer(installer, _added(status="left"), owned=False)
