@@ -122,6 +122,11 @@ describe('buildEnvFile', () => {
       'DISCORD_APP_CLIENT_SECRET',
       'DISCORD_APP_BOT_TOKEN',
       'DISCORD_APP_APPLICATION_ID',
+      // Telegram's distributed bot is deployment config too, and Telegram
+      // delivers its updates to a webhook on MESSAGING_PUBLIC_URL, which a
+      // loopback stack cannot offer (see above).
+      'TELEGRAM_APP_BOT_TOKEN',
+      'TELEGRAM_APP_WEBHOOK_SECRET',
       // Agent management is off unless a server opts in, and the compose file
       // defaults it off. A managed stack does not opt in yet: the pinned
       // switch-core release predates it, and turning it on also needs a
