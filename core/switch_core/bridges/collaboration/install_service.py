@@ -94,6 +94,7 @@ from switch_core.db.stores.messaging_install_store import (
     INSTALL_ACTIVE,
     INSTALL_DISCONNECTED,
     INSTALL_REVOKED,
+    MessagingInstallStateError,
     MessagingInstallStore,
 )
 from switch_core.db.stores.user_store import UserStore
@@ -195,6 +196,16 @@ class InstallClaimNotPermitted(RuntimeError):
     creates the connection itself, which is an admin's. Checked when the claim
     is redeemed and not only when it was minted, because whether a connection
     exists can change in the ten minutes between the two.
+    """
+
+
+class InstallClaimRepeated(RuntimeError):
+    """A claim arrived again after it had already connected its workspace.
+
+    The platform re-sends an event it thinks went unanswered, and the retried
+    claim finds its state burnt. Told apart from a claim that genuinely came
+    too late, because answering a retry with "that link has expired" in a chat
+    it has just connected would be telling the person something false.
     """
 
 
@@ -400,7 +411,21 @@ class MessagingInstallService:
         state = verify_compact(claim.token, platform=platform, secret=self._secret)
 
         with tenant_scope(state.tenant_id):
-            burnt = await self._burn(state)
+            try:
+                burnt = await self._burn(state)
+            except MessagingInstallStateError:
+                holder = await tenant_of_messaging_install(
+                    self._session_factory,
+                    platform,
+                    claim.grant.external_workspace_id,
+                )
+                if holder == state.tenant_id:
+                    raise InstallClaimRepeated(
+                        f"the {platform} workspace "
+                        f"{claim.grant.external_workspace_id} was already "
+                        "connected by this claim"
+                    ) from None
+                raise
 
             async with tenant_session(
                 self._session_factory, state.tenant_id

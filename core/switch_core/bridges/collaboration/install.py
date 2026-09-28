@@ -215,6 +215,12 @@ class InstallClaim:
     grant: InstallGrant
 
 
+#: Why a claim was refused, as a person trying to connect a chat needs to hear
+#: it. `expired` covers a link already used too: the store cannot tell the two
+#: apart, and neither is fixed differently — both want a fresh link.
+ClaimRefusal = Literal["expired", "unrecognised", "already_connected", "not_permitted"]
+
+
 #: Which state token an installer's platform can carry. `v1` for a platform
 #: that hands the state back through a redirect; `compact` for one whose only
 #: carrier is short (see `install_state`).
@@ -403,6 +409,18 @@ class MessagingAppInstaller(ABC):
         install row is keyed by that id and has to follow it, or the chat's
         events stop resolving to anyone. Pure, like `workspace_of_event`,
         which for such an event answers the *old* id so it still resolves.
+        """
+        return None
+
+    async def on_claim_refused(
+        self, *, claim: InstallClaim, reason: ClaimRefusal
+    ) -> None:
+        """Tell the chat a claim came from why it was not connected.
+
+        Runs after the platform has been answered. Without it the person who
+        tapped the link sees nothing happen, which reads as Switch being broken
+        rather than as a link that ran out. Must say nothing about which tenant
+        holds a chat that is already connected.
         """
         return None
 

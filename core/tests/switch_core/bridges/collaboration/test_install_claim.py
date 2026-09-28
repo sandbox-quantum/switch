@@ -95,6 +95,10 @@ class _ClaimInstaller(MessagingAppInstaller):
         self.released: list[str] = []
         self.release_error: Exception | None = None
         self.unowned: list[tuple[str, bool]] = []
+        self.refused: list[tuple[str, str]] = []
+
+    async def on_claim_refused(self, *, claim: InstallClaim, reason: Any) -> None:
+        self.refused.append((claim.grant.external_workspace_id, reason))
 
     async def release(self, *, external_workspace_id: str) -> None:
         if self.release_error is not None:
@@ -917,3 +921,80 @@ class TestUnownedChats:
         assert point.attributes == {"platform": _PLATFORM, "reason": "unowned"}
         assert fixture.installer.unowned == [("-7", True)]
         assert await _active_installs(rls_harness) == []
+
+
+class TestRefusedClaims:
+    """The person who tapped the link is told why nothing happened — except
+    for a retry of a claim that worked, which is not a refusal at all."""
+
+    async def _post(self, fixture: _Fixture, body: dict[str, Any]) -> int:
+        app = FastAPI()
+        app.include_router(create_messaging_install_router(fixture.service))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
+        ) as client:
+            response = await client.post(
+                f"/messaging/{_PLATFORM}/events", content=json.dumps(body).encode()
+            )
+        return response.status_code
+
+    async def test_a_code_this_deployment_did_not_mint(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        await self._post(fixture, {"chat": "-1001", "claim": "c1forged"})
+        assert fixture.installer.refused == [("-1001", "unrecognised")]
+
+    async def test_a_link_already_used_elsewhere(self, rls_harness: RLSHarness) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        await _claim(fixture, token, "-1001")
+
+        await self._post(fixture, {"chat": "-1002", "claim": token})
+
+        assert fixture.installer.refused == [("-1002", "expired")]
+
+    async def test_a_retry_of_a_claim_that_worked_is_not_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Telegram re-sends what it thinks went unanswered. Telling that chat
+        its link expired, having just connected it, would be false."""
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        body = {"chat": "-1001", "claim": token}
+        await self._post(fixture, body)
+
+        assert await self._post(fixture, body) == 200
+
+        assert fixture.installer.refused == []
+
+    async def test_a_chat_another_tenant_holds(self, rls_harness: RLSHarness) -> None:
+        fixture = await _fixture(rls_harness)
+        await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+        intruding = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_b, fixture.admin_b
+        )
+
+        await self._post(fixture, {"chat": "-1001", "claim": intruding})
+
+        assert fixture.installer.refused == [("-1001", "already_connected")]
+
+    async def test_a_member_turning_the_platform_on(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.member_a
+        )
+        await self._post(fixture, {"chat": "-1001", "claim": token})
+        assert fixture.installer.refused == [("-1001", "not_permitted")]

@@ -33,6 +33,7 @@ from starlette.responses import HTMLResponse, PlainTextResponse
 
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
+    ClaimRefusal,
     InboundWebhook,
     InstallClaim,
     MessagingInstallError,
@@ -42,6 +43,7 @@ from switch_core.bridges.collaboration.install import (
 )
 from switch_core.bridges.collaboration.install_service import (
     InstallClaimNotPermitted,
+    InstallClaimRepeated,
     InstallPlatformMismatch,
     MessagingInstallService,
     Revocation,
@@ -181,8 +183,10 @@ def create_messaging_install_router(
                 target.tenant_id,
             )
 
-    async def _claim(platform: str, claim: InstallClaim) -> None:
-        """Install the workspace a claim names, or log why not.
+    async def _claim(
+        platform: str, claim: InstallClaim, background: BackgroundTasks
+    ) -> None:
+        """Install the workspace a claim names, or say why not.
 
         A refused claim is not a refused event. The event is resolved next
         either way, and that is right in every case a claim can fail: a replay
@@ -190,20 +194,48 @@ def create_messaging_install_router(
         drop the duplicate; a workspace another tenant holds resolves to them,
         exactly as it would have without the claim; and one nobody holds is
         dropped as any unowned workspace is.
+
+        Saying why is the installer's, after the platform has been answered. A
+        retry of a claim that already succeeded is not a refusal and says
+        nothing.
         """
+        reason: ClaimRefusal
+        refusal: Exception
         try:
             await service.claim(platform=platform, claim=claim)
-        except (
-            InstallStateError,
-            MessagingInstallStateError,
-            MessagingInstallClaimedError,
-            InstallClaimNotPermitted,
-        ) as failure:
-            logger.warning(
-                "Refused a claim of %s workspace %s: %s",
+            return
+        except InstallClaimRepeated as repeated:
+            logger.info("Ignored a repeated %s claim: %s", platform, repeated)
+            return
+        except InstallStateError as failure:
+            reason, refusal = "unrecognised", failure
+        except MessagingInstallStateError as failure:
+            reason, refusal = "expired", failure
+        except MessagingInstallClaimedError as failure:
+            reason, refusal = "already_connected", failure
+        except InstallClaimNotPermitted as failure:
+            reason, refusal = "not_permitted", failure
+        logger.warning(
+            "Refused a claim of %s workspace %s: %s",
+            platform,
+            claim.grant.external_workspace_id,
+            refusal,
+        )
+        background.add_task(_claim_refused, platform, claim, reason)
+
+    async def _claim_refused(
+        platform: str, claim: InstallClaim, reason: ClaimRefusal
+    ) -> None:
+        """Let the installer explain a refused claim; logged, never raised."""
+        try:
+            await service.installer(platform).on_claim_refused(
+                claim=claim, reason=reason
+            )
+        except Exception:
+            logger.exception(
+                "Failed to tell %s workspace %s why its claim was refused",
                 platform,
                 claim.grant.external_workspace_id,
-                failure,
             )
 
     async def _unowned(platform: str, workspace_id: str, event: InboundWebhook) -> None:
@@ -310,7 +342,7 @@ def create_messaging_install_router(
             # has anywhere to go is what the claim decides.
             claim = service.claim_of(platform=platform, event=event)
             if claim is not None:
-                await _claim(platform, claim)
+                await _claim(platform, claim, background)
 
             target = await service.resolve(platform=platform, event=event)
             await service.follow_migration(
