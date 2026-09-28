@@ -180,8 +180,14 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
       await unlink(temporary);
     }
     // Only the launch that created the root: every later one — a resume, a
-    // restart, a relaunch after parking — is the same session going on.
-    if (created && !input.watcher) await recordSessionStart(input.root, input.startSource);
+    // restart, a relaunch after parking — is the same session going on. A
+    // record that cannot be written costs the report, never the session.
+    if (created && !input.watcher)
+      await recordSessionStart(input.root, input.startSource).catch((error: unknown) => {
+        console.warn(
+          `Could not record how session ${input.config.session.sessionId} started, so it is not reported: ${String(error)}`
+        );
+      });
     if (process.platform !== 'win32') {
       const directory = await open(input.root, 'r');
       try {

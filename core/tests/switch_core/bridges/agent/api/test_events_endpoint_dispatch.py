@@ -403,6 +403,56 @@ class TestOpeningAStreamReportsASession:
 
         assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
 
+    async def test_a_refused_open_then_a_retry_is_one_start(self) -> None:
+        """The room claim refuses the first attempt; nothing began, so only the
+        retry that gets a stream reports."""
+        protocol, service, sink = self._reporting()
+        refusals = [PermissionError("not a member yet")]
+
+        async def member(agent_id: str, room_id: str) -> None:
+            if refusals:
+                raise refusals.pop()
+
+        protocol.require_room_member = member  # type: ignore[method-assign]
+
+        with pytest.raises(HTTPException):
+            await _call(
+                protocol, accept="text/event-stream", connection_id="c1", rooms="r1"
+            )
+        await _call(
+            protocol, accept="text/event-stream", connection_id="c1", rooms="r1"
+        )
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+
+    async def test_an_open_that_failed_after_registering_is_counted_on_retry(
+        self,
+    ) -> None:
+        """An unexpected failure leaves the connection registered, so the retry
+        on the same id reattaches to it. It is still the session's first
+        stream."""
+        protocol, service, sink = self._reporting()
+        failures = [RuntimeError("database went away")]
+
+        async def member(agent_id: str, room_id: str) -> None:
+            if failures:
+                raise failures.pop()
+
+        protocol.require_room_member = member  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError):
+            await _call(
+                protocol, accept="text/event-stream", connection_id="c1", rooms="r1"
+            )
+        assert protocol.connections.get("c1") is not None
+        await _call(
+            protocol, accept="text/event-stream", connection_id="c1", rooms="r1"
+        )
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+
     async def test_closing_the_only_connection_ends_the_session(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

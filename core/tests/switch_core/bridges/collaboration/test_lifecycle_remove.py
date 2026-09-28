@@ -364,3 +364,20 @@ async def test_a_starting_bridge_is_recorded_in_the_rooms_it_carries(
     async with session_factory() as session:
         assert await RoomStore().get_client_ids(session, room_id) == [client_id]
         assert await RoomStore().get_client_ids(session, elsewhere_id) == []
+
+
+@pytest.mark.asyncio
+async def test_removing_a_bridge_forgets_that_it_was_preconfigured(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Bridge ids are never reused, so an entry left behind is one nothing
+    will ever remove."""
+    service = _service(session_factory, _ClientLifecycle())
+    async with session_factory() as session:
+        bridge_id, _ = await _make_bridge(session)
+        await session.commit()
+    service._preconfigured.add(bridge_id)
+
+    await service.remove(bridge_id)
+
+    assert bridge_id not in service._preconfigured

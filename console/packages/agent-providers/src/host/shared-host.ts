@@ -611,28 +611,36 @@ export async function runSharedHost(
      * taken as the `unsupported` that switches all reporting off.
      */
     const reportStart = async (): Promise<void> => {
-      let owed: OwedSessionStart | null;
       try {
-        owed = await owedSessionStart(options.root);
-      } catch (error) {
-        console.warn(
-          `Could not read how this session started, so it is not reported: ${String(error)}`
-        );
-        await settleSessionStart(options.root);
-        return;
-      }
-      if (!owed) return;
-      try {
-        await agentSessions(`${sessionPath}/started`, 'POST', { start_source: owed });
-      } catch (error) {
-        if (!(error instanceof RequestError)) throw error;
-        if (error.status === 404 && !error.code)
+        let owed: OwedSessionStart | 'unreadable' | null;
+        try {
+          owed = await owedSessionStart(options.root);
+        } catch (error) {
           console.warn(
-            'This Switch server does not accept session start reports, so how this session started is not reported.'
+            `Could not read how this session started, so it is not reported: ${String(error)}`
           );
-        else console.warn(`Switch refused this session's start report: ${error.message}`);
+          owed = 'unreadable';
+        }
+        if (owed === null) return;
+        if (owed !== 'unreadable') {
+          try {
+            await agentSessions(`${sessionPath}/started`, 'POST', { start_source: owed });
+          } catch (error) {
+            if (!(error instanceof RequestError)) throw error;
+            if (error.status === 404 && !error.code)
+              console.warn(
+                'This Switch server does not accept session start reports, so how this session started is not reported.'
+              );
+            else console.warn(`Switch refused this session's start report: ${error.message}`);
+          }
+        }
+        await settleSessionStart(options.root);
+      } catch (error) {
+        // Stopping is the one reason to let go: whatever is still owed is
+        // reported the next time this session's host runs.
+        if (executionSignal.aborted) throw error;
+        console.warn(`Could not report how this session started: ${String(error)}`);
       }
-      await settleSessionStart(options.root);
     };
     // Reporting runs beside the session rather than in its way: while Switch
     // is unreachable the reports wait and retry, and the session keeps working.

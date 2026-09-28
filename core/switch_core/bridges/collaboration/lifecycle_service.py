@@ -1131,8 +1131,9 @@ class CollaborationBridgeLifecycleService:
             )
 
     def note_preconfigured(self, bridge_id: str, preconfigured: bool) -> None:
-        """Follow a change to the row without a restart. Only a running bridge
-        is tracked; one that is not running reads the row when it starts."""
+        """Follow a change to the row without a restart. Only a bridge this
+        process has started is tracked; any other reads the row when it
+        starts."""
         if bridge_id not in self._bridge_facts:
             return
         if preconfigured:

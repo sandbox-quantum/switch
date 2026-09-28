@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -21,11 +23,17 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.db.models import CollaborationBridge
+from switch_core.telemetry.deployment import claim_milestone
+from switch_core.telemetry.service import TelemetryService
 from tests.switch_core.bridges.collaboration.test_lifecycle_tenant_binding import (
     _make_bridge,
     _make_tenant,
     _StubAdapter,
     _StubConfig,
+)
+from tests.switch_core.bridges.collaboration.test_teams_zero_config import (
+    _lifecycle,
+    _RecordingAdapter,
 )
 from tests.switch_core.telemetry.test_bridge_connect_reporting import (
     _RecordingSink,
@@ -133,6 +141,27 @@ class TestTheConnectorAPersonAdds:
         [milestone] = await _events(service, sink, "first_connector_added")
         assert milestone["bridge_platform"] == "slack"
 
+    async def test_it_still_claims_the_milestone_once_its_own_report_is_spent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A connector whose own `connector_added` went out before this
+        deployment had an install clock: the deployment-wide milestone may
+        still be unclaimed, and a person's connector is what claims it."""
+        service, sink = _service_with_telemetry(session_factory, installed_at=INSTALLED)
+        slack = f"slack-{uuid.uuid4().hex[:8]}"
+        assert await claim_milestone(session_factory, f"connector_added:{slack}")
+        _running(service, slack, preconfigured=False)
+
+        await service._report_connector_up(slack, "slack", INSTALLED)
+
+        assert await _events(service, sink, "connector_added") == []
+        [milestone] = [
+            dict(r.properties)
+            for r in sink.sent
+            if r.name == "switch_core.first_connector_added"
+        ]
+        assert milestone["bridge_platform"] == "slack"
+
     async def test_a_second_one_is_not_the_first(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -184,6 +213,8 @@ class TestTheFlagIsReadOffTheRow:
         service, _ = _service_with_telemetry(session_factory)
         service.register_adapter("mattermost", _StubAdapter, _StubConfig)
         service._run_bridge = AsyncMock()  # type: ignore[method-assign]
+        # Left over from an earlier start, before the row was changed back.
+        service._preconfigured.add(bridge_id)
 
         await service.start(bridge_id)
 
@@ -217,3 +248,50 @@ class TestMarkingARunningBridge:
         service.note_preconfigured("stopped", True)
 
         assert "stopped" not in service._preconfigured
+
+
+class TestRegisteringRecordsTheFlag:
+    """What the setup step asked for is what the row holds, and what the
+    configured event says."""
+
+    @pytest.mark.parametrize("preconfigured", [True, False])
+    async def test_the_row_and_connector_configured_carry_it(
+        self, session_factory: async_sessionmaker[AsyncSession], preconfigured: bool
+    ) -> None:
+        _RecordingAdapter.events = []
+        _RecordingAdapter.fail_verification = False
+        service = _lifecycle()
+        sink = _RecordingSink()
+        service._telemetry = TelemetryService(
+            sink=sink,  # type: ignore[arg-type]
+            enabled=True,
+            client_id="deployment-uuid",
+            service_name="switch-core",
+            version=None,
+            environment=None,
+        )
+        service._session_factory = session_factory
+        service._client_lifecycle.create_client = AsyncMock(  # type: ignore[method-assign]
+            return_value=SimpleNamespace(id="bridge-client")
+        )
+        stored: list[CollaborationBridge] = []
+        service._bridge_store.create = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda session, bridge: stored.append(bridge)
+        )
+        service.start = AsyncMock()  # type: ignore[method-assign]
+
+        await service.register(
+            bridge_type="recording",
+            display_name="Recording",
+            connection_config={"app_id": "a"},
+            channel_creation_enabled=False,
+            preconfigured=preconfigured,
+        )
+
+        [row] = stored
+        assert row.preconfigured is preconfigured
+        [configured] = await _events(service, sink, "connector_configured")
+        assert configured == {
+            "bridge_platform": "none",
+            "is_preconfigured": preconfigured,
+        }

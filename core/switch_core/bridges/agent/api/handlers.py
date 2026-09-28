@@ -807,11 +807,6 @@ async def _open_event_stream(
 
     cursor = _resolve_start_cursor(protocol, agent.id, start_from, last_event_id)
 
-    # Asked before `open()`, which answers a reattach with the same Connection.
-    # The generation cannot answer it: incarnations are drawn from a randomly
-    # seeded registry-wide counter, so a brand-new connection's is not zero.
-    reattaching = protocol.connections.get(connection_id) is not None
-
     try:
         conn = protocol.connections.open(
             agent_id=agent.id,
@@ -903,11 +898,11 @@ async def _open_event_stream(
     # created instead counted every rejected attempt as a session that began
     # and ended at once, which a retrying client repeats indefinitely.
     #
-    # A supervisor reattaching to a connection it already had is not a new
-    # session: `open()` hands back the existing Connection rather than making
-    # another.
-    if not reattaching:
-        await protocol.sessions.started(agent, conn)
+    # Every stream, a reattach included. The reporter keys sessions on the
+    # agent, so a stream on a connection the agent already holds continues its
+    # session rather than starting another, and an open that failed after
+    # registering its connection, retried on the same id, is still counted.
+    await protocol.sessions.started(agent, conn)
 
     return StreamingResponse(
         event_stream(

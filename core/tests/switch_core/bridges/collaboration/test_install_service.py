@@ -291,6 +291,8 @@ class TestTheRoundTrip:
         registered = fixture.lifecycle.registered[0]
         assert registered["bridge_type"] == "slack"
         assert registered["display_name"] == "Acme"
+        # A person clicked Add to Slack: onboarding telemetry must count it.
+        assert registered["preconfigured"] is False
         assert install.bridge_id is not None
 
     async def test_the_redirect_is_the_public_one_on_both_legs(

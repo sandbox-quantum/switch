@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -281,4 +281,28 @@ it('records nothing for a watcher, which is not a session', async () => {
   });
 
   expect(await owedSessionStart(input.root)).toBeNull();
+});
+
+it('starts the session anyway when its start cannot be recorded', async () => {
+  const input = await fixture();
+  // Something in the way of the record: here, a directory where the file goes.
+  await mkdir(join(input.root, 'session-start.json'));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const started = vi.fn(async () => {});
+
+  await ensureSharedProcess({
+    ...input,
+    resuming: false,
+    restart: false,
+    supervision: { ...inert, start: started },
+    startSource: 'user',
+  });
+
+  expect(started).toHaveBeenCalledOnce();
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not record how session'));
+  // And leaves nothing half-written behind.
+  expect(
+    (await readdir(input.root)).filter((name) => name.includes('session-start.json.'))
+  ).toEqual([]);
+  warn.mockRestore();
 });

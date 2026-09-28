@@ -8,6 +8,7 @@ the host that runs it says so.
 from __future__ import annotations
 
 import uuid
+from typing import get_args
 
 import httpx
 import pytest
@@ -17,7 +18,9 @@ from switch_core.bridges.agent.api.activity_routes import router
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_session_factory, get_telemetry
 from switch_core.db.models import Agent
+from switch_core.telemetry.catalogue import CATALOGUE
 from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.session_start import StartSource
 from switch_core.telemetry.sink import TelemetryRecord
 
 
@@ -177,3 +180,37 @@ async def test_a_source_outside_the_set_is_refused(session_factory, body) -> Non
 
     assert response.status_code == 422
     assert _started(sink) == []
+
+
+@pytest.mark.parametrize("start_source", get_args(StartSource))
+async def test_every_source_the_route_accepts_is_sent(
+    session_factory, start_source
+) -> None:
+    """The route spends the once-only claim before it emits. A value it accepts
+    that the catalogue refuses would be claimed, dropped by the emitter, and
+    answered `reported: true` — lost for good with nothing saying so."""
+    sink = _RecordingSink()
+    telemetry = _telemetry(sink, enabled=True)
+
+    response = await _post(
+        _app(session_factory, telemetry, _agent()),
+        "session-1",
+        {"start_source": start_source},
+    )
+    await telemetry.aclose()
+
+    assert response.json() == {"reported": True}
+    assert [e["start_source"] for e in _started(sink)] == [start_source]
+
+
+def test_the_route_and_the_catalogue_accept_the_same_sources() -> None:
+    declared = CATALOGUE["session_started"]["start_source"]
+    assert set(get_args(StartSource)) == set(declared.values)  # type: ignore[attr-defined]
+
+
+async def test_a_session_id_past_the_limit_is_refused(session_factory) -> None:
+    response = await _post(
+        _app(session_factory, None, _agent()), "s" * 201, {"start_source": "user"}
+    )
+
+    assert response.status_code == 422

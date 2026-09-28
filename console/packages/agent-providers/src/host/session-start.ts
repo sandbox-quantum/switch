@@ -48,7 +48,12 @@ export async function recordSessionStart(
   } finally {
     await file.close();
   }
-  await rename(temporary, path);
+  try {
+    await rename(temporary, path);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
 }
 
 /** The start this session still owes the server, or null if it owes none. */

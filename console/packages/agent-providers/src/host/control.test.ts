@@ -5,12 +5,15 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { CONTROL_FILE, ControlClient, serveControl } from './control';
+import { CONTROL_FILE, ControlClient, ensureSessions, serveControl } from './control';
+import type { Supervision } from './launch';
 import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
 
 const paths = vi.hoisted(() => ({ base: '' }));
+const launched = vi.hoisted(() => ({ ensureSharedProcess: vi.fn() }));
 vi.mock('./launch', () => ({
+  ensureSharedProcess: launched.ensureSharedProcess,
   sharedSessionRoot: (id: string) => join(paths.base, id),
   liveSupervisor: async (root: string) =>
     (await readFile(join(root, 'running'), 'utf8').catch(() => null)) ? { build: 'b' } : null,
@@ -64,7 +67,7 @@ async function started() {
     const socket = connect(control.port, '127.0.0.1');
     return new ControlClient(socket, token);
   };
-  return { base, links, ensure, stop, serving, client, watcher };
+  return { base, links, ensure, stop, serving, client, watcher, control };
 }
 
 it('relays requests to a session host and its events back', async () => {
@@ -253,6 +256,156 @@ it('answers the watcher health and pushes every change to a client watching it',
   console.onClose(closed);
   console.close();
   await vi.waitFor(() => expect(closed).toHaveBeenCalledTimes(1));
+  stop.abort();
+  await serving;
+});
+
+it('still starts a session for a Console that sends no start source', async () => {
+  // What a Console older than start sources writes: the same message, one key short.
+  const { ensure, stop, serving, control } = await started();
+  const socket = connect(control.port, '127.0.0.1');
+  const replies: unknown[] = [];
+  let buffered = '';
+  socket.on('data', (chunk: Buffer) => {
+    buffered += chunk.toString();
+    let end: number;
+    while ((end = buffered.indexOf('\n')) >= 0) {
+      replies.push(JSON.parse(buffered.slice(0, end)));
+      buffered = buffered.slice(end + 1);
+    }
+  });
+  socket.write(`${JSON.stringify({ token: control.token })}\n`);
+  socket.write(
+    `${JSON.stringify({ id: 1, ensure: { config: {}, resuming: false, restart: false } })}\n`
+  );
+
+  await vi.waitFor(() =>
+    expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
+  );
+  expect(ensure).toHaveBeenCalledWith({ config: {}, resuming: false, restart: false });
+
+  socket.destroy();
+  stop.abort();
+  await serving;
+});
+
+const sessionConfig = {
+  session: {
+    sessionId: 'session-1',
+    agentId: 'agent',
+    hostId: 'host',
+    epoch: 'initial',
+    provider: 'codex',
+    status: 'starting',
+    connectivity: 'online',
+    pendingRequestIds: [],
+    capabilities: {
+      input: 'queue',
+      approvals: true,
+      questions: true,
+      interrupt: true,
+      reset: false,
+      compact: false,
+      modelChange: false,
+      attachmentMimeTypes: [],
+    },
+  },
+  start: {
+    provider: 'codex',
+    input: {
+      sessionId: 'session-1',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: {},
+      mcpServers: {},
+    },
+  },
+};
+
+it('starts the session a sidecar is asked for with the start source it was given', async () => {
+  paths.base = '/sessions';
+  launched.ensureSharedProcess.mockReset().mockResolvedValue({ created: true });
+  const supervision = { build: 'b' } as unknown as Supervision;
+
+  await ensureSessions(supervision)({
+    config: sessionConfig,
+    resuming: false,
+    restart: false,
+    startSource: 'room',
+  });
+
+  expect(launched.ensureSharedProcess).toHaveBeenCalledWith(
+    expect.objectContaining({
+      root: join('/sessions', 'session-1'),
+      watcher: false,
+      supervision,
+      startSource: 'room',
+    })
+  );
+});
+
+it('records a start source an older Console did not send as not known', async () => {
+  launched.ensureSharedProcess.mockReset().mockResolvedValue({ created: true });
+
+  await ensureSessions({ build: 'b' } as unknown as Supervision)({
+    config: sessionConfig,
+    resuming: false,
+    restart: false,
+  });
+
+  expect(launched.ensureSharedProcess.mock.calls[0]![0]).toMatchObject({ startSource: null });
+});
+
+it('carries a start source Console could not name as null, which a resume always does', async () => {
+  const { ensure, stop, serving, client } = await started();
+  const console = client();
+  await console.ready;
+
+  await console.ensure({ config: {}, resuming: true, restart: false, startSource: null });
+
+  expect(ensure).toHaveBeenCalledWith({
+    config: {},
+    resuming: true,
+    restart: false,
+    startSource: null,
+  });
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('starts a session whose start source is newer than this sidecar, as not known', async () => {
+  const { ensure, stop, serving, control } = await started();
+  const socket = connect(control.port, '127.0.0.1');
+  const replies: unknown[] = [];
+  let buffered = '';
+  socket.on('data', (chunk: Buffer) => {
+    buffered += chunk.toString();
+    let end: number;
+    while ((end = buffered.indexOf('\n')) >= 0) {
+      replies.push(JSON.parse(buffered.slice(0, end)));
+      buffered = buffered.slice(end + 1);
+    }
+  });
+  socket.write(`${JSON.stringify({ token: control.token })}\n`);
+  socket.write(
+    `${JSON.stringify({
+      id: 1,
+      ensure: { config: {}, resuming: false, restart: false, startSource: 'scheduled' },
+    })}\n`
+  );
+
+  await vi.waitFor(() =>
+    expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
+  );
+  expect(ensure).toHaveBeenCalledWith({
+    config: {},
+    resuming: false,
+    restart: false,
+    startSource: null,
+  });
+
+  socket.destroy();
   stop.abort();
   await serving;
 });

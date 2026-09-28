@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Any
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.dependencies import get_protocol
+from switch_core.bridges.agent.dependencies import get_protocol, get_telemetry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
@@ -104,3 +104,13 @@ def test_the_protocol_service_the_app_returns_is_the_one_handlers_use() -> None:
         "other — which is how the session events came to be emitted into "
         "nothing."
     )
+
+
+def test_the_session_start_route_reaches_the_same_telemetry() -> None:
+    """`/agent-sessions/{id}/started` resolves telemetry on its own rather than
+    through the protocol service. Wired to nothing, it answers every host
+    with `reported: false` and no error anywhere."""
+    telemetry = _telemetry()
+    _build(telemetry)
+
+    assert get_telemetry() is telemetry

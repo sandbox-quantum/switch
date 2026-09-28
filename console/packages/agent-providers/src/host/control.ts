@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { liveSupervisor, sharedSessionRoot } from './launch';
+import { ensureSharedProcess, liveSupervisor, sharedSessionRoot, type Supervision } from './launch';
 import {
   SessionHostFailedError,
   sessionRequestSchema,
@@ -14,6 +14,7 @@ import {
   type SessionRequest,
 } from './session-channel';
 import { hostStartSources, type HostStartSource } from './session-start';
+import { sharedConfigSchema } from './shared-config';
 import {
   type PlaceOutcome,
   type WatcherControl,
@@ -46,8 +47,10 @@ const clientMessageSchema = z.union([
       restart: z.boolean(),
       // Beside the config rather than in it: a sidecar older than Console
       // parses the config strictly and would refuse the session over a key it
-      // does not know, but drops one here. Absent from an older Console.
-      startSource: z.enum(hostStartSources).nullable().optional(),
+      // does not know, but drops one here. Absent from an older Console, and
+      // a source newer than this sidecar reads as not known rather than
+      // refusing the session.
+      startSource: z.enum(hostStartSources).nullable().optional().catch(null),
     }),
   }),
   /** Console's "Reconnect to room": move a room's messages to this session. */
@@ -71,6 +74,26 @@ export type EnsureSession = (input: {
   restart: boolean;
   startSource?: HostStartSource | null;
 }) => Promise<unknown>;
+
+/**
+ * How a sidecar answers `ensure`: start the session the message names, or
+ * reattach to it, under `supervision`. A message from a Console that predates
+ * start sources carries none, which is recorded as not known.
+ */
+export function ensureSessions(supervision: Supervision): EnsureSession {
+  return async (input) => {
+    const config = sharedConfigSchema.parse(input.config);
+    return ensureSharedProcess({
+      root: sharedSessionRoot(config.session.sessionId),
+      config,
+      resuming: input.resuming,
+      watcher: false,
+      restart: input.restart,
+      supervision,
+      startSource: input.startSource ?? null,
+    });
+  };
+}
 
 /** How long a request waits for the session's host to be ready. */
 const REQUEST_WAIT_MS = 30000;
