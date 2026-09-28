@@ -86,11 +86,32 @@ describe('the console name', () => {
     expect(consoleName()).toBe('Ada-Lovelace@lab-machinerm--rf');
   });
 
+  it('says unknown for a user or host name nothing of which the server would keep', async () => {
+    // A bare "@" would tell nobody apart in the list of who uses a server.
+    os.userInfo.mockReturnValue({ username: '☃' });
+    os.hostname.mockReturnValue('☃☃');
+    const { consoleName } = await loadModule();
+
+    expect(consoleName()).toBe('unknown@unknown');
+  });
+
   it('is capped at the length the server keeps', async () => {
     os.hostname.mockReturnValue('h'.repeat(200));
     const { consoleName } = await loadModule();
 
     expect(consoleName()).toHaveLength(64);
+  });
+
+  it('warns about an unreadable desktop user once, however often the name is asked for', async () => {
+    // It is asked for on every request to a managed server.
+    os.userInfo.mockImplementation(() => {
+      throw new Error('no passwd entry');
+    });
+    const { consoleName } = await loadModule();
+
+    for (let i = 0; i < 5; i++) consoleName();
+
+    expect(logWarn).toHaveBeenCalledOnce();
   });
 
   it('says unknown, and warns, when the desktop user cannot be read', async () => {

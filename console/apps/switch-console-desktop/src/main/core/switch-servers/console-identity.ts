@@ -58,8 +58,10 @@ function consoleId(): Promise<string> {
   return pendingId;
 }
 
-function sanitiseName(raw: string): string {
-  return raw.replace(/\s+/g, '-').replace(NAME_CHARACTERS, '').slice(0, MAX_NAME_LENGTH);
+/** One half of `user@host`, reduced to what the server keeps — or `unknown`
+ * when nothing of it survives, rather than a bare `@` telling nobody apart. */
+function namePart(raw: string): string {
+  return raw.replace(/\s+/g, '-').replace(NAME_CHARACTERS, '') || 'unknown';
 }
 
 /** Whether the missing user name has been reported: it is asked for on every
@@ -84,7 +86,7 @@ function desktopUser(): string {
 /** The name this Console shows to others: `user@host`, reduced to what the
  * server will keep. Read fresh, since a renamed machine should say so. */
 export function consoleName(): string {
-  return sanitiseName(`${desktopUser()}@${hostname()}`) || 'unknown';
+  return `${namePart(desktopUser())}@${namePart(hostname())}`.slice(0, MAX_NAME_LENGTH);
 }
 
 export async function getConsoleIdentity(): Promise<ConsoleIdentity> {
