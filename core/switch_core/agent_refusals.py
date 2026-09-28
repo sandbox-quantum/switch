@@ -1,16 +1,15 @@
-"""Requests the server refuses an agent, kept so people can see them.
+"""Requests the server refuses an agent, and how the refusal is reported.
 
 An agent acts for its owner, but not with everything the owner may do: it may
 change only the templates it saved, it cannot create agents, and the run
 guards in ``agent_runs`` refuse rooms that cannot work. When one of those
 rules says no, the agent gets a sentence it can act on, and the refusal is
-recorded. Nobody yet knows which of these rules people will run into, so the
-record is what a finer rights model should be designed from.
+reported. Nobody yet knows which of these rules people will run into, so the
+counts are what a finer rights model should be designed from.
 
-Each refusal goes three places: a row in ``agent_refusals``, which Switch
-Console shows quietly under Templates; a log line; and a telemetry event that
-carries only the operation and the reason code, since product telemetry never
-carries a name or an id.
+Each refusal goes two places: a log line naming the agent, and a telemetry
+event that carries only the operation and the reason code, since product
+telemetry never carries a name or an id.
 """
 
 from __future__ import annotations
@@ -18,12 +17,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Literal
 
-from switch_core.db.models import AgentRefusal
 from switch_core.telemetry import emit_safely
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
     from switch_core.telemetry import TelemetryService
 
 logger = logging.getLogger(__name__)
@@ -48,7 +44,7 @@ RefusalReason = Literal[
 
 REFUSAL_REASONS: tuple[str, ...] = RefusalReason.__args__  # type: ignore[attr-defined]
 
-# The agent operations whose refusals are recorded.
+# The agent operations whose refusals are reported.
 OPERATIONS = (
     "list_templates",
     "get_template",
@@ -66,26 +62,20 @@ class AgentRefused(ValueError):
     the agent. A ValueError, so it reaches the agent the way every other
     operation error does."""
 
-    def __init__(
-        self, reason: RefusalReason, message: str, *, subject: str | None = None
-    ) -> None:
+    def __init__(self, reason: RefusalReason, message: str) -> None:
         super().__init__(message)
         self.reason: RefusalReason = reason
-        self.subject = subject
 
 
-async def record_refusal(
-    session_factory: async_sessionmaker[AsyncSession],
+def record_refusal(
     telemetry: TelemetryService | None,
     *,
     agent_id: str,
     agent_name: str,
-    owner_id: str | None,
     operation: str,
     refusal: AgentRefused,
 ) -> None:
-    """Keep a refusal. Best effort: failing to write the record must not
-    change what the agent is told."""
+    """Report a refusal in the log and as a telemetry event."""
     logger.info(
         "Refused agent %s (%s) %s: %s. %s",
         agent_name,
@@ -99,19 +89,3 @@ async def record_refusal(
         "agent_request_refused",
         {"operation": operation, "reason": refusal.reason},
     )
-    try:
-        async with session_factory() as session:
-            session.add(
-                AgentRefusal(
-                    agent_id=agent_id,
-                    agent_name=agent_name,
-                    owner_id=owner_id,
-                    operation=operation,
-                    reason=refusal.reason,
-                    message=str(refusal),
-                    subject=refusal.subject,
-                )
-            )
-            await session.commit()
-    except Exception:  # noqa: BLE001 - the refusal stands either way
-        logger.warning("Could not record a refusal for %s", agent_id, exc_info=True)

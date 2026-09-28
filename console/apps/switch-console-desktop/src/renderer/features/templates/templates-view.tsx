@@ -34,7 +34,6 @@ import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
 import { cn } from '@renderer/utils/utils';
-import { AgentRefusalsRow } from './agent-refusals-list';
 import { prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
 import { formatTimeAgo, runMatches } from './template-runs';
@@ -719,8 +718,6 @@ const TemplatesPanel = observer(function TemplatesPanel() {
               query={query}
               onSaved={reload}
             />
-
-            <AgentRefusalsRow serverId={serverId} />
           </div>
         )}
       </div>

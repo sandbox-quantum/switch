@@ -9,7 +9,7 @@ agent takes instructions from whoever can address it and should not be a way
 to rewrite templates other people or agents depend on.
 
 Every "no" here is an ``AgentRefused`` with a reason code, which the
-operation layer records (see ``agent_refusals``).
+operation layer reports (see ``agent_refusals``).
 """
 
 from __future__ import annotations
@@ -130,7 +130,6 @@ class AgentTemplates:
                 "not_found",
                 f"No template with id {template_id} that you can see. "
                 "list_templates shows the ones you can use.",
-                subject=template_id,
             )
         return template
 
@@ -160,14 +159,13 @@ class AgentTemplates:
 
     # ── Writing ───────────────────────────────────────────────────────────
 
-    def _check_content(self, content: str, name: str) -> str:
+    def _check_content(self, content: str) -> str:
         size = len(content.encode("utf-8"))
         if size > self._max_bytes:
             raise AgentRefused(
                 "too_large",
                 f"The template is {size} bytes, over this server's limit of "
                 f"{self._max_bytes}.",
-                subject=name,
             )
         lint = lint_template(content)
         if lint.blocked:
@@ -175,15 +173,14 @@ class AgentTemplates:
                 "invalid",
                 "The template cannot be saved: "
                 + "; ".join(f.message for f in lint.errors if f.blocking),
-                subject=name,
             )
         try:
             return template_kind(content)
         except ValueError as e:
-            raise AgentRefused("invalid", str(e), subject=name) from e
+            raise AgentRefused("invalid", str(e)) from e
 
     @staticmethod
-    def _pair(visibility: str, name: str) -> tuple[str, str]:
+    def _pair(visibility: str) -> tuple[str, str]:
         pair = _VISIBILITY.get(visibility)
         if pair is None:
             raise AgentRefused(
@@ -192,7 +189,6 @@ class AgentTemplates:
                 "'private' (only your owner sees it) or 'shared' (everyone "
                 "sees it, only you change it). A template anyone may change "
                 "can be made in Switch Console.",
-                subject=name,
             )
         return pair
 
@@ -202,7 +198,6 @@ class AgentTemplates:
             "name_taken",
             f"Your owner already has a template named '{name}', saved by them "
             "or one of their agents. Pick another name.",
-            subject=name,
         )
 
     async def save(
@@ -215,8 +210,8 @@ class AgentTemplates:
         content: str,
         visibility: str,
     ) -> Template:
-        read, write = self._pair(visibility, name)
-        kind = self._check_content(content, name)
+        read, write = self._pair(visibility)
+        kind = self._check_content(content)
         try:
             template = await self._store.create(
                 session,
@@ -246,7 +241,6 @@ class AgentTemplates:
                 "An agent can change or delete only the templates it saved "
                 "itself. Ask whoever saved it, or save your own version under "
                 "another name.",
-                subject=template.name,
             )
         return template
 
@@ -263,10 +257,8 @@ class AgentTemplates:
     ) -> Template:
         template = await self._own(session, acting, template_id)
         label = name or template.name
-        read, write = (
-            self._pair(visibility, label) if visibility is not None else (None, None)
-        )
-        kind = self._check_content(content, label) if content is not None else None
+        read, write = self._pair(visibility) if visibility is not None else (None, None)
+        kind = self._check_content(content) if content is not None else None
         try:
             return await self._store.update_fields(
                 session,
@@ -291,7 +283,6 @@ class AgentTemplates:
                 "not_yours",
                 f"'{locked.name}' is no longer yours to change: an agent can "
                 "change or delete only the templates it saved itself.",
-                subject=locked.name,
             )
 
     async def delete(
@@ -302,9 +293,7 @@ class AgentTemplates:
             Template, template.id, with_for_update=True, populate_existing=True
         )
         if locked is None:
-            raise AgentRefused(
-                "not_found", f"No template with id {template_id}.", subject=template_id
-            )
+            raise AgentRefused("not_found", f"No template with id {template_id}.")
         self._still_own(acting, locked)
         name = locked.name
         await self._store.delete(session, locked.id)

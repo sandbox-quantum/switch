@@ -737,7 +737,7 @@ reason.
 - `agent_request_refused`: an agent asked for something a rule says no to:
   a template it did not save, a run that would need a new agent, a room in a
   paused or stopped run. `operation` and `reason` are fixed lists; which agent
-  and which template stay on the server, where Switch Console shows them.
+  and which template stay in the server log.
 - `room_link_created` / `room_link_removed`, `room_role_defined` /
   `room_role_deleted`, `room_users_added`.
 - `reference_detached_from_room` / `document_detached_from_room` /

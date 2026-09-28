@@ -469,9 +469,8 @@ documents against (`core/switch_core/template_guide.py`; keep it in step).
 - **Changing and deleting.** Only the agent that saved a template may change
   or delete it; not its owner's templates, and not another agent's.
 
-A refusal tells the agent why, and is listed in Switch Console under
-Templates, so the owner can see what their agents were asked to do and
-could not.
+A refusal tells the agent why. The server logs it, naming the agent, and
+counts it in telemetry by operation and reason.
 
 ## Validation
 

@@ -441,7 +441,7 @@ the schema the server checks documents against.
 
 A refusal says why (a template you did not save, a slot that needs a new
 agent, a name your owner already uses). Tell the person who asked, and what
-they can do instead. Your owner can see refusals in Switch Console.
+they can do instead.
 
 ### Room documents and attached resources
 

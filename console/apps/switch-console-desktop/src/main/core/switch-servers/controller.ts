@@ -87,7 +87,6 @@ import {
   deleteTemplate,
   updateTemplate,
   fetchTemplateDetail,
-  fetchAgentRefusals,
   fetchTemplateRuns,
   fetchTemplates,
   GatewayError,
@@ -102,7 +101,6 @@ import {
   type StoredTemplateSummary,
   type TemplateVisibility,
   type ProvisionFromTemplateResult,
-  type AgentRefusal,
   type TemplateRun,
   updateAddressingPolicy,
   updateAgentIcon,
@@ -559,10 +557,6 @@ export const switchServersController = createRPCController({
     rootRoomId: string;
   }): Promise<TemplateRun> =>
     changeTemplateRun(await requireServer(params.serverId), params.rootRoomId, 'continue'),
-
-  /** Requests the server refused the user's agents, or null when it does not record them. */
-  listAgentRefusals: async (params: { serverId: string }): Promise<AgentRefusal[] | null> =>
-    fetchAgentRefusals(await requireServer(params.serverId)),
 
   listTemplates: async (params: {
     serverId: string;

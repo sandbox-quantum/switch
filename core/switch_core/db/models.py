@@ -1052,44 +1052,6 @@ class Template(TenantScoped, Base):
     )
 
 
-class AgentRefusal(TenantScoped, Base):
-    """A request an agent made that the server refused, and why.
-
-    Kept so people can see what agents are asked to do and cannot, which is
-    what a finer rights model should be designed from. ``message`` is the
-    sentence the agent was given; ``subject`` names what it was about (a
-    template or a room), as text, so the record outlives the thing.
-    """
-
-    __tablename__ = "agent_refusals"
-    __table_args__ = (
-        UniqueConstraint("id", "tenant_id", name="uq_agent_refusals_id_tenant"),
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_agent_refusals_agent",
-            ondelete="SET NULL (agent_id)",
-        ),
-        Index("ix_agent_refusals_owner_id_created_at", "owner_id", "created_at"),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Kept apart from the agent: a refusal stays its owner's to see after
-    # the agent is deleted.
-    agent_name: Mapped[str] = mapped_column(Text, nullable=False)
-    owner_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-    operation: Mapped[str] = mapped_column(Text, nullable=False)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    message: Mapped[str] = mapped_column(Text, nullable=False)
-    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
 # ── Packages ──────────────────────────────────────────────────────────────────
 
 

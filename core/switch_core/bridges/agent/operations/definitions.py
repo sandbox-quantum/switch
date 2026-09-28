@@ -1127,7 +1127,7 @@ async def create_room(
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
-    async with _refusals_recorded("create_room"):
+    async with _refusals_reported("create_room"):
         result = await protocol.create_moderation_room(
             agent_id=agent_id,
             name=name,
@@ -1703,7 +1703,7 @@ async def create_room_from_yaml(
         failed_attachments}``. For a group: ``{group_id, group_name,
         rooms: [...], errors: [...]}``.
     """
-    async with _refusals_recorded("create_room_from_yaml"):
+    async with _refusals_reported("create_room_from_yaml"):
         return await _provision_as_agent(yaml, inputs)
 
 
@@ -1725,8 +1725,8 @@ async def _acting_for() -> ActingFor:
 
 
 @asynccontextmanager
-async def _refusals_recorded(operation_name: str) -> AsyncIterator[None]:
-    """Record a request refused on purpose, then let the refusal reach the
+async def _refusals_reported(operation_name: str) -> AsyncIterator[None]:
+    """Report a request refused on purpose, then let the refusal reach the
     agent as it would have anyway (see ``agent_refusals``)."""
     try:
         yield
@@ -1735,12 +1735,10 @@ async def _refusals_recorded(operation_name: str) -> AsyncIterator[None]:
         agent_id = get_agent_id()
         async with protocol.session_factory() as session:
             agent = await protocol.agent_store.get(session, agent_id)
-        await record_refusal(
-            protocol.session_factory,
+        record_refusal(
             getattr(protocol, "telemetry", None),
             agent_id=agent_id,
             agent_name=agent.name if agent else agent_id,
-            owner_id=agent.owner_id if agent else None,
             operation=operation_name,
             refusal=refusal,
         )
@@ -1824,7 +1822,6 @@ async def _require_agents_exist(names: list[str]) -> None:
             "missing_agents",
             "Nothing was created: no agent is called "
             f"{', '.join(missing)}. list_agents shows the ones that exist.",
-            subject=", ".join(missing),
         )
 
 
@@ -1869,7 +1866,7 @@ async def list_templates(
         newest first.
     """
     protocol = get_protocol()
-    async with _refusals_recorded("list_templates"):
+    async with _refusals_reported("list_templates"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
             return await _agent_templates().listing(
@@ -1897,7 +1894,7 @@ async def get_template(template_id: str) -> dict[str, Any]:
         agent_slots: [{name, description}], content}``.
     """
     protocol = get_protocol()
-    async with _refusals_recorded("get_template"):
+    async with _refusals_reported("get_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
             return await _agent_templates().describe(session, acting, template_id)
@@ -1930,16 +1927,12 @@ async def run_template(
         for a group ``{group_id, group_name, rooms, errors}``.
     """
     protocol = get_protocol()
-    async with _refusals_recorded("run_template"):
+    async with _refusals_reported("run_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        try:
-            document, run_inputs = room_document(content, agents or {}, inputs or {})
-        except AgentRefused as refusal:
-            refusal.subject = refusal.subject or name
-            raise
+        document, run_inputs = room_document(content, agents or {}, inputs or {})
         return await _provision_as_agent(
             document, run_inputs or None, template_name=name
         )
@@ -1969,7 +1962,7 @@ async def save_template(
         ``{id, name, kind, visibility}``.
     """
     protocol = get_protocol()
-    async with _refusals_recorded("save_template"):
+    async with _refusals_reported("save_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
             template = await _agent_templates().save(
@@ -2006,7 +1999,7 @@ async def update_template(
         ``{id, name, kind, visibility, version}``.
     """
     protocol = get_protocol()
-    async with _refusals_recorded("update_template"):
+    async with _refusals_reported("update_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
             template = await _agent_templates().update(
@@ -2039,7 +2032,7 @@ async def delete_template(template_id: str) -> dict[str, Any]:
         ``{id, name}`` of the deleted template.
     """
     protocol = get_protocol()
-    async with _refusals_recorded("delete_template"):
+    async with _refusals_reported("delete_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
             name = await _agent_templates().delete(session, acting, template_id)

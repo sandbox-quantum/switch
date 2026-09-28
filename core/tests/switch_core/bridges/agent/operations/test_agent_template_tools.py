@@ -7,6 +7,7 @@ PostgreSQL, the real template engine and run guards, no Matrix.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -33,7 +34,7 @@ from switch_core.bridges.agent.operations.definitions import (
     save_template,
     update_template,
 )
-from switch_core.db.models import Agent, AgentRefusal, Room, Template, User
+from switch_core.db.models import Agent, Room, Template, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.template_store import TemplateStore
 
@@ -127,10 +128,18 @@ async def _bob_id(env: dict[str, Any]) -> str:
         return bob.id
 
 
-async def _refusals(env: dict[str, Any]) -> list[tuple[str, str]]:
-    async with env["session_factory"]() as session:
-        rows = (await session.execute(select(AgentRefusal))).scalars().all()
-    return [(r.operation, r.reason) for r in rows]
+@pytest.fixture(autouse=True)
+def _refusal_log(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="switch_core.agent_refusals")
+
+
+def _refusals(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str]]:
+    """Each reported refusal, as (operation, reason), from its log line."""
+    return [
+        (str(r.args[2]), str(r.args[3]))
+        for r in caplog.records
+        if r.name == "switch_core.agent_refusals" and isinstance(r.args, tuple)
+    ]
 
 
 # ── Reading a document ────────────────────────────────────────────────────
@@ -218,14 +227,16 @@ async def test_get_describes_inputs_and_agent_slots(tools):
 
 
 @pytest.mark.asyncio
-async def test_a_private_template_of_someone_else_does_not_exist_for_the_agent(tools):
+async def test_a_private_template_of_someone_else_does_not_exist_for_the_agent(
+    tools, caplog
+):
     template_id = await _stored(
         tools, tools["stranger_id"], "secret", ROOM_TEMPLATE, read_visibility="private"
     )
 
     with pytest.raises(AgentRefused, match="No template"):
         await _as(tools["agent_id"], get_template, template_id=template_id)
-    assert await _refusals(tools) == [("get_template", "not_found")]
+    assert _refusals(caplog) == [("get_template", "not_found")]
 
 
 @pytest.mark.asyncio
@@ -284,7 +295,7 @@ async def test_run_an_agent_template_with_an_existing_agent(tools):
 
 
 @pytest.mark.asyncio
-async def test_run_that_would_create_an_agent_is_refused_and_recorded(tools):
+async def test_run_that_would_create_an_agent_is_refused_and_reported(tools, caplog):
     template_id = await _stored(
         tools, tools["user_id"], "jq", AGENT_TEMPLATE, kind="agent"
     )
@@ -292,12 +303,8 @@ async def test_run_that_would_create_an_agent_is_refused_and_recorded(tools):
     with pytest.raises(AgentRefused, match="Switch Console"):
         await _as(tools["agent_id"], run_template, template_id=template_id)
 
-    assert await _refusals(tools) == [("run_template", "agent_creation_console_only")]
-    async with tools["session_factory"]() as session:
-        refusal = (await session.execute(select(AgentRefusal))).scalar_one()
-    assert refusal.subject == "jq"
-    assert refusal.owner_id == tools["user_id"]
-    assert refusal.agent_name == "claude-code.alice"
+    assert _refusals(caplog) == [("run_template", "agent_creation_console_only")]
+    assert "Refused agent claude-code.alice" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -346,7 +353,7 @@ async def test_save_is_owned_by_the_owner_and_marked_with_the_agent(tools):
 
 
 @pytest.mark.asyncio
-async def test_save_refuses_a_template_anyone_could_change(tools):
+async def test_save_refuses_a_template_anyone_could_change(tools, caplog):
     with pytest.raises(AgentRefused, match="not one an agent can set"):
         await _as(
             tools["agent_id"],
@@ -356,11 +363,11 @@ async def test_save_refuses_a_template_anyone_could_change(tools):
             yaml=ROOM_TEMPLATE,
             visibility="open",
         )
-    assert await _refusals(tools) == [("save_template", "visibility_not_allowed")]
+    assert _refusals(caplog) == [("save_template", "visibility_not_allowed")]
 
 
 @pytest.mark.asyncio
-async def test_save_refuses_a_name_the_owner_already_uses(tools):
+async def test_save_refuses_a_name_the_owner_already_uses(tools, caplog):
     await _stored(tools, tools["user_id"], "standup", ROOM_TEMPLATE)
 
     with pytest.raises(AgentRefused, match="already has a template named 'standup'"):
@@ -371,7 +378,7 @@ async def test_save_refuses_a_name_the_owner_already_uses(tools):
             description="",
             yaml=ROOM_TEMPLATE,
         )
-    assert await _refusals(tools) == [("save_template", "name_taken")]
+    assert _refusals(caplog) == [("save_template", "name_taken")]
 
 
 @pytest.mark.asyncio
@@ -397,7 +404,7 @@ async def test_an_agent_changes_and_deletes_what_it_saved(tools):
 
 
 @pytest.mark.asyncio
-async def test_an_agent_cannot_change_its_owners_template(tools):
+async def test_an_agent_cannot_change_its_owners_template(tools, caplog):
     template_id = await _stored(tools, tools["user_id"], "owners", ROOM_TEMPLATE)
 
     with pytest.raises(AgentRefused, match="saved by alice"):
@@ -406,7 +413,7 @@ async def test_an_agent_cannot_change_its_owners_template(tools):
         )
     with pytest.raises(AgentRefused, match="saved by alice"):
         await _as(tools["agent_id"], delete_template, template_id=template_id)
-    assert await _refusals(tools) == [
+    assert _refusals(caplog) == [
         ("update_template", "not_yours"),
         ("delete_template", "not_yours"),
     ]
