@@ -2787,8 +2787,9 @@ class TelegramAdapter(PlatformAdapter):
         nothing.
 
         A bare `/start` in a 1:1 chat is left alone — it is how a person opens
-        a conversation with the bot, and swallowing it would leave the DM
-        unbridged until they typed again.
+        a conversation with the bot, and swallowing it would leave them without
+        the reply that says direct messages reach no agent. A DM is never
+        bridged either way.
 
         Only groups reach this at all. A channel add sends no `/start` — the
         start parameter is group-only — and a channel post has no sender, so it
