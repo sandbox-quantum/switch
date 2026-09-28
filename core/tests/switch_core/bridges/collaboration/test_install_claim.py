@@ -807,6 +807,23 @@ class TestEndingOneChat:
 
         assert fixture.lifecycle.removed == [first.bridge_id]
 
+    async def test_disconnecting_every_chat_leaves_each_and_removes_the_bridge(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture, first, _ = await self._two_chats(rls_harness)
+
+        ended = await fixture.service.disconnect_platform(
+            tenant_id=fixture.tenant_a, platform=_PLATFORM
+        )
+
+        assert sorted(install.external_workspace_id for install in ended) == [
+            "-1001",
+            "-1002",
+        ]
+        assert sorted(fixture.installer.released) == ["-1001", "-1002"]
+        assert fixture.lifecycle.removed == [first.bridge_id]
+        assert await _active_installs(rls_harness) == []
+
     async def test_a_bot_that_could_not_leave_keeps_the_chat_connected(
         self, rls_harness: RLSHarness
     ) -> None:

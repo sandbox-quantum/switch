@@ -283,6 +283,13 @@ class MessagingAppInstaller(ABC):
 
     state_format: ClassVar[StateFormat] = "v1"
 
+    #: Whether a workspace is installed by a claim posted in it rather than by
+    #: an OAuth round trip. A claim-based platform shares one bridge per tenant
+    #: across every chat claimed, so one chat is a room rather than a
+    #: connection: after an admin connects the first, members may connect and
+    #: disconnect chats, and only removing all of them is an admin's.
+    installs_by_claim: ClassVar[bool] = False
+
     #: Whether events from workspaces nobody has installed are routine here.
     #: Off for a platform whose app is only ever in workspaces that installed
     #: it, so such an event is worth a warning each time. On for one whose app
@@ -460,7 +467,9 @@ class MessagingAppInstaller(ABC):
 
         The counterpart of `revoke` for a platform with no per-install token,
         called only when the install's bridge is not running to do it itself
-        (`PlatformAdapter.withdraw`). A no-op where there is nothing on
+        (`PlatformAdapter.withdraw`) — or, for a platform that `installs_by_claim`,
+        always, since its bridge serves the tenant's other workspaces and is not
+        removed with this one. A no-op where there is nothing on
         the platform to undo. Best effort: raise `MessagingInstallError` to
         say what was left behind, and the disconnect is refused so it can be
         tried again.

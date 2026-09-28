@@ -402,6 +402,20 @@ class MessagingInstallStore:
         await session.flush()
         return install
 
+    async def list_active(
+        self, session: AsyncSession, *, platform: str
+    ) -> list[MessagingInstall]:
+        """The bound tenant's live installs of one platform, oldest first."""
+        result = await session.execute(
+            select(MessagingInstall)
+            .where(
+                MessagingInstall.platform == platform,
+                MessagingInstall.status == INSTALL_ACTIVE,
+            )
+            .order_by(MessagingInstall.installed_at, MessagingInstall.id)
+        )
+        return list(result.scalars())
+
     async def end(
         self, session: AsyncSession, *, install_id: str, status: str
     ) -> MessagingInstall:

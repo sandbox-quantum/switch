@@ -124,6 +124,7 @@ class TelegramAppInstaller(MessagingAppInstaller):
     # Every update goes to the one URL `setWebhook` names.
     webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]] = frozenset({"events"})
     state_format = "compact"
+    installs_by_claim = True
     # With Group Privacy off the bot hears everything in every chat it is in,
     # claimed or not.
     expects_unowned_events = True

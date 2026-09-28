@@ -13,9 +13,16 @@ import {
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
-import { type InstalledApp, beginAppInstall } from "../../data/api";
+import {
+  type ChatClaim,
+  type InstalledApp,
+  beginAppInstall,
+  beginChatClaim,
+} from "../../data/api";
 import { useInstallablePlatforms, useInstalledApps } from "../../data/hooks";
 import { EM_DASH, MONO_SX, formatDate, platformLabel, titleCase } from "../../theme/hootFormat";
+import ClaimChatDialog from "./ClaimChatDialog";
+import DisconnectAllChatsDialog from "./DisconnectAllChatsDialog";
 import DisconnectAppDialog from "./DisconnectAppDialog";
 
 /**
@@ -32,6 +39,12 @@ import DisconnectAppDialog from "./DisconnectAppDialog";
  * Renders nothing at all on a deployment that has no app of its own and has
  * never had one, which is most of them: an empty section explaining a feature
  * nobody here can use is worse than no section.
+ *
+ * A claim-based platform (Telegram) is installed a chat at a time, and a chat
+ * is a room rather than a connection. So its buttons are offered to whoever
+ * the server says may use them — an admin to connect the first chat, anyone
+ * after that — and any member may disconnect one of its chats, where every
+ * OAuth action here stays the operator's.
  */
 type InstallRow = InstalledApp & { id: string };
 
@@ -55,9 +68,18 @@ export default function InstalledAppsSection({
   isAdmin,
   onConnectionsChanged,
 }: Props) {
-  const { data: platforms } = useInstallablePlatforms();
+  const { data: offered, refetch: refetchOffered } = useInstallablePlatforms();
   const { data: installs, loading, refetch } = useInstalledApps();
   const [starting, setStarting] = useState<string | null>(null);
+  const [claim, setClaim] = useState<{ platform: string; claim: ChatClaim } | null>(
+    null,
+  );
+  const [disconnectAll, setDisconnectAll] = useState<string | null>(null);
+  const claimable = useMemo(() => offered?.claimable ?? [], [offered]);
+  const claimPlatforms = useMemo(
+    () => new Set(claimable.map((c) => c.platform)),
+    [claimable],
+  );
   const [error, setError] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<InstalledApp | null>(
     null,
@@ -78,11 +100,34 @@ export default function InstalledAppsSection({
     }
   }, []);
 
+  const handleClaim = useCallback(async (platform: string) => {
+    setStarting(platform);
+    setError(null);
+    try {
+      setClaim({ platform, claim: await beginChatClaim(platform) });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start connecting a chat");
+    } finally {
+      setStarting(null);
+    }
+  }, []);
+
+  // A claim lands in the chat, not here, so the list is refreshed when the
+  // dialog closes rather than waited on.
+  const handleClaimClosed = useCallback(() => {
+    setClaim(null);
+    refetch();
+    refetchOffered();
+    onConnectionsChanged();
+  }, [refetch, refetchOffered, onConnectionsChanged]);
+
   const handleDisconnected = useCallback(() => {
     setDisconnectTarget(null);
+    setDisconnectAll(null);
     refetch();
+    refetchOffered();
     onConnectionsChanged();
-  }, [refetch, onConnectionsChanged]);
+  }, [refetch, refetchOffered, onConnectionsChanged]);
 
   const columns = useMemo<GridColDef<InstallRow>[]>(
     () => [
@@ -96,7 +141,7 @@ export default function InstalledAppsSection({
       },
       {
         field: "external_workspace_id",
-        headerName: "Workspace",
+        headerName: "Workspace or chat",
         width: 170,
         renderCell: ({ value }) => (
           <Box component="span" sx={MONO_SX}>
@@ -144,7 +189,7 @@ export default function InstalledAppsSection({
         valueFormatter: (value) =>
           value ? formatDate(value as string) : EM_DASH,
       },
-      ...(isAdmin
+      ...(isAdmin || claimPlatforms.size > 0
         ? [
             {
               field: "actions" as const,
@@ -154,8 +199,15 @@ export default function InstalledAppsSection({
               filterable: false,
               align: "right" as const,
               renderCell: ({ row }: { row: InstallRow }) =>
-                row.status === "active" ? (
-                  <Tooltip title="Disconnect this app">
+                row.status === "active" &&
+                (isAdmin || claimPlatforms.has(row.platform)) ? (
+                  <Tooltip
+                    title={
+                      claimPlatforms.has(row.platform)
+                        ? "Disconnect this chat"
+                        : "Disconnect this app"
+                    }
+                  >
                     <IconButton
                       size="small"
                       onClick={() => setDisconnectTarget(row)}
@@ -168,21 +220,50 @@ export default function InstalledAppsSection({
           ]
         : []),
     ],
-    [isAdmin],
+    [isAdmin, claimPlatforms],
   );
 
   const rows = useMemo<InstallRow[]>(() => installs ?? [], [installs]);
 
-  const installable = platforms ?? [];
-  if (installable.length === 0 && rows.length === 0) return null;
+  const installable = offered?.platforms ?? [];
+  if (installable.length === 0 && claimable.length === 0 && rows.length === 0) {
+    return null;
+  }
 
   return (
     <Box mt={5}>
       <Stack direction="row" alignItems="center" mb={1}>
         <Typography variant="h5">Installed apps</Typography>
-        {isAdmin && (
-          <Stack direction="row" spacing={1} sx={{ ml: "auto" }}>
-            {installable.map((platform) => (
+        <Stack direction="row" spacing={1} sx={{ ml: "auto" }}>
+          {claimable.map((c) => (
+            <Stack key={c.platform} direction="row" spacing={1}>
+              {c.can_disconnect_all && (
+                <Button
+                  color="error"
+                  variant="outlined"
+                  onClick={() => setDisconnectAll(c.platform)}
+                >
+                  Disconnect {titleCase(c.platform)}
+                </Button>
+              )}
+              {c.can_add_chat && (
+                <Button
+                  variant="contained"
+                  disabled={starting !== null}
+                  startIcon={
+                    starting === c.platform ? (
+                      <CircularProgress size={16} />
+                    ) : undefined
+                  }
+                  onClick={() => handleClaim(c.platform)}
+                >
+                  Connect a {titleCase(c.platform)} chat
+                </Button>
+              )}
+            </Stack>
+          ))}
+          {isAdmin &&
+            installable.map((platform) => (
               <Button
                 key={platform}
                 variant="contained"
@@ -197,8 +278,7 @@ export default function InstalledAppsSection({
                 Add to {platformLabel(platform)}
               </Button>
             ))}
-          </Stack>
-        )}
+        </Stack>
       </Stack>
 
       <Typography variant="body2" color="text.secondary" mb={2}>
@@ -219,7 +299,8 @@ export default function InstalledAppsSection({
         <CircularProgress />
       ) : rows.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          No workspaces yet. Use the button above to install the app into one.
+          Nothing connected yet. Use the button above to connect a workspace or
+          chat.
         </Typography>
       ) : (
         <DataTable rows={rows} columns={columns} height={360} />
@@ -229,6 +310,16 @@ export default function InstalledAppsSection({
         install={disconnectTarget}
         onClose={() => setDisconnectTarget(null)}
         onDisconnected={handleDisconnected}
+      />
+      <DisconnectAllChatsDialog
+        platform={disconnectAll}
+        onClose={() => setDisconnectAll(null)}
+        onDisconnected={handleDisconnected}
+      />
+      <ClaimChatDialog
+        platform={claim?.platform ?? ""}
+        claim={claim?.claim ?? null}
+        onClose={handleClaimClosed}
       />
     </Box>
   );
