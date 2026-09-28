@@ -106,7 +106,7 @@ def set_session_cookie(
         httponly=True,
         samesite="lax",
         secure=secure,
-        max_age=86400,
+        max_age=JWT_EXPIRY_HOURS * 3600,
         path="/",
     )
 
