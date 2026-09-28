@@ -51,14 +51,42 @@ def _agents(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def template_kind(text: str) -> TemplateKind:
-    """The kind the registry files a document under, by the Console's rule:
-    agents with one agent is an agent template, with several a group, a
-    ``group:`` a group, anything else a room."""
+    """The kind the registry files a document under, by the Console's rule
+    (``kindOf``): a ``group:`` or ``rooms:`` makes a group, then several
+    agents a group, one agent an agent template, anything else a room."""
     data = _load(text)
+    if "group" in data or isinstance(data.get("rooms"), list):
+        return "group"
     agents = _agents(data)
     if agents:
         return "agent" if len(agents) == 1 else "group"
-    return "group" if "group" in data else "room"
+    return "room"
+
+
+# Past this a display name is not slugged, as in the Console's agent-slug.
+_MAX_SLUG_INPUT = 128
+
+
+def _slug(value: str) -> str:
+    """An agent name from a display name, the Console's
+    ``slugifyAgentNamePart``: what an unnamed agent is created under."""
+    if len(value) > _MAX_SLUG_INPUT:
+        return ""
+    slug = re.sub(r"[^a-z0-9._]+", "-", value.lower())
+    return re.sub(r"^[._-]+|[._-]+$", "", slug)
+
+
+def _written_name(agent: dict[str, Any]) -> str:
+    """How a slot is named in the template: its ``name``, or for an agent
+    that has none, its ``display_name``."""
+    return str(agent.get("name") or agent.get("display_name") or "")
+
+
+def _resolved_name(agent: dict[str, Any], values: dict[str, Any]) -> str:
+    """The name the agent would be created under once the inputs are in."""
+    if agent.get("name"):
+        return str(interpolate(str(agent["name"]), values))
+    return _slug(str(interpolate(str(agent.get("display_name") or ""), values)))
 
 
 @dataclass(frozen=True)
@@ -74,7 +102,7 @@ class AgentSlot:
 def agent_slots(text: str) -> list[AgentSlot]:
     return [
         AgentSlot(
-            name=str(a.get("name", "")),
+            name=_written_name(a),
             description=str(a["description"]) if a.get("description") else None,
         )
         for a in _agents(_load(text))
@@ -86,11 +114,11 @@ def _known_values(data: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any
     each given input, else each plain (non-list) default, checked and coerced
     exactly as the server would. A chain or a value nobody gave is left for
     the server to resolve."""
+    raw = data.get("params") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("'params' must be a mapping of param name to its spec")
     try:
-        declared = {
-            name: ParamSpec.model_validate(spec)
-            for name, spec in (data.get("params") or {}).items()
-        }
+        declared = {name: ParamSpec.model_validate(spec) for name, spec in raw.items()}
     except ValidationError as e:
         raise ValueError(f"Invalid param spec: {e}") from e
     undeclared = set(inputs) - set(declared)
@@ -157,14 +185,15 @@ def room_document(
     replacements: dict[str, str] = {}
     unfilled: list[str] = []
     for agent in agents:
-        written = str(agent.get("name", ""))
-        resolved = str(interpolate(written, values))
+        written = _written_name(agent)
+        resolved = _resolved_name(agent, values)
         chosen = filled.get(written) or filled.get(resolved)
         if not chosen:
-            unfilled.append(resolved)
+            unfilled.append(resolved or written or "an unnamed agent")
             continue
-        replacements[written] = chosen
-        replacements[resolved] = chosen
+        for key in (written, resolved):
+            if key:
+                replacements[key] = chosen
     if unfilled:
         raise AgentRefused(
             "agent_creation_console_only",
@@ -204,14 +233,26 @@ def room_document(
     still_used = _placeholders(room_part, set())
     params = {name: spec for name, spec in declared.items() if name in still_used}
     run_inputs = {k: v for k, v in inputs.items() if k in params}
-    for name, spec in params.items():
-        # An entity param whose value is a slot now names the agent filling it.
-        given = inputs.get(name)
-        if given is None and not isinstance(spec, dict):
+    for name, spec in list(params.items()):
+        # An agent param that names a slot, as its input, its default or a
+        # candidate in its default list, now names the agent filling it.
+        # Only agent params: a bridge or room that shares a slot's name is
+        # something else.
+        if not isinstance(spec, dict) or spec.get("type") != "agent":
             continue
-        value = given if given is not None else spec.get("default")
-        if isinstance(value, str) and value in replacements:
-            run_inputs[name] = replacements[value]
+        given = inputs.get(name)
+        if isinstance(given, str) and given in replacements:
+            run_inputs[name] = replacements[given]
+        default = spec.get("default")
+        if isinstance(default, str) and default in replacements:
+            params[name] = {**spec, "default": replacements[default]}
+        elif isinstance(default, list):
+            params[name] = {
+                **spec,
+                "default": [
+                    replacements.get(c, c) if isinstance(c, str) else c for c in default
+                ],
+            }
 
     pattern = _name_pattern(list(replacements))
 

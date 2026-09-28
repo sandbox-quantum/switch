@@ -56,14 +56,17 @@ params:
     description: text
     default: a value, or for agent/bridge/room a list of candidates tried in
              order, where $first means the first one the server has
-    required: true | false       # default: true unless there is a default
+    required: true | false       # default: false with a single default value,
+                                 # true with none or with a list of candidates
     enum: [choices]              # enum only
     pattern: regex               # string only, whole value must match
     min: number, max: number     # number only
 
-provider, location and directory params are the Console's; the server
-ignores them. Give values in the inputs argument; a required param with no
-default and no input is refused with its name.
+provider, location and directory params are the Console's. run_template
+drops them from an agent or team template; in a document you write yourself,
+leave them out, since the server reads them as text and requires a value
+like any other param. Give values in the inputs argument; a required param
+with no value is refused with its name.
 
 ## Placeholders
 

@@ -635,7 +635,9 @@ room:
     # Still params, so the server checks the room and the agent exist.
     assert set(doc["params"]) == {"target", "helper"}
     assert doc["room"]["description"] == "Work in {target}"
-    assert inputs == {"target": "nowhere", "helper": "claude-code.bob"}
+    assert inputs == {"target": "nowhere"}
+    # The agent default that named the slot now names the agent filling it.
+    assert doc["params"]["helper"]["default"] == "claude-code.bob"
 
 
 @pytest.mark.asyncio
@@ -660,3 +662,98 @@ async def test_the_guide_describes_the_language_and_the_example_in_it_is_valid(t
         inputs={"topic": "billing"},
     )
     assert created["room_name"] == "billing review"
+
+
+def test_an_agent_param_whose_candidates_name_a_slot_follows_the_swap():
+    template = """\
+params:
+  member: { type: agent, default: [worker, $first] }
+agents:
+  - name: worker
+    instructions: Work.
+room:
+  name: shop
+  description: The shop
+  agents: ["{member}"]
+"""
+    document, _ = room_document(template, {"worker": "claude-code.bob"}, {})
+
+    assert yaml.safe_load(document)["params"]["member"]["default"] == [
+        "claude-code.bob",
+        "$first",
+    ]
+
+
+def test_only_agent_params_follow_the_swap():
+    template = """\
+params:
+  bridge: { type: bridge, default: worker }
+  helper: { type: agent }
+agents:
+  - name: worker
+    instructions: Work.
+room:
+  name: shop
+  description: The shop
+  bridge: "{bridge}"
+  agents: ["{helper}"]
+"""
+    document, inputs = room_document(
+        template, {"worker": "claude-code.bob"}, {"helper": "worker"}
+    )
+
+    doc = yaml.safe_load(document)
+    assert doc["params"]["bridge"]["default"] == "worker"
+    assert inputs == {"helper": "claude-code.bob"}
+
+
+def test_unnamed_agents_are_slots_named_after_their_display_name():
+    template = """\
+agents:
+  - display_name: Lead Reviewer
+    instructions: Lead.
+  - display_name: Second Reviewer
+    instructions: Help.
+room:
+  name: review
+  description: Reviews
+  agents: [lead-reviewer, second-reviewer]
+kickoff: "@lead-reviewer start with @second-reviewer."
+"""
+    assert [s.name for s in agent_slots(template)] == [
+        "Lead Reviewer",
+        "Second Reviewer",
+    ]
+
+    document, _ = room_document(
+        template,
+        {"Lead Reviewer": "claude-code.alice", "second-reviewer": "claude-code.bob"},
+        {},
+    )
+
+    doc = yaml.safe_load(document)
+    assert doc["room"]["agents"] == ["claude-code.alice", "claude-code.bob"]
+    assert doc["kickoff"] == "@claude-code.alice start with @claude-code.bob."
+
+
+@pytest.mark.asyncio
+async def test_a_template_with_malformed_params_can_still_be_read(tools):
+    content = "params: [not, a, mapping]\nroom:\n  name: r\n  description: d\n"
+    template_id = await _stored(tools, tools["user_id"], "broken", content)
+
+    detail = await _as(tools["agent_id"], get_template, template_id=template_id)
+
+    assert detail["params"] == []
+    assert detail["content"] == content
+
+
+def test_a_group_with_one_agent_is_a_group_as_the_console_says():
+    template = """\
+agent:
+  name: lead
+  instructions: Lead.
+group: { name: team }
+rooms:
+  - { name: lobby, description: Lobby, agents: [lead] }
+"""
+    assert template_kind(template) == "group"

@@ -88,7 +88,7 @@ export function AgentRefusalsRow({ serverId }: { serverId: string }) {
         <ChevronRight
           className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')}
         />
-        {refusalSummary(recent.length)}
+        {refusalSummary(recent.length, refusals.length)}
       </button>
       {open && (
         <div className="mt-1 pl-5">

@@ -49,6 +49,17 @@ export function splitRefusals(
 }
 
 /** The collapsed row's sentence, e.g. "Your agents were refused 3 requests this week". */
-export function refusalSummary(count: number): string {
-  return `Your agents were refused ${count} ${count === 1 ? 'request' : 'requests'} this week`;
+/** How many refusals the server lists at most (`RECENT_REFUSALS` in
+ * `core/switch_core/gateway/agent_refusals.py`). A full list may be cut off. */
+export const REFUSALS_LISTED = 50;
+
+/**
+ * The collapsed line: how many requests agents were refused this week. Not
+ * "your agents": an admin sees every agent's. When the server's list came
+ * back full and all of it is from this week, there may be more than it says.
+ */
+export function refusalSummary(count: number, listed: number): string {
+  const more = listed >= REFUSALS_LISTED && count === listed;
+  const number = more ? `${count} or more` : String(count);
+  return `Agents were refused ${number} ${count === 1 && !more ? 'request' : 'requests'} this week`;
 }

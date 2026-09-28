@@ -72,10 +72,18 @@ describe('splitRefusals', () => {
 
 describe('refusalSummary', () => {
   it('uses the singular for one', () => {
-    expect(refusalSummary(1)).toBe('Your agents were refused 1 request this week');
+    expect(refusalSummary(1, 4)).toBe('Agents were refused 1 request this week');
   });
 
   it('uses the plural otherwise', () => {
-    expect(refusalSummary(3)).toBe('Your agents were refused 3 requests this week');
+    expect(refusalSummary(3, 4)).toBe('Agents were refused 3 requests this week');
+  });
+
+  it('says there may be more when the server list came back full', () => {
+    expect(refusalSummary(50, 50)).toBe('Agents were refused 50 or more requests this week');
+  });
+
+  it('is exact when the full list reaches past this week', () => {
+    expect(refusalSummary(12, 50)).toBe('Agents were refused 12 requests this week');
   });
 });

@@ -65,9 +65,15 @@ async def _saved_by(session: AsyncSession, template: Template | Any) -> str:
 
 
 def _params(content: str) -> list[dict[str, Any]]:
+    """The inputs a document declares, as far as it declares them properly.
+    A stored document may be malformed (saving checks only what would block
+    it), and an agent still needs to read it to repair it."""
     try:
-        raw = (yaml.safe_load(content) or {}).get("params") or {}
-    except (yaml.YAMLError, AttributeError):
+        doc = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return []
+    raw = doc.get("params") if isinstance(doc, dict) else None
+    if not isinstance(raw, dict):
         return []
     return [
         {
