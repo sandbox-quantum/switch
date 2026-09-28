@@ -456,7 +456,17 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // reads it. Another account may have started, updated or reset the stack
   // since this one last did, and the version check below reads the `.env`
   // compose would use — which has to be the stack's, not a stale copy.
-  if (plan.kind === 'adopt') await bringWorkingDirInStep(host, plan.stack);
+  if (plan.kind === 'adopt') {
+    await bringWorkingDirInStep(host, plan.stack);
+  } else if (plan.kind === 'fresh' && host.sharedState !== null) {
+    // Nothing of the stack is on the host, so what this account's working dir
+    // still holds belongs to a stack that is gone — reset, perhaps, after
+    // another account updated it. Left there, its version would pass for the
+    // deployed one: refusing this start as a downgrade, or backing up a
+    // database that does not exist.
+    await host.removeFile(ENV_FILE_NAME);
+    await finishUpgrade(host);
+  }
 
   onMessage('Checking the deployed version…');
   const downgrade = await refuseDowngrade(host, checkoutRoot);

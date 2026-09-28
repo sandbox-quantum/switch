@@ -24,7 +24,10 @@ const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const composeDownMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const waitForHealthMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)));
 const readDeployedVersionMock = vi.hoisted(() =>
-  vi.fn(() => Promise.resolve({ kind: 'deployed', version: '0.11.0', source: 'env-file' }))
+  vi.fn(
+    (): Promise<{ kind: string; version?: string; source?: string }> =>
+      Promise.resolve({ kind: 'deployed', version: '0.11.0', source: 'env-file' })
+  )
 );
 const buildEnvFileMock = vi.hoisted(() => vi.fn((_params: unknown) => 'BUILT_ENV\n'));
 const loadOrCreateSecretsMock = vi.hoisted(() => vi.fn());
@@ -133,17 +136,27 @@ function sharedHost() {
   const establishNetworking = vi.fn(() => Promise.resolve());
   const teardownNetworking = vi.fn(() => Promise.resolve());
   const readFile = vi.fn<(relPath: string) => Promise<string | null>>(() => Promise.resolve(null));
+  const removeFile = vi.fn<(relPath: string) => Promise<void>>(() => Promise.resolve());
   const sharedState = { label: 'vm-1' } as unknown as StackStateHost;
   const host = {
     label: 'vm-1',
     sharedState,
     writeFile,
     readFile,
+    removeFile,
     establishNetworking,
     teardownNetworking,
     detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
   } as unknown as ServerHost;
-  return { host, sharedState, writeFile, readFile, establishNetworking, teardownNetworking };
+  return {
+    host,
+    sharedState,
+    writeFile,
+    readFile,
+    removeFile,
+    establishNetworking,
+    teardownNetworking,
+  };
 }
 
 function startOptions(host: ServerHost) {
@@ -624,6 +637,26 @@ describe('resetting a shared stack', () => {
     await resetStack({ ...host, sharedState: null } as unknown as ServerHost);
 
     expect(withdrawPublishedEnvMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('starting where nothing of the stack is left', () => {
+  it('drops what this account still holds of a stack that is gone before checking versions', async () => {
+    // Another account updated the stack and then it was reset: the working dir
+    // still names the newer version, which is no deployment to protect.
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    const { host, removeFile } = sharedHost();
+    const order: string[] = [];
+    removeFile.mockImplementation(async (path) => void order.push(`remove ${path}`));
+    readDeployedVersionMock.mockImplementation(async () => {
+      order.push('version check');
+      return { kind: 'absent' };
+    });
+
+    expect(await startStack(startOptions(host))).toMatchObject({ kind: 'started' });
+
+    expect(order.indexOf('remove .env')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('remove .env')).toBeLessThan(order.indexOf('version check'));
   });
 });
 
