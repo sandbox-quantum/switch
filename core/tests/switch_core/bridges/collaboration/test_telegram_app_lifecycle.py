@@ -19,7 +19,11 @@ import pytest
 from fastapi import HTTPException
 from telegram.error import BadRequest, Forbidden, TimedOut
 
-from switch_core.bridges.collaboration.install import MessagingInstallError
+from switch_core.bridges.collaboration.install import (
+    InstallClaim,
+    InstallGrant,
+    MessagingInstallError,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -33,6 +37,7 @@ from switch_core.bridges.collaboration.telegram.app_client import (
     bot_resource,
 )
 from switch_core.bridges.collaboration.telegram.install import (
+    CLAIM_REFUSED,
     DIRECT_MESSAGE_REPLY,
     UNCLAIMED_NOTICE,
     TelegramAppInstaller,
@@ -363,3 +368,22 @@ class TestEditingAConnection:
                 {"bot_token": "123456:placeholder"},
             )
         assert refused.value.status_code == 409
+
+
+class TestRefusedClaims:
+    @pytest.mark.parametrize("reason", sorted(CLAIM_REFUSED))
+    async def test_the_chat_is_told_why(self, reason: str) -> None:
+        installer, bot = await _installer()
+        claim = InstallClaim(
+            token="c1token",
+            grant=InstallGrant(
+                external_workspace_id="-1001",
+                workspace_name="Telegram",
+                bot_token=None,
+                scopes="",
+            ),
+        )
+
+        await installer.on_claim_refused(claim=claim, reason=reason)  # type: ignore[arg-type]
+
+        assert bot.sent == [{"chat_id": -1001, "text": CLAIM_REFUSED[reason]}]  # type: ignore[index]

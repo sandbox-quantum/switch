@@ -26,6 +26,7 @@ from typing import Any, ClassVar
 from telegram.error import BadRequest, Forbidden, TelegramError
 
 from switch_core.bridges.collaboration.install import (
+    ClaimRefusal,
     InboundWebhook,
     InstallClaim,
     InstallGrant,
@@ -62,6 +63,27 @@ UNCLAIMED_NOTICE = (
     "agent. To connect it, add the bot with the link from Switch, or post "
     "/connect followed by a code from Switch."
 )
+
+#: What a refused claim is told, per reason. Nothing here names the tenant that
+#: holds an already-connected chat, or says one exists beyond "connected".
+CLAIM_REFUSED: dict[ClaimRefusal, str] = {
+    "expired": (
+        "That Switch link has expired or was already used. Get a new one from "
+        "Switch and try again."
+    ),
+    "unrecognised": (
+        "That isn't a code from this Switch. Get a new link or code from "
+        "Switch and try again."
+    ),
+    "already_connected": (
+        "This chat is already connected to Switch. To connect it somewhere "
+        "else, disconnect it in Switch first."
+    ),
+    "not_permitted": (
+        "Only an admin can connect the first chat to Switch. Ask an admin to "
+        "connect one, then try again."
+    ),
+}
 
 DIRECT_MESSAGE_REPLY = (
     "👋 Direct messages to this bot aren't routed to anyone. Connect a group "
@@ -292,6 +314,14 @@ class TelegramAppInstaller(MessagingAppInstaller):
         if message.get("migrate_from_chat_id") is not None:
             return str(message["migrate_from_chat_id"]), str(chat.get("id"))
         return None
+
+    async def on_claim_refused(
+        self, *, claim: InstallClaim, reason: ClaimRefusal
+    ) -> None:
+        await self._client.bot.send_message(
+            chat_id=int(claim.grant.external_workspace_id),
+            text=CLAIM_REFUSED[reason],
+        )
 
     async def on_unowned_event(
         self,
