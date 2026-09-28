@@ -31,6 +31,16 @@ The signing key is derived from `JWT_SECRET_KEY` rather than being another
 value to deploy, but it is *derived* rather than reused: a token minted here
 must never be mistakable for an agent's JWT, or for whatever the next thing to
 want a signature turns out to be.
+
+**A second, compact form exists for platforms with no redirect.** Telegram has
+no consent screen to carry a state through; the only thing that rides along
+with adding its bot to a group is a deep-link start parameter of at most 64
+characters from `[A-Za-z0-9_-]`, and the form above is about 150. The compact
+form carries the same two ids as raw UUID bytes and a truncated MAC, and says
+nothing about the platform: that is implied by the key, which is derived per
+platform, so a token minted for one platform is simply unsigned to another.
+Ninety-six bits of MAC is ample for a token that is also single use and dead
+in ten minutes.
 """
 
 from __future__ import annotations
@@ -39,6 +49,7 @@ import base64
 import hashlib
 import hmac
 import json
+import uuid
 from dataclasses import dataclass
 
 #: Distinguishes this key from every other use of `JWT_SECRET_KEY`, and this
@@ -47,6 +58,13 @@ from dataclasses import dataclass
 _KEY_INFO = b"switch/messaging-install-state/v1"
 
 _PREFIX = "v1."
+
+#: The compact form's counterparts. Its key info is completed by the platform
+#: name — see `_compact_signing_key`.
+_COMPACT_KEY_INFO = b"switch/messaging-install-claim/c1/"
+_COMPACT_PREFIX = "c1"
+_COMPACT_MAC_BYTES = 12
+_COMPACT_BODY_BYTES = 32
 
 
 class InstallStateError(RuntimeError):
@@ -131,3 +149,54 @@ def verify(token: str, *, secret: str) -> InstallState:
         )
     except (ValueError, KeyError, TypeError):
         raise InstallStateError("install state is malformed") from None
+
+
+def _compact_signing_key(secret: str, platform: str) -> bytes:
+    return hmac.new(
+        secret.encode(), _COMPACT_KEY_INFO + platform.encode(), hashlib.sha256
+    ).digest()
+
+
+def mint_compact(state: InstallState, *, secret: str) -> str:
+    """Sign a state short enough to ride in a 64-character deep link.
+
+    Both ids must be UUIDs, which every tenant and state row is in production.
+    Anything else is a programming error rather than a state to mint, and
+    raises `ValueError` instead of producing a token that could not round-trip.
+    """
+    body = uuid.UUID(state.tenant_id).bytes + uuid.UUID(state.state_id).bytes
+    mac = hmac.new(
+        _compact_signing_key(secret, state.platform), body, hashlib.sha256
+    ).digest()[:_COMPACT_MAC_BYTES]
+    return f"{_COMPACT_PREFIX}{_b64(body + mac)}"
+
+
+def verify_compact(token: str, *, platform: str, secret: str) -> InstallState:
+    """Recover a compact state minted for `platform`, or raise.
+
+    The platform is an argument rather than a field because the token does not
+    carry one: the caller says which platform it is listening as, and a token
+    minted for any other fails the MAC like a forgery would.
+    """
+    if not token.startswith(_COMPACT_PREFIX):
+        raise InstallStateError("install state is not a state this deployment minted")
+
+    try:
+        raw = _unb64(token[len(_COMPACT_PREFIX) :])
+    except ValueError:
+        raise InstallStateError("install state is malformed") from None
+    if len(raw) != _COMPACT_BODY_BYTES + _COMPACT_MAC_BYTES:
+        raise InstallStateError("install state is malformed")
+
+    body, mac = raw[:_COMPACT_BODY_BYTES], raw[_COMPACT_BODY_BYTES:]
+    expected = hmac.new(
+        _compact_signing_key(secret, platform), body, hashlib.sha256
+    ).digest()[:_COMPACT_MAC_BYTES]
+    if not hmac.compare_digest(mac, expected):
+        raise InstallStateError("install state was not signed by this deployment")
+
+    return InstallState(
+        tenant_id=str(uuid.UUID(bytes=body[:16])),
+        state_id=str(uuid.UUID(bytes=body[16:])),
+        platform=platform,
+    )

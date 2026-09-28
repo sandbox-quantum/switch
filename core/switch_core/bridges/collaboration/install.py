@@ -195,6 +195,32 @@ class InstallGrant:
     scopes: str
 
 
+@dataclass(frozen=True)
+class InstallClaim:
+    """A platform event that asks for its workspace to be installed.
+
+    The counterpart of a completed OAuth callback for a platform that has none.
+    Telegram cannot redirect a browser anywhere; what it can do is post the
+    state it was handed into the chat the bot was just added to, so the
+    install arrives as an ordinary webhook event instead of a callback.
+
+    `grant` is what that event amounts to, in the shape the rest of the install
+    already takes. `workspace_name` names the bridge when this claim is the one
+    that creates it, so for a platform whose bridge serves many workspaces it
+    should name the connection rather than the one chat that happened to come
+    first.
+    """
+
+    token: str
+    grant: InstallGrant
+
+
+#: Which state token an installer's platform can carry. `v1` for a platform
+#: that hands the state back through a redirect; `compact` for one whose only
+#: carrier is short (see `install_state`).
+StateFormat = Literal["v1", "compact"]
+
+
 class MessagingAppInstaller(ABC):
     """The install half of one platform, holding that platform's app credentials.
 
@@ -206,6 +232,8 @@ class MessagingAppInstaller(ABC):
     #: The platform this installs, matching the adapter registry's key and the
     #: `platform` column on `messaging_installs`.
     platform: ClassVar[str]
+
+    state_format: ClassVar[StateFormat] = "v1"
 
     @abstractmethod
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
@@ -327,6 +355,19 @@ class MessagingAppInstaller(ABC):
         for the tenant whose live install that workspace is, and this is what
         names the workspace to check. None for every other bridge, which
         reaches only what its own credential reaches.
+        """
+        return None
+
+    def claim_of_event(self, payload: Mapping[str, object]) -> InstallClaim | None:
+        """The install this event asks for, or `None` if it asks for none.
+
+        Only a platform with no OAuth leg overrides this; for the rest an
+        install arrives at the callback and never as an event.
+
+        Asked before the event is resolved, because the workspace it names is
+        by definition not installed yet and resolving it would drop the one
+        event that could change that. Pure, like :meth:`workspace_of_event`:
+        the token is verified and redeemed by the install service, not here.
         """
         return None
 

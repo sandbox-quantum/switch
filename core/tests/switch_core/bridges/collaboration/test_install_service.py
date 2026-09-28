@@ -57,6 +57,7 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallStateError,
     MessagingInstallStore,
 )
+from switch_core.db.stores.user_store import UserStore
 from tests.conftest import RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -218,6 +219,7 @@ async def _fixture(harness: RLSHarness, *, tokenless: bool = False) -> _Fixture:
         receipts=MessagingEventReceiptStore(),
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
+        users=UserStore(),
         public_origin=_ORIGIN,
         secret=_SECRET,
     )

@@ -55,11 +55,14 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
+    InstallClaim,
+    InstallGrant,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
     WebhookEndpoint,
@@ -69,14 +72,16 @@ from switch_core.bridges.collaboration.install import (
 from switch_core.bridges.collaboration.install_state import (
     InstallState,
     mint,
+    mint_compact,
     verify,
+    verify_compact,
 )
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.models import BridgeStartRefused
 from switch_core.crypto import decrypt_token, encrypt_token
-from switch_core.db.models import MessagingInstall
+from switch_core.db.models import MessagingInstall, MessagingInstallState, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import (
@@ -85,6 +90,7 @@ from switch_core.db.stores.messaging_install_store import (
     INSTALL_REVOKED,
     MessagingInstallStore,
 )
+from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_messaging_install
 from switch_core.tenant_context import no_tenant, tenant_scope
 
@@ -146,6 +152,17 @@ class InstallPlatformMismatch(RuntimeError):
     """
 
 
+class InstallClaimNotPermitted(RuntimeError):
+    """The person who minted a claim may not make the install it would make.
+
+    Connecting a further chat to a tenant's existing connection is a member's
+    action — a chat is a room, and rooms are members' — but the first claim
+    creates the connection itself, which is an admin's. Checked when the claim
+    is redeemed and not only when it was minted, because whether a connection
+    exists can change in the ten minutes between the two.
+    """
+
+
 class MessagingInstallService:
     def __init__(
         self,
@@ -155,11 +172,13 @@ class MessagingInstallService:
         receipts: MessagingEventReceiptStore,
         installers: MessagingInstallerRegistry,
         lifecycle: CollaborationBridgeLifecycleService,
+        users: UserStore,
         public_origin: str,
         secret: str,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
+        self._users = users
         self._receipts = receipts
         self._installers = installers
         self._lifecycle = lifecycle
@@ -194,11 +213,13 @@ class MessagingInstallService:
         state = await self._store.start_install(
             session, platform=platform, user_id=user_id
         )
-        token = mint(
-            InstallState(
-                tenant_id=state.tenant_id, state_id=state.id, platform=platform
-            ),
-            secret=self._secret,
+        signed = InstallState(
+            tenant_id=state.tenant_id, state_id=state.id, platform=platform
+        )
+        token = (
+            mint_compact(signed, secret=self._secret)
+            if installer.state_format == "compact"
+            else mint(signed, secret=self._secret)
         )
         return installer.authorize_url(
             state=token, redirect_uri=self._redirect_uri(platform)
@@ -221,13 +242,7 @@ class MessagingInstallService:
             )
 
         with tenant_scope(state.tenant_id):
-            async with tenant_session(
-                self._session_factory, state.tenant_id
-            ) as session:
-                burnt = await self._store.redeem_state(
-                    session, state_id=state.state_id, platform=platform
-                )
-                await session.commit()
+            burnt = await self._burn(state)
 
             grant = await installer.redeem(
                 code=code, redirect_uri=self._redirect_uri(platform)
@@ -240,14 +255,7 @@ class MessagingInstallService:
                     session,
                     platform=platform,
                     external_workspace_id=grant.external_workspace_id,
-                    # A grant with no token is a platform whose credential is
-                    # deployment-level (Discord), not per-install; there is
-                    # nothing to encrypt and the column is nullable for it.
-                    encrypted_bot_token=(
-                        encrypt_token(grant.bot_token, self._secret)
-                        if grant.bot_token is not None
-                        else None
-                    ),
+                    encrypted_bot_token=self._encrypted_token(grant),
                     scopes=grant.scopes,
                     user_id=burnt.created_by_user_id,
                 )
@@ -321,6 +329,117 @@ class MessagingInstallService:
                 "which its tenant has not installed this deployment's app into. "
                 "A bridge on that app is created by installing it, and serves "
                 "only what it was installed into."
+            )
+
+    async def claim(self, *, platform: str, claim: InstallClaim) -> MessagingInstall:
+        """Install a workspace from an event that carried a signed claim.
+
+        The counterpart of `complete` for a platform with no OAuth leg, and it
+        keeps the same first two steps: verify the signature, then burn the
+        state and commit before anything else. There is no code to exchange —
+        the event is the grant — and what differs after that is the bridge.
+
+        **A claim-based platform shares one bridge per tenant.** Identities are
+        held per bridge, so a bridge per chat would have every person link
+        themselves again in every chat. The first claim registers the bridge
+        and each later one attaches to it.
+
+        That makes the first claim a race: two landing together would each
+        find no bridge and each register one. So the lookup, the insert, the
+        registration and the attachment happen inside one transaction holding
+        an advisory lock on the tenant and platform, and a second claim waits
+        and then finds the bridge the first one made. Holding the transaction
+        across registration has a second benefit: a registration that fails
+        rolls the install back with it, rather than leaving a workspace claimed
+        by a tenant with no bridge to deliver its events to.
+        """
+        installer = self._installers.get(platform)
+        state = verify_compact(claim.token, platform=platform, secret=self._secret)
+
+        with tenant_scope(state.tenant_id):
+            burnt = await self._burn(state)
+
+            async with tenant_session(
+                self._session_factory, state.tenant_id
+            ) as session:
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                    {"key": f"messaging-install-claim:{state.tenant_id}:{platform}"},
+                )
+                bridge_id = await self._store.bridge_for_platform(
+                    session, platform=platform
+                )
+                if bridge_id is None:
+                    await self._require_admin(session, burnt, platform)
+
+                install = await self._store.record_install(
+                    session,
+                    platform=platform,
+                    external_workspace_id=claim.grant.external_workspace_id,
+                    encrypted_bot_token=self._encrypted_token(claim.grant),
+                    scopes=claim.grant.scopes,
+                    user_id=burnt.created_by_user_id,
+                )
+
+                if bridge_id is None:
+                    bridge = await self._lifecycle.register(
+                        bridge_type=platform,
+                        display_name=claim.grant.workspace_name,
+                        connection_config=installer.connection_config(claim.grant),
+                        channel_creation_enabled=False,
+                        # Someone here connected a chat, as with an OAuth install.
+                        preconfigured=False,
+                    )
+                    bridge_id = bridge.id
+
+                attached = await self._store.attach_bridge(
+                    session, install_id=install.id, bridge_id=bridge_id
+                )
+                await session.commit()
+
+            logger.info(
+                "Claimed %s workspace %s for tenant %s on bridge %s",
+                platform,
+                claim.grant.external_workspace_id,
+                state.tenant_id,
+                bridge_id,
+            )
+            return attached
+
+    async def _burn(self, state: InstallState) -> MessagingInstallState:
+        """Redeem a verified state, and commit, before anything else happens.
+
+        Shared by both ways an install completes, and in its own transaction
+        for the reason the module docstring gives: a replay must fail even if
+        everything after this does.
+        """
+        async with tenant_session(self._session_factory, state.tenant_id) as session:
+            burnt = await self._store.redeem_state(
+                session, state_id=state.state_id, platform=state.platform
+            )
+            await session.commit()
+        return burnt
+
+    def _encrypted_token(self, grant: InstallGrant) -> str | None:
+        """The grant's credential as stored, or `None` if it carries none.
+
+        A grant with no token is a platform whose credential is
+        deployment-level (Discord, Telegram), not per-install; there is nothing
+        to encrypt and the column is nullable for it.
+        """
+        if grant.bot_token is None:
+            return None
+        return encrypt_token(grant.bot_token, self._secret)
+
+    async def _require_admin(
+        self, session: AsyncSession, burnt: MessagingInstallState, platform: str
+    ) -> None:
+        user = await session.get(User, burnt.created_by_user_id)
+        if user is None or not await self._users.administers(session, user):
+            raise InstallClaimNotPermitted(
+                f"connecting the first {platform} chat turns {platform} on for "
+                "this organisation, which only an admin can do. Ask an admin to "
+                "connect it, or to connect any chat first."
             )
 
     async def list_installs(self, session: AsyncSession) -> list[MessagingInstall]:
@@ -505,6 +624,15 @@ class MessagingInstallService:
         return Revocation(
             workspace_id=installer.workspace_of_event(event.payload), reason=reason
         )
+
+    def claim_of(self, *, platform: str, event: InboundWebhook) -> InstallClaim | None:
+        """Whether this event asks for its workspace to be installed.
+
+        Asked before `resolve` for the mirror of the reason `revocation` is:
+        the workspace a claim names is not installed yet, so resolving it first
+        would drop the one event that could install it.
+        """
+        return self._installers.get(platform).claim_of_event(event.payload)
 
     async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
         """Turn a webhook event's workspace into the bridge entitled to it."""

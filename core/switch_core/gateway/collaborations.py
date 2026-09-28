@@ -753,13 +753,19 @@ async def delete_bridge(
     # real foreign key — so this delete would destroy every room on the bridge
     # and *then* be refused by Postgres, leaving the bridge running, the rooms
     # gone and a live credential nobody has revoked.
-    install = await install_store.get_for_bridge(session, bridge_id=bridge_id)
-    if install is not None:
+    installs = await install_store.list_for_bridge(session, bridge_id=bridge_id)
+    if installs:
+        install = installs[0]
+        where = (
+            f"{install.platform} workspace {install.external_workspace_id}"
+            if len(installs) == 1
+            else f"{len(installs)} {install.platform} workspaces"
+        )
         raise HTTPException(
             status_code=409,
             detail=(
                 f"This connection was created by installing the Switch app into "
-                f"{install.platform} workspace {install.external_workspace_id}, so "
+                f"{where}, so "
                 "it cannot be deleted here — the app would stay installed and its "
                 "token would stay valid. Disconnect the app instead, which revokes "
                 "the token at the platform and then removes this connection."

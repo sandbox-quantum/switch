@@ -62,6 +62,7 @@ from switch_core.db.stores.messaging_event_store import (
     MessagingEventReceiptStore,
 )
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.tenant_context import current_tenant_id
 from tests.conftest import RLSHarness
 
@@ -281,6 +282,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         receipts=MessagingEventReceiptStore(),
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
+        users=UserStore(),
         public_origin=_ORIGIN,
         secret=_SECRET,
     )

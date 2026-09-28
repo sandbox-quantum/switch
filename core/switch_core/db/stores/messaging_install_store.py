@@ -186,26 +186,63 @@ class MessagingInstallStore:
         )
         return result.scalars().one_or_none()
 
-    async def get_for_bridge(
+    async def list_for_bridge(
         self, session: AsyncSession, *, bridge_id: str
-    ) -> MessagingInstall | None:
-        """The live install a bridge was built for, if it was built for one.
+    ) -> list[MessagingInstall]:
+        """The live installs a bridge serves, if it was built for any.
 
         Asked from the other direction than the rest of this store, and by
         something that does not otherwise know installs exist: the bridge
         delete endpoint, which has to refuse rather than tear down a bridge
         whose credential is a token nobody here has revoked.
 
+        A list because a bridge may serve many: a Slack install has a bridge
+        of its own, but every Telegram chat a tenant claims is served by the
+        tenant's one Telegram bridge.
+
         Live installs only. An ended one has already released its pointer, so a
         row matching here is always a bridge that is still somebody's install.
         """
         result = await session.execute(
-            select(MessagingInstall).where(
+            select(MessagingInstall)
+            .where(
                 MessagingInstall.bridge_id == bridge_id,
                 MessagingInstall.status == INSTALL_ACTIVE,
             )
+            .order_by(MessagingInstall.installed_at, MessagingInstall.id)
         )
-        return result.scalars().one_or_none()
+        return list(result.scalars())
+
+    async def bridge_for_platform(
+        self, session: AsyncSession, *, platform: str
+    ) -> str | None:
+        """The bridge the bound tenant's live installs of `platform` share.
+
+        Only meaningful for a platform whose installs share one bridge per
+        tenant — one claimed by event rather than by OAuth. `None` means the
+        tenant has no live install of it, so the next claim creates the bridge.
+
+        Two distinct bridges is a broken invariant rather than a choice to make
+        here: routing a new chat to either would split one tenant's identities
+        across two bridges without anyone having decided to.
+        """
+        result = await session.execute(
+            select(MessagingInstall.bridge_id)
+            .where(
+                MessagingInstall.platform == platform,
+                MessagingInstall.status == INSTALL_ACTIVE,
+                MessagingInstall.bridge_id.is_not(None),
+            )
+            .distinct()
+        )
+        bridge_ids = [bridge_id for bridge_id in result.scalars() if bridge_id]
+        if len(bridge_ids) > 1:
+            raise RuntimeError(
+                f"this organisation's {platform} installs are served by "
+                f"{len(bridge_ids)} bridges ({', '.join(sorted(bridge_ids))}); "
+                "they must share one"
+            )
+        return bridge_ids[0] if bridge_ids else None
 
     async def get(self, session: AsyncSession, *, install_id: str) -> MessagingInstall:
         """One of the bound tenant's installs, by id, or raise."""

@@ -34,12 +34,14 @@ from starlette.responses import HTMLResponse, PlainTextResponse
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
     InboundWebhook,
+    InstallClaim,
     MessagingInstallError,
     WebhookAuthenticityError,
     WebhookEndpoint,
     WebhookPayloadError,
 )
 from switch_core.bridges.collaboration.install_service import (
+    InstallClaimNotPermitted,
     InstallPlatformMismatch,
     MessagingInstallService,
     Revocation,
@@ -176,6 +178,31 @@ def create_messaging_install_router(
                 target.tenant_id,
             )
 
+    async def _claim(platform: str, claim: InstallClaim) -> None:
+        """Install the workspace a claim names, or log why not.
+
+        A refused claim is not a refused event. The event is resolved next
+        either way, and that is right in every case a claim can fail: a replay
+        of a claim that succeeded resolves to the install it made, and receipts
+        drop the duplicate; a workspace another tenant holds resolves to them,
+        exactly as it would have without the claim; and one nobody holds is
+        dropped as any unowned workspace is.
+        """
+        try:
+            await service.claim(platform=platform, claim=claim)
+        except (
+            InstallStateError,
+            MessagingInstallStateError,
+            MessagingInstallClaimedError,
+            InstallClaimNotPermitted,
+        ) as failure:
+            logger.warning(
+                "Refused a claim of %s workspace %s: %s",
+                platform,
+                claim.grant.external_workspace_id,
+                failure,
+            )
+
     async def _end_install(platform: str, revocation: Revocation) -> None:
         """Act on the platform's news after it has been acknowledged.
 
@@ -261,6 +288,13 @@ def create_messaging_install_router(
             if revocation is not None:
                 background.add_task(_end_install, platform, revocation)
                 return Response(status_code=200)
+
+            # Before resolving too, and handled before answering rather than
+            # after: the event goes on to be delivered below, and whether it
+            # has anywhere to go is what the claim decides.
+            claim = service.claim_of(platform=platform, event=event)
+            if claim is not None:
+                await _claim(platform, claim)
 
             target = await service.resolve(platform=platform, event=event)
         except WebhookPayloadError as failure:
