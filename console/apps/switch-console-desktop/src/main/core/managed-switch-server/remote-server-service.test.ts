@@ -320,6 +320,29 @@ describe('disconnect', () => {
     expect(removeServer).toHaveBeenCalledExactlyOnceWith('srv-1');
   });
 
+  it('does not wait on a slow host to leave, and closes the host it opened late', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = fakeHost();
+      let opened: (value: unknown) => void = () => {};
+      createRemoteServerHost.mockReturnValue(new Promise((resolve) => (opened = resolve)));
+      getRemoteManagedServer.mockResolvedValue(RECORD);
+      const service = await loadService();
+
+      const leaving = service.disconnect('vm-1');
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(leaving).resolves.toBeUndefined();
+      expect(removeServer).toHaveBeenCalledOnce();
+
+      opened(host);
+      await vi.runAllTimersAsync();
+      expect(host.dispose).toHaveBeenCalledOnce();
+      expect(writeRecord).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('creates no register just to leave one where the stack never had any', async () => {
     const host = fakeHost();
     createRemoteServerHost.mockResolvedValue(host);

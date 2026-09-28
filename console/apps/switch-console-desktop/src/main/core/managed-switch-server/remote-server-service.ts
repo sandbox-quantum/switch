@@ -875,9 +875,21 @@ export class RemoteServerService {
    * {@link LEAVE_RECORD_TIMEOUT_MS}, and never creating a register where the
    * stack has none. */
   private async recordLeaving(sshHost: string, live: RemoteServerHost | null): Promise<void> {
-    const opened: { host: RemoteServerHost | null } = { host: null };
+    const opened: { host: RemoteServerHost | null; abandoned: boolean } = {
+      host: null,
+      abandoned: false,
+    };
     const record = async () => {
-      const host = live ?? (opened.host = await createRemoteServerHost(sshHost));
+      let host = live;
+      if (!host) {
+        host = await createRemoteServerHost(sshHost);
+        // Opened after leaving gave up on it: nothing else will close it.
+        if (opened.abandoned) {
+          host.dispose();
+          return;
+        }
+        opened.host = host;
+      }
       if (await stateVolumeExists(host)) await writeRecord(host, 'disconnected');
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -893,6 +905,7 @@ export class RemoteServerService {
       log.warn(`remote-switch-server: could not record disconnected on ${sshHost}`, { error });
     } finally {
       clearTimeout(timer);
+      opened.abandoned = true;
       opened.host?.dispose();
     }
   }
