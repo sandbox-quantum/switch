@@ -92,7 +92,10 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
-from switch_core.bridges.collaboration.telegram.app_client import TelegramAppClient
+from switch_core.bridges.collaboration.telegram.app_client import (
+    TelegramAppClient,
+    bot_resource,
+)
 from switch_core.bridges.collaboration.telegram.install import TelegramAppInstaller
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
@@ -817,6 +820,9 @@ async def run(config: SwitchConfig) -> None:
             webhook_secret=config.telegram_app_webhook_secret,
             on_connected=_attach_shared_telegram_bridges,
         )
+        collab_lifecycle.reserve_resource(
+            bot_resource(telegram_app.bot_id), "Telegram app bot"
+        )
         installers.register(
             TelegramAppInstaller(
                 client=telegram_app,
@@ -834,6 +840,7 @@ async def run(config: SwitchConfig) -> None:
             installers=installers,
             lifecycle=collab_lifecycle,
             users=user_store,
+            rooms=room_service,
             public_origin=config.messaging_public_url,
             keyring=config.keyring,
         )
@@ -1071,8 +1078,13 @@ async def run(config: SwitchConfig) -> None:
     # not hold up a boot serving everything else.
     telegram_app_task: asyncio.Task[None] | None = None
     if telegram_app is not None:
+
+        async def _run_telegram_app(client: TelegramAppClient) -> None:
+            await client.start_with_retry()
+            await client.watch_delivery()
+
         telegram_app_task = asyncio.create_task(
-            telegram_app.start_with_retry(), name="telegram-app-start"
+            _run_telegram_app(telegram_app), name="telegram-app"
         )
 
     # Backfill room membership: system clients (e.g. the admin client) added

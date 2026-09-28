@@ -33,7 +33,7 @@ not registered an app cannot half-offer installs.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
@@ -277,6 +277,14 @@ class MessagingAppInstaller(ABC):
 
     state_format: ClassVar[StateFormat] = "v1"
 
+    #: Whether events from workspaces nobody has installed are routine here.
+    #: Off for a platform whose app is only ever in workspaces that installed
+    #: it, so such an event is worth a warning each time. On for one whose app
+    #: can sit in chats nobody claimed and hear everything said there, where a
+    #: warning per event would bury the drops that are real losses; those are
+    #: counted instead.
+    expects_unowned_events: ClassVar[bool] = False
+
     @abstractmethod
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
         """Where to send the browser to begin an install.
@@ -473,6 +481,35 @@ class MessagingAppInstaller(ABC):
         by definition not installed yet and resolving it would drop the one
         event that could change that. Pure, like :meth:`workspace_of_event`:
         the token is verified and redeemed by the install service, not here.
+        """
+        return None
+
+    def migration_of_event(
+        self, payload: Mapping[str, object]
+    ) -> tuple[str, str] | None:
+        """`(old id, new id)` if this event says its workspace changed id.
+
+        Telegram reissues a chat's id when a group becomes a supergroup. The
+        install row is keyed by that id and has to follow it, or the chat's
+        events stop resolving to anyone. Pure, like `workspace_of_event`,
+        which for such an event answers the *old* id so it still resolves.
+        """
+        return None
+
+    async def on_unowned_event(
+        self,
+        *,
+        workspace_id: str,
+        payload: Mapping[str, object],
+        still_unowned: Callable[[], Awaitable[bool]],
+    ) -> None:
+        """React to an authentic event from a workspace nobody holds.
+
+        Runs after the platform has been answered. Nothing about the event may
+        be stored; what a platform may do is say something back in the chat —
+        how to connect it, or that a direct message reaches no one.
+        `still_unowned` re-asks, for a reply worth delaying until a claim that
+        may be in flight has had its chance.
         """
         return None
 

@@ -42,6 +42,11 @@ ALLOWED_UPDATES: tuple[str, ...] = (
 _INITIAL_RETRY_DELAY = 5.0
 _MAX_RETRY_DELAY = 300.0
 
+#: How often Telegram is asked how delivery to the webhook is going.
+_DELIVERY_CHECK_INTERVAL = 300.0
+#: Updates Telegram may hold for us before a growing queue is worth saying.
+_PENDING_WORTH_REPORTING = 50
+
 
 class TelegramAppNotReady(MessagingInstallError):
     """The shared bot has not yet told us who it is.
@@ -64,6 +69,15 @@ def bot_id_of(token: str) -> str:
     if not separator or not bot_id.isdigit():
         raise ValueError("a Telegram bot token is shaped <bot id>:<secret>")
     return bot_id
+
+
+def bot_resource(bot_id: str) -> str:
+    """The exclusive resource a Telegram bot is, as bridges and the app name it.
+
+    One place, so the self-registered bridge's claim on a bot and the app's
+    reservation of its own cannot drift into two spellings that never collide.
+    """
+    return f"Telegram bot {bot_id}"
 
 
 class TelegramAppClient:
@@ -189,6 +203,48 @@ class TelegramAppClient:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, _MAX_RETRY_DELAY)
         await self._on_connected(self)
+
+    async def check_delivery(
+        self, previous: telegram.WebhookInfo | None
+    ) -> telegram.WebhookInfo:
+        """Ask Telegram how its deliveries to us are going, and say if badly.
+
+        The only view there is of what Telegram has given up on. Our own route
+        logs every refusal it makes, but not a delivery that never arrived, and
+        not the retries Telegram is still holding: a new delivery error, or a
+        queue growing past a handful, is Telegram telling us events are late
+        or will be lost.
+        """
+        info = await self._bot.get_webhook_info()
+        if info.last_error_date and (
+            previous is None or info.last_error_date != previous.last_error_date
+        ):
+            logger.warning(
+                "Telegram reports failing to deliver to the webhook: %s",
+                info.last_error_message,
+            )
+        if info.pending_update_count >= _PENDING_WORTH_REPORTING and (
+            previous is None
+            or info.pending_update_count > previous.pending_update_count
+        ):
+            logger.warning(
+                "Telegram is holding %d updates it has not yet delivered to the "
+                "webhook; replies are late, and updates it gives up on are lost",
+                info.pending_update_count,
+            )
+        return info
+
+    async def watch_delivery(self) -> None:
+        """`check_delivery` for the life of the process, after a start."""
+        previous: telegram.WebhookInfo | None = None
+        while True:
+            await asyncio.sleep(_DELIVERY_CHECK_INTERVAL)
+            try:
+                previous = await self.check_delivery(previous)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Could not ask Telegram how webhook delivery is going")
 
     async def stop(self) -> None:
         """Release the HTTP client. The webhook stays set on purpose.

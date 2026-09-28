@@ -79,7 +79,11 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
-from switch_core.bridges.collaboration.telegram.app_client import TelegramAppClient
+from switch_core.bridges.collaboration.telegram.app_client import (
+    TelegramAppClient,
+    bot_id_of,
+    bot_resource,
+)
 from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
     chunk_message,
@@ -993,6 +997,22 @@ class TelegramAdapter(PlatformAdapter):
                     logger.exception("Error while stopping the Telegram adapter")
         self._bot = None
         logger.info("Telegram adapter stopped")
+
+    @classmethod
+    def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
+        """The bot a self-registered bridge polls, which only one poller can use.
+
+        Telegram hands each update to a single `getUpdates` caller, so two
+        bridges on one token split a chat's messages between them at random.
+        Declaring the bot here refuses the second at registration.
+
+        A shared bridge declares nothing: every tenant's shared bridge runs on
+        the one app bot by design, and none of them polls it.
+        """
+        config = TelegramConnectionConfig.model_validate(connection_config)
+        if config.event_delivery == "shared" or config.bot_token is None:
+            return None
+        return bot_resource(bot_id_of(config.bot_token))
 
     def set_on_attached(self, callback: Callable[[], None]) -> None:
         self._on_attached = callback

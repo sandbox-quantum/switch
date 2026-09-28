@@ -158,6 +158,15 @@ class _GatedAdapter(_SocketOnlyAdapter):
         await self.release.wait()
 
 
+class _NoRooms:
+    """A Slack bridge has one install, so an ending never detaches one room."""
+
+    async def unlink_bridge_channel(
+        self, bridge_id: str, external_channel_id: str
+    ) -> None:
+        raise AssertionError("a one-install bridge is removed, not detached")
+
+
 class _FakeLifecycle:
     def __init__(self, factory: async_sessionmaker) -> None:
         self._factory = factory
@@ -287,6 +296,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
         users=UserStore(),
+        rooms=_NoRooms(),
         public_origin=_ORIGIN,
         keyring=_KEYRING,
     )

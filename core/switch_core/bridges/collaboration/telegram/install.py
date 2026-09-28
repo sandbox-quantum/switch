@@ -16,10 +16,14 @@ only a secret Telegram echoes back in a header, which `setWebhook` gave it.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
-from collections.abc import Mapping
+import logging
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, ClassVar
+
+from telegram.error import BadRequest, Forbidden, TelegramError
 
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
@@ -33,6 +37,8 @@ from switch_core.bridges.collaboration.install import (
 )
 from switch_core.bridges.collaboration.telegram.app_client import TelegramAppClient
 
+logger = logging.getLogger(__name__)
+
 #: The header Telegram carries `setWebhook`'s `secret_token` back in.
 SECRET_TOKEN_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 
@@ -44,6 +50,23 @@ _CLAIM_COMMANDS = frozenset({"start", "connect"})
 _BRIDGE_NAME = "Telegram"
 
 _REMOVED_STATUSES = frozenset({"left", "kicked"})
+_PRESENT_STATUSES = frozenset({"member", "administrator"})
+
+#: How long an unclaimed add waits before saying so. Adding the bot through a
+#: Switch link sends the add and the claim a moment apart, possibly delivered
+#: out of order; the notice is only for an add no claim follows.
+UNCLAIMED_NOTICE_GRACE = 10.0
+
+UNCLAIMED_NOTICE = (
+    "This chat isn't connected to Switch, so nothing said here reaches an "
+    "agent. To connect it, add the bot with the link from Switch, or post "
+    "/connect followed by a code from Switch."
+)
+
+DIRECT_MESSAGE_REPLY = (
+    "👋 Direct messages to this bot aren't routed to anyone. Connect a group "
+    "or channel from Switch, then mention an agent there."
+)
 
 
 def _as_dict(value: object) -> dict[str, Any] | None:
@@ -79,6 +102,9 @@ class TelegramAppInstaller(MessagingAppInstaller):
     # Every update goes to the one URL `setWebhook` names.
     webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]] = frozenset({"events"})
     state_format = "compact"
+    # With Group Privacy off the bot hears everything in every chat it is in,
+    # claimed or not.
+    expects_unowned_events = True
 
     def __init__(self, *, client: TelegramAppClient, webhook_secret: str) -> None:
         self._client = client
@@ -231,6 +257,75 @@ class TelegramAppInstaller(MessagingAppInstaller):
                 platform_data={},
             ),
         )
+
+    async def release(self, *, external_workspace_id: str) -> None:
+        """Leave the chat. There is no per-install token to revoke instead.
+
+        A chat the bot is already out of answers with a refusal, which is the
+        outcome wanted; anything else leaves the bot in the chat and is raised
+        so the disconnect fails and can be tried again.
+        """
+        try:
+            await self._client.bot.leave_chat(chat_id=int(external_workspace_id))
+        except (BadRequest, Forbidden) as gone:
+            logger.info(
+                "The Telegram app was already out of chat %s: %s",
+                external_workspace_id,
+                gone,
+            )
+        except TelegramError as failure:
+            raise MessagingInstallError(
+                f"Telegram did not let the bot leave chat {external_workspace_id}: "
+                f"{failure}. It is still in the chat; disconnect again to retry."
+            ) from failure
+
+    def migration_of_event(
+        self, payload: Mapping[str, object]
+    ) -> tuple[str, str] | None:
+        """Read either of the two notices Telegram sends for a supergroup."""
+        message = _message_of(payload)
+        if message is None:
+            return None
+        chat = _as_dict(message.get("chat")) or {}
+        if message.get("migrate_to_chat_id") is not None:
+            return str(chat.get("id")), str(message["migrate_to_chat_id"])
+        if message.get("migrate_from_chat_id") is not None:
+            return str(message["migrate_from_chat_id"]), str(chat.get("id"))
+        return None
+
+    async def on_unowned_event(
+        self,
+        *,
+        workspace_id: str,
+        payload: Mapping[str, object],
+        still_unowned: Callable[[], Awaitable[bool]],
+    ) -> None:
+        """Say how to connect an unclaimed chat, or that DMs reach no one.
+
+        The bot being added is answered once, after the grace period, and only
+        if no claim has landed by then. A direct message is answered each time,
+        as the self-registered bridge answers one. Everything else from an
+        unowned chat gets no answer: the bot stays, and stays quiet.
+        """
+        member = _as_dict(payload.get("my_chat_member"))
+        if member is not None:
+            chat = _as_dict(member.get("chat")) or {}
+            status = (_as_dict(member.get("new_chat_member")) or {}).get("status")
+            if status not in _PRESENT_STATUSES or chat.get("type") == "private":
+                return
+            await asyncio.sleep(UNCLAIMED_NOTICE_GRACE)
+            if await still_unowned():
+                await self._client.bot.send_message(
+                    chat_id=int(workspace_id), text=UNCLAIMED_NOTICE
+                )
+            return
+
+        message = _as_dict(payload.get("message"))
+        sent_in = _as_dict(message.get("chat")) if message is not None else None
+        if sent_in is not None and sent_in.get("type") == "private":
+            await self._client.bot.send_message(
+                chat_id=int(workspace_id), text=DIRECT_MESSAGE_REPLY
+            )
 
     def shared_connection(self) -> TelegramAppClient:
         """The shared bot, once it has said who it is.

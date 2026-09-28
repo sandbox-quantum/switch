@@ -378,6 +378,19 @@ BRIDGE_THROTTLE_HELD = _spec(
     bounds=(1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0),
 )
 
+# ── Messaging app installs ───────────────────────────────────────────────────
+MESSAGING_EVENTS_IGNORED = _spec(
+    "switch.messaging.events_ignored",
+    "sum",
+    "{event}",
+    "Authentic webhook events from a workspace nobody installed the app into, "
+    "on a platform where that is routine — a shared bot sitting in chats "
+    "nobody claimed. Counted rather than logged so that the drops which are "
+    "real losses, each reported where its cause is known, are not buried.",
+    "platform",
+    "reason",
+)
+
 # ── Agent protocol ───────────────────────────────────────────────────────────
 # The agent-side counterpart to the delivery counters above. An event that
 # reaches the buffer and is dropped before the agent reads it is the same class
@@ -588,6 +601,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGES_RUNNING,
         BRIDGE_CALL_DURATION,
         BRIDGE_THROTTLE_HELD,
+        MESSAGING_EVENTS_IGNORED,
         AGENT_EVENTS_DROPPED,
         AGENT_BUFFER_SCANNED,
         AGENT_BUFFER_SCAN_DURATION,

@@ -388,6 +388,9 @@ class CollaborationBridgeLifecycleService:
         # registration refuses a second claim, but rows predating that check
         # still start.
         self._running_workspaces: dict[str, str] = {}
+        # Resources the deployment itself holds and no bridge may, with who
+        # holds them — the distributed Telegram app's bot, for one.
+        self._reserved_resources: dict[str, str] = {}
         # Started and not deliberately stopped. A crash removes a bridge from
         # `_bridges` and leaves it here, which is what makes "configured but no
         # longer running" answerable.
@@ -701,6 +704,15 @@ class CollaborationBridgeLifecycleService:
             except Exception:
                 logger.exception("Failed to start bridge %s", bridge.id)
 
+    def reserve_resource(self, resource: str, holder: str) -> None:
+        """Keep a resource the deployment itself uses away from every bridge.
+
+        The distributed Telegram app's bot is the case: its updates go to the
+        webhook, and a self-registered bridge polling the same bot would fail
+        against it — or, if it got there first, take every tenant's updates.
+        """
+        self._reserved_resources[resource] = holder
+
     async def reject_claim_conflict(
         self,
         bridge_type: str,
@@ -726,6 +738,16 @@ class CollaborationBridgeLifecycleService:
         wanted_workspace = adapter_cls.claimed_workspace(connection_config)
         if wanted_resource is None and wanted_workspace is None:
             return
+        holder = (
+            None
+            if wanted_resource is None
+            else self._reserved_resources.get(wanted_resource)
+        )
+        if holder is not None:
+            raise BridgeClaimConflict(
+                f"{wanted_resource} is this deployment's own {holder} and cannot "
+                "also be connected as a bridge. Use a bot of your own."
+            )
 
         # Captured before the loop below rebinds per tenant. This method is
         # only ever reached from an authenticated request or an install the
@@ -1018,6 +1040,13 @@ class CollaborationBridgeLifecycleService:
             # the bind error one of them causes. Say which bridge holds it
             # instead.
             wanted = adapter_cls.exclusive_resource(bridge.connection_config or {})
+            if wanted is not None and wanted in self._reserved_resources:
+                raise ValueError(
+                    f"Cannot start bridge {bridge_id} ({bridge.type}): {wanted} "
+                    f"is this deployment's own "
+                    f"{self._reserved_resources[wanted]}. Give the bridge a bot "
+                    "of its own."
+                )
             if wanted is not None:
                 for other_id, held in self._held_resources.items():
                     if held == wanted and other_id != bridge_id:
