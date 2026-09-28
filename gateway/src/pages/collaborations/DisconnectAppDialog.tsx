@@ -76,6 +76,12 @@ const DEFAULT_COPY: Copy = {
   rooms: CONNECTION_ROOMS("workspace"),
 };
 
+/** What `platform` calls the place an install goes into: a Discord server,
+ *  a Telegram chat, a Slack workspace. */
+export function installNoun(platform: string): string {
+  return (PLATFORM_COPY[platform] ?? DEFAULT_COPY).noun;
+}
+
 interface Props {
   install: InstalledApp | null;
   onClose: () => void;
@@ -117,7 +123,8 @@ export default function DisconnectAppDialog({
       <DialogContent>
         <DialogContentText>
           Disconnect Switch from the {titleCase(install?.platform ?? "")}{" "}
-          {copy.noun} <b>{install?.external_workspace_id}</b>? {copy.effect}
+          {copy.noun} <b>{install?.name ?? install?.external_workspace_id}</b>?{" "}
+          {copy.effect}
         </DialogContentText>
         <DialogContentText sx={{ mt: 2 }}>{copy.rooms}</DialogContentText>
         {error && (

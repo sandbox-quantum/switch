@@ -93,7 +93,7 @@ left set on shutdown, so Telegram holds and retries updates across a restart.
 
 ## How a chat is connected
 
-In the dashboard, **Installed apps** → **Connect a Telegram chat** shows a link
+In the dashboard, **Installed apps** → the Telegram card → **Connect a chat** shows a link
 and a code. Both work once, for ten minutes.
 
 - **A group:** the link opens Telegram's chat picker. Adding the bot through it
@@ -146,13 +146,14 @@ as the self-registered bot's does.
 
 ## Disconnecting
 
-- **One chat:** the chat's row in **Installed apps** → disconnect. The bot
+- **One chat:** **Disconnect** on the chat's row in the Telegram card. The bot
   leaves the chat and its room becomes internal-only; every other chat keeps
   working. If Telegram refuses to let the bot leave, nothing changes and the
   error says to try again.
-- **Every chat:** **Disconnect Telegram**, for admins. The bot leaves each chat
-  and the connection goes. It stops at the first chat Telegram refuses, with
-  the rest still connected, so trying again finishes it.
+- **Every chat:** the Telegram card's ⋯ menu → **Disconnect Telegram**, for
+  admins. The bot leaves each chat and the connection goes. It stops at the
+  first chat Telegram refuses, with the rest still connected, so trying again
+  finishes it.
 - **Removing the bot in Telegram** ends that chat's connection the same way,
   from Telegram's side.
 

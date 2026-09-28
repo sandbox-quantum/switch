@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
+    CollaborationBridge,
     MessagingInstall,
     MessagingInstallState,
+    Room,
     require_tenant_id,
 )
 
@@ -185,6 +187,37 @@ class MessagingInstallStore:
             )
         )
         return result.scalars().one_or_none()
+
+    async def names_for_tenant(
+        self, session: AsyncSession
+    ) -> list[tuple[str, str, str | None, str | None]]:
+        """`(install id, platform, room name, bridge name)` for every install.
+
+        The room is the one bridged to the install's own workspace id, which
+        only a chat claimed as a room has; the bridge is the one the install
+        still points at. An ended install has let go of both, so both are
+        `None`. Which of the two a person calls the install is the caller's.
+        """
+        result = await session.execute(
+            select(
+                MessagingInstall.id,
+                MessagingInstall.platform,
+                Room.name,
+                CollaborationBridge.display_name,
+            )
+            .outerjoin(
+                Room,
+                and_(
+                    Room.bridge_id == MessagingInstall.bridge_id,
+                    Room.external_channel_id == MessagingInstall.external_workspace_id,
+                ),
+            )
+            .outerjoin(
+                CollaborationBridge,
+                CollaborationBridge.id == MessagingInstall.bridge_id,
+            )
+        )
+        return [(row[0], row[1], row[2], row[3]) for row in result.all()]
 
     async def list_for_bridge(
         self, session: AsyncSession, *, bridge_id: str

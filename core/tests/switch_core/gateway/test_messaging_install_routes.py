@@ -88,6 +88,9 @@ class _Service:
     async def list_installs(self, session: Any) -> list[SimpleNamespace]:
         return self.installs
 
+    async def install_names(self, session: Any) -> dict[str, str]:
+        return {"t1": "Telegram: news"}
+
     async def install_platform(self, session: Any, *, install_id: str) -> str:
         return next(i.platform for i in self.installs if i.id == install_id)
 
@@ -248,6 +251,13 @@ class TestChats:
     async def test_a_tenant_admin_sees_everything(self) -> None:
         listed = await list_installs(_Session(), _Service(), True)  # type: ignore[arg-type]
         assert [i.platform for i in listed.installs] == ["slack", "telegram"]
+
+    async def test_each_is_listed_by_the_name_it_still_has(self) -> None:
+        listed = await list_installs(_Session(), _Service(), True)  # type: ignore[arg-type]
+        assert [(i.id, i.name) for i in listed.installs] == [
+            ("s1", None),
+            ("t1", "Telegram: news"),
+        ]
 
     async def test_a_member_disconnects_one_chat(self) -> None:
         service = _Service()

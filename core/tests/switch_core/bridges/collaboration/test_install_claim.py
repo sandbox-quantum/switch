@@ -88,6 +88,7 @@ class _ClaimInstaller(MessagingAppInstaller):
 
     platform: ClassVar[str] = _PLATFORM
     state_format = "compact"
+    installs_by_claim = True
     expects_unowned_events = True
 
     def __init__(self) -> None:
@@ -352,6 +353,46 @@ async def _active_installs(harness: RLSHarness) -> list[MessagingInstall]:
             )
         )
         return list(rows.scalars())
+
+
+class TestNames:
+    async def test_a_chat_is_named_by_its_room_never_by_the_shared_bridge(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Every chat shares the tenant's one bridge, so its name would call
+        each of them the same thing; a chat whose room is not there yet has no
+        name rather than the bridge's."""
+        fixture = await _fixture(rls_harness)
+        await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            assert await fixture.service.install_names(session) == {}
+
+    async def test_an_install_whose_app_is_gone_is_still_listed(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A deployment can hold installs of a platform it no longer has an
+        app for; naming them must not fail the whole list."""
+        fixture = await _fixture(rls_harness)
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            await MessagingInstallStore().record_install(
+                session,
+                platform="slack",
+                external_workspace_id="T-gone",
+                encrypted_bot_token=None,
+                scopes="",
+                user_id=fixture.admin_a,
+            )
+            await session.commit()
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            assert await fixture.service.install_names(session) == {}
 
 
 class TestTheLink:
