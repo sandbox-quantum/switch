@@ -1,7 +1,7 @@
 """record which agent created a room and where it sits in its run
 
 Revision ID: a3c9e1f7b2d4
-Revises: e3b7c9d2a415
+Revises: c4e9a1f7b203
 Create Date: 2026-09-17 00:00:00.000000
 
 A room an agent creates records the agent, the room it was working in when
@@ -20,7 +20,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "a3c9e1f7b2d4"
-down_revision: str | None = "e3b7c9d2a415"
+down_revision: str | None = "c4e9a1f7b203"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
