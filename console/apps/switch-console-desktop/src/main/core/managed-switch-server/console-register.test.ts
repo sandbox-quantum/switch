@@ -120,6 +120,26 @@ describe('recording a Console on the host', () => {
     expect(writeStateVolume).toHaveBeenCalledTimes(2);
   });
 
+  it('asks again after the host failed to say which account it is', async () => {
+    const { host: h, exec } = host();
+    exec.mockRejectedValueOnce(new Error('ssh dropped'));
+
+    await expect(writeRecord(h, 'started')).rejects.toThrow(/ssh dropped/);
+    await writeRecord(h, 'started');
+
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(writeStateVolume).toHaveBeenCalledOnce();
+  });
+
+  it('records the account as unknown when the host names none', async () => {
+    const { host: h } = host('');
+
+    await writeRecord(h, 'started');
+
+    const [, , input] = writeStateVolume.mock.calls[0] as unknown as [unknown, unknown, string];
+    expect(input).toContain('"hostAccount":"unknown"');
+  });
+
   it('refuses to use an id that is not one as a file name', async () => {
     getConsoleIdentity.mockResolvedValueOnce({ id: '../../etc/passwd', name: 'x' });
     const { host: h } = host();
@@ -252,6 +272,33 @@ describe('reading the register', () => {
       consoles: 2,
       activity: 1,
     });
+  });
+
+  it('skips lines that are not records at all', async () => {
+    stateVolumeExists.mockResolvedValue(true);
+    readStateVolume.mockResolvedValue(
+      [
+        JSON.stringify(alice),
+        '"just a string"',
+        '---switch-console-activity---',
+        '42',
+        'null',
+      ].join('\n')
+    );
+    const { host: h } = host();
+
+    const register = await readRegister(h);
+
+    expect(register.consoles).toEqual([alice]);
+    expect(register.activity).toEqual([]);
+  });
+
+  it('reads a register that has no activity yet', async () => {
+    stateVolumeExists.mockResolvedValue(true);
+    readStateVolume.mockResolvedValue(`${JSON.stringify(bob)}\n`);
+    const { host: h } = host();
+
+    expect(await readRegister(h)).toEqual({ self: SELF, consoles: [bob], activity: [] });
   });
 
   it('is empty, not an error, before anything has been recorded', async () => {

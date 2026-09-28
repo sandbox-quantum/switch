@@ -1,11 +1,30 @@
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { expect, it, vi } from 'vitest';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
   resolveSharedHostBundlePath: vi.fn(),
 }));
-vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
-const { runSharedHostCommand } = await import('./shared-host-deployment');
+const ssh = vi.hoisted(() => ({
+  ensureSshConnected: vi.fn(async () => ({ proxy: true })),
+  exec: vi.fn(async () => ({
+    stdout: '/home/alice/.local/state/switch/sdk-watchers/abc\n',
+    stderr: '',
+  })),
+  contexts: [] as unknown[][],
+}));
+vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({
+  ensureSshConnected: ssh.ensureSshConnected,
+}));
+vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
+  SshExecutionContext: class {
+    exec = ssh.exec;
+    constructor(...args: unknown[]) {
+      ssh.contexts.push(args);
+    }
+  },
+}));
+const { resolveWatcherRoot, runSharedHostCommand } = await import('./shared-host-deployment');
 it.each([false, true])(
   'keeps configuration out of launch arguments and cleans files on failure=%s',
   async (fail) => {
@@ -35,3 +54,24 @@ it.each([false, true])(
     await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
   }
 );
+
+it('finds a watcher’s state root on a host without deploying anything there', async () => {
+  // For a one-field edit beside the watcher (CHOO-2893): uploading and pruning
+  // the host bundle would be work for nothing.
+  const { root } = await resolveWatcherRoot(
+    { kind: 'ssh', connectionId: 'conn-1', host: 'vm-1', dir: '/work' } as never,
+    '/work',
+    'switch-agent-1'
+  );
+
+  expect(root).toBe('/home/alice/.local/state/switch/sdk-watchers/abc');
+  expect(ssh.ensureSshConnected).toHaveBeenCalledWith('conn-1', 'vm-1');
+  expect(ssh.exec).toHaveBeenCalledOnce();
+  const [command, args] = ssh.exec.mock.calls[0] as unknown as [string, string[]];
+  expect(command).toBe('node');
+  expect(args.slice(2)).toEqual([
+    createHash('sha256').update('switch-agent-1').digest('hex'),
+    'sdk-watchers',
+    'switch-agent-1',
+  ]);
+});

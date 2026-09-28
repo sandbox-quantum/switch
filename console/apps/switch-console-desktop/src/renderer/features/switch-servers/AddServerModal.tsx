@@ -756,7 +756,7 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
  * What the chosen host already has, and so what the primary button will do
  * (CHOO-2893). Silent for an empty host, where Start does what it always did.
  */
-function RemoteStackNotice({
+export function RemoteStackNotice({
   sshHost,
   action,
   affected,

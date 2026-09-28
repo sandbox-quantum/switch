@@ -14,10 +14,13 @@ vi.mock('@main/core/managed-switch-server/host/host-for-server', () => ({
       : 'local-switch-server:secrets',
 }));
 vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie }));
-vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
+const consoleIdentityHeaders = vi.hoisted(() =>
+  vi.fn(async (): Promise<Record<string, string>> => ({}))
+);
+vi.mock('./console-identity', () => ({ consoleIdentityHeaders }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, error: vi.fn(), info: vi.fn() } }));
 
-const { reauthenticateManagedServer } = await import('./auth');
+const { reauthenticateManagedServer, refreshSession } = await import('./auth');
 
 const REMOTE = {
   id: 'srv-remote',
@@ -103,6 +106,39 @@ describe('reauthenticateManagedServer', () => {
     });
 
     expect(await reauthenticateManagedServer(REMOTE)).toBeNull();
+    expect(setSessionCookie).not.toHaveBeenCalled();
+  });
+});
+
+describe('refreshSession', () => {
+  it('identifies the Console to a server it manages while renewing, and keeps the new session', async () => {
+    // Everyone shares one sign-in on a managed server (CHOO-2893); the headers
+    // are how the server tells the Consoles behind it apart.
+    consoleIdentityHeaders.mockResolvedValueOnce({
+      'X-Switch-Console-Id': 'console-1',
+      'X-Switch-Console-Name': 'alice@laptop',
+    });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      headers: { getSetCookie: () => ['switch_auth=fresh-jwt; Path=/; HttpOnly'] },
+    });
+
+    expect(await refreshSession(REMOTE, 'old-jwt')).toBe('fresh-jwt');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:41000/gateway/auth/refresh');
+    expect(init.headers).toMatchObject({
+      Cookie: 'switch_auth=old-jwt',
+      'X-Switch-Console-Id': 'console-1',
+      'X-Switch-Console-Name': 'alice@laptop',
+    });
+    expect(setSessionCookie).toHaveBeenCalledWith('srv-remote', 'fresh-jwt');
+  });
+
+  it('keeps the current session when renewal is refused', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 401, headers: { getSetCookie: () => [] } });
+
+    expect(await refreshSession(REMOTE, 'old-jwt')).toBeNull();
     expect(setSessionCookie).not.toHaveBeenCalled();
   });
 });

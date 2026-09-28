@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEnvFile, keysDisagreeing, readStackEnv } from './env-file';
+import { buildEnvFile, keysDisagreeing, readStackEnv, telemetryRequested } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
@@ -192,6 +192,26 @@ describe('readStackEnv', () => {
         version: '1.2.3',
       },
     });
+  });
+
+  it('names the owner password a file from before the role split is missing', () => {
+    const legacy = written
+      .replace('DB_USER=switch_app', 'DB_USER=postgres')
+      .replace(/^DB_PASSWORD=.*$/m, '')
+      .replace(/^DB_OWNER_USER=.*$/m, '')
+      .replace(/^DB_OWNER_PASSWORD=.*$/m, '');
+
+    expect(readStackEnv(legacy)).toMatchObject({
+      kind: 'incomplete',
+      missing: expect.arrayContaining(['DB_PASSWORD']),
+    });
+  });
+
+  it('reads whether a stack asks to share usage data', () => {
+    expect(telemetryRequested('TELEMETRY_ENABLED=true\n')).toBe(true);
+    expect(telemetryRequested('TELEMETRY_ENABLED=false\n')).toBe(false);
+    // Absent is off: switch-core's own default for the gate.
+    expect(telemetryRequested('GATEWAY_HOST_PORT=3300\n')).toBe(false);
   });
 
   it('names every key it could not find instead of inventing a value', () => {

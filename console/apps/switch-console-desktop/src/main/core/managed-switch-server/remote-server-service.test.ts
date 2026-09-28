@@ -20,6 +20,9 @@ const createRemoteServerHost = vi.hoisted(() => vi.fn());
 const inspectStack = vi.hoisted(() => vi.fn<() => Promise<StackOnHost>>());
 const connectStack = vi.hoisted(() => vi.fn());
 const startStack = vi.hoisted(() => vi.fn());
+const stopStack = vi.hoisted(() => vi.fn(async () => {}));
+const resetStack = vi.hoisted(() => vi.fn(async () => {}));
+const deleteAgentsForServer = vi.hoisted(() => vi.fn(async () => ({ failed: [] })));
 const adoptRunningStack = vi.hoisted(() => vi.fn());
 const listManagedServers = vi.hoisted(() => vi.fn());
 const getRemoteManagedServer = vi.hoisted(() => vi.fn());
@@ -64,8 +67,8 @@ vi.mock('./pipeline', () => ({
   connectStack,
   adoptRunningStack,
   startStack,
-  stopStack: vi.fn(),
-  resetStack: vi.fn(),
+  stopStack,
+  resetStack,
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   listManagedServers,
@@ -73,9 +76,7 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   ensureManagedServer,
   removeServer,
 }));
-vi.mock('@main/core/switch-servers/delete-server-agents', () => ({
-  deleteAgentsForServer: vi.fn(),
-}));
+vi.mock('@main/core/switch-servers/delete-server-agents', () => ({ deleteAgentsForServer }));
 vi.mock('@main/core/telemetry/managed-server', () => ({
   reportManagedServerOutcome: vi.fn(),
   reportManagedServerStart: vi.fn(),
@@ -814,5 +815,311 @@ describe('register', () => {
 
     expect(readRegister).toHaveBeenCalledWith(host);
     expect(host.dispose).toHaveBeenCalledOnce();
+  });
+});
+
+describe('stopping and resetting a shared stack', () => {
+  it('stops it, says so on the host, and lets the forward go', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    const service = await loadService();
+
+    await service.stop('vm-1');
+
+    expect(stopStack).toHaveBeenCalledWith(host);
+    expect(writeRecord).toHaveBeenCalledExactlyOnceWith(host, 'stopped');
+    expect(host.dispose).toHaveBeenCalledOnce();
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'stopped',
+      error: null,
+      notice: null,
+    });
+  });
+
+  it('turns an update held for others into one owed at the next start once stopped', async () => {
+    // A stopped stack reaches nobody, so the next start updates it without asking.
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(true));
+    readVersionStatus.mockResolvedValueOnce({
+      deployedVersion: '0.10.0',
+      drift: { deployed: '0.10.0', expected: '0.11.0', direction: 'upgrade' },
+    } as never);
+    readRegister.mockResolvedValue({
+      self: 'me',
+      consoles: [
+        {
+          consoleId: 'bob',
+          name: 'bob@desk',
+          hostAccount: 'bob',
+          appVersion: '0.37.0',
+          lastSeenAt: new Date().toISOString(),
+        },
+      ],
+      activity: [],
+    });
+    const service = await loadService();
+    await service.initialize();
+    await expect(service.ensureReady('vm-1', 'Team server')).rejects.toThrow(/Others use it too/);
+
+    await service.stop('vm-1');
+
+    expect(service.getStatus('vm-1').upgrade).toEqual({
+      state: 'pending',
+      from: '0.10.0',
+      to: '0.11.0',
+    });
+  });
+
+  it('reports a stop that failed, and gives the forward back', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    stopStack.mockRejectedValueOnce(new Error('compose down failed'));
+    const service = await loadService();
+
+    await expect(service.stop('vm-1')).rejects.toThrow(/compose down failed/);
+
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'error',
+      error: 'compose down failed',
+    });
+    expect(writeRecord).not.toHaveBeenCalled();
+    expect(host.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('resets it, deleting its agents first and keeping who did it on the host', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    const service = await loadService();
+
+    await service.reset('vm-1');
+
+    expect(deleteAgentsForServer).toHaveBeenCalledWith('srv-1');
+    expect(deleteAgentsForServer.mock.invocationCallOrder[0]).toBeLessThan(
+      resetStack.mock.invocationCallOrder[0]!
+    );
+    expect(writeRecord).toHaveBeenCalledExactlyOnceWith(host, 'reset');
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'stopped',
+      deployedVersion: null,
+      drift: null,
+      upgrade: null,
+    });
+  });
+
+  it('refuses either while another operation on the host is running', async () => {
+    let finish: (value: unknown) => void = () => {};
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const service = await loadService();
+    const connecting = service.connect('vm-1', 'Team server');
+    await vi.waitFor(() => expect(connectStack).toHaveBeenCalled());
+
+    await expect(service.stop('vm-1')).rejects.toThrow(/already in progress/);
+    await expect(service.reset('vm-1')).rejects.toThrow(/already in progress/);
+
+    finish({ kind: 'not-running' });
+    await connecting;
+  });
+});
+
+describe('connecting when it cannot', () => {
+  it('reports Docker being unavailable on the host', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    connectStack.mockResolvedValue({
+      kind: 'docker-unavailable',
+      reason: 'daemon-down',
+      detail: 'Cannot connect to the Docker daemon',
+    });
+    const service = await loadService();
+
+    expect(await service.connect('vm-1', 'Team server')).toMatchObject({
+      kind: 'docker-unavailable',
+    });
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'error',
+      error: 'Cannot connect to the Docker daemon',
+    });
+    expect(host.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('reports an update on joining that would be a downgrade, in words', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockResolvedValue({ kind: 'behind', deployed: '0.10.0', expected: '0.11.0' });
+    startStack.mockResolvedValue({
+      kind: 'version-downgrade',
+      deployed: '0.12.0',
+      expected: '0.11.0',
+    });
+    const service = await loadService();
+
+    const result = await service.connect('vm-1', 'Team server');
+
+    expect(result).toMatchObject({ kind: 'error' });
+    expect(result.kind === 'error' && result.message).toMatch(/0\.12\.0/);
+  });
+
+  it('passes on Docker being unavailable for the update on joining', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockResolvedValue({ kind: 'behind', deployed: '0.10.0', expected: '0.11.0' });
+    startStack.mockResolvedValue({
+      kind: 'docker-unavailable',
+      reason: 'not-installed',
+      detail: 'docker: command not found',
+    });
+    const service = await loadService();
+
+    expect(await service.connect('vm-1', 'Team server')).toEqual({
+      kind: 'docker-unavailable',
+      reason: 'not-installed',
+      detail: 'docker: command not found',
+    });
+  });
+
+  it('reports a history copy that failed during the update on joining, in words', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockResolvedValue({ kind: 'behind', deployed: '0.10.0', expected: '0.11.0' });
+    startStack.mockResolvedValue({
+      kind: 'matrix-migration-failed',
+      deployed: '0.10.0',
+      expected: '0.11.0',
+      detail: 'backfill exited 1',
+    });
+    const service = await loadService();
+
+    expect(await service.connect('vm-1', 'Team server')).toMatchObject({ kind: 'error' });
+  });
+});
+
+describe('connecting through a failure it did not expect', () => {
+  it('reports the failure and lets the host go', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    connectStack.mockRejectedValue(new Error('ssh: connection reset'));
+    const service = await loadService();
+
+    expect(await service.connect('vm-1', 'Team server')).toEqual({
+      kind: 'error',
+      message: 'ssh: connection reset',
+    });
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'error',
+      error: 'ssh: connection reset',
+    });
+    expect(host.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('passes the steps of a join on to the page as they happen', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockImplementation(async (opts: { onMessage: (message: string) => void }) => {
+      opts.onMessage('Waiting for the server to answer…');
+      return { kind: 'connected', serverId: 'srv-1', deployedVersion: '0.11.0' };
+    });
+    const service = await loadService();
+
+    await service.connect('vm-1', 'Team server');
+
+    expect(emitted.some((status) => status.message === 'Waiting for the server to answer…')).toBe(
+      true
+    );
+  });
+});
+
+describe('leaving a server this Console has no record of', () => {
+  it('still lets go of the host and forgets its credentials', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    getRemoteManagedServer.mockResolvedValue(undefined);
+    const service = await loadService();
+
+    await service.disconnect('vm-1');
+
+    expect(removeServer).not.toHaveBeenCalled();
+    expect(clearSecrets).toHaveBeenCalledWith({ secretsKey: 'remote-switch-server:vm-1:secrets' });
+  });
+});
+
+describe('what a launch says about a stack it cannot take up', () => {
+  it('names another account’s unshared stack', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue({
+      kind: 'unshared',
+      ownerDir: '/home/alice/.switchdash',
+      running: true,
+    });
+    const service = await loadService();
+
+    await boot(service);
+
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'stopped' });
+    expect(service.getStatus('vm-1').notice).toMatch(
+      /another account \(from \/home\/alice\/\.switchdash\)/
+    );
+  });
+
+  it('names what a partial stack is missing', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue({
+      kind: 'incomplete',
+      source: 'published',
+      missing: ['JWT_SECRET_KEY'],
+      raw: '',
+      running: false,
+    });
+    const service = await loadService();
+
+    await boot(service);
+
+    expect(service.getStatus('vm-1').notice).toMatch(/missing JWT_SECRET_KEY/);
+  });
+
+  it('still reports a stopped stack when this account’s copy of its settings cannot be refreshed', async () => {
+    const host = fakeHost();
+    host.writeFile.mockRejectedValue(new Error('read-only file system'));
+    createRemoteServerHost.mockResolvedValue(host);
+    inspectStack.mockResolvedValue(present(false));
+    const service = await loadService();
+
+    await boot(service);
+
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'stopped',
+      deployedVersion: '0.11.0',
+    });
+  });
+
+  it('says on the page when the record that it still uses the server cannot be written', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(true));
+    writeRecord.mockRejectedValueOnce(new Error('volume busy'));
+    const service = await loadService();
+
+    await boot(service);
+
+    expect(service.getStatus('vm-1').recordWarning).toBe(
+      'Could not record on vm-1 that this Console uses the server, so others may not see it ' +
+        'among its users: volume busy'
+    );
+  });
+});
+
+describe('re-checking while something else is running', () => {
+  it('leaves the host alone until that operation is done', async () => {
+    let finish: (value: unknown) => void = () => {};
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockReturnValueOnce(
+      Promise.resolve({ kind: 'connected', serverId: 'srv-1', deployedVersion: '0.11.0' })
+    );
+    const service = await loadService();
+    await service.connect('vm-1', 'Team server');
+    startStack.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const restarting = service.start('vm-1', 'Team server');
+    inspectStack.mockClear();
+
+    service.recheck('vm-1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(inspectStack).not.toHaveBeenCalled();
+    finish({ kind: 'started', serverId: 'srv-1', telemetryEnabled: false, warning: null });
+    await restarting;
   });
 });

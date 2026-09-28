@@ -131,6 +131,15 @@ describe('setAgentAutoApprove', () => {
     expect(updateAgent).not.toHaveBeenCalled();
   });
 
+  it('says so when the agent is deleted while the change is being made', async () => {
+    getRemoteAgentLocation.mockResolvedValue(null);
+    updateAgent.mockResolvedValueOnce(undefined as never);
+
+    await expect(setAgentAutoApprove({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
+      /No agent with id agent-1/
+    );
+  });
+
   it('throws when the agent does not exist', async () => {
     agentRow.current = undefined;
 

@@ -158,6 +158,24 @@ describe('servers-store: rename & delete', () => {
       expect(local).toMatchObject({ managementKind: 'local', sshHost: null });
     });
 
+    it('never gives the local server a remote server’s row by URL either', async () => {
+      await insertServer({
+        id: 'remote-1',
+        name: 'Team server',
+        gatewayUrl: 'http://localhost:41000',
+        managed: true,
+        managementKind: 'remote',
+        sshHost: 'vm-1',
+      });
+
+      await expect(
+        ensureManagedServer(
+          { name: 'Local', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+          { kind: 'local' }
+        )
+      ).rejects.toThrow(/on this computer/);
+    });
+
     it('never takes over the row of a server on another host', async () => {
       await insertServer({
         id: 'remote-2',

@@ -249,6 +249,20 @@ it('keeps a choice on the host without touching a watcher about to be rewritten'
   expect(mocks.deploy).not.toHaveBeenCalled();
 });
 
+it('keeps nothing on a host for an agent that is not there, or never linked, or local', async () => {
+  mocks.agent.mockResolvedValueOnce(undefined);
+  await expect(keepAutoApproveChoice('agent-1', true)).rejects.toThrow(/does not exist/);
+
+  mocks.agent.mockResolvedValueOnce({ ...agent(true), switchAgentId: null });
+  await keepAutoApproveChoice('agent-1', true);
+
+  mocks.agent.mockResolvedValueOnce(agent(true));
+  mocks.location.mockResolvedValueOnce({ id: 'local', dir: '/work', sshHost: null });
+  await recordAutoApproveOnHost('agent-1', true);
+
+  expect(() => readChoice()).toThrow(/ENOENT/);
+});
+
 it('has nothing to record for an agent that has never had a watcher', async () => {
   mocks.agent.mockResolvedValue(agent(true));
   rmSync(root, { recursive: true, force: true });

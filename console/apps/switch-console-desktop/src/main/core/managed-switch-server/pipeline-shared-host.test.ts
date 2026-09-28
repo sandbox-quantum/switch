@@ -98,7 +98,7 @@ vi.mock('./matrix-migration', () => ({
   runBackfill: vi.fn(),
 }));
 
-const { connectStack, resetStack, startStack } = await import('./pipeline');
+const { adoptRunningStack, connectStack, resetStack, startStack } = await import('./pipeline');
 
 const hostSecrets: LocalServerSecrets = {
   dbPassword: 'host-owner-pw',
@@ -774,5 +774,73 @@ describe('stamping the published settings', () => {
       expect.stringMatching(/could not stamp the published settings on vm-1/),
       expect.anything()
     );
+  });
+});
+
+describe('the paths a shared start or join refuses or degrades on', () => {
+  it('refuses a partial host .env when this desktop holds no copy to fill it from', async () => {
+    inspectStackMock.mockResolvedValue({
+      kind: 'incomplete',
+      source: 'published',
+      missing: ['JWT_SECRET_KEY'],
+      raw: 'GATEWAY_HOST_PORT=3300\n',
+      running: false,
+    });
+    const { host, writeFile } = sharedHost();
+
+    const result = await startStack(startOptions(host));
+
+    expect(result.kind === 'error' && result.message).toMatch(
+      /Could not read .* on vm-1 \(its settings are missing JWT_SECRET_KEY\).*nothing was changed/
+    );
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(composeUpMock).not.toHaveBeenCalled();
+  });
+
+  it('starts a stack whose automatic sign-in fails, leaving the sign-in to the page', async () => {
+    // The stack is up and healthy; only the silent sign-in did not take.
+    inspectStackMock.mockResolvedValue(present());
+    passwordLoginMock.mockResolvedValueOnce({ success: false, error: 'bad password' } as never);
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/auto sign-in failed/),
+      expect.objectContaining({ error: 'bad password' })
+    );
+  });
+
+  it('has nothing to adopt on a host whose stack nobody shares', async () => {
+    const { host } = sharedHost();
+    const local = { ...host, sharedState: null } as unknown as ServerHost;
+    const stack = present();
+
+    await expect(
+      adoptRunningStack(local, stack as Extract<StackOnHost, { kind: 'present' }>)
+    ).rejects.toThrow(/not shared/);
+  });
+
+  it('reports Docker being unavailable before looking to join', async () => {
+    const { host } = sharedHost();
+    const noDocker = {
+      ...host,
+      detectDocker: () =>
+        Promise.resolve({ available: false, reason: 'daemon-down', detail: 'no daemon' }),
+    } as unknown as ServerHost;
+
+    expect(await connectStack(connectOptions(noDocker))).toEqual({
+      kind: 'docker-unavailable',
+      reason: 'daemon-down',
+      detail: 'no daemon',
+    });
+    expect(inspectStackMock).not.toHaveBeenCalled();
+  });
+
+  it('says why it cannot join a host whose settings cannot be read', async () => {
+    inspectStackMock.mockResolvedValue({ kind: 'unreadable', reason: 'docker ps timed out' });
+
+    expect(await connectStack(connectOptions(sharedHost().host))).toEqual({
+      kind: 'error',
+      message: "Could not read the Switch server's settings on vm-1: docker ps timed out",
+    });
   });
 });

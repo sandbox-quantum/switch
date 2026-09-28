@@ -8,8 +8,10 @@ import { STACK_HELPER_IMAGE, STACK_STATE_LABEL } from './constants';
 import { buildEnvFile } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 import {
+  driftOf,
   inspectStack,
   listProjectResources,
+  probeFromStack,
   publishEnv,
   readPublishedCopy,
   type StackStateHost,
@@ -215,6 +217,18 @@ describe('the published copy', () => {
     );
   });
 
+  it('reads a copy written before stamps existed as unstamped', async () => {
+    const env = envFor();
+    const { host, exec } = fakeHost({ stateVolume: true });
+    exec.mockImplementation(async (_command: string, args: string[] = []) => {
+      if (args[0] === 'run') return { stdout: env, stderr: '' };
+      if (args[0] === 'image') return { stdout: 'sha256:abc\n', stderr: '' };
+      throw new Error(`unexpected docker ${args.join(' ')}`);
+    });
+
+    expect(await readPublishedCopy(host)).toEqual({ env, stamp: null });
+  });
+
   it('reads as absent when the volume holds no copy', async () => {
     const { host } = fakeHost({ stateVolume: true, published: '' });
 
@@ -284,6 +298,14 @@ describe('the published copy', () => {
 
     const [, , input] = writeCommandInput.mock.calls[0]!;
     expect(input).toBe(`2026-09-01T10:00:00Z\n${env}`);
+  });
+
+  it('is left unstamped, and says so, when a start leaves no database volume to stamp it with', async () => {
+    const { host, writeCommandInput } = fakeHost({ stateVolume: true, dataVolumes: [] });
+
+    await stampPublishedEnv(host);
+
+    expect(writeCommandInput).not.toHaveBeenCalled();
   });
 
   it('is stamped after a first start, once the database volume exists', async () => {
@@ -550,6 +572,16 @@ describe('inspectStack', () => {
     });
   });
 
+  it('says what failed when the daemon gives no reason of its own', async () => {
+    const { host, exec } = fakeHost();
+    exec.mockRejectedValue(new Error('channel closed'));
+
+    expect(await inspectStack(host)).toMatchObject({
+      kind: 'unreadable',
+      reason: expect.stringContaining('channel closed'),
+    });
+  });
+
   it('reports a daemon it cannot ask as unreadable, never as absent', async () => {
     const { host } = fakeHost({ failing: /^ps/ });
 
@@ -566,5 +598,103 @@ describe('inspectStack', () => {
       kind: 'unreadable',
       reason: 'Permission denied',
     });
+  });
+});
+
+describe('the version a stack runs', () => {
+  it('is read from the image of its running core, beside the version its settings ask for', async () => {
+    // A start that published and then failed leaves the old containers
+    // running: what they run is what the stack is.
+    const { host } = fakeHost({
+      containers: [
+        `switch\trunning\t${OTHER_DIR}\tghcr.io/sandbox-quantum/switch-core:0.26.0`,
+        `postgres\trunning\t${OTHER_DIR}\tpostgres:16-alpine`,
+      ],
+      dataVolumes: [`${PROJECT}_pgdata`],
+      stateVolume: true,
+      published: envFor({}, '0.27.0'),
+    });
+
+    expect(await inspectStack(host)).toMatchObject({
+      kind: 'present',
+      runningVersion: '0.26.0',
+      env: { version: '0.27.0' },
+    });
+  });
+
+  it('is not known from containers that are not running', async () => {
+    const { host } = fakeHost({
+      containers: [`switch\texited\t${OTHER_DIR}\tghcr.io/sandbox-quantum/switch-core:0.26.0`],
+      dataVolumes: [`${PROJECT}_pgdata`],
+      stateVolume: true,
+      published: envFor(),
+    });
+
+    expect(await inspectStack(host)).toMatchObject({ kind: 'present', runningVersion: null });
+  });
+});
+
+describe('what the setup step is told about a host', () => {
+  const present = {
+    kind: 'present' as const,
+    env: { ports, secrets, version: '0.27.0' },
+    raw: 'RAW\n',
+    source: 'published' as const,
+    running: true,
+    published: true,
+    runningVersion: null,
+  };
+
+  it('compares the version a running stack runs, else the one its settings name', () => {
+    expect(driftOf({ ...present, runningVersion: '0.26.0' })).toMatchObject({
+      deployed: '0.26.0',
+    });
+    expect(driftOf(present)).toMatchObject({ deployed: '0.27.0' });
+    expect(driftOf({ ...present, env: { ...present.env, version: null } })).toBeNull();
+  });
+
+  it('reports the version the stack runs, and never a secret', () => {
+    const probe = probeFromStack('vm-1', { ...present, runningVersion: '0.26.0' });
+
+    expect(probe).toMatchObject({ kind: 'present', deployedVersion: '0.26.0', shared: true });
+    expect(JSON.stringify(probe)).not.toContain(secrets.gatewayAdminPassword);
+  });
+
+  it('says an unshared stack is another account’s even when it cannot say whose', () => {
+    const probe = probeFromStack('vm-1', { kind: 'unshared', ownerDir: null, running: false });
+
+    expect(probe.kind === 'unshared' && probe.message).toMatch(
+      /^The Switch server on vm-1 was set up from another account and its settings have not been shared/
+    );
+  });
+
+  it('names where another account’s unshared stack was started from', () => {
+    const probe = probeFromStack('vm-1', {
+      kind: 'unshared',
+      ownerDir: OTHER_DIR,
+      running: true,
+    });
+
+    expect(probe).toMatchObject({ kind: 'unshared', running: true, ownerDir: OTHER_DIR });
+    expect(probe.kind === 'unshared' && probe.message).toMatch(
+      /set up from another account \(from \/home\/alice\/\.switchdash\/switch-server\)/
+    );
+  });
+
+  it('passes on what a partial stack is missing, a reason it could not look, and an empty host', () => {
+    expect(
+      probeFromStack('vm-1', {
+        kind: 'incomplete',
+        source: 'published',
+        missing: ['JWT_SECRET_KEY'],
+        raw: 'JWT_SECRET_KEY=\n',
+        running: false,
+      })
+    ).toEqual({ kind: 'incomplete', running: false, missing: ['JWT_SECRET_KEY'] });
+    expect(probeFromStack('vm-1', { kind: 'unreadable', reason: 'ssh dropped' })).toEqual({
+      kind: 'unreadable',
+      reason: 'ssh dropped',
+    });
+    expect(probeFromStack('vm-1', { kind: 'absent' })).toEqual({ kind: 'absent' });
   });
 });
