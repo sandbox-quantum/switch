@@ -25,7 +25,10 @@ from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
 )
 from switch_core.bridges.collaboration.install_service import MessagingInstallService
-from switch_core.bridges.collaboration.telegram.adapter import _ALLOWED_UPDATES
+from switch_core.bridges.collaboration.telegram.adapter import (
+    _ALLOWED_UPDATES,
+    TelegramConnectionConfig,
+)
 from switch_core.bridges.collaboration.telegram.app_client import (
     ALLOWED_UPDATES,
     TelegramAppClient,
@@ -45,6 +48,8 @@ _WEBHOOK_URL = "https://switch.example/messaging/telegram/events"
 class _Me:
     id: int
     username: str | None
+    can_read_all_group_messages: bool = True
+    can_join_groups: bool = True
 
 
 @dataclass
@@ -54,6 +59,7 @@ class _FakeBot:
     token: str = "123456:placeholder-token"
     username: str | None = "switch_app_bot"
     webhooks: list[dict[str, Any]] = field(default_factory=list)
+    menus: list[list[Any]] = field(default_factory=list)
     shut_down: bool = False
 
     async def initialize(self) -> None:
@@ -66,8 +72,16 @@ class _FakeBot:
         self.webhooks.append(kwargs)
         return True
 
+    async def set_my_commands(self, commands: Any) -> bool:
+        self.menus.append(list(commands))
+        return True
+
     async def shutdown(self) -> None:
         self.shut_down = True
+
+
+async def _nothing(client: TelegramAppClient) -> None:
+    return None
 
 
 def _client(bot: _FakeBot | None = None) -> TelegramAppClient:
@@ -75,6 +89,7 @@ def _client(bot: _FakeBot | None = None) -> TelegramAppClient:
         bot=bot or _FakeBot(),  # type: ignore[arg-type]
         webhook_url=_WEBHOOK_URL,
         webhook_secret=_SECRET,
+        on_connected=_nothing,
     )
 
 
@@ -156,6 +171,31 @@ class TestTheSharedBot:
         with pytest.raises(Exception, match="no username"):
             await _client(bot).start()
         assert bot.webhooks == []
+
+    async def test_start_publishes_the_command_menu_once_for_every_tenant(
+        self,
+    ) -> None:
+        bot = _FakeBot()
+        await _client(bot).start()
+        assert len(bot.menus) == 1 and bot.menus[0]
+
+    async def test_bridges_already_running_are_handed_the_bot_once_it_is_up(
+        self,
+    ) -> None:
+        connected: list[TelegramAppClient] = []
+
+        async def on_connected(client: TelegramAppClient) -> None:
+            connected.append(client)
+
+        client = TelegramAppClient(
+            bot=_FakeBot(),  # type: ignore[arg-type]
+            webhook_url=_WEBHOOK_URL,
+            webhook_secret=_SECRET,
+            on_connected=on_connected,
+        )
+        await client.start_with_retry()
+
+        assert connected == [client]
 
     def test_it_asks_for_what_the_self_registered_bot_polls_for(self) -> None:
         """One adapter reads both, so they must be offered the same updates."""
@@ -340,6 +380,19 @@ class TestTheLink:
         claim = installer.claim_of_event(_group_message("/start c1token"))
         assert claim is not None
         assert installer.connection_config(claim.grant) == {"event_delivery": "shared"}
+
+    async def test_the_bridge_config_is_one_the_telegram_bridge_accepts(self) -> None:
+        """Registration validates it against the adapter's config, and a claim
+        whose config were refused there would roll back every time."""
+        installer = await _installer()
+        claim = installer.claim_of_event(_group_message("/start c1token"))
+        assert claim is not None
+
+        config = TelegramConnectionConfig.model_validate(
+            installer.connection_config(claim.grant)
+        )
+
+        assert config.event_delivery == "shared"
 
 
 class TestTheRoute:

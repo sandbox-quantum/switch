@@ -32,6 +32,7 @@ from switch_core.bridges.collaboration.install import (
     InstallGrant,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
+    MessagingInstallError,
     WebhookEndpoint,
 )
 from switch_core.bridges.collaboration.install_routes import (
@@ -86,6 +87,15 @@ class _ClaimInstaller(MessagingAppInstaller):
     platform: ClassVar[str] = _PLATFORM
     state_format = "compact"
 
+    def __init__(self) -> None:
+        self.connection: object | None = None
+        self.not_ready = False
+
+    def shared_connection(self) -> object | None:
+        if self.not_ready:
+            raise MessagingInstallError("the shared bot has not connected yet")
+        return self.connection
+
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
         return f"https://t.me/switch_bot?startgroup={state}"
 
@@ -134,6 +144,20 @@ def _grant(chat_id: str) -> InstallGrant:
     )
 
 
+class _AttachableAdapter(_RecordingAdapter):
+    """A bridge that runs on its platform's shared connection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attached: list[object] = []
+
+    def attach_shared_connection(self, connection: object) -> None:
+        self.attached.append(connection)
+
+    def set_on_attached(self, callback: Any) -> None:
+        return None
+
+
 class _FakeLifecycle:
     """Registers real rows, on a plain session like the real lifecycle.
 
@@ -174,7 +198,7 @@ class _FakeLifecycle:
             await session.flush()
             bridge_id = bridge.id
             await session.commit()
-        self.adapters[bridge_id] = _RecordingAdapter()
+        self.adapters[bridge_id] = _AttachableAdapter()
         return CollaborationBridge(id=bridge_id)
 
     def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
@@ -190,6 +214,7 @@ class _Fixture:
         self.admin_b: str = ""
         self.suffix: str = ""
         self.lifecycle: _FakeLifecycle
+        self.installer: _ClaimInstaller
         self.service: MessagingInstallService
 
 
@@ -227,7 +252,8 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
 
     fixture.lifecycle = _FakeLifecycle(harness.restricted, fixture.suffix)
     installers = MessagingInstallerRegistry()
-    installers.register(_ClaimInstaller())
+    fixture.installer = _ClaimInstaller()
+    installers.register(fixture.installer)
     fixture.service = MessagingInstallService(
         session_factory=harness.restricted,
         store=MessagingInstallStore(),
@@ -560,3 +586,62 @@ class TestTheRoute:
         adapter = fixture.lifecycle.adapters[owned.bridge_id]  # type: ignore[index]
         assert isinstance(adapter, _RecordingAdapter)
         assert adapter.dispatched == [("events", body)]
+
+
+class TestTheSharedConnection:
+    """A bridge registered by a claim at runtime missed boot's attach, so its
+    first delivered event is what hands it the platform's shared bot."""
+
+    async def _client(self, fixture: _Fixture) -> httpx.AsyncClient:
+        app = FastAPI()
+        app.include_router(create_messaging_install_router(fixture.service))
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
+        )
+
+    async def test_the_first_delivery_attaches_it(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        shared = object()
+        fixture.installer.connection = shared
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+
+        async with await self._client(fixture) as client:
+            response = await client.post(
+                f"/messaging/{_PLATFORM}/events",
+                content=json.dumps({"chat": "-1001", "claim": token}).encode(),
+            )
+
+        assert response.status_code == 200
+        (install,) = await _active_installs(rls_harness)
+        adapter = fixture.lifecycle.adapters[install.bridge_id]  # type: ignore[index]
+        assert isinstance(adapter, _AttachableAdapter)
+        assert adapter.attached == [shared]
+        assert len(adapter.dispatched) == 1
+
+    async def test_a_connection_not_ready_yet_is_retried_not_dropped(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        owned = await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+        fixture.installer.not_ready = True
+
+        async with await self._client(fixture) as client:
+            response = await client.post(
+                f"/messaging/{_PLATFORM}/events",
+                content=json.dumps({"chat": "-1001"}).encode(),
+            )
+
+        assert response.status_code == 503
+        adapter = fixture.lifecycle.adapters[owned.bridge_id]  # type: ignore[index]
+        assert isinstance(adapter, _AttachableAdapter)
+        assert adapter.dispatched == []

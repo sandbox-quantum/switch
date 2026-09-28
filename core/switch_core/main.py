@@ -51,7 +51,6 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
-from switch_core.bridges.collaboration.adapter import SupportsSharedConnection
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -798,6 +797,14 @@ async def run(config: SwitchConfig) -> None:
         )
 
     teams_app = _distributed_teams_app(config, installers, collab_lifecycle)
+
+    async def _attach_shared_telegram_bridges(client: TelegramAppClient) -> None:
+        # Bridges registered after this run attach on their first update
+        # instead (see `MessagingInstallService.resolve_by_workspace`).
+        for adapter in collab_lifecycle.iter_adapters():
+            if isinstance(adapter, TelegramAdapter):
+                adapter.attach_shared_connection(client)
+
     telegram_app: TelegramAppClient | None = None
     if config.telegram_app_bot_token:
         assert config.telegram_app_webhook_secret is not None
@@ -808,6 +815,7 @@ async def run(config: SwitchConfig) -> None:
                 config.messaging_public_url, events_path("telegram")
             ),
             webhook_secret=config.telegram_app_webhook_secret,
+            on_connected=_attach_shared_telegram_bridges,
         )
         installers.register(
             TelegramAppInstaller(
@@ -1038,11 +1046,12 @@ async def run(config: SwitchConfig) -> None:
         async def _attach_shared_discord_bridges(
             connection: DiscordConnection,
         ) -> None:
-            # Runs once the socket is up: hand it to every already-running bridge
-            # that rides a shared connection. Platform-agnostic — narrowed by
-            # capability, not by knowing which platform that is.
+            # Runs once the socket is up: hand it to every already-running
+            # Discord bridge. Narrowed to Discord's adapter and not only to the
+            # capability, because Telegram's shared bridges have it too and
+            # must be handed Telegram's bot, not this socket.
             for adapter in collab_lifecycle.iter_adapters():
-                if isinstance(adapter, SupportsSharedConnection):
+                if isinstance(adapter, DiscordAdapter):
                     adapter.attach_shared_connection(connection)
 
         discord_gateway = DiscordGatewayClient(
