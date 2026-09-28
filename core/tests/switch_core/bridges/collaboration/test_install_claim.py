@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from switch_core.bridges.collaboration import install_service as install_service_module
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
@@ -236,6 +237,10 @@ class _FakeLifecycle:
 
     def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         return self.adapters.get(bridge_id)
+
+    def is_connected(self, bridge_id: str) -> bool:
+        """Every bridge here is started the moment it exists."""
+        return bridge_id in self.adapters
 
     async def remove(self, bridge_id: str) -> None:
         """Delete the row, on a plain session like the real one."""
@@ -1016,3 +1021,142 @@ class TestRefusedClaims:
         )
         await self._post(fixture, {"chat": "-1001", "claim": token})
         assert fixture.installer.refused == [("-1001", "not_permitted")]
+
+
+class TestABridgeStillStarting:
+    """A claim's first event is the claim itself, delivered moments after the
+    claim launched the tenant's bridge — before the bridge has handed its
+    adapter the callbacks that provision the chat's room. Delivered early, the
+    room would never be made. So any event carrying a claim waits for its
+    bridge to start — a first claim, Telegram's retry of one, or a claim on a
+    bridge that is restarting — and nothing else does."""
+
+    async def _post(self, fixture: _Fixture, body: dict[str, Any]) -> int:
+        app = FastAPI()
+        app.include_router(create_messaging_install_router(fixture.service))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
+        ) as client:
+            response = await client.post(
+                f"/messaging/{_PLATFORM}/events", content=json.dumps(body).encode()
+            )
+        return response.status_code
+
+    async def test_an_event_waits_for_the_bridge_to_finish_starting(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        polls = {"left": 3}
+
+        def is_connected(bridge_id: str) -> bool:
+            polls["left"] -= 1
+            return polls["left"] <= 0
+
+        fixture.lifecycle.is_connected = is_connected  # type: ignore[method-assign]
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+
+        assert await self._post(fixture, {"chat": "-1001", "claim": token}) == 200
+
+        (install,) = await _active_installs(rls_harness)
+        adapter = fixture.lifecycle.adapters[install.bridge_id]  # type: ignore[index]
+        assert isinstance(adapter, _AttachableAdapter)
+        assert len(adapter.dispatched) == 1
+
+    async def test_one_that_does_not_start_in_time_is_retried(
+        self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(install_service_module, "_BRIDGE_START_WAIT", 0.2)
+        fixture = await _fixture(rls_harness)
+        fixture.lifecycle.is_connected = lambda bridge_id: False  # type: ignore[method-assign]
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+
+        assert await self._post(fixture, {"chat": "-1001", "claim": token}) == 503
+
+        (install,) = await _active_installs(rls_harness)
+        adapter = fixture.lifecycle.adapters[install.bridge_id]  # type: ignore[index]
+        assert isinstance(adapter, _AttachableAdapter)
+        assert adapter.dispatched == []
+
+    async def test_an_ordinary_event_does_not_wait(
+        self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only the claim that made the bridge waits. Every other event is
+        routed exactly as before, which is what keeps Slack's untouched."""
+        fixture = await _fixture(rls_harness)
+        owned = await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+        fixture.lifecycle.is_connected = lambda bridge_id: False  # type: ignore[method-assign]
+
+        assert await self._post(fixture, {"chat": "-1001"}) == 200
+
+        adapter = fixture.lifecycle.adapters[owned.bridge_id]  # type: ignore[index]
+        assert isinstance(adapter, _AttachableAdapter)
+        assert len(adapter.dispatched) == 1
+
+    async def test_a_retried_claim_waits_too(
+        self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Telegram retries the claim while the bridge is still coming up. The
+        retry is a repeated claim, and it must wait as the first one did, or
+        it reaches the half-started adapter and the room is lost."""
+        monkeypatch.setattr(install_service_module, "_BRIDGE_START_WAIT", 0.2)
+        fixture = await _fixture(rls_harness)
+        started = {"yes": False}
+        fixture.lifecycle.is_connected = lambda bridge_id: started["yes"]  # type: ignore[method-assign]
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        body = {"chat": "-1001", "claim": token}
+
+        assert await self._post(fixture, body) == 503
+        assert await self._post(fixture, body) == 503
+        (install,) = await _active_installs(rls_harness)
+        adapter = fixture.lifecycle.adapters[install.bridge_id]  # type: ignore[index]
+        assert isinstance(adapter, _AttachableAdapter)
+        assert adapter.dispatched == []
+
+        started["yes"] = True
+        assert await self._post(fixture, body) == 200
+
+        assert len(adapter.dispatched) == 1
+        assert fixture.installer.refused == []
+
+    async def test_a_claim_on_a_restarting_bridge_waits(
+        self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A tenant's second group claimed while its bridge restarts: the
+        bridge exists and resolves, and its adapter is not started yet."""
+        monkeypatch.setattr(install_service_module, "_BRIDGE_START_WAIT", 0.2)
+        fixture = await _fixture(rls_harness)
+        first = await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+        started = {"yes": False}
+        fixture.lifecycle.is_connected = lambda bridge_id: started["yes"]  # type: ignore[method-assign]
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        body = {"chat": "-1002", "claim": token}
+
+        assert await self._post(fixture, body) == 503
+        adapter = fixture.lifecycle.adapters[first.bridge_id]  # type: ignore[index]
+        assert isinstance(adapter, _AttachableAdapter)
+        assert adapter.dispatched == []
+
+        started["yes"] = True
+        assert await self._post(fixture, body) == 200
+
+        assert [payload["chat"] for _, payload in adapter.dispatched] == ["-1002"]

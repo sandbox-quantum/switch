@@ -2843,14 +2843,22 @@ class TelegramAdapter(PlatformAdapter):
             or channel_type == "lobby"
         ):
             return False
-        if self._on_app_joined is not None:
-            await self._on_app_joined(
-                InboundAppJoin(
-                    channel_id=chat_id,
-                    channel_type=channel_type,
-                    channel_name=channel_name,
-                )
+        if self._on_app_joined is None:
+            # Absorbing the claim without provisioning would lose the chat's
+            # room for good. The install route holds an event carrying a claim
+            # until its bridge has started, so reaching here means that wait
+            # was bypassed.
+            raise RuntimeError(
+                f"Telegram chat {chat_id} was claimed on a bridge that has not "
+                "started, so its room cannot be provisioned"
             )
+        await self._on_app_joined(
+            InboundAppJoin(
+                channel_id=chat_id,
+                channel_type=channel_type,
+                channel_name=channel_name,
+            )
+        )
         await self.announce_visibility(chat_id)
         return True
 

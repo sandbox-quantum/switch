@@ -56,6 +56,7 @@ workspace it has already been thrown out of.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import OrderedDict
@@ -166,6 +167,12 @@ class RoomDetacher(Protocol):
 #: because an app sitting in unclaimed chats sees an open-ended set of them.
 _RECENT_DROP_TTL = 300.0
 _RECENT_DROPS_MAX = 1000
+
+#: How long an event carrying a claim waits for its bridge to start before the
+#: platform is told to retry. The claim is the event that provisions the chat's
+#: room, and a bridge still starting has nothing to provision it with.
+_BRIDGE_START_WAIT = 2.0
+_BRIDGE_START_POLL = 0.05
 
 
 class WebhookBridgeUnavailable(RuntimeError):
@@ -859,6 +866,34 @@ class MessagingInstallService:
             await self._rooms.unlink_bridge_channel(bridge_id, workspace_id)
             return
         await self._lifecycle.remove(bridge_id)
+
+    async def resolve_started(
+        self, *, platform: str, workspace_id: str
+    ) -> WebhookTarget:
+        """`resolve_by_workspace`, waiting for a bridge still starting.
+
+        For an event carrying a claim. A claim is the event that provisions
+        its chat's room, and a bridge is launched before it is started: its
+        adapter is given the callbacks that provision anything in the bridge's
+        own task, a few reads after launch, and until then it is refused as
+        unavailable. That gap is open when a claim has just registered the
+        bridge, when Telegram retries such a claim while the bridge is still
+        coming up, and when a claim lands on a bridge that is restarting.
+
+        Only an event carrying a claim waits; every other event is refused
+        straight away. Past the wait the platform is told to retry, and the
+        retry — a repeated claim, since the install is committed — waits again.
+        """
+        deadline = time.monotonic() + _BRIDGE_START_WAIT
+        while True:
+            try:
+                return await self.resolve_by_workspace(
+                    platform=platform, workspace_id=workspace_id
+                )
+            except WebhookBridgeUnavailable:
+                if time.monotonic() >= deadline:
+                    raise
+            await asyncio.sleep(_BRIDGE_START_POLL)
 
     async def _burn(self, state: InstallState) -> MessagingInstallState:
         """Redeem a verified state, and commit, before anything else happens.

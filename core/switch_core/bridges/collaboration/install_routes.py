@@ -551,11 +551,20 @@ def create_messaging_install_router(
         # each lookup is two database reads before the platform is answered.
         resolved: dict[str, WebhookTarget | Exception] = {}
 
-        async def resolve(event: InboundWebhook) -> WebhookTarget:
+        async def resolve(
+            event: InboundWebhook, *, wait_for_start: bool
+        ) -> WebhookTarget:
             workspace_id = service.workspace_of(platform=platform, event=event)
-            if workspace_id not in resolved:
+            # Waiting looks again whatever is cached: it is asked for by an
+            # event that may itself have just installed the workspace.
+            if wait_for_start or workspace_id not in resolved:
+                lookup = (
+                    service.resolve_started
+                    if wait_for_start
+                    else service.resolve_by_workspace
+                )
                 try:
-                    resolved[workspace_id] = await service.resolve_by_workspace(
+                    resolved[workspace_id] = await lookup(
                         platform=platform, workspace_id=workspace_id
                     )
                 except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable) as failure:
@@ -596,9 +605,8 @@ def create_messaging_install_router(
                 claim = service.claim_of(platform=platform, event=event)
                 if claim is not None:
                     await _claim(platform, claim, background)
-                    resolved.pop(claim.grant.external_workspace_id, None)
 
-                target = await resolve(event)
+                target = await resolve(event, wait_for_start=claim is not None)
                 await service.follow_migration(
                     platform=platform, event=event, target=target
                 )
