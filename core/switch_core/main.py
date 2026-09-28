@@ -801,6 +801,7 @@ async def run(config: SwitchConfig) -> None:
             receipts=MessagingEventReceiptStore(),
             installers=installers,
             lifecycle=collab_lifecycle,
+            users=user_store,
             public_origin=config.messaging_public_url,
             keyring=config.keyring,
         )

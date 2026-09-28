@@ -229,6 +229,32 @@ class InstallGrant:
     platform_data: Mapping[str, object]
 
 
+@dataclass(frozen=True)
+class InstallClaim:
+    """A platform event that asks for its workspace to be installed.
+
+    The counterpart of a completed OAuth callback for a platform that has none.
+    Telegram cannot redirect a browser anywhere; what it can do is post the
+    state it was handed into the chat the bot was just added to, so the
+    install arrives as an ordinary webhook event instead of a callback.
+
+    `grant` is what that event amounts to, in the shape the rest of the install
+    already takes. `workspace_name` names the bridge when this claim is the one
+    that creates it, so for a platform whose bridge serves many workspaces it
+    should name the connection rather than the one chat that happened to come
+    first.
+    """
+
+    token: str
+    grant: InstallGrant
+
+
+#: Which state token an installer's platform can carry. `v1` for a platform
+#: that hands the state back through a redirect; `compact` for one whose only
+#: carrier is short (see `install_state`).
+StateFormat = Literal["v1", "compact"]
+
+
 class MessagingAppInstaller(ABC):
     """The install half of one platform, holding that platform's app credentials.
 
@@ -248,6 +274,8 @@ class MessagingAppInstaller(ABC):
     #: it — so a platform that delivers over a socket of its own declares none
     #: and its webhook URLs simply do not exist.
     webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]]
+
+    state_format: ClassVar[StateFormat] = "v1"
 
     @abstractmethod
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
@@ -434,6 +462,19 @@ class MessagingAppInstaller(ABC):
         act on — "you need to be an administrator" — says that instead.
         """
         return f"{self.platform} reported: {error}."
+
+    def claim_of_event(self, payload: Mapping[str, object]) -> InstallClaim | None:
+        """The install this event asks for, or `None` if it asks for none.
+
+        Only a platform with no OAuth leg overrides this; for the rest an
+        install arrives at the callback and never as an event.
+
+        Asked before the event is resolved, because the workspace it names is
+        by definition not installed yet and resolving it would drop the one
+        event that could change that. Pure, like :meth:`workspace_of_event`:
+        the token is verified and redeemed by the install service, not here.
+        """
+        return None
 
     @abstractmethod
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
