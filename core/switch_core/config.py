@@ -523,6 +523,16 @@ class SwitchConfig(BaseSettings):
     # them — would otherwise see several apps of the same name.
     teams_app_name: str = "Agent Switch"
 
+    # The distributed Telegram app (`TELEGRAM_DISTRIBUTED_APP.md`): one bot per
+    # deployment whose groups a customer claims with a link, as opposed to the
+    # self-registered bot whose token an operator pastes in. Two values: the
+    # bot's token, which like Discord's is deployment config rather than per
+    # install, and the secret Telegram echoes back on every webhook, which is
+    # the whole of what proves an update came from Telegram. Setting both is
+    # what enables it; setting one is a startup error.
+    telegram_app_bot_token: str | None = None
+    telegram_app_webhook_secret: str | None = None
+
     # Public origin (scheme + host, no path) that a messaging platform reaches
     # Switch on: the base of the OAuth redirect and of the three event URLs
     # under `/messaging`, and the one registered with the app.
@@ -1370,6 +1380,47 @@ class SwitchConfig(BaseSettings):
                 "is not. The bot's messaging endpoint, the notification URL Graph "
                 "delivers captured messages to, and the approval redirect are "
                 "all built from it."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_telegram_app(self) -> "SwitchConfig":
+        required = (self.telegram_app_bot_token, self.telegram_app_webhook_secret)
+        set_count = sum(1 for value in required if value)
+        if 0 < set_count < len(required):
+            raise ValueError(
+                "Partial distributed Telegram app config: set both "
+                "TELEGRAM_APP_BOT_TOKEN and TELEGRAM_APP_WEBHOOK_SECRET, or "
+                "neither."
+            )
+        if not set_count:
+            return self
+        assert self.telegram_app_bot_token is not None
+        assert self.telegram_app_webhook_secret is not None
+        if not re.fullmatch(r"\d+:[A-Za-z0-9_-]+", self.telegram_app_bot_token):
+            raise ValueError(
+                "TELEGRAM_APP_BOT_TOKEN is not shaped like a Telegram bot token "
+                "(<bot id>:<secret>, as BotFather issues it)."
+            )
+        # Telegram's own rule for `secret_token`. Checked here because
+        # `setWebhook` would refuse it in a background task at boot, where the
+        # failure reads as Telegram being unreachable rather than as this.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", self.telegram_app_webhook_secret):
+            raise ValueError(
+                "TELEGRAM_APP_WEBHOOK_SECRET must be 1-256 characters of "
+                "A-Z, a-z, 0-9, _ and -, which is all Telegram accepts."
+            )
+        if not self.messaging_public_url:
+            raise ValueError(
+                "A distributed Telegram app is configured but "
+                "MESSAGING_PUBLIC_URL is not. Telegram delivers every update "
+                "to a webhook built from it."
+            )
+        port = urlsplit(self.messaging_public_url).port
+        if port not in (None, 443, 80, 88, 8443):
+            raise ValueError(
+                "Telegram delivers webhooks only to ports 443, 80, 88 and 8443, "
+                f"and MESSAGING_PUBLIC_URL names port {port}."
             )
         return self
 

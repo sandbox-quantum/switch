@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 import httpx
+import telegram
 import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -58,7 +59,11 @@ from switch_core.bridges.collaboration.discord.adapter import (
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
 from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
-from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
+from switch_core.bridges.collaboration.install import (
+    MessagingInstallerRegistry,
+    events_path,
+    public_url,
+)
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
 )
@@ -88,6 +93,8 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.telegram.app_client import TelegramAppClient
+from switch_core.bridges.collaboration.telegram.install import TelegramAppInstaller
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.agent_consumer import AgentConsumer
@@ -791,6 +798,23 @@ async def run(config: SwitchConfig) -> None:
         )
 
     teams_app = _distributed_teams_app(config, installers, collab_lifecycle)
+    telegram_app: TelegramAppClient | None = None
+    if config.telegram_app_bot_token:
+        assert config.telegram_app_webhook_secret is not None
+        assert config.messaging_public_url is not None
+        telegram_app = TelegramAppClient(
+            bot=telegram.Bot(config.telegram_app_bot_token),
+            webhook_url=public_url(
+                config.messaging_public_url, events_path("telegram")
+            ),
+            webhook_secret=config.telegram_app_webhook_secret,
+        )
+        installers.register(
+            TelegramAppInstaller(
+                client=telegram_app,
+                webhook_secret=config.telegram_app_webhook_secret,
+            )
+        )
 
     install_service: MessagingInstallService | None = None
     if installers.platforms():
@@ -1033,6 +1057,15 @@ async def run(config: SwitchConfig) -> None:
             discord_gateway.start_with_retry(), name="discord-gateway-start"
         )
 
+    # The shared Telegram bot: `getMe`, then `setWebhook`. In the background
+    # for the reason the Discord connection is — an unreachable Telegram must
+    # not hold up a boot serving everything else.
+    telegram_app_task: asyncio.Task[None] | None = None
+    if telegram_app is not None:
+        telegram_app_task = asyncio.create_task(
+            telegram_app.start_with_retry(), name="telegram-app-start"
+        )
+
     # Backfill room membership: system clients (e.g. the admin client) added
     # after a room was created, and any agent whose invite did not land. The
     # just-started clients accept the invites on their first sync.
@@ -1070,6 +1103,8 @@ async def run(config: SwitchConfig) -> None:
                     discord_gateway,
                     discord_gateway_task,
                     teams_app,
+                    telegram_app,
+                    telegram_app_task,
                 )
             ),
         )
@@ -1553,6 +1588,8 @@ async def _shutdown(
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
     teams_app: TeamsSharedApp | None,
+    telegram_app: TelegramAppClient | None,
+    telegram_app_task: asyncio.Task[None] | None,
 ) -> None:
     logger.info("Shutting down...")
     # Before uvicorn closes the sockets, so the controllers' are recorded as
@@ -1574,6 +1611,15 @@ async def _shutdown(
     # After the bridges, which borrow its HTTP client until they stop.
     if teams_app is not None:
         await teams_app.aclose()
+
+    if telegram_app_task is not None:
+        telegram_app_task.cancel()
+        try:
+            await telegram_app_task
+        except asyncio.CancelledError:
+            pass
+    if telegram_app is not None:
+        await telegram_app.stop()
     await client_lifecycle.stop_all()
     await provisioning.close()
 

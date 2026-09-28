@@ -570,6 +570,14 @@ def create_messaging_install_router(
                 # visible.
                 logger.warning("Dropped a %s event: %s", platform, failure)
                 continue
+            except MessagingInstallError as failure:
+                # The installer cannot read this event yet — Telegram's, before
+                # its bot has said who it is. Transient, so counted with the
+                # undeliverable: the platform retries a request nothing in
+                # which was delivered.
+                logger.error("Could not read a %s event yet: %s", platform, failure)
+                unavailable += 1
+                continue
             except WebhookBridgeUnavailable as failure:
                 logger.error("Could not deliver a %s event: %s", platform, failure)
                 unavailable += 1
