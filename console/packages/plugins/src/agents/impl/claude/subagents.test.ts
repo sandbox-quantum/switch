@@ -308,3 +308,69 @@ describe('claudeRepoAgentsBehavior.removeLocal', () => {
     expect(await workspaceFs.exists(neutralRel)).toBe(true);
   });
 });
+
+describe('claudeRepoAgentsBehavior.launchDefinition', () => {
+  it('builds the same agent the definition file described, for the SDK', () => {
+    expect(
+      claudeRepoAgentsBehavior.launchDefinition({
+        name: 'reviewer',
+        description: 'Reviews diffs',
+        model: 'opus',
+        effort: 'high',
+        permissionMode: 'acceptEdits',
+        maxTurns: 12,
+        background: true,
+        memory: 'project',
+        instructions: 'You are a careful reviewer.',
+      })
+    ).toEqual({
+      description: 'Reviews diffs',
+      prompt: 'You are a careful reviewer.',
+      model: 'opus',
+      effort: 'high',
+      permissionMode: 'acceptEdits',
+      maxTurns: 12,
+      background: true,
+      memory: 'project',
+    });
+  });
+
+  it('keeps the Switch tools in a tools allowlist and out of the deny list', () => {
+    const definition = claudeRepoAgentsBehavior.launchDefinition({
+      name: 'reviewer',
+      description: 'Reviews diffs',
+      tools: ['Read', 'Grep'],
+      disallowedTools: ['Write', 'mcp__switch'],
+    });
+
+    expect(definition.tools).toEqual(['Read', 'Grep', 'mcp__switch']);
+    expect(definition.disallowedTools).toEqual(['Write']);
+  });
+
+  it('leaves out what was not set, so the session keeps its own defaults', () => {
+    expect(
+      claudeRepoAgentsBehavior.launchDefinition({
+        name: 'reviewer',
+        description: 'Reviews diffs',
+        model: '',
+        tools: [],
+        disallowedTools: [],
+        maxTurns: null,
+        background: false,
+        color: 'blue',
+        isolation: 'worktree',
+      })
+    ).toEqual({ description: 'Reviews diffs', prompt: 'Reviews diffs' });
+  });
+
+  it('uses the description as the prompt when there are no instructions', () => {
+    // As the definition file did: its body could not be empty.
+    expect(
+      claudeRepoAgentsBehavior.launchDefinition({
+        name: 'reviewer',
+        description: 'Reviews\ndiffs',
+        instructions: '',
+      })
+    ).toEqual({ description: 'Reviews diffs', prompt: 'Reviews diffs' });
+  });
+});

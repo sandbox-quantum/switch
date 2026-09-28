@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import type { AgentLaunchDefinition, ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { createAntigravityAdapter } from '../antigravity/antigravity-adapter';
 import { createClaudeAdapter } from '../claude/claude-adapter';
 import { createCodexAdapter } from '../codex/codex-adapter';
@@ -25,6 +25,22 @@ const mcp = z.discriminatedUnion('transport', [
   }),
   z.object({ transport: z.literal('http'), url: z.string(), headers: env.optional() }),
 ]);
+/** {@link AgentLaunchDefinition}, checked where it arrives from the launch spec. */
+export const agentLaunchDefinitionSchema = z.strictObject({
+  description: z.string(),
+  prompt: z.string(),
+  tools: z.array(z.string()).optional(),
+  disallowedTools: z.array(z.string()).optional(),
+  model: z.string().min(1).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  permissionMode: z
+    .enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'])
+    .optional(),
+  maxTurns: z.number().int().positive().optional(),
+  background: z.boolean().optional(),
+  memory: z.enum(['user', 'project', 'local']).optional(),
+}) satisfies z.ZodType<AgentLaunchDefinition>;
+
 export const startSchema = z.strictObject({
   provider: z.enum(['claude', 'codex', 'opencode', 'antigravity', 'cursor']),
   input: z.strictObject({
@@ -36,6 +52,7 @@ export const startSchema = z.strictObject({
     model: z.object({ id: z.string(), options: env.optional() }).optional(),
     systemContext: z.string().optional(),
     agentName: z.string().optional(),
+    agentDefinition: agentLaunchDefinitionSchema.optional(),
     resume: z.object({ nativeSessionId: id }).optional(),
   }),
 });

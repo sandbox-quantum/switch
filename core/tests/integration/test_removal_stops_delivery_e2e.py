@@ -93,9 +93,7 @@ async def test_removal_stops_every_reader_serving_the_room(harness: Harness) -> 
     bodies = {}
     for label, room in rooms.items():
         bodies[label] = f"@e2e-removed-watcher please look at the {label} room"
-        await talker_client.send_message(
-            room.matrix_room_id, bodies[label], metered=True
-        )
+        await talker_client.send_message(room.matrix_room_id, bodies[label])
         await _wait_buffered(harness, watcher.agent_id, room.id, bodies[label])
 
     # Both rooms are in the buffer and addressed, so every assertion after the
@@ -165,9 +163,7 @@ async def test_a_room_the_agent_is_still_in_is_untouched(harness: Harness) -> No
 
     body = "@e2e-still-in-watcher this one still applies"
     await harness.client_for(talker.agent_id).send_message(
-        kept.room.matrix_room_id,
-        body,
-        metered=True,
+        kept.room.matrix_room_id, body
     )
     await _wait_buffered(harness, watcher.agent_id, kept.room.id, body)
 

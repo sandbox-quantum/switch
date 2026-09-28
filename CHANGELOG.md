@@ -44,6 +44,12 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.28.1] - 2026-09-26
+
+#### Added
+- Observability: a peak `db.pool.in_use` gauge and a counter for database
+  connection-pool checkout timeouts (#560).
+
 ### [0.28.0] - 2026-09-25
 
 #### Added
@@ -1338,6 +1344,48 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+### [0.37.2] - 2026-09-27
+
+#### Changed
+- **Checking a remote agent's watcher reads only that agent's own state.** The
+  watcher panel, session start and the sidecar connection used to read every
+  agent's watcher configuration on the host to find one, so any other agent's
+  broken or duplicated state could fail them. The agent's directory is named
+  from its identity, so it is now read directly; the others are only looked at
+  when it has none, to adopt a watcher saved under an earlier name.
+
+#### Fixed
+- **A remote agent's room watcher no longer fails with "Competing saved
+  watchers require explicit cleanup" or an unreadable-config error after a
+  launch was interrupted.** Each launch staged the agent's configuration in a
+  scratch directory beside every agent's watcher state, and the watcher status
+  check, session start and session listing all read that directory in full. A
+  scratch directory left behind by a dropped SSH connection held either a
+  half-written file, which broke the check for every agent on the host, or a
+  complete copy of one agent's configuration, which made that agent look like
+  it had two watchers. Launches now stage in a separate `sdk-launch` directory,
+  the readers skip any scratch directory an earlier version left, and each
+  launch removes staged configurations abandoned more than an hour ago, since
+  they carry the agent's credentials.
+- **Agent discovery failures no longer dump a raw error into the sidebar.** A
+  failed discovery now shows a compact discovery-failure indicator instead of
+  the raw error text (#565).
+
+### [0.37.1] - 2026-09-26
+
+#### Fixed
+- **An agent's instructions and settings can no longer be blanked or reverted
+  by the Console itself.** The agent's config file (`.switch/config/<name>.json`)
+  is now the only record: opening an agent's page never writes anything, Claude
+  Code sessions get their agent definition from the config file directly instead
+  of from `.claude/agents/<name>.md`, and that file is no longer written or read
+  back. A missing config file is reported as an error rather than treated as an
+  agent with no instructions. A one-time migration gives every existing agent a
+  config file, taking over its description and any hand edits from the old
+  definition file; attaching to an agent, or adopting a subagent, creates one
+  when it is missing. Deleting an agent's provisioned files now removes its
+  config file too, so an agent re-created under the same name starts clean.
 
 ### [0.37.0] - 2026-09-25
 
@@ -3061,6 +3109,11 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+#### Changed
+- Claude Code sessions accept their agent definition in the launch spec and pass
+  it to the SDK, rather than reading `.claude/agents/<name>.md` on the host.
+  Sessions saved by an earlier Console, which name the file, still relaunch.
 
 ### [1.9.10] - 2026-09-25
 

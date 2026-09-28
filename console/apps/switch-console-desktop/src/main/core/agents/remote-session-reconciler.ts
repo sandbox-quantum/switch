@@ -13,6 +13,7 @@ import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
+import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
 
@@ -165,7 +166,8 @@ class RemoteSessionReconciler {
               agent.switchAgentId
             );
         } catch (error) {
-          failures.push(String(error));
+          if (error instanceof HostUnreachableError) throw error;
+          failures.push(errorMessage(error));
         }
       }
       if (failures.length)
@@ -176,7 +178,13 @@ class RemoteSessionReconciler {
       this.failedRounds.delete(agentId);
     } catch (error) {
       this.failedRounds.set(agentId, (this.failedRounds.get(agentId) ?? 0) + 1);
-      const message = `Session discovery failed: ${String(error)}`;
+      // A host that is down already marks each of its agents and clears on its
+      // own once the host answers, so it is not a discovery failure of its own.
+      if (error instanceof HostUnreachableError) {
+        this.failures.delete(agentId);
+        return;
+      }
+      const message = errorMessage(error);
       const changed = this.failures.get(agentId) !== message;
       this.failures.set(agentId, message);
       if (changed)
@@ -188,5 +196,9 @@ class RemoteSessionReconciler {
       this.inFlight.delete(agentId);
     }
   }
+}
+/** The failure's own words, without the exception class `String(error)` puts in front. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 export const remoteSessionReconciler = new RemoteSessionReconciler();

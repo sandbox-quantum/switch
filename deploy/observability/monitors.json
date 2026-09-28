@@ -278,5 +278,23 @@
       },
       "include_tags": true
     }
+  },
+  {
+    "name": "[Switch] the database pool is refusing connections",
+    "type": "metric alert",
+    "query": "sum(last_5m):sum:switch.db.pool.timeouts{service:switch-core}.as_count() > 0",
+    "message": "{{value}} request(s) got no pooled connection within the timeout in five minutes.\n\nThis is the pool past nearly-exhausted and into failing: it queues rather than sheds when full, so a timeout means a request waited out `db_pool_timeout` and still got nothing. Because auth resolves a token against the database before the handler runs, the first thing to fail is authentication on otherwise-fine requests — including agent heartbeats, which then look lapsed and reconnect, which loads the pool further.\n\nLook for a connection held across non-database work (an external call inside an open session) or a synchronized reconnect burst. Raising the pool size is a cushion, not the cause.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "thresholds": {
+        "critical": 0
+      },
+      "include_tags": true
+    }
   }
 ]

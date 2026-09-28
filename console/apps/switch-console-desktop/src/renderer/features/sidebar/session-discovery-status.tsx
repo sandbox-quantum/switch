@@ -1,48 +1,28 @@
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { observer } from 'mobx-react-lite';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
-import { groupDiscoveryFailures } from './group-discovery-failures';
-export const SessionDiscoveryStatus = observer(function SessionDiscoveryStatus() {
-  const query = useQuery({
-    queryKey: ['sdk-discovery-errors'],
-    queryFn: () => rpc.sdkHost.discoveryErrors(),
-    refetchInterval: 3000,
-  });
-  const retry = useMutation({
-    mutationFn: (agentIds: string[]) =>
-      Promise.all(agentIds.map((agentId) => rpc.sdkHost.retryDiscovery(agentId))),
-    onSuccess: () => query.refetch(),
-  });
-  const grouped = groupDiscoveryFailures(
-    (query.data ?? []).filter(
-      (failure) =>
-        agentsStore.agentById(failure.agentId)?.serverId === switchServersStore.activeServerId
-    )
-  );
+import { useDiscoveryFailures } from './discovery-failure-indicator';
+
+/**
+ * Console could not ask for discovery failures at all, so no agent row can
+ * show its own. Each agent's failure is on its row; this is only the case that
+ * belongs to none of them.
+ */
+export function SessionDiscoveryStatus() {
+  const query = useDiscoveryFailures();
+  if (!query.error) return null;
   return (
-    <>
-      {(query.error || retry.error) && (
-        <div role="alert" className="px-3 py-2 text-xs text-foreground-destructive">
-          Session discovery unavailable: {String(query.error || retry.error)}
-        </div>
-      )}
-      {grouped.map(({ message, agentIds }) => (
-        <div key={message} role="alert" className="px-3 py-2 text-xs text-foreground-destructive">
-          {message}
-          {agentIds.length > 1 && ` (${agentIds.length} agents)`}
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={retry.isPending}
-            onClick={() => retry.mutate(agentIds)}
-          >
-            Retry discovery
-          </Button>
-        </div>
-      ))}
-    </>
+    <div
+      role="alert"
+      className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-foreground-warning"
+    >
+      <span>Couldn’t check your agents’ sessions.</span>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={query.isFetching}
+        onClick={() => void query.refetch()}
+      >
+        Retry
+      </Button>
+    </div>
   );
-});
+}

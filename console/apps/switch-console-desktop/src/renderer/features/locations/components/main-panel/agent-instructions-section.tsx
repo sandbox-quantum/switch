@@ -34,7 +34,7 @@ export function AgentInstructionsSection({
   const queryClient = useQueryClient();
   const fieldId = useId();
 
-  const { data: saved } = useQuery({
+  const { data: saved, error: readError } = useQuery({
     queryKey: ['agent-instructions', agentId],
     queryFn: () =>
       agentId ? rpc.agents.readInstructions({ agentId }) : Promise.resolve<string>(''),
@@ -109,8 +109,7 @@ export function AgentInstructionsSection({
       rpc.agents.updateInstructions({ agentId: agentId as string, instructions }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agent-instructions', agentId] });
-      // The instructions are written into the same file as the advanced
-      // settings, and saving them regenerates the provider's own file.
+      // The instructions are written into the same file as the advanced settings.
       void queryClient.invalidateQueries({ queryKey: ['agent-advanced-config', agentId] });
       void queryClient.invalidateQueries({ queryKey: ['location-agents', locationId] });
     },
@@ -140,6 +139,24 @@ export function AgentInstructionsSection({
   });
 
   if (!agentId) return null;
+
+  // No editor over settings that could not be read: whatever was typed would be
+  // saved over a file nobody has seen, or fail to save at all.
+  if (readError) {
+    const { headline, detail } = describeFailure(
+      readError,
+      'Could not read this agent’s settings.'
+    );
+    return (
+      <Field>
+        <FieldLabel>Agent instructions</FieldLabel>
+        <p role="alert" className="text-sm text-foreground-destructive">
+          {headline}
+          {detail ? <span className="block text-foreground-muted">{detail}</span> : null}
+        </p>
+      </Field>
+    );
+  }
 
   return (
     <Field>

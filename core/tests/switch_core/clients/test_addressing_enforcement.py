@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from switch_core.budgets import BudgetGuard
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.agent_client import AUTO_REPLY_FLAG, AgentClient
-from switch_core.db.stores.budget_store import BudgetStanding
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE as _ADDRESSING_DENIED_MESSAGE,
 )
@@ -511,34 +508,7 @@ class TestOwnerAgentsAddressing:
         assert (await _decide(client)).refusal == _ADDRESSING_DENIED_MESSAGE
 
 
-def _standing(*, spent: int) -> BudgetStanding:
-    return BudgetStanding(
-        id="budget-1",
-        agent_id="agent-1",
-        agent_name="fixer",
-        metric="turns",
-        model="",
-        amount_limit=10,
-        period_hours=24,
-        spent=spent,
-        resets_at=datetime(2026, 1, 2, tzinfo=UTC),
-    )
-
-
-class _FakeBudgetStore:
-    def __init__(self, standings: list[BudgetStanding]) -> None:
-        self._standings = standings
-
-    async def standings(self, _session, *, tenant_id, agent_id):  # type: ignore[no-untyped-def]
-        return self._standings
-
-
-def _gate_client(  # type: ignore[no-untyped-def]
-    *,
-    allowed: bool,
-    refusal: str = _ADDRESSING_DENIED_MESSAGE,
-    budgets: list[BudgetStanding] | None = None,
-):
+def _gate_client(*, allowed: bool, refusal: str = _ADDRESSING_DENIED_MESSAGE):  # type: ignore[no-untyped-def]
     """Fake client for _gate_addressed and the auto-reply it hands back."""
     sent: list[dict] = []
 
@@ -554,9 +524,7 @@ def _gate_client(  # type: ignore[no-untyped-def]
         return "human"
 
     client = SimpleNamespace(
-        agent=SimpleNamespace(id="agent-1", name="fixer"),
-        tenant_id="tenant-1",
-        _budget_guard=BudgetGuard(_FakeBudgetStore(budgets or [])),  # type: ignore[arg-type]
+        agent=SimpleNamespace(name="fixer"),
         _addressing_allowed=_addressing_allowed,
         send_message=_send_message,
         _sender_handle=_sender_handle,
@@ -630,32 +598,6 @@ class TestGateAddressed:
         )
         assert outcome.refusal == _ADDRESSING_DENIED_MESSAGE
         assert client.sent == []
-
-    async def test_an_agent_within_its_budget_stays_addressed(self) -> None:
-        client = _gate_client(allowed=True, budgets=[_standing(spent=9)])
-        outcome = await _gate(client, _event())
-        assert outcome.addressed is True
-        assert client.sent == []
-
-    async def test_an_agent_over_budget_is_demoted_and_says_so(self) -> None:
-        client = _gate_client(allowed=True, budgets=[_standing(spent=10)])
-        outcome = await _gate(client, _event())
-        assert outcome.addressed is False
-        reply = client.sent[0]
-        assert "Agent fixer has reached its budget of 10 turns per 24h" in reply["body"]
-        assert "2026-01-02 00:00 UTC" in reply["body"]
-        assert reply["extra_content"] == {AUTO_REPLY_FLAG: True}
-
-    async def test_an_over_budget_agent_does_not_answer_an_auto_reply(self) -> None:
-        client = _gate_client(allowed=True, budgets=[_standing(spent=10)])
-        outcome = await _gate(client, _event(auto_reply=True))
-        assert outcome.addressed is False
-        assert client.sent == []
-
-    async def test_a_denied_sender_hears_the_policy_not_the_budget(self) -> None:
-        client = _gate_client(allowed=False, budgets=[_standing(spent=10)])
-        await _gate(client, _event())
-        assert _ADDRESSING_DENIED_MESSAGE in client.sent[0]["body"]
 
 
 def _command(

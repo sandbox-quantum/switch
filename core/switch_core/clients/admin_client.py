@@ -125,7 +125,6 @@ class AdminClient(ClientBase[ClientConfig]):
             format=format,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(AdminMessageType.COMMAND_RESULT),
-            metered=False,
         )
 
     # ── Platform messages ───────────────────────────────────────────────────
@@ -169,7 +168,6 @@ class AdminClient(ClientBase[ClientConfig]):
             format="markdown",
             thread_root_id=thread_root_id,
             extra_content={PLATFORM_MARKER: marker_value},
-            metered=False,
         )
 
     # ── Admin notices ─────────────────────────────────────────────────────────
@@ -301,7 +299,6 @@ class AdminClient(ClientBase[ClientConfig]):
             mentions=mentions,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(message_type),
-            metered=False,
         )
 
     def _sender_handle(self, event: InboundMessage) -> str:

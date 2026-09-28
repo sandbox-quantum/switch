@@ -34,7 +34,6 @@ from switch_core.bridges.agent.operations.callctx import (
 )
 from switch_core.bridges.agent.protocol.connections import UnknownConnectionError
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
 
 logger = logging.getLogger(__name__)
@@ -239,8 +238,6 @@ async def post_operation(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BadArgumentsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except BudgetExceeded as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

@@ -65,6 +65,16 @@ const config = {
   session: { sessionId: 'watcher', agentId: 'switch-agent-1' },
 } as never;
 
+it('takes the agent’s own watcher root without reading any other', async () => {
+  const keyed = localWatcherRoot('switch-agent-1');
+  await mkdir(keyed, { recursive: true });
+  await writeFile(join(keyed, 'config.json'), JSON.stringify(config));
+  const earlier = join(home, '.local/state/switch/sdk-watchers/earlier');
+  await mkdir(earlier, { recursive: true });
+  await writeFile(join(earlier, 'config.json'), JSON.stringify(config));
+  expect(localWatcherRoot('switch-agent-1')).toBe(keyed);
+});
+
 it('records why the watcher stopped so the agent panel can show it', async () => {
   mocks.runWatcher.mockRejectedValue(new Error('Shared SDK watcher delivery gap: sequence reset.'));
   await startLocalWatcher(config, { intent: 'explicit', spawning: true });

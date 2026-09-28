@@ -33,6 +33,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
+import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
 import { SidebarItemMiniButton, SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { agentExpandKey, depthIndent } from './sidebar-store';
 
@@ -155,6 +156,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                     Shared with the room-grouped rows so the two trees cannot
                     disagree about the same agent (CHOO-1682/1809). */}
                 <HostTroubleIndicator sshHost={sshHost} agentId={agent.providerId ?? null} />
+                <DiscoveryFailureIndicator agentId={agent.id} label={label} />
                 {agent.providerId && (
                   <ProviderIssueIndicator
                     providerId={agent.providerId}

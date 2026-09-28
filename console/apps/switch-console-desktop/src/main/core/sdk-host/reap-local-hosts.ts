@@ -6,6 +6,7 @@ import { getAgents } from '@main/core/agents/getAgents';
 import { log } from '@main/lib/logger';
 import { localStateBase, savedAgentId, writeWatchFlags } from './local-host';
 import { ownedElsewhere } from './local-host-owners';
+import { isStateRootName } from './state-roots';
 
 const STOP_ATTEMPTS = 100;
 const STOP_INTERVAL_MS = 200;
@@ -44,7 +45,7 @@ export async function reapDetachedLocalWatchers(): Promise<void> {
   const base = localStateBase('sdk-watchers');
   let entries: string[];
   try {
-    entries = await readdir(base);
+    entries = (await readdir(base)).filter(isStateRootName);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;

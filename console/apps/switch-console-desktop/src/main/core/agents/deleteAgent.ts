@@ -35,7 +35,7 @@ import { stopRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { removeSwitchCredentials } from './remove-switch-settings';
 import { stopSharedAgentSessions } from './stop-shared-agent-sessions';
-import { agentSettingsRelativePath } from './switch-settings-paths';
+import { agentConfigRelativePath, agentSettingsRelativePath } from './switch-settings-paths';
 
 export type DeleteAgentOptions = {
   /**
@@ -116,8 +116,8 @@ async function deleteAgentInSwitch(agent: Agent): Promise<void> {
 
 /**
  * Reverse the on-disk state Switch Console provisioned for this one agent: its
- * provider definition (`.claude/agents/<name>.md`) and its per-agent Switch
- * credentials. Runs against the agent's local dir or its remote SSH host
+ * per-agent Switch credentials, its config file, and any provider definition
+ * (`.claude/agents/<name>.md`) an earlier version wrote. Runs against the agent's local dir or its remote SSH host
  * transparently. Only THIS agent's files are removed — sibling agents sharing the
  * directory are untouched (CHOO-1440).
  *
@@ -147,6 +147,15 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
     // credentials behind.
     await ctx.fs.delete(agentSettingsRelativePath(agent.name ?? agent.id)).catch((error) => {
       log.warn('deleteAgent: failed to remove the per-agent Switch credentials', {
+        agentId: agent.id,
+        name: agent.name,
+        error: String(error),
+      });
+    });
+    // The config file goes too: an agent created later under the same name must
+    // start from what it was created with, not from this one's settings.
+    await ctx.fs.delete(agentConfigRelativePath(agent.name ?? agent.id)).catch((error) => {
+      log.warn('deleteAgent: failed to remove the agent config file', {
         agentId: agent.id,
         name: agent.name,
         error: String(error),
