@@ -711,7 +711,26 @@
       "layout": {
         "x": 0,
         "y": 59,
-        "width": 12,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Messaging events from unclaimed chats, by platform",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.messaging.events_ignored{$env,$service} by {platform,reason}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 59,
+        "width": 6,
         "height": 4
       }
     },

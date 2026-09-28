@@ -409,6 +409,7 @@ class TestTheRoute:
             installers=installers,
             lifecycle=None,  # type: ignore[arg-type]
             users=None,  # type: ignore[arg-type]
+            rooms=None,  # type: ignore[arg-type]
             public_origin="https://switch.example",
             secret="unused",
         )

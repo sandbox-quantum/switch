@@ -48,12 +48,15 @@ from switch_core.bridges.collaboration.install_service import (
     WebhookBridgeUnavailable,
     WebhookTarget,
     WebhookWorkspaceUnknown,
+    WebhookWorkspaceUnowned,
 )
 from switch_core.bridges.collaboration.install_state import InstallStateError
 from switch_core.db.stores.messaging_install_store import (
     MessagingInstallClaimedError,
     MessagingInstallStateError,
 )
+from switch_core.observability.catalogue import MESSAGING_EVENTS_IGNORED
+from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +206,19 @@ def create_messaging_install_router(
                 failure,
             )
 
+    async def _unowned(platform: str, workspace_id: str, event: InboundWebhook) -> None:
+        """Let the installer answer an unowned event; logged, never raised."""
+        try:
+            await service.unowned(
+                platform=platform, workspace_id=workspace_id, event=event
+            )
+        except Exception:
+            logger.exception(
+                "Failed to answer a %s event from unowned workspace %s",
+                platform,
+                workspace_id,
+            )
+
     async def _end_install(platform: str, revocation: Revocation) -> None:
         """Act on the platform's news after it has been acknowledged.
 
@@ -297,11 +313,30 @@ def create_messaging_install_router(
                 await _claim(platform, claim)
 
             target = await service.resolve(platform=platform, event=event)
+            await service.follow_migration(
+                platform=platform, event=event, target=target
+            )
         except WebhookPayloadError as failure:
             logger.error(
                 "A verified %s event named no workspace: %s", platform, failure
             )
             return Response(status_code=400)
+        except WebhookWorkspaceUnowned as failure:
+            # A 200, for the reason given below. Where the app routinely sits in
+            # chats nobody claimed, a warning per event would bury the drops
+            # that are real losses, so those are counted instead and each real
+            # loss is reported where its cause is known.
+            if service.note_unowned(
+                platform=platform, workspace_id=failure.workspace_id
+            ):
+                metrics().increment(
+                    MESSAGING_EVENTS_IGNORED,
+                    {"platform": platform, "reason": "unowned"},
+                )
+            else:
+                logger.warning("Dropped a %s event: %s", platform, failure)
+            background.add_task(_unowned, platform, failure.workspace_id, event)
+            return Response(status_code=200)
         except WebhookWorkspaceUnknown as failure:
             # A 200 for an event that reached nobody, which is the one place
             # this file answers something other than what happened. The app

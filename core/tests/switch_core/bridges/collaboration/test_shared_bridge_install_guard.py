@@ -35,6 +35,7 @@ from .test_install_service import (
     _FakeInstaller,
     _FakeLifecycle,
     _fixture,
+    _NoRooms,
 )
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -94,6 +95,7 @@ async def _shared_app(harness: RLSHarness) -> tuple[MessagingInstallService, _Id
         installers=installers,
         lifecycle=lifecycle,  # type: ignore[arg-type]
         users=UserStore(),
+        rooms=_NoRooms(),
         public_origin=_ORIGIN,
         secret=_SECRET,
     )

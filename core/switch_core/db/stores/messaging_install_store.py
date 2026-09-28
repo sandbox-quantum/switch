@@ -244,6 +244,41 @@ class MessagingInstallStore:
             )
         return bridge_ids[0] if bridge_ids else None
 
+    async def move_workspace(
+        self,
+        session: AsyncSession,
+        *,
+        platform: str,
+        from_workspace_id: str,
+        to_workspace_id: str,
+    ) -> MessagingInstall | None:
+        """Re-key the bound tenant's live install when its workspace changes id.
+
+        `None` when there is nothing at the old id, which is the ordinary
+        second half of a migration the platform announces twice: whichever
+        notice arrives second finds the row already moved.
+
+        The new id is still subject to the workspace uniqueness index, so a
+        new id somebody else holds fails here rather than producing a
+        workspace with two owners.
+        """
+        install = await self.get_for_workspace(
+            session, platform=platform, external_workspace_id=from_workspace_id
+        )
+        if install is None:
+            return None
+        install.external_workspace_id = to_workspace_id
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            if "uq_messaging_installs_workspace" not in str(exc.orig):
+                raise
+            raise MessagingInstallClaimedError(
+                f"the {platform} workspace {from_workspace_id} became "
+                f"{to_workspace_id}, which another install already holds"
+            ) from exc
+        return install
+
     async def get(self, session: AsyncSession, *, install_id: str) -> MessagingInstall:
         """One of the bound tenant's installs, by id, or raise."""
         install = await session.get(MessagingInstall, install_id)

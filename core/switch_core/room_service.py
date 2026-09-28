@@ -1230,6 +1230,32 @@ class RoomService:
 
         logger.info("Unlinked bridge from room %s", room_id)
 
+    async def unlink_bridge_channel(
+        self, bridge_id: str, external_channel_id: str
+    ) -> None:
+        """Detach the one room a bridge holds for an external channel.
+
+        For a bridge that serves many installs and loses one: the rest of its
+        rooms stay bridged, and this one becomes internal-only, as every room
+        does when a whole bridge goes. A channel with no room — never
+        provisioned, or already deleted — has nothing to detach.
+
+        Reads under the tenant bound by the caller, like the rest of this
+        service's unscoped sessions.
+        """
+        async with self._session_factory() as session:
+            room = await self._room_store.get_by_external_channel(
+                session, bridge_id, external_channel_id
+            )
+        if room is None:
+            logger.info(
+                "Bridge %s holds no room for channel %s; nothing to detach",
+                bridge_id,
+                external_channel_id,
+            )
+            return
+        await self.unlink_bridge_from_room(room.id)
+
     async def change_bridge(
         self,
         room_id: str,

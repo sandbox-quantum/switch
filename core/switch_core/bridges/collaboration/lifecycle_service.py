@@ -370,6 +370,9 @@ class CollaborationBridgeLifecycleService:
         # (see PlatformAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
         self._held_resources: dict[str, str] = {}
+        # Resources the deployment itself holds and no bridge may, with who
+        # holds them — the distributed Telegram app's bot, for one.
+        self._reserved_resources: dict[str, str] = {}
         # Started and not deliberately stopped. A crash removes a bridge from
         # `_bridges` and leaves it here, which is what makes "configured but no
         # longer running" answerable.
@@ -583,6 +586,31 @@ class CollaborationBridgeLifecycleService:
             except Exception:
                 logger.exception("Failed to start bridge %s", bridge.id)
 
+    def reserve_resource(self, resource: str, holder: str) -> None:
+        """Keep a resource the deployment itself uses away from every bridge.
+
+        The distributed Telegram app's bot is the case: its updates go to the
+        webhook, and a self-registered bridge polling the same bot would fail
+        against it — or, if it got there first, take every tenant's updates.
+        """
+        self._reserved_resources[resource] = holder
+
+    async def reject_resource_conflict(
+        self,
+        bridge_type: str,
+        connection_config: dict[str, object],
+        *,
+        exclude_bridge_id: str,
+    ) -> None:
+        """Refuse an edited connection that would contend for a held resource.
+
+        The edit path's entry to the check registration makes, excluding the
+        bridge being edited so it does not collide with itself.
+        """
+        await self._reject_resource_conflict(
+            bridge_type, connection_config, exclude_bridge_id=exclude_bridge_id
+        )
+
     async def _reject_resource_conflict(
         self,
         bridge_type: str,
@@ -601,6 +629,12 @@ class CollaborationBridgeLifecycleService:
         wanted = adapter_cls.exclusive_resource(connection_config)
         if wanted is None:
             return
+        holder = self._reserved_resources.get(wanted)
+        if holder is not None:
+            raise ValueError(
+                f"{wanted} is this deployment's own {holder} and cannot also be "
+                "connected as a bridge. Use a bot of your own."
+            )
 
         # Captured before the loop below rebinds per tenant. This method is
         # only ever reached from an authenticated request, so what is bound
@@ -664,10 +698,10 @@ class CollaborationBridgeLifecycleService:
                 raise ValueError(
                     f"'{other.display_name}' already uses {wanted} on this "
                     f"instance, and two {bridge_type} bridges cannot share it. "
-                    "Delete that bridge first, or give this one a different "
-                    "listen_port in its connection_config — noting the Helm "
-                    "chart publishes only one Teams port, so a second one needs "
-                    "its own Service port and route."
+                    "Delete that bridge first, or change this one's connection "
+                    "so it needs something else — for Teams a different "
+                    "listen_port, noting the Helm chart publishes only one Teams "
+                    "port, so a second one needs its own Service port and route."
                 )
             # The incumbent belongs to a different tenant (or the caller's
             # tenant could not be determined at all — see the fail-closed note
@@ -855,6 +889,13 @@ class CollaborationBridgeLifecycleService:
             # the bind error one of them causes. Say which bridge holds it
             # instead.
             wanted = adapter_cls.exclusive_resource(bridge.connection_config or {})
+            if wanted is not None and wanted in self._reserved_resources:
+                raise ValueError(
+                    f"Cannot start bridge {bridge_id} ({bridge.type}): {wanted} "
+                    f"is this deployment's own "
+                    f"{self._reserved_resources[wanted]}. Give the bridge a bot "
+                    "of its own."
+                )
             if wanted is not None:
                 for other_id, held in self._held_resources.items():
                     if held == wanted and other_id != bridge_id:

@@ -52,8 +52,11 @@ workspace it has already been thrown out of.
 from __future__ import annotations
 
 import logging
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Protocol
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -110,6 +113,35 @@ class WebhookWorkspaceUnknown(RuntimeError):
     route absorbs rather than reports, since the platform cannot fix it and
     telling it repeatedly that its posts fail is held against the app itself.
     """
+
+
+class WebhookWorkspaceUnowned(WebhookWorkspaceUnknown):
+    """No tenant holds the workspace at all — the routine case of the two.
+
+    Split from the scoped re-read missing, which is a lookup disagreeing with
+    itself and always worth a warning. This one is an app sitting in a
+    workspace nobody installed it into, which on some platforms is most of
+    what it hears.
+    """
+
+    def __init__(self, message: str, *, workspace_id: str) -> None:
+        super().__init__(message)
+        self.workspace_id = workspace_id
+
+
+class RoomDetacher(Protocol):
+    """Detaches the one room a bridge holds for a workspace that is leaving it."""
+
+    async def unlink_bridge_channel(
+        self, bridge_id: str, external_channel_id: str
+    ) -> None: ...
+
+
+#: How long an unowned workspace's drops are remembered, and how many
+#: workspaces at most. Long enough to span a migration's two notices; bounded
+#: because an app sitting in unclaimed chats sees an open-ended set of them.
+_RECENT_DROP_TTL = 300.0
+_RECENT_DROPS_MAX = 1000
 
 
 class WebhookBridgeUnavailable(RuntimeError):
@@ -176,12 +208,20 @@ class MessagingInstallService:
         installers: MessagingInstallerRegistry,
         lifecycle: CollaborationBridgeLifecycleService,
         users: UserStore,
+        rooms: RoomDetacher,
         public_origin: str,
         secret: str,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
         self._users = users
+        self._rooms = rooms
+        # (platform, workspace id) -> (events dropped, when the last was), in
+        # order of that last drop. Ids and counts only: nothing an unowned
+        # workspace said is kept.
+        self._recent_drops: OrderedDict[tuple[str, str], tuple[int, float]] = (
+            OrderedDict()
+        )
         self._receipts = receipts
         self._installers = installers
         self._lifecycle = lifecycle
@@ -365,10 +405,7 @@ class MessagingInstallService:
             async with tenant_session(
                 self._session_factory, state.tenant_id
             ) as session:
-                await session.execute(
-                    text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-                    {"key": f"messaging-install-claim:{state.tenant_id}:{platform}"},
-                )
+                await self._lock_platform(session, state.tenant_id, platform)
                 bridge_id = await self._store.bridge_for_platform(
                     session, platform=platform
                 )
@@ -408,6 +445,37 @@ class MessagingInstallService:
                 bridge_id,
             )
             return attached
+
+    @staticmethod
+    async def _lock_platform(
+        session: AsyncSession, tenant_id: str, platform: str
+    ) -> None:
+        """Serialise the changes to which installs share a tenant's bridge.
+
+        Held by a first claim across looking up and registering the bridge,
+        and by an ending across ending the install and counting what is left
+        on its bridge — so two chats leaving together cannot each see the other
+        still there and leave the bridge behind with no installs.
+        """
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"messaging-install-claim:{tenant_id}:{platform}"},
+        )
+
+    async def _release_bridge(
+        self, *, bridge_id: str, workspace_id: str, installs_left: int
+    ) -> None:
+        """Remove a bridge its last install has left, or detach one chat's room.
+
+        A bridge built for one install goes with it, which is every OAuth
+        install. A claim-based platform's bridge serves every chat its tenant
+        claimed, so an ending that leaves others behind detaches only the room
+        of the chat that went.
+        """
+        if installs_left:
+            await self._rooms.unlink_bridge_channel(bridge_id, workspace_id)
+            return
+        await self._lifecycle.remove(bridge_id)
 
     async def _burn(self, state: InstallState) -> MessagingInstallState:
         """Redeem a verified state, and commit, before anything else happens.
@@ -488,19 +556,29 @@ class MessagingInstallService:
                 return await self._store.get(session, install_id=install_id)
 
         with tenant_scope(tenant_id):
+            installer = self._installers.get(platform)
             if token is not None:
-                await self._installers.get(platform).revoke(
-                    bot_token=decrypt_token(token, self._secret)
-                )
+                await installer.revoke(bot_token=decrypt_token(token, self._secret))
+            await installer.release(external_workspace_id=workspace_id)
 
             async with tenant_session(self._session_factory, tenant_id) as session:
+                await self._lock_platform(session, tenant_id, platform)
                 ended = await self._store.end(
                     session, install_id=install_id, status=INSTALL_DISCONNECTED
+                )
+                left = (
+                    await self._store.list_for_bridge(session, bridge_id=bridge_id)
+                    if bridge_id is not None
+                    else []
                 )
                 await session.commit()
 
             if bridge_id is not None:
-                await self._lifecycle.remove(bridge_id)
+                await self._release_bridge(
+                    bridge_id=bridge_id,
+                    workspace_id=workspace_id,
+                    installs_left=len(left),
+                )
 
         logger.info(
             "Disconnected %s workspace %s for tenant %s",
@@ -558,13 +636,23 @@ class MessagingInstallService:
                 bridge_id = install.bridge_id
 
             async with tenant_session(self._session_factory, tenant_id) as session:
+                await self._lock_platform(session, tenant_id, platform)
                 await self._store.end(
                     session, install_id=install_id, status=INSTALL_REVOKED
+                )
+                left = (
+                    await self._store.list_for_bridge(session, bridge_id=bridge_id)
+                    if bridge_id is not None
+                    else []
                 )
                 await session.commit()
 
             if bridge_id is not None:
-                await self._lifecycle.remove(bridge_id)
+                await self._release_bridge(
+                    bridge_id=bridge_id,
+                    workspace_id=workspace_id,
+                    installs_left=len(left),
+                )
 
         logger.warning(
             "Ended the install of %s workspace %s for tenant %s: %s",
@@ -667,9 +755,10 @@ class MessagingInstallService:
             self._session_factory, platform, workspace_id
         )
         if tenant_id is None:
-            raise WebhookWorkspaceUnknown(
+            raise WebhookWorkspaceUnowned(
                 f"no tenant has installed Switch into {platform} workspace "
-                f"{workspace_id}"
+                f"{workspace_id}",
+                workspace_id=workspace_id,
             )
 
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -705,6 +794,94 @@ class MessagingInstallService:
             platform=platform,
             bridge_id=install.bridge_id,
             adapter=adapter,
+        )
+
+    async def follow_migration(
+        self, *, platform: str, event: InboundWebhook, target: WebhookTarget
+    ) -> None:
+        """Move the install to its workspace's new id, if the event says so.
+
+        After `resolve`, which found the tenant by the old id, and before the
+        event is delivered, whose handler moves the room the same way. Awaited
+        rather than deferred: until the row moves, every event from the new id
+        resolves to nobody and is dropped.
+
+        Messages from the new id that were dropped before this ran are lost;
+        the recently-dropped list is how that is said rather than guessed.
+        """
+        migration = self._installers.get(platform).migration_of_event(event.payload)
+        if migration is None:
+            return
+        old_id, new_id = migration
+        with tenant_scope(target.tenant_id):
+            async with tenant_session(
+                self._session_factory, target.tenant_id
+            ) as session:
+                moved = await self._store.move_workspace(
+                    session,
+                    platform=platform,
+                    from_workspace_id=old_id,
+                    to_workspace_id=new_id,
+                )
+                await session.commit()
+        if moved is None:
+            return
+        logger.info(
+            "The %s install of workspace %s followed it to %s (tenant %s)",
+            platform,
+            old_id,
+            new_id,
+            target.tenant_id,
+        )
+        dropped = self._recent_drops.pop((platform, new_id), None)
+        if dropped is not None:
+            logger.error(
+                "%d %s event(s) from workspace %s were dropped as unowned before "
+                "its install followed it from %s; they are lost",
+                dropped[0],
+                platform,
+                new_id,
+                old_id,
+            )
+
+    def note_unowned(self, *, platform: str, workspace_id: str) -> bool:
+        """Remember an unowned drop, and say whether it is routine here.
+
+        Remembered as an id and a count for a few minutes, so a migration can
+        tell whether it lost anything; see `follow_migration`. Routine or not
+        is the installer's `expects_unowned_events`, and decides whether the
+        route warns or only counts.
+        """
+        now = time.monotonic()
+        while self._recent_drops:
+            _, (_, last_seen) = next(iter(self._recent_drops.items()))
+            if now - last_seen < _RECENT_DROP_TTL:
+                break
+            self._recent_drops.popitem(last=False)
+        key = (platform, workspace_id)
+        count, _ = self._recent_drops.pop(key, (0, now))
+        self._recent_drops[key] = (count + 1, now)
+        if len(self._recent_drops) > _RECENT_DROPS_MAX:
+            self._recent_drops.popitem(last=False)
+        return self._installers.get(platform).expects_unowned_events
+
+    async def unowned(
+        self, *, platform: str, workspace_id: str, event: InboundWebhook
+    ) -> None:
+        """Let the installer answer an unowned event, after the platform has been."""
+
+        async def still_unowned() -> bool:
+            return (
+                await tenant_of_messaging_install(
+                    self._session_factory, platform, workspace_id
+                )
+                is None
+            )
+
+        await self._installers.get(platform).on_unowned_event(
+            workspace_id=workspace_id,
+            payload=event.payload,
+            still_unowned=still_unowned,
         )
 
     async def deliver(self, target: WebhookTarget, event: InboundWebhook) -> None:

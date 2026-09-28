@@ -64,6 +64,8 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallStore,
 )
 from switch_core.db.stores.user_store import UserStore
+from switch_core.observability.catalogue import MESSAGING_EVENTS_IGNORED
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from tests.conftest import RLSHarness
 from tests.switch_core.bridges.collaboration.test_install_webhook import (
     _RecordingAdapter,
@@ -85,10 +87,36 @@ class _ClaimInstaller(MessagingAppInstaller):
 
     platform: ClassVar[str] = _PLATFORM
     state_format = "compact"
+    expects_unowned_events = True
 
     def __init__(self) -> None:
         self.connection: object | None = None
         self.not_ready = False
+        self.released: list[str] = []
+        self.release_error: Exception | None = None
+        self.unowned: list[tuple[str, bool]] = []
+
+    async def release(self, *, external_workspace_id: str) -> None:
+        if self.release_error is not None:
+            raise self.release_error
+        self.released.append(external_workspace_id)
+
+    def migration_of_event(
+        self, payload: Mapping[str, object]
+    ) -> tuple[str, str] | None:
+        moved = payload.get("migrate")
+        if not isinstance(moved, list):
+            return None
+        return str(moved[0]), str(moved[1])
+
+    async def on_unowned_event(
+        self,
+        *,
+        workspace_id: str,
+        payload: Mapping[str, object],
+        still_unowned: Any,
+    ) -> None:
+        self.unowned.append((workspace_id, await still_unowned()))
 
     def shared_connection(self) -> object | None:
         if self.not_ready:
@@ -172,6 +200,7 @@ class _FakeLifecycle:
         self.registered: list[dict[str, object]] = []
         self.adapters: dict[str, PlatformAdapter] = {}
         self.fail_next: Exception | None = None
+        self.removed: list[str] = []
 
     async def register(self, **kwargs: object) -> CollaborationBridge:
         if self.fail_next is not None:
@@ -203,6 +232,26 @@ class _FakeLifecycle:
     def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         return self.adapters.get(bridge_id)
 
+    async def remove(self, bridge_id: str) -> None:
+        """Delete the row, on a plain session like the real one."""
+        self.removed.append(bridge_id)
+        self.adapters.pop(bridge_id, None)
+        async with self._factory() as session:
+            bridge = await session.get(CollaborationBridge, bridge_id)
+            if bridge is not None:
+                await session.delete(bridge)
+            await session.commit()
+
+
+class _RecordingRooms:
+    def __init__(self) -> None:
+        self.detached: list[tuple[str, str]] = []
+
+    async def unlink_bridge_channel(
+        self, bridge_id: str, external_channel_id: str
+    ) -> None:
+        self.detached.append((bridge_id, external_channel_id))
+
 
 class _Fixture:
     def __init__(self) -> None:
@@ -214,6 +263,7 @@ class _Fixture:
         self.suffix: str = ""
         self.lifecycle: _FakeLifecycle
         self.installer: _ClaimInstaller
+        self.rooms: _RecordingRooms
         self.service: MessagingInstallService
 
 
@@ -250,6 +300,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         await session.commit()
 
     fixture.lifecycle = _FakeLifecycle(harness.restricted, fixture.suffix)
+    fixture.rooms = _RecordingRooms()
     installers = MessagingInstallerRegistry()
     fixture.installer = _ClaimInstaller()
     installers.register(fixture.installer)
@@ -260,6 +311,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
         users=UserStore(),
+        rooms=fixture.rooms,
         public_origin=_ORIGIN,
         secret=_SECRET,
     )
@@ -644,3 +696,224 @@ class TestTheSharedConnection:
         adapter = fixture.lifecycle.adapters[owned.bridge_id]  # type: ignore[index]
         assert isinstance(adapter, _AttachableAdapter)
         assert adapter.dispatched == []
+
+
+class TestEndingOneChat:
+    """Every chat a tenant claimed shares its one bridge, so a chat leaving
+    must take only its own room with it — and the last one the bridge."""
+
+    async def _two_chats(
+        self, harness: RLSHarness
+    ) -> tuple[_Fixture, MessagingInstall, MessagingInstall]:
+        fixture = await _fixture(harness)
+        first = await _claim(
+            fixture,
+            await _link(harness.restricted, fixture, fixture.tenant_a, fixture.admin_a),
+            "-1001",
+        )
+        second = await _claim(
+            fixture,
+            await _link(harness.restricted, fixture, fixture.tenant_a, fixture.admin_a),
+            "-1002",
+        )
+        return fixture, first, second
+
+    async def test_disconnecting_one_chat_detaches_only_its_room(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture, first, second = await self._two_chats(rls_harness)
+
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=first.id
+        )
+
+        assert fixture.installer.released == ["-1001"]
+        assert fixture.rooms.detached == [(first.bridge_id, "-1001")]
+        assert fixture.lifecycle.removed == []
+        (left,) = await _active_installs(rls_harness)
+        assert left.id == second.id and left.bridge_id == first.bridge_id
+
+    async def test_disconnecting_the_last_chat_removes_the_bridge(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture, first, second = await self._two_chats(rls_harness)
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=first.id
+        )
+
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=second.id
+        )
+
+        assert fixture.lifecycle.removed == [first.bridge_id]
+        assert await _active_installs(rls_harness) == []
+
+    async def test_the_platform_removing_the_bot_ends_one_chat_the_same_way(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture, first, _ = await self._two_chats(rls_harness)
+
+        await fixture.service.revoked(
+            platform=_PLATFORM, workspace_id="-1001", reason="kicked"
+        )
+
+        assert fixture.installer.released == []
+        assert fixture.rooms.detached == [(first.bridge_id, "-1001")]
+        assert fixture.lifecycle.removed == []
+
+    async def test_two_chats_leaving_together_still_remove_the_bridge(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Without the lock each sees the other still there, and the bridge is
+        left behind with no installs and nothing that would ever remove it.
+
+        Deterministic rather than a race left to chance: each ending waits for
+        the other before counting what is left, and again after, holding its
+        transaction open until both have counted. With the lock the second
+        cannot get that far until the first has committed, so the first stops
+        waiting and goes on alone; without it both count while the other's
+        ending is uncommitted, and each sees the other still there.
+        """
+        fixture, first, second = await self._two_chats(rls_harness)
+        store = fixture.service._store
+        counted = store.list_for_bridge
+        before, after = asyncio.Barrier(2), asyncio.Barrier(2)
+
+        async def meet(barrier: asyncio.Barrier) -> None:
+            try:
+                await asyncio.wait_for(barrier.wait(), timeout=0.5)
+            except TimeoutError:
+                pass
+
+        async def list_together(session: Any, *, bridge_id: str) -> Any:
+            await meet(before)
+            rows = await counted(session, bridge_id=bridge_id)
+            await meet(after)
+            return rows
+
+        store.list_for_bridge = list_together  # type: ignore[method-assign]
+
+        await asyncio.gather(
+            fixture.service.disconnect(tenant_id=fixture.tenant_a, install_id=first.id),
+            fixture.service.disconnect(
+                tenant_id=fixture.tenant_a, install_id=second.id
+            ),
+        )
+
+        assert fixture.lifecycle.removed == [first.bridge_id]
+
+    async def test_a_bot_that_could_not_leave_keeps_the_chat_connected(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Tell the platform first, then destroy things: a failure leaves the
+        install as it was, to be disconnected again."""
+        fixture, first, _ = await self._two_chats(rls_harness)
+        fixture.installer.release_error = MessagingInstallError("still in the chat")
+
+        with pytest.raises(MessagingInstallError):
+            await fixture.service.disconnect(
+                tenant_id=fixture.tenant_a, install_id=first.id
+            )
+
+        assert len(await _active_installs(rls_harness)) == 2
+        assert fixture.rooms.detached == []
+
+
+class TestMigration:
+    async def _owned(self, harness: RLSHarness) -> tuple[_Fixture, MessagingInstall]:
+        fixture = await _fixture(harness)
+        install = await _claim(
+            fixture,
+            await _link(harness.restricted, fixture, fixture.tenant_a, fixture.admin_a),
+            "-55",
+        )
+        return fixture, install
+
+    async def _post(self, fixture: _Fixture, body: dict[str, Any]) -> int:
+        app = FastAPI()
+        app.include_router(create_messaging_install_router(fixture.service))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
+        ) as client:
+            response = await client.post(
+                f"/messaging/{_PLATFORM}/events", content=json.dumps(body).encode()
+            )
+        return response.status_code
+
+    async def test_the_install_follows_its_chat_to_the_new_id(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture, install = await self._owned(rls_harness)
+
+        assert (
+            await self._post(fixture, {"chat": "-55", "migrate": ["-55", "-1009"]})
+            == 200
+        )
+
+        (moved,) = await _active_installs(rls_harness)
+        assert moved.id == install.id
+        assert moved.external_workspace_id == "-1009"
+
+    async def test_the_second_notice_finds_the_work_done(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Telegram announces the move from both chats; the second resolves by
+        the old id, which is nobody's now, and is dropped."""
+        fixture, _ = await self._owned(rls_harness)
+        await self._post(fixture, {"chat": "-55", "migrate": ["-55", "-1009"]})
+
+        assert (
+            await self._post(fixture, {"chat": "-55", "migrate": ["-55", "-1009"]})
+            == 200
+        )
+
+        (moved,) = await _active_installs(rls_harness)
+        assert moved.external_workspace_id == "-1009"
+
+    async def test_messages_lost_before_the_move_are_reported(
+        self, rls_harness: RLSHarness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fixture, _ = await self._owned(rls_harness)
+        for _ in range(2):
+            await self._post(fixture, {"chat": "-1009"})
+
+        with caplog.at_level("ERROR"):
+            await self._post(fixture, {"chat": "-55", "migrate": ["-55", "-1009"]})
+
+        assert any(
+            "2 telegram event(s) from workspace -1009" in record.getMessage()
+            for record in caplog.records
+        )
+
+
+class TestUnownedChats:
+    async def test_they_are_counted_not_warned_about_and_answered(
+        self, rls_harness: RLSHarness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        registry = MetricsRegistry()
+        install(registry)
+        try:
+            app = FastAPI()
+            app.include_router(create_messaging_install_router(fixture.service))
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
+            ) as client:
+                with caplog.at_level("WARNING"):
+                    response = await client.post(
+                        f"/messaging/{_PLATFORM}/events",
+                        content=json.dumps(
+                            {"chat": "-7", "text": "something private"}
+                        ).encode(),
+                    )
+            payloads = {p.name: p for p in registry.collect()}
+        finally:
+            uninstall()
+
+        assert response.status_code == 200
+        assert not any("Dropped" in r.getMessage() for r in caplog.records)
+        assert "something private" not in caplog.text
+        (point,) = payloads[MESSAGING_EVENTS_IGNORED.name].numbers
+        assert point.attributes == {"platform": _PLATFORM, "reason": "unowned"}
+        assert fixture.installer.unowned == [("-7", True)]
+        assert await _active_installs(rls_harness) == []

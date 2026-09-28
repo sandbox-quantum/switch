@@ -320,6 +320,9 @@ async def update_bridge(
             )
         try:
             collab_lifecycle.validate_connection_config(bridge.type, merged)
+            await collab_lifecycle.reject_resource_conflict(
+                bridge.type, merged, exclude_bridge_id=bridge_id
+            )
             # Asked now rather than at the restart below, so an edit that would
             # point a shared bridge at a workspace this tenant never installed
             # into is refused instead of stored and then failing to start.
@@ -333,6 +336,8 @@ async def update_bridge(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except BridgeStartRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         bridge = await bridge_store.merge_connection_config(
             session, bridge_id, dict(payload.connection_config)
         )
