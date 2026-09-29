@@ -97,15 +97,17 @@ const LOCK_MAGIC = 'switch-console-lock v1';
 /**
  * `$1` is the operation — `take`, `renew` or `release` — and `$2…$9` the
  * token, console id, run, action, lease length and longest hold in seconds,
- * name and host account. Answers on stdout: a status line, the host's clock,
- * then the lock file as it now stands, so a refusal can say who holds it.
+ * name and host account; `$10` lists, space-separated, leases this run failed
+ * to give back, which it may take over. Answers on stdout: a status line, the
+ * host's clock, then the lock file as it now stands, so a refusal can say who
+ * holds it.
  * A write that fails ends the script with an error rather than an answer: on
  * a full disk, "taken" over a lock file left empty would let the next Console
  * take it too. Exported for the test that runs it against a real volume.
  */
 export const LOCK_SCRIPT = [
   'set -u',
-  'op=$1 token=$2 console=$3 instance=$4 action=$5 ttl=$6 max=$7 name=$8 account=$9',
+  'op=$1 token=$2 console=$3 instance=$4 action=$5 ttl=$6 max=$7 name=$8 account=$9 stale=${10:-}',
   'umask 077',
   UNDER_STATE_MUTEX,
   `lock=${SERVER_LOCK_FILE}`,
@@ -118,7 +120,11 @@ export const LOCK_SCRIPT = [
   'case $op in',
   '  take)',
   '    if [ -f "$lock" ] && number "$expires" && [ "$expires" -gt "$now" ]; then',
-  '      [ "$(line 5)" = "$console" ] && [ "$(line 6)" != "$instance" ] || report held',
+  // This Console's previous run — the same id and name, another run — left
+  // it when it crashed; this run left it when giving it back failed.
+  '      if [ "$(line 5)" = "$console" ] && [ "$(line 6)" != "$instance" ] && [ "$(line 8)" = "$name" ]; then :',
+  '      else case " $stale " in *" $held "*) ;; *) report held ;; esac',
+  '      fi',
   '    fi',
   `    printf "%s\\n" "${LOCK_MAGIC}" "$token" "$(until_for "$now")" "$now" "$console" "$instance" "$action" "$name" "$account" > /state/.lock.tmp || exit 1`,
   '    mv /state/.lock.tmp "$lock" || exit 1',
@@ -212,11 +218,19 @@ function oneLine(text: string): string {
   return printable.trim().slice(0, 200) || 'unknown';
 }
 
+/**
+ * Leases this run could not give back, by host: its own, which it must not
+ * then wait for as if they were someone else's. Taken over by the next take
+ * on that host, and forgotten once it succeeds.
+ */
+const unreleased = new Map<string, Set<string>>();
+
 function scriptArgs(
   op: 'take' | 'renew' | 'release',
   token: string,
   claim: LockClaim,
-  timing: LockTiming
+  timing: LockTiming,
+  stale: Iterable<string>
 ): string[] {
   return [
     op,
@@ -228,6 +242,7 @@ function scriptArgs(
     String(timing.maxHoldSeconds),
     oneLine(claim.name),
     oneLine(claim.hostAccount),
+    [...stale].join(' '),
   ];
 }
 
@@ -279,7 +294,7 @@ export class ServerLease {
       await runStateScript(
         this.host,
         LOCK_SCRIPT,
-        scriptArgs('renew', this.token, this.claim, this.timing)
+        scriptArgs('renew', this.token, this.claim, this.timing, [])
       )
     );
     if (reply.status === 'renewed') return;
@@ -330,9 +345,12 @@ export class ServerLease {
       await runStateScript(
         this.host,
         LOCK_SCRIPT,
-        scriptArgs('release', this.token, this.claim, this.timing)
+        scriptArgs('release', this.token, this.claim, this.timing, [])
       );
     } catch (error) {
+      const left = unreleased.get(this.host.label) ?? new Set<string>();
+      left.add(this.token);
+      unreleased.set(this.host.label, left);
       log.warn(
         `stack-lock: could not release the lock on ${this.host.label}; it lapses by itself ` +
           `within ${this.timing.ttlSeconds}s`,
@@ -389,10 +407,14 @@ export async function acquireServerLock(
   let last: ServerLockHolder | null = null;
   for (;;) {
     if (opts.mode === 'wait' && opts.signal.aborted) throw new ServerLockWaitCancelled(last);
+    const stale = unreleased.get(host.label) ?? new Set<string>();
     const reply = parseLockReply(
-      await runStateScript(host, LOCK_SCRIPT, scriptArgs('take', token, claim, opts.timing))
+      await runStateScript(host, LOCK_SCRIPT, scriptArgs('take', token, claim, opts.timing, stale))
     );
-    if (reply.status === 'taken') return new ServerLease(host, token, claim, opts.timing);
+    if (reply.status === 'taken') {
+      unreleased.delete(host.label);
+      return new ServerLease(host, token, claim, opts.timing);
+    }
     if (reply.status !== 'held' || reply.holder === null) {
       throw new Error(`Unexpected answer from the server lock on ${host.label}: ${reply.status}`);
     }

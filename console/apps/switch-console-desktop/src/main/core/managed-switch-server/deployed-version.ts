@@ -7,6 +7,7 @@ import type {
 import { runningImages } from './compose';
 import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
 import { readEnvValue } from './env-file';
+import { errorText } from './error-text';
 import type { ServerHost } from './host/types';
 
 /**
@@ -140,8 +141,4 @@ export function imageTag(image: string): string | null {
   if (colon === -1) return null;
   const tag = name.slice(colon + 1).trim();
   return tag.length > 0 ? tag : null;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -6,6 +6,7 @@ import {
   ENV_FILE_NAME,
   LOCAL_SERVER_PROFILES,
 } from './constants';
+import { commandFailure } from './error-text';
 import type { ServerHost } from './host/types';
 
 /** Pulls can take minutes on a cold machine; give compose a generous ceiling. */
@@ -45,9 +46,7 @@ export async function runDocker(
     });
     return stdout;
   } catch (error) {
-    const stderr = (error as { stderr?: string } | undefined)?.stderr;
-    const message = stderr?.trim() || (error instanceof Error ? error.message : String(error));
-    throw new Error(`${full.join(' ')} failed: ${message}`);
+    throw new Error(`${full.join(' ')} failed: ${commandFailure(error)}`);
   }
 }
 

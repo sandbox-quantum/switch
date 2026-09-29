@@ -23,8 +23,9 @@ vi.mock('@main/core/switch-servers/console-identity', () => ({
 vi.mock('@main/core/app/utils', () => ({ resolveAppVersion: () => Promise.resolve('0.37.0') }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
-const { acquireServerLock, readServerLock, ServerLockLostError } = await import('./stack-lock');
-const { publishEnv, withdrawPublishedEnv, writeStateVolume, readStateVolume } =
+const { acquireServerLock, LOCK_SCRIPT, readServerLock, ServerLockLostError } =
+  await import('./stack-lock');
+const { publishEnv, withdrawPublishedEnv, writeStateVolume, readStateVolume, runStateScript } =
   await import('./stack-state');
 const { RECORD_SCRIPT } = await import('./console-register');
 const { LOCK_LOST_MESSAGE } = await import('./state-mutex');
@@ -216,6 +217,38 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
     await expect(
       take(claim({ consoleId: 'cccccccc-0000-4000-8000-000000000003' }))
     ).rejects.toMatchObject({ holder: expect.objectContaining({ name: 'bob@desk' }) });
+  }, 60_000);
+
+  it('is not taken back by a Console that only shares the id, as a restored backup would', async () => {
+    await take(claim({ instance: 'run-before-crash' }));
+
+    await expect(
+      take(claim({ instance: 'other-desk', name: 'alice@other-desk' }))
+    ).rejects.toBeInstanceOf(ServerBusyError);
+  }, 60_000);
+
+  it('is taken over by a take that names it as a lease this run failed to give back', async () => {
+    await take(claim());
+    const args = (op: string, token: string, stale: string) => [
+      op,
+      token,
+      'aaaaaaaa-0000-4000-8000-000000000001',
+      'run-1',
+      'starting',
+      '2',
+      '600',
+      'alice@laptop',
+      'alice',
+      stale,
+    ];
+    const held = (await readStateVolume(host, 'sed -n 2p /state/lock')).trim();
+
+    expect(
+      (await runStateScript(host, LOCK_SCRIPT, args('take', 'other', ''))).split('\n')[0]
+    ).toBe('held');
+    expect(
+      (await runStateScript(host, LOCK_SCRIPT, args('take', 'next', `x ${held} y`))).split('\n')[0]
+    ).toBe('taken');
   }, 60_000);
 
   it('is taken back at once by the same Console after a restart, but not by the same run', async () => {

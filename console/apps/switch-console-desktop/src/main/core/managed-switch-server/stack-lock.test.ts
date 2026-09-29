@@ -162,6 +162,7 @@ describe('taking the lock', () => {
       '5400',
       'alice @laptop',
       'unknown',
+      '',
     ]);
   });
 
@@ -364,6 +365,22 @@ describe('holding the lock', () => {
     expect(error).toBeInstanceOf(ServerLockLostError);
     expect((error as InstanceType<typeof ServerLockLostError>).holder).toBeNull();
     await held.release();
+  });
+
+  it('takes over, rather than waits for, a lease this run failed to give back', async () => {
+    runStateScript.mockRejectedValueOnce(new Error('ssh dropped'));
+    const held = new ServerLease({ label: 'vm-2' } as StackStateHost, 'left-token', claim, timing);
+    await held.release();
+    runStateScript.mockResolvedValueOnce(reply('taken', 1000));
+
+    const next = await acquireServerLock({ label: 'vm-2' } as StackStateHost, claim, {
+      mode: 'refuse',
+      timing,
+    });
+    await next.release();
+
+    const take = runStateScript.mock.calls.find((c) => (c[2] as string[])[0] === 'take')!;
+    expect((take[2] as string[]).at(-1)).toBe('left-token');
   });
 
   it('gives it back once however often it is released, and logs a failure to', async () => {

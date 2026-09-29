@@ -15,6 +15,7 @@ import {
 } from './constants';
 import { classifyVersionDrift, imageTag } from './deployed-version';
 import { readStackEnv, type StackEnv } from './env-file';
+import { commandFailure, errorText } from './error-text';
 import type { ServerHost } from './host/types';
 import type { ServerLease } from './stack-lock';
 import { WHILE_HOLDING_SERVER_LOCK } from './state-mutex';
@@ -88,10 +89,6 @@ export function stackStateVolume(host: Pick<StackStateHost, 'composeProjectName'
   return `${host.composeProjectName}_${STACK_STATE_VOLUME_SUFFIX}`;
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** Run `docker <args>` on the host, returning stdout. Failures name the host
  * and carry docker's own complaint. Nothing passed here may be a secret: the
  * arguments are visible in the host's process table. */
@@ -107,8 +104,7 @@ async function docker(
     });
     return stdout;
   } catch (error) {
-    const stderr = (error as { stderr?: string } | undefined)?.stderr?.trim();
-    throw new Error(`docker ${args[0]} on ${host.label} failed: ${stderr || errorText(error)}`);
+    throw new Error(`docker ${args[0]} on ${host.label} failed: ${commandFailure(error)}`);
   }
 }
 
@@ -218,19 +214,32 @@ async function databaseStamp(host: StackStateHost, dataVolumes: string[]): Promi
 const HELPER_IMAGE_MISSING = 'switch-console: the helper image is not on this host';
 
 /**
- * Runs a container against the state volume in one round trip to the host:
- * checks the helper image is there — saying so, rather than letting
- * `docker run` pull it inside a timeout meant for a quick script — creates
- * the volume, labelled, when asked, and runs the container. `$1…$5` are the
- * docker binary, the image, the volume, its label and `yes` to create it; the
- * rest are the arguments to `docker`.
+ * Runs a container against the state volume in one round trip to the host.
+ * The image is the helper image — the stack's own Postgres image — or, on a
+ * host that lacks it, the image the stack's own Postgres container runs,
+ * which is there whenever the stack is and has the same shell and `flock`.
+ * Only when neither is there does it say so, for the caller to pull the
+ * helper image under a pull's timeout rather than `docker run` pulling it
+ * inside a quick one. It creates the volume, labelled, when asked.
+ *
+ * `$1…$8` are the docker binary, the helper image, the volume, its label,
+ * `yes` to create it, the compose project, the mount and `yes` for stdin;
+ * then the script and its arguments.
  */
 const LAUNCHER = [
-  'docker=$1 image=$2 volume=$3 label=$4 create=$5',
-  'shift 5',
-  `"$docker" image inspect "$image" >/dev/null 2>&1 || { echo '${HELPER_IMAGE_MISSING}' >&2; exit 97; }`,
+  'docker=$1 image=$2 volume=$3 label=$4 create=$5 project=$6 mount=$7 stdin=$8',
+  'shift 8',
+  'if ! "$docker" image inspect "$image" >/dev/null 2>&1; then',
+  `  own=$("$docker" ps -a --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=postgres --format '{{.Image}}' | head -n 1)`,
+  '  if [ -n "$own" ] && "$docker" image inspect "$own" >/dev/null 2>&1; then image=$own',
+  `  else echo '${HELPER_IMAGE_MISSING}' >&2; exit 97; fi`,
+  'fi',
   'if [ "$create" = yes ]; then "$docker" volume create --label "$label" "$volume" >/dev/null || exit 1; fi',
-  'exec "$docker" "$@"',
+  'interactive=',
+  'if [ "$stdin" = yes ]; then interactive=--interactive; fi',
+  'script=$1',
+  'shift',
+  'exec "$docker" run --rm $interactive --network none --volume "$mount" --entrypoint sh "$image" -c "$script" stack-state "$@"',
 ].join('\n');
 
 type StateContainer = {
@@ -252,19 +261,10 @@ function launcherArgs(host: StackStateHost, container: StateContainer, interacti
     stackStateVolume(host),
     `${STACK_STATE_LABEL}=${host.composeProjectName}`,
     container.mode === 'write' ? 'yes' : 'no',
-    'run',
-    '--rm',
-    ...(interactive ? ['--interactive'] : []),
-    '--network',
-    'none',
-    '--volume',
+    host.composeProjectName,
     mount,
-    '--entrypoint',
-    'sh',
-    STACK_HELPER_IMAGE,
-    '-c',
+    interactive ? 'yes' : 'no',
     container.script,
-    'stack-state',
     ...container.scriptArgs,
   ];
 }
@@ -292,8 +292,7 @@ async function runStateContainer(host: StackStateHost, container: StateContainer
       });
       return stdout;
     } catch (error) {
-      const stderr = (error as { stderr?: string } | undefined)?.stderr?.trim();
-      throw new Error(`docker run on ${host.label} failed: ${stderr || errorText(error)}`);
+      throw new Error(`docker run on ${host.label} failed: ${commandFailure(error)}`);
     }
   });
 }
@@ -397,17 +396,18 @@ const PUBLISH_SCRIPT = [
  * stamp, so a read between the two sees a mismatch and distrusts it, never
  * the other way round.
  *
- * Returns whether the copy was stamped, which tells a start whether it still
- * has to stamp it once compose has created the volume.
+ * Returns the stamp it was written with, or null when there was no database
+ * yet — which tells a start it still has to stamp it once compose has created
+ * the volume.
  */
 export async function publishEnv(
   host: StackStateHost,
   env: string,
   lease: ServerLease
-): Promise<boolean> {
+): Promise<string | null> {
   const stamp = await databaseStamp(host, await listDataVolumes(host));
   await writeStateVolume(host, PUBLISH_SCRIPT, `${stamp ?? ''}\n${env}`, [lease.token]);
-  return stamp !== null;
+  return stamp;
 }
 
 /**
@@ -416,14 +416,17 @@ export async function publishEnv(
  * first start's copy vouches for nothing, and a later reset from a Console
  * that does not publish would leave it looking current.
  */
-export async function stampPublishedEnv(host: StackStateHost, lease: ServerLease): Promise<void> {
+export async function stampPublishedEnv(
+  host: StackStateHost,
+  lease: ServerLease
+): Promise<string | null> {
   const stamp = await databaseStamp(host, await listDataVolumes(host));
   if (stamp === null) {
     log.warn(
       `stack-state: the stack on ${host.label} has no database volume after starting, ` +
         `so its published settings are not stamped with one`
     );
-    return;
+    return null;
   }
   await writeStateVolume(
     host,
@@ -434,6 +437,7 @@ export async function stampPublishedEnv(host: StackStateHost, lease: ServerLease
     `${stamp}\n`,
     [lease.token]
   );
+  return stamp;
 }
 
 /**
@@ -519,8 +523,6 @@ export function unsharedStackMessage(hostLabel: string, ownerDir: string | null)
   );
 }
 
-/** What the renderer is told of a host's stack: enough to choose between
- * Connect and Start, and nothing secret. */
 /** How the stack compares with this build's pin: by the version it runs when
  * it is running, else by the one its settings name. */
 export function driftOf(
@@ -530,8 +532,9 @@ export function driftOf(
   return version === null ? null : classifyVersionDrift(version, COMPATIBLE_SWITCH_VERSION);
 }
 
-/** `busy` is the Console holding the stack's lock, if any: what the probe
- * offers waits for it. */
+/** What the renderer is told of a host's stack: enough to choose between
+ * Connect and Start, and nothing secret. `busy` is the Console holding the
+ * stack's lock, if any: what the probe offers waits for it. */
 export function probeFromStack(
   hostLabel: string,
   stack: StackOnHost,
@@ -619,7 +622,8 @@ function runningCoreVersion(resources: ProjectResources): string | null {
 export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   let resources: ProjectResources;
   let published: PublishedCopy | null = null;
-  let database: string | null = null;
+  // Asked once, and only when a stamp needs comparing with it.
+  let database: string | null | undefined;
   let own: string | null;
   let ownStamp: string | null;
   try {
@@ -640,7 +644,7 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   const running = isRunning(resources);
   // A copy with no stamp, or a stack with no database volume to compare it
   // with, cannot be judged, and is trusted as it always was.
-  const stale = published?.stamp != null && database !== null && published.stamp !== database;
+  const stale = published?.stamp != null && database != null && published.stamp !== database;
   if (published !== null && !stale) {
     return fromEnvText(published.env, 'published', resources, true, published.stamp);
   }
@@ -667,7 +671,8 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   if (stamp !== null) {
     let current: string | null;
     try {
-      current = await databaseStamp(host, resources.dataVolumes);
+      current =
+        database !== undefined ? database : await databaseStamp(host, resources.dataVolumes);
     } catch (error) {
       return { kind: 'unreadable', reason: errorText(error) };
     }
@@ -680,10 +685,4 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
     }
   }
   return fromEnvText(own, 'working-dir', resources, false, stamp);
-}
-
-/** The database volume the stack on `host` has now, as a stamp — null when it
- * has none yet. */
-export async function currentDatabaseStamp(host: StackStateHost): Promise<string | null> {
-  return databaseStamp(host, await listDataVolumes(host));
 }

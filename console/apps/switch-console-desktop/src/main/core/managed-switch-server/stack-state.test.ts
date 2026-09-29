@@ -73,6 +73,27 @@ type HostState = {
   readFileFails: boolean;
 };
 
+/** The `docker run` the state launcher execs, from the arguments it is given. */
+function dockerRun(launcherArgs: string[]): string[] {
+  const [, , , , image = '', , , , , mount = '', stdin = '', script = '', ...rest] = launcherArgs;
+  return [
+    'run',
+    '--rm',
+    ...(stdin === 'yes' ? ['--interactive'] : []),
+    '--network',
+    'none',
+    '--volume',
+    mount,
+    '--entrypoint',
+    'sh',
+    image,
+    '-c',
+    script,
+    'stack-state',
+    ...rest,
+  ];
+}
+
 function fakeHost(initial: Partial<HostState> = {}) {
   const state: HostState = {
     containers: [],
@@ -90,7 +111,7 @@ function fakeHost(initial: Partial<HostState> = {}) {
   };
   const calls: string[][] = [];
   /** The state launcher, as the host's shell would run it: its image check,
-   * its volume creation, and then the docker arguments it hands on. */
+   * its volume creation, and then the `docker run` it execs. */
   const launch = (args: string[]): string[] => {
     const [, , , , , volume = '', label = '', create = ''] = args;
     if (!state.imagePresent) {
@@ -102,7 +123,7 @@ function fakeHost(initial: Partial<HostState> = {}) {
       calls.push(['volume', 'create', '--label', label, volume]);
       state.stateVolume = true;
     }
-    return args.slice(8);
+    return dockerRun(args);
   };
   const exec = vi.fn(async (command: string, args: string[] = []): Promise<ExecResult> => {
     if (command === 'sh') args = launch(args);
@@ -297,7 +318,8 @@ describe('the published copy', () => {
       `${PROJECT}_console-state`,
     ]);
     expect(writeCommandInput).toHaveBeenCalledOnce();
-    const [, args, input] = writeCommandInput.mock.calls[0]!;
+    const [, launched, input] = writeCommandInput.mock.calls[0]!;
+    const args = dockerRun(launched);
     // No database volume yet (a first start), so an empty stamp line.
     expect(input).toBe(`\n${env}`);
     expect(args.join(' ')).not.toContain(secrets.gatewayAdminPassword);
@@ -306,7 +328,7 @@ describe('the published copy', () => {
       expect.arrayContaining(['--interactive', `${PROJECT}_console-state:/state`])
     );
     // Written aside and moved into place, so a reader never sees half a file.
-    const script = args[args.lastIndexOf('-c') + 1]!;
+    const script = args[args.indexOf('-c') + 1]!;
     expect(script).toMatch(/umask 077\n.*\ncat > .*stack\.env\.tmp.*\nmv /s);
     expect(script).toContain('rm -f "/state/stack.db"');
     for (const argv of calls) expect(argv.join(' ')).not.toContain(secrets.jwtSecretKey);
@@ -317,9 +339,9 @@ describe('the published copy', () => {
 
     await publishEnv(host, envFor(), lease);
 
-    const [, args] = writeCommandInput.mock.calls[0]!;
-    expect(args.slice(args.lastIndexOf('-c') + 2)).toEqual(['stack-state', lease.token]);
-    expect(args[args.lastIndexOf('-c') + 1]).toContain(WHILE_HOLDING_SERVER_LOCK);
+    const args = dockerRun(writeCommandInput.mock.calls[0]![1]);
+    expect(args.slice(args.indexOf('-c') + 2)).toEqual(['stack-state', lease.token]);
+    expect(args[args.indexOf('-c') + 1]).toContain(WHILE_HOLDING_SERVER_LOCK);
   });
 
   it('reads the database volume it was written for, when that was recorded', async () => {
@@ -359,9 +381,10 @@ describe('the published copy', () => {
 
     await stampPublishedEnv(host, lease);
 
-    const [, args, input] = writeCommandInput.mock.calls[0]!;
+    const [, launched, input] = writeCommandInput.mock.calls[0]!;
+    const args = dockerRun(launched);
     expect(input).toBe('2026-09-01T10:00:00Z\n');
-    expect(args[args.lastIndexOf('-c') + 1]).toContain('/state/stack.db');
+    expect(args[args.indexOf('-c') + 1]).toContain('/state/stack.db');
   });
 
   it('is withdrawn on reset, and only it: the activity record survives', async () => {
@@ -369,8 +392,8 @@ describe('the published copy', () => {
 
     await withdrawPublishedEnv(host, lease);
 
-    const [, args] = writeCommandInput.mock.calls[0]!;
-    const script = args[args.lastIndexOf('-c') + 1]!;
+    const args = dockerRun(writeCommandInput.mock.calls[0]![1]);
+    const script = args[args.indexOf('-c') + 1]!;
     expect(script).toContain('rm -f "/state/stack.env"');
     expect(script).toContain('"/state/stack.db"');
     expect(script).not.toMatch(/rm -rf|activity/);
@@ -404,9 +427,10 @@ describe('the published copy’s scripts, run for real', () => {
     writeFileSync(join(dir, 'lock'), `switch-console-lock v1\n${lease.token}\n`);
     const env = stateScriptEnv();
     const sh = (args: string[], input: string) => {
-      const at = args.lastIndexOf('-c');
-      const script = args[at + 1]!.replaceAll('/state', dir);
-      return execFileSync('sh', ['-c', script, ...args.slice(at + 2)], {
+      const run = dockerRun(args);
+      const at = run.indexOf('-c');
+      const script = run[at + 1]!.replaceAll('/state', dir);
+      return execFileSync('sh', ['-c', script, ...run.slice(at + 2)], {
         input,
         encoding: 'utf8',
         env,
@@ -648,6 +672,21 @@ describe('inspectStack', () => {
     expect(await inspectStack(host)).toEqual({ kind: 'unshared', ownerDir: null, running: false });
   });
 
+  it('asks about the database once when both copies need comparing with it', async () => {
+    const { host, calls } = fakeHost({
+      dataVolumes: [`${PROJECT}_pgdata`],
+      stateVolume: true,
+      published: envFor(),
+      publishedStamp: '2026-08-01T09:00:00Z',
+      own: envFor(),
+      ownStamp: '2026-08-01T09:00:00Z\n',
+      databaseCreatedAt: '2026-09-20T08:30:00Z',
+    });
+
+    expect(await inspectStack(host)).toMatchObject({ kind: 'unshared' });
+    expect(calls.filter((args) => args[0] === 'volume' && args[1] === 'inspect')).toHaveLength(1);
+  });
+
   it('cannot tell whose settings they are when the database cannot be asked about', async () => {
     const { host } = fakeHost({
       dataVolumes: [`${PROJECT}_pgdata`],
@@ -869,7 +908,7 @@ describe('the state launcher, run for real', () => {
 
   /** A host whose shell is this machine's and whose docker is a script that
    * records what it was asked, and has the helper image only when told to. */
-  function launcherHost(imagePresent: boolean) {
+  function launcherHost(imagePresent: boolean, ownImage: string | null = null) {
     const log = join(dir, 'docker.log');
     const docker = join(dir, 'docker');
     writeFileSync(
@@ -877,7 +916,9 @@ describe('the state launcher, run for real', () => {
       [
         '#!/bin/sh',
         `printf '%s\\n' "$*" >> '${log}'`,
-        `if [ "$1" = image ]; then ${imagePresent ? 'exit 0' : 'exit 1'}; fi`,
+        `if [ "$1" = image ] && [ "$3" = '${STACK_HELPER_IMAGE}' ]; then ${imagePresent ? 'exit 0' : 'exit 1'}; fi`,
+        `if [ "$1" = image ]; then [ "$3" = '${ownImage ?? ''}' ] && exit 0; exit 1; fi`,
+        `if [ "$1" = ps ]; then echo '${ownImage ?? ''}'; exit 0; fi`,
         'if [ "$1" = run ]; then echo ran; fi',
         'exit 0',
       ].join('\n'),
@@ -923,6 +964,17 @@ describe('the state launcher, run for real', () => {
 
     expect(asked().some((line) => line.startsWith('volume create'))).toBe(false);
     expect(asked().at(-1)).toMatch(/_console-state:\/state:ro /);
+  });
+
+  it('runs in the stack’s own Postgres image on a host without the helper image', async () => {
+    // Stop and Reset take the lock too: a host that cannot pull the helper
+    // image still has the image its stack's database runs.
+    const { host, asked } = launcherHost(false, 'postgres:17-alpine');
+
+    await runStateScript(host, 'echo hi', []);
+
+    expect(asked().at(-1)).toMatch(/--entrypoint sh postgres:17-alpine -c echo hi/);
+    expect(asked().some((line) => line.startsWith('pull'))).toBe(false);
   });
 
   it('says the helper image is missing rather than letting docker run pull it', async () => {

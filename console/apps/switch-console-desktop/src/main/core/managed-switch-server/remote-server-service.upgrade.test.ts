@@ -96,6 +96,23 @@ vi.mock('./stack-lock', async (importOriginal) => ({
   acquireServerLock,
   readServerLock,
 }));
+/** The KV store, in memory, cleared before each case: what the service keeps
+ * across launches. */
+const kvStore = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('@main/db/kv', () => ({
+  KV: class {
+    constructor(private readonly namespace: string) {}
+    async get(key: string) {
+      return kvStore.get(`${this.namespace}:${key}`) ?? null;
+    }
+    async set(key: string, value: unknown) {
+      kvStore.set(`${this.namespace}:${key}`, value);
+    }
+    async del(key: string) {
+      kvStore.delete(`${this.namespace}:${key}`);
+    }
+  },
+}));
 vi.mock('@main/core/switch-servers/console-identity', () => ({
   getConsoleIdentity: async () => ({
     id: 'aaaaaaaa-0000-4000-8000-000000000001',
@@ -174,6 +191,7 @@ function announce(sshHost: string, status: string): void {
 }
 
 beforeEach(() => {
+  kvStore.clear();
   vi.resetAllMocks();
   m.listeners.length = 0;
   m.blocked.clear();

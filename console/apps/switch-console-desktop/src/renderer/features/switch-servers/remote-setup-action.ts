@@ -37,16 +37,19 @@ export function remoteSetupAction(
     case 'absent':
       return { kind: 'start', existing: false };
     case 'present':
-      if (!probe.running) return { kind: 'start', existing: true };
+      // Stopped or running: a start is refused as a downgrade either way, so
+      // it is not offered only to be turned away once it has waited its turn.
       if (probe.drift?.direction === 'downgrade') {
         return {
           kind: 'blocked',
           title: `The server on ${hostLabel} is newer than this Console`,
           detail:
-            `It runs switch-core ${probe.drift.deployed}, and this Console runs ` +
-            `${probe.drift.expected}, so it cannot use it. Update Switch Console, then connect.`,
+            `It ${probe.running ? 'runs' : 'was last run on'} switch-core ${probe.drift.deployed}, ` +
+            `and this Console runs ${probe.drift.expected}, so it cannot use it. Update Switch ` +
+            `Console, then ${probe.running ? 'connect' : 'start it'}.`,
         };
       }
+      if (!probe.running) return { kind: 'start', existing: true };
       return {
         kind: 'connect',
         deployedVersion: probe.deployedVersion,

@@ -18,9 +18,11 @@ import type { StackOnHost, StackStateHost } from './stack-state';
  */
 
 const inspectStackMock = vi.hoisted(() => vi.fn<() => Promise<StackOnHost>>());
-const publishEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve(false)));
+const publishEnvMock = vi.hoisted(() => vi.fn((): Promise<string | null> => Promise.resolve(null)));
 const withdrawPublishedEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
-const stampPublishedEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const stampPublishedEnvMock = vi.hoisted(() =>
+  vi.fn((): Promise<string | null> => Promise.resolve('2026-09-01T10:00:00Z'))
+);
 const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const composeDownMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const waitForHealthMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)));
@@ -50,12 +52,8 @@ vi.mock('@shared/app-identity', async (importOriginal) => ({
   COMPATIBLE_SWITCH_VERSION: '0.11.0',
 }));
 vi.mock('@main/lib/logger', () => ({ log: { error: logError, warn: logWarn, info: vi.fn() } }));
-const currentDatabaseStampMock = vi.hoisted(() =>
-  vi.fn(async (): Promise<string | null> => '2026-09-01T10:00:00Z')
-);
 vi.mock('./stack-state', async (importOriginal) => ({
   ...(await importOriginal<typeof StackState>()),
-  currentDatabaseStamp: currentDatabaseStampMock,
   inspectStack: inspectStackMock,
   publishEnv: publishEnvMock,
   stampPublishedEnv: stampPublishedEnvMock,
@@ -216,7 +214,8 @@ beforeEach(() => {
   held = heldLease();
   telemetryConsentMock.mockResolvedValue(false);
   readRegisterMock.mockResolvedValue({ self: 'me', consoles: [], activity: [] });
-  publishEnvMock.mockResolvedValue(false);
+  publishEnvMock.mockResolvedValue(null);
+  stampPublishedEnvMock.mockResolvedValue('2026-09-01T10:00:00Z');
   waitForHealthMock.mockResolvedValue(true);
   loadOrCreateSecretsMock.mockResolvedValue(cachedSecrets);
   resolvePortsMock.mockResolvedValue(cachedPorts);
@@ -242,8 +241,8 @@ describe('starting a shared stack', () => {
     );
   });
 
-  it('leaves the compose file an account already has for the start to rewrite', async () => {
-    inspectStackMock.mockResolvedValue(present());
+  it('leaves an older stack’s compose file for the start to rewrite after its backup', async () => {
+    inspectStackMock.mockResolvedValue(present({}, { version: '0.10.0' }));
     const { host, writeFile, readFile } = sharedHost();
     readFile.mockImplementation(async (path) =>
       path === 'standalone-docker-compose.yml' ? 'services: { older: {} }' : null
@@ -256,6 +255,24 @@ describe('starting a shared stack', () => {
     );
     // Once, by the start itself, after the backup.
     expect(composeWrites).toHaveLength(1);
+  });
+
+  it('replaces an account’s older compose file for a stack at this build’s version', async () => {
+    // Stop and Reset run compose from this file: one from an older Console
+    // would miss a service the stack now has.
+    inspectStackMock.mockResolvedValue(present({ running: true }));
+    const { host, writeFile, readFile } = sharedHost();
+    readFile.mockImplementation(async (path) =>
+      path === 'standalone-docker-compose.yml' ? 'services: { older: {} }' : null
+    );
+
+    await adoptRunningStack(
+      host,
+      present() as Extract<StackOnHost, { kind: 'present' }>,
+      held.lease
+    );
+
+    expect(writeFile).toHaveBeenCalledWith('standalone-docker-compose.yml', 'services: {}');
   });
 
   it('runs the host’s stack with the host’s settings, not this desktop’s', async () => {
@@ -323,13 +340,14 @@ describe('starting a shared stack', () => {
     publishEnvMock.mockImplementation(async () => {
       order.push('publish');
       // A first start: no database volume to stamp the copy with yet.
-      return false;
+      return null;
     });
     composeUpMock.mockImplementation(async () => {
       order.push('compose up');
     });
     stampPublishedEnvMock.mockImplementation(async () => {
       order.push('stamp');
+      return '2026-09-01T10:00:00Z';
     });
 
     await startStack(startOptions(host));
@@ -521,14 +539,16 @@ describe('connecting to a shared stack', () => {
     expect(writeFile).not.toHaveBeenCalledWith('.env', expect.anything(), expect.anything());
   });
 
-  it('leaves a compose file this account already has alone: rewriting it is a start’s job', async () => {
+  it('brings an account’s older compose file to the one the stack runs, when joining it', async () => {
+    // Joined only at this build's version, whose compose file is the stack's:
+    // Stop and Reset from here then know every service it runs.
     inspectStackMock.mockResolvedValue(present());
     const { host, writeFile, readFile } = sharedHost();
     readFile.mockResolvedValue('services: { older: {} }');
 
     await connectStack(connectOptions(host));
 
-    expect(writeFile).not.toHaveBeenCalledWith('standalone-docker-compose.yml', expect.anything());
+    expect(writeFile).toHaveBeenCalledWith('standalone-docker-compose.yml', 'services: {}');
     expect(writeFile).toHaveBeenCalledWith('.env', 'PUBLISHED_ENV\n', 0o600);
   });
 
@@ -780,11 +800,14 @@ describe('usage data on a shared stack', () => {
 describe('stamping the published settings', () => {
   it('stamps after compose only a copy published before its database existed', async () => {
     inspectStackMock.mockResolvedValue(present());
-    publishEnvMock.mockResolvedValue(true);
+    publishEnvMock.mockResolvedValue('2026-08-31T09:00:00Z');
+    const { host, writeFile } = sharedHost();
 
-    await startStack(startOptions(sharedHost().host));
+    await startStack(startOptions(host));
 
     expect(stampPublishedEnvMock).not.toHaveBeenCalled();
+    // The stamp it was published with, not asked for again.
+    expect(writeFile).toHaveBeenCalledWith('.env.db', '2026-08-31T09:00:00Z\n', 0o600);
   });
 
   it('does not fail a start that happened because the stamp could not be written, and says what it leaves open', async () => {
@@ -1025,13 +1048,13 @@ describe('recording which database this account’s settings are for', () => {
     expect(result).toMatchObject({ kind: 'started', warning: null });
     expect(writeFile).toHaveBeenCalledWith('.env.db', '2026-09-01T10:00:00Z\n', 0o600);
     expect(composeUpMock.mock.invocationCallOrder[0]).toBeLessThan(
-      currentDatabaseStampMock.mock.invocationCallOrder[0]!
+      stampPublishedEnvMock.mock.invocationCallOrder[0]!
     );
   });
 
   it('leaves no stamp to vouch for settings when the stack has no database to stamp', async () => {
     inspectStackMock.mockResolvedValue({ kind: 'absent' });
-    currentDatabaseStampMock.mockResolvedValueOnce(null);
+    stampPublishedEnvMock.mockResolvedValueOnce(null);
     const { host, removeFile } = sharedHost();
 
     await startStack(startOptions(host));
@@ -1059,12 +1082,41 @@ describe('recording which database this account’s settings are for', () => {
 
   it('says so, without failing the start, when this account’s stamp cannot be written', async () => {
     inspectStackMock.mockResolvedValue({ kind: 'absent' });
-    currentDatabaseStampMock.mockRejectedValueOnce(new Error('volume inspect timed out'));
+    stampPublishedEnvMock.mockRejectedValueOnce(new Error('volume inspect timed out'));
 
     const result = await startStack(startOptions(sharedHost().host));
 
     expect(result.kind === 'started' && result.warning).toMatch(
       /could not be stamped with its database \(volume inspect timed out\)/
     );
+  });
+});
+
+describe('choosing ports for a new stack', () => {
+  it('chooses new ports when one it kept from a stack since gone is taken here', async () => {
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    const { host, checkNetworking } = sharedHost();
+    const fresh = { gateway: 42000, api: 42001, mattermost: 42002, postgres: 42003 };
+    (host as unknown as { pickFreePorts: () => Promise<typeof fresh> }).pickFreePorts = vi.fn(
+      async () => fresh
+    );
+    checkNetworking.mockRejectedValueOnce(new Error('Port 3300 is already in use'));
+
+    expect(await startStack(startOptions(host))).toMatchObject({ kind: 'started' });
+
+    expect(rememberPortsMock).toHaveBeenCalledWith(host, fresh);
+    expect(buildEnvFileMock).toHaveBeenCalledWith(expect.objectContaining({ ports: fresh }));
+  });
+
+  it('keeps an existing stack’s ports, which others use, and refuses instead', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const { host, checkNetworking } = sharedHost();
+    const pickFreePorts = vi.fn();
+    (host as unknown as { pickFreePorts: typeof pickFreePorts }).pickFreePorts = pickFreePorts;
+    checkNetworking.mockRejectedValue(new Error('Port 41000 is already in use'));
+
+    await expect(startStack(startOptions(host))).rejects.toThrow(/41000 is already in use/);
+    expect(pickFreePorts).not.toHaveBeenCalled();
+    expect(checkNetworking).toHaveBeenCalledWith(hostPorts);
   });
 });

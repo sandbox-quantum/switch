@@ -123,6 +123,23 @@ vi.mock('./stack-lock', async (importOriginal) => ({
   acquireServerLock,
   readServerLock,
 }));
+/** The KV store, in memory, cleared before each case: what the service keeps
+ * across launches. */
+const kvStore = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('@main/db/kv', () => ({
+  KV: class {
+    constructor(private readonly namespace: string) {}
+    async get(key: string) {
+      return kvStore.get(`${this.namespace}:${key}`) ?? null;
+    }
+    async set(key: string, value: unknown) {
+      kvStore.set(`${this.namespace}:${key}`, value);
+    }
+    async del(key: string) {
+      kvStore.delete(`${this.namespace}:${key}`);
+    }
+  },
+}));
 vi.mock('@main/core/switch-servers/console-identity', () => ({
   getConsoleIdentity: async () => ({
     id: 'aaaaaaaa-0000-4000-8000-000000000001',
@@ -198,6 +215,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   emitted.length = 0;
   lockEvents.length = 0;
+  kvStore.clear();
   isBlocked.mockReturnValue(false);
   listManagedServers.mockResolvedValue([RECORD]);
   getRemoteManagedServer.mockResolvedValue(RECORD);
@@ -1611,6 +1629,87 @@ describe('the paths the rest leave', () => {
 
       expect(createRemoteServerHost).not.toHaveBeenCalled();
     });
+  });
+
+  it('says why a running server could not be taken up at launch, instead of showing it stopped', async () => {
+    const host = fakeHost();
+    host.establishNetworking.mockRejectedValueOnce(new Error('Port 41000 is already in use'));
+    createRemoteServerHost.mockResolvedValue(host);
+    inspectStack.mockResolvedValue(present(true));
+    const service = await loadService();
+
+    await boot(service);
+
+    expect(service.getStatus('vm-1').notice).toBe(
+      'The server on vm-1 is running, but this Console could not connect to it: ' +
+        'Port 41000 is already in use'
+    );
+  });
+
+  it('says a host could not be asked at launch', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue({ kind: 'unreadable', reason: 'ssh: connection refused' });
+    const service = await loadService();
+
+    await boot(service);
+
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'stopped',
+      notice: 'Could not check the server on vm-1: ssh: connection refused',
+    });
+  });
+
+  it('keeps a running server whose settings cannot be read now, and the forward that reaches it', async () => {
+    const live = fakeHost();
+    createRemoteServerHost.mockResolvedValue(live);
+    inspectStack.mockResolvedValue(present(true));
+    const service = await loadService();
+    await boot(service);
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue({
+      kind: 'incomplete',
+      source: 'published',
+      missing: ['JWT_SECRET_KEY'],
+      raw: '',
+      running: true,
+    });
+
+    service.recheck('vm-1');
+
+    await vi.waitFor(() =>
+      expect(service.getStatus('vm-1').notice).toBe(
+        "The server's settings on vm-1 are missing JWT_SECRET_KEY."
+      )
+    );
+    expect(service.getStatus('vm-1').phase).toBe('running');
+    expect(live.dispose).not.toHaveBeenCalled();
+  });
+
+  it('does not report a server this Console reset itself as removed by someone', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue({ kind: 'absent' });
+    const service = await loadService();
+    await service.reset('vm-1');
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+
+    service.refresh('vm-1');
+    await vi.waitFor(() => expect(inspectStack).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(service.getStatus('vm-1').notice).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  it('records that it still uses a server at most daily, across launches too', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(true));
+    await boot(await loadService());
+    expect(writeRecord).toHaveBeenCalledOnce();
+
+    // The next launch: a new service, the same store.
+    await boot(await loadService());
+
+    expect(writeRecord).toHaveBeenCalledOnce();
   });
 
   it('passes a start’s steps, log lines and update on to the page', async () => {

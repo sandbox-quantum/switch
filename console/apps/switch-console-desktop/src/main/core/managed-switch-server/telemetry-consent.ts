@@ -3,6 +3,7 @@ import type { DeployedTelemetry } from '@shared/core/managed-switch-server/manag
 import { runningServiceEnv } from './compose';
 import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
 import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from './env-file';
+import { errorText } from './error-text';
 import type { ServerHost } from './host/types';
 
 /**
@@ -55,8 +56,4 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
   }
 
   return { known: false, reason: failures.join('; ') };
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

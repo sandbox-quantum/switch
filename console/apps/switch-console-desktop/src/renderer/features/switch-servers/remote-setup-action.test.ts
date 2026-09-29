@@ -61,6 +61,29 @@ describe('remoteSetupAction', () => {
     expect(action.kind === 'blocked' && action.detail).toMatch(/Update Switch Console/);
   });
 
+  it('offers no Start on a stopped stack newer than this Console, which would be refused', () => {
+    const action = remoteSetupAction(
+      'vm-1',
+      {
+        kind: 'present',
+        running: false,
+        deployedVersion: '0.29.0',
+        shared: true,
+        drift: { deployed: '0.29.0', expected: '0.28.0', direction: 'downgrade' },
+        busy: null,
+      },
+      false
+    );
+
+    expect(action).toEqual({
+      kind: 'blocked',
+      title: 'The server on vm-1 is newer than this Console',
+      detail:
+        'It was last run on switch-core 0.29.0, and this Console runs 0.28.0, so it cannot use ' +
+        'it. Update Switch Console, then start it.',
+    });
+  });
+
   it('joins a stack whose version cannot be compared as it is', () => {
     expect(
       remoteSetupAction(

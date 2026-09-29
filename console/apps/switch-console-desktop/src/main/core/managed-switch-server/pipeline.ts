@@ -38,7 +38,6 @@ import { type LocalServerSecrets, withRuntimePassword } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
 import type { ServerLease } from './stack-lock';
 import {
-  currentDatabaseStamp,
   driftOf,
   inspectStack,
   publishEnv,
@@ -331,8 +330,8 @@ async function adoptSettings(
  * Take up a stack that is running on a shared host without touching it: keep
  * its settings as this desktop's copy, and bring this account's working dir in
  * step so compose — for Stop, Restart and the status probes — reads the same
- * `.env` the stack runs with. The compose file is written only where there is
- * none, since rewriting it is a start's business. A stack this account started
+ * `.env` the stack runs with, and the compose file it runs with where this
+ * build's is that one. A stack this account started
  * before settings were shared is published on the way, so the next person can
  * join it.
  *
@@ -354,10 +353,10 @@ export async function adoptRunningStack(
 /**
  * Bring this account's working dir in step with a stack found on the host, so
  * compose — for the version check, an upgrade's backup, Stop, Restart — reads
- * what the stack runs with: the published `.env` byte for byte, and a compose
- * file where the account has none. An account that never joined the stack has
- * no compose file; rewriting an existing one is a start's business. A
- * published stack is past the Matrix line, so this build's file serves it.
+ * what the stack runs with: the published `.env` byte for byte, and this
+ * build's compose file where the account has none or the stack runs this
+ * build's version. An older stack's file is a start's to rewrite. A published
+ * stack is past the Matrix line, so this build's file serves it.
  */
 export async function bringWorkingDirInStep(
   host: ServerHost,
@@ -367,7 +366,11 @@ export async function bringWorkingDirInStep(
     await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
     await writeEnvStamp(host, stack.stamp);
   }
-  if ((await host.readFile(COMPOSE_FILE_NAME)) === null) {
+  // At this build's version the bundled file is the one the stack runs, so an
+  // account's older copy — from before it last updated its Console — is
+  // replaced: Stop and Reset must know every service. At another version it
+  // is a start's to rewrite, after any backup has read the old one.
+  if (driftOf(stack) === null || (await host.readFile(COMPOSE_FILE_NAME)) === null) {
     await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
   }
 }
@@ -421,6 +424,30 @@ async function settingsFor(
   if (plan.kind === 'adopt') return adoptSettings(host, plan.stack);
   // `cached` was only chosen because a copy exists, so neither call mints.
   return { secrets: await loadOrCreateSecrets(host), ports: await resolvePorts(host) };
+}
+
+/**
+ * A fresh stack's ports are this desktop's to choose — nothing on the host
+ * depends on them yet — so a choice kept from a stack since gone is chosen
+ * again when a port in it is now taken here, rather than refusing every start.
+ */
+async function portsReachableHere(
+  host: ServerHost,
+  plan: Exclude<StartPlan, { kind: 'refused' }>,
+  settings: StackSettings
+): Promise<StackSettings> {
+  if (plan.kind !== 'fresh') return settings;
+  try {
+    await host.checkNetworking(settings.ports);
+    return settings;
+  } catch (error) {
+    log.info(`managed-switch-server: choosing new ports for a new stack on ${host.label}`, {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    const ports = await host.pickFreePorts();
+    await rememberPorts(host, ports);
+    return { ...settings, ports };
+  }
 }
 
 /**
@@ -538,7 +565,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // host — make sure this Console can reach it afterwards: a port taken here,
   // or already another server's address, found only after compose has run
   // would leave the others restarted or updated and this Console without it.
-  const settings = await settingsFor(host, plan);
+  const settings = await portsReachableHere(host, plan, await settingsFor(host, plan));
   await host.checkNetworking(settings.ports);
   await assertManagedServerUrlFree(gatewayUrlFor(settings.ports), ref);
 
@@ -583,10 +610,10 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // halfway. A start whose settings nobody else can read is the state that
   // led the next person's Console to overwrite them, so this failing fails
   // the start rather than being logged past.
-  let stamped = false;
+  let publishedStamp: string | null = null;
   if (shared !== null) {
     onMessage('Sharing the server’s settings on the host…');
-    stamped = await publishEnv(shared.state, env, shared.lease);
+    publishedStamp = await publishEnv(shared.state, env, shared.lease);
   }
 
   onMessage(
@@ -602,8 +629,11 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   let warning: string | null = null;
   if (shared !== null) {
     try {
-      if (!stamped) await stampPublishedEnv(shared.state, shared.lease);
-      await writeEnvStamp(host, await currentDatabaseStamp(shared.state));
+      // The database exists by now; stamped at publish if it did then.
+      await writeEnvStamp(
+        host,
+        publishedStamp ?? (await stampPublishedEnv(shared.state, shared.lease))
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       log.error(`managed-switch-server: could not stamp the published settings on ${host.label}`, {
@@ -645,6 +675,13 @@ export type ConnectStackOptions = {
   lease: ServerLease;
 };
 
+/** What joining found: joined, a reason it could not, or a stack at an older
+ * switch-core than this build pins — which this Console cannot use as it is,
+ * and which the caller brings up to date as a start. */
+export type ConnectStackResult =
+  | Exclude<ConnectRemoteServerResult, { kind: 'cancelled' }>
+  | { kind: 'behind'; deployed: string; expected: string };
+
 /**
  * Join a stack that is already running on a shared host, from a Console that
  * did not start it (CHOO-2893): read its settings off the host, forward its
@@ -660,13 +697,6 @@ export type ConnectStackOptions = {
  * stopped or older stack is for Start, and nothing here ever makes new
  * credentials.
  */
-/** What joining found: joined, a reason it could not, or a stack at an older
- * switch-core than this build pins — which this Console cannot use as it is,
- * and which the caller brings up to date as a start. */
-export type ConnectStackResult =
-  | Exclude<ConnectRemoteServerResult, { kind: 'cancelled' }>
-  | { kind: 'behind'; deployed: string; expected: string };
-
 export async function connectStack(opts: ConnectStackOptions): Promise<ConnectStackResult> {
   const { host, ref, serverName, onMessage, signal, lease } = opts;
   const shared = requireSharedUnderLock(host, lease, 'connect to');

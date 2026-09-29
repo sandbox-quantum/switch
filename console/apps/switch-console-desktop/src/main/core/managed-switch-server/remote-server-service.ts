@@ -13,6 +13,7 @@ import {
   reportManagedServerStart,
   reportManagedServerStartThrew,
 } from '@main/core/telemetry/managed-server';
+import { KV } from '@main/db/kv';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
@@ -90,6 +91,10 @@ const RECHECK_INTERVAL_MS = 30_000;
  * without a container run on the host at every launch and re-check. */
 const SIGHTING_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+/** When this Console last got a record onto each host, by alias — kept across
+ * launches, so picking a stack back up at launch does not record it again. */
+const sightings = new KV<Record<string, string>>('remote-server-sightings');
+
 /** How long leaving waits to take this Console off a host's register. Leaving
  * is local; the record is a courtesy to the others and not worth a hang. */
 const LEAVE_RECORD_TIMEOUT_MS = 20_000;
@@ -151,7 +156,8 @@ function recordWarningFor(
 function noticeForIdleStack(
   hostLabel: string,
   stack: Exclude<StackOnHost, { kind: 'unreadable' }>,
-  wasRunning: boolean
+  wasRunning: boolean,
+  removedHere: boolean
 ): string | null {
   switch (stack.kind) {
     case 'present':
@@ -159,6 +165,8 @@ function noticeForIdleStack(
         ? `The server on ${hostLabel} was stopped outside this Console — from another Console, or on the host.`
         : null;
     case 'absent':
+      // Removed from here: nothing this Console needs telling.
+      if (removedHere) return null;
       return (
         `Nothing is set up on ${hostLabel} any more: the server was removed. Its activity says ` +
         `by whom. Starting it sets up a new, empty one.`
@@ -208,8 +216,12 @@ export class RemoteServerService {
    * upgrade finished, so that it can be told when they are ready. */
   private readonly refused = new Set<string>();
   private readonly lastRecheck = new Map<string, number>();
-  /** When this Console last got a record onto each host. */
+  /** When this Console last got a record onto each host, as far as this run
+   * knows; {@link sightings} carries it across launches. */
   private readonly lastRecorded = new Map<string, number>();
+  /** Hosts whose stack this Console reset, until it starts or joins one there
+   * again: finding nothing on them is no news to report. */
+  private readonly removedHere = new Set<string>();
 
   getStatuses(): RemoteServerStatus[] {
     return [...this.statuses.values()];
@@ -239,6 +251,7 @@ export class RemoteServerService {
     try {
       await writeRecord(host, action);
       this.lastRecorded.set(sshHost, Date.now());
+      await sightings.set(sshHost, new Date().toISOString());
       this.setStatus(sshHost, { recordWarning: null });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -537,6 +550,7 @@ export class RemoteServerService {
     let lease: ServerLease | null = null;
     let kept = false;
     let upgradeNow = false;
+    let seenRunning = false;
     try {
       host = await createRemoteServerHost(sshHost);
       // Read only once nobody else is changing the stack: one half-way through
@@ -544,9 +558,10 @@ export class RemoteServerService {
       lease = await this.waitForLock(sshHost, host, 'checking');
       const stack = await inspectStack(host);
       if (stack.kind === 'unreadable') {
-        this.leaveUnanswered(sshHost, wasRunning, stack.reason);
+        this.leaveUnanswered(sshHost, stack.reason, false);
         return;
       }
+      seenRunning = stack.kind !== 'absent' && stack.running;
       // The version of a stopped stack is read from this account's `.env`,
       // which is stale once another account has updated the stack; the
       // published copy is what the stack was last started with. A read that
@@ -610,16 +625,25 @@ export class RemoteServerService {
         // Only for a running stack: a stopped one sends nothing, so it
         // cannot be out of step with the user's answer.
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
-        if (Date.now() - (this.lastRecorded.get(sshHost) ?? 0) >= SIGHTING_INTERVAL_MS) {
+        if (Date.now() - (await this.lastSighting(sshHost)) >= SIGHTING_INTERVAL_MS) {
           await this.record(sshHost, host, null);
         }
+      } else if (stack.kind !== 'present' && stack.kind !== 'absent' && stack.running && live) {
+        // Up, and reached through the forward this Console already holds, but
+        // its settings cannot be read from here now: keep what works, and say
+        // why it could not be taken up afresh.
+        this.setStatus(sshHost, {
+          phase: 'running',
+          serverId: server.id,
+          notice: noticeForIdleStack(host.label, stack, wasRunning, false),
+        });
       } else {
         this.releaseHost(sshHost, live);
         this.setStatus(sshHost, {
           phase: 'stopped',
           serverId: server.id,
           deployedTelemetry: null,
-          notice: noticeForIdleStack(host.label, stack, wasRunning),
+          notice: noticeForIdleStack(host.label, stack, wasRunning, this.removedHere.has(sshHost)),
         });
       }
       this.setStatus(sshHost, {
@@ -634,8 +658,8 @@ export class RemoteServerService {
       log.warn(`remote-switch-server: reconcile failed for ${sshHost}`, { error });
       this.leaveUnanswered(
         sshHost,
-        wasRunning,
-        error instanceof Error ? error.message : String(error)
+        error instanceof Error ? error.message : String(error),
+        seenRunning
       );
     } finally {
       // Before the host goes: giving the lock back runs over its connection.
@@ -671,15 +695,29 @@ export class RemoteServerService {
   }
 
   /**
-   * The host could not be asked what it has. That is not news about the stack,
-   * so a stack this Console saw running keeps its forward and its phase, and
-   * says it could not be checked; the next failing call asks again.
+   * The host could not be asked what it has, or a stack it has could not be
+   * taken up. That is not news about the stack, so the phase and any forward
+   * this Console holds stay as they were — but the page says why, rather than
+   * showing a server that runs for everyone else as simply stopped.
+   * `seenRunning` is whether the stack was read as running before it failed.
    */
-  private leaveUnanswered(sshHost: string, wasRunning: boolean, reason: string): void {
+  private leaveUnanswered(sshHost: string, reason: string, seenRunning: boolean): void {
     log.warn(`remote-switch-server: could not check the stack on ${sshHost}`, { reason });
-    if (wasRunning) {
-      this.setStatus(sshHost, { notice: `Could not check the server on ${sshHost}: ${reason}` });
-    }
+    this.setStatus(sshHost, {
+      notice: seenRunning
+        ? `The server on ${sshHost} is running, but this Console could not connect to it: ${reason}`
+        : `Could not check the server on ${sshHost}: ${reason}`,
+    });
+  }
+
+  /** When this Console last got a record onto `sshHost`: this run's, else the
+   * one a previous launch kept. */
+  private async lastSighting(sshHost: string): Promise<number> {
+    const inRun = this.lastRecorded.get(sshHost);
+    if (inRun !== undefined) return inRun;
+    const kept = await sightings.get(sshHost);
+    const at = kept === null ? Number.NaN : Date.parse(kept);
+    return Number.isFinite(at) ? at : 0;
   }
 
   /** Point the server's record at the ports the stack actually publishes,
@@ -820,6 +858,7 @@ export class RemoteServerService {
           notice: result.warning,
         });
         this.releaseRefused(sshHost, result.serverId);
+        this.removedHere.delete(sshHost);
         await this.record(sshHost, host, 'started');
       }
       reportManagedServerStart('remote', result);
@@ -932,6 +971,7 @@ export class RemoteServerService {
         this.releaseRefused(sshHost, result.serverId);
         this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
+        this.removedHere.delete(sshHost);
         await this.record(sshHost, host, 'connected');
         return result;
       }
@@ -1037,6 +1077,8 @@ export class RemoteServerService {
       this.statuses.delete(sshHost);
       this.lastRecheck.delete(sshHost);
       this.lastRecorded.delete(sshHost);
+      this.removedHere.delete(sshHost);
+      await sightings.del(sshHost);
     } finally {
       this.busy.delete(sshHost);
     }
@@ -1166,6 +1208,7 @@ export class RemoteServerService {
         drift: null,
         upgrade: null,
       });
+      this.removedHere.add(sshHost);
       // Kept through the reset on purpose: who destroyed a shared server is
       // exactly what its other users will ask.
       await this.record(sshHost, host, 'reset');

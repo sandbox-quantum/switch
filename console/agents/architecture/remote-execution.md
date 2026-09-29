@@ -100,8 +100,9 @@ stack's `.env` and took the running server down. Now:
   container of the stack's own Postgres image, with secrets on stdin, never in
   a command line — see `stack-state.ts`. One shell launcher per round trip
   checks the image is there, creates the volume when writing, and runs the
-  container; a missing image is pulled under a pull's timeout, never by
-  `docker run` inside a quick one.
+  container. A host without the helper image uses the image the stack's own
+  Postgres container runs; only with neither is it pulled — under a pull's
+  timeout, never by `docker run` inside a quick one.
 - "Nothing of the stack" is read from empty `docker ps` / `docker volume ls`
   output, so a command over SSH succeeds only on an exit status of 0: a channel
   that closes without one — a dropped connection — or on a signal is a failure,
@@ -136,13 +137,21 @@ stack's `.env` and took the running server down. Now:
   stopped, restarted on new ports or reset shows as it is. A stack shown as
   stopped is sent nothing, so opening its page has the host looked at again:
   one someone has started or removed is taken up; one still stopped keeps
-  what the page says about it. An update this Console held sessions back for is
+  what the page says about it, and one this Console removed itself is not
+  reported as removed. A stack that could not be taken up says why on the page
+  rather than showing as simply stopped; one running with settings that cannot
+  be read now keeps the forward this Console already has. An update this Console held sessions back for is
   finished once the host is at its pin, whoever made it. The status carries a
   `notice` for what this Console did not do.
 - A start checks, before it changes anything on the host, that this Console
   can reach the stack afterwards — its ports free here, its address not
   another server's (`checkNetworking`, `assertManagedServerUrlFree`) — since
   compose restarts or updates it for everyone before the forward is opened.
+  A new stack's ports are this desktop's to choose, so a kept choice with a
+  port now taken here is chosen again.
+- Joining or picking up a stack at this build's version also replaces an older
+  compose file in the account's working dir, which is then the stack's own:
+  Stop and Reset run from it.
 
 **One Console changes a shared stack at a time.** Two Consoles pressing Start
 on an empty host together would otherwise both find nothing, both make
@@ -167,8 +176,11 @@ the state volume:
 - It is a lease: `ttlSeconds` at a time, renewed while its holder works, with a
   hard `maxHoldSeconds` above anything a start can take (a backup may run 30
   minutes). A Console that crashes or loses its network holds it for at most a
-  lease; a restarted Console takes back its own previous run's at once. Expiry
-  is decided by the host's clock inside the script, never a desktop's.
+  lease; a restarted Console takes back its own previous run's at once (the
+  same id and name — two desktops restored from one backup share only the id),
+  and a lease this run failed to give back is its own to take over, not to
+  wait for. Expiry is decided by the host's clock inside the script, never a
+  desktop's.
 - Taking and renewing happen under a `flock` on `/state/.mutex`, held for the
   script's lifetime, so exactly one of two Consoles gets it — including two
   taking over one lapsed lease. The containers share one volume on one kernel,
@@ -231,7 +243,8 @@ per-person accounts would hide each person's sessions from the others. Instead:
   register of who uses the stack and an activity log of starts, connects,
   stops, resets and disconnects. Every action refreshes the Console's entry;
   otherwise it is refreshed at most once a day, since each write is a
-  container run on the host. A disconnect takes the Console off the register
+  container run on the host — when it last did is kept across launches. A
+  disconnect takes the Console off the register
   and keeps its line of activity. A reset keeps the activity. The
   record is for people, never a control, and a write that fails does not fail
   the operation: the server page says what could not be recorded
