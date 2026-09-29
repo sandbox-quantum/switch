@@ -9,7 +9,10 @@ error — so the adapter must only ever act on privacy it actually knows.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
+
+import pytest
 
 from switch_core.bridges.collaboration.models import InboundAppJoin, InboundMessage
 from switch_core.bridges.collaboration.teams.adapter import (
@@ -288,7 +291,7 @@ def test_captured_message_from_a_private_channel_reports_it_private() -> None:
     assert [m.channel_type for m in captured] == ["channel_private"]
 
 
-# ── Correcting saved rooms at startup ────────────────────────────────────────
+# ── Reporting learned types, so saved rooms are corrected ────────────────────
 
 
 class _PerChannelGraph(_FakeGraph):
@@ -297,13 +300,24 @@ class _PerChannelGraph(_FakeGraph):
         self._types = types
 
     async def get_channel(self, *, team_id: str, channel_id: str) -> dict[str, Any]:
+        self.channel_reads += 1
         membership = self._types[channel_id]
         if membership is None:
             raise RuntimeError("Graph refused the read")
         return {"id": channel_id, "membershipType": membership}
 
 
-def test_read_channel_types_reports_what_teams_says_and_skips_failures() -> None:
+def _capture_learned(adapter: TeamsAdapter) -> list[tuple[str, str]]:
+    learned: list[tuple[str, str]] = []
+
+    async def on_learned(channel_id: str, channel_type: Any) -> None:
+        learned.append((channel_id, channel_type))
+
+    adapter.set_channel_type_handler(on_learned)
+    return learned
+
+
+def test_refresh_reports_what_teams_says_and_skips_failures() -> None:
     graph = _PerChannelGraph(
         {
             "19:std@thread.tacv2": "standard",
@@ -312,17 +326,72 @@ def test_read_channel_types_reports_what_teams_says_and_skips_failures() -> None
         }
     )
     adapter = _adapter(graph)
+    learned = _capture_learned(adapter)
 
-    types = _run(
-        adapter.read_channel_types(
+    _run(
+        adapter.refresh_channel_types(
             ["19:std@thread.tacv2", "19:prv@thread.tacv2", "19:bad@thread.tacv2"]
         )
     )
 
-    assert types == {
-        "19:std@thread.tacv2": "channel_public",
-        "19:prv@thread.tacv2": "channel_private",
-    }
+    assert learned == [
+        ("19:std@thread.tacv2", "channel_public"),
+        ("19:prv@thread.tacv2", "channel_private"),
+    ]
+
+
+def test_a_type_learned_after_startup_is_reported_too() -> None:
+    # The startup read failed, or the channel was never read; the first read
+    # that succeeds later must still correct the saved room.
+    graph = _FakeGraph(membership_type="private")
+    adapter = _adapter(graph)
+    learned = _capture_learned(adapter)
+
+    _run(adapter.add_users_to_channel(CHANNEL, ["bob"], ["aad-bob"]))
+
+    assert learned == [(CHANNEL, "channel_private")]
+
+
+def test_a_failure_to_record_the_type_does_not_fail_the_read() -> None:
+    graph = _FakeGraph(membership_type="private")
+    adapter = _adapter(graph)
+
+    async def on_learned(channel_id: str, channel_type: Any) -> None:
+        raise RuntimeError("database unavailable")
+
+    adapter.set_channel_type_handler(on_learned)
+
+    failed = _run(adapter.add_users_to_channel(CHANNEL, ["bob"], ["aad-bob"]))
+
+    assert failed == []
+    assert graph.channel_members == ["aad-bob"]
+    assert graph.team_members == []
+
+
+def test_a_conversation_update_adding_nobody_does_not_read_the_channel() -> None:
+    # Deletions, renames and departures need no type, so no Graph read.
+    graph = _FakeGraph(membership_type=None)
+    adapter = _adapter(graph)
+    activity = _bot_added_activity()
+    activity["membersAdded"] = []
+    activity["channelData"]["eventType"] = "channelDeleted"
+
+    _run(adapter._dispatch_activity(activity))
+
+    assert graph.channel_reads == 0
+
+
+def test_a_failed_read_is_warned_about_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    graph = _FakeGraph(membership_type=None)
+    adapter = _adapter(graph)
+    _capture_messages(adapter)
+
+    with caplog.at_level(logging.WARNING):
+        _run(adapter._dispatch_activity(_message_activity()))
+
+    assert len([r for r in caplog.records if CHANNEL in r.getMessage()]) == 1
 
 
 def test_a_known_chat_is_not_mistaken_for_a_channel() -> None:

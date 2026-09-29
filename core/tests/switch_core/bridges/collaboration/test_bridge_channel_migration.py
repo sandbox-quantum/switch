@@ -88,6 +88,9 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
         def set_channel_migration_handler(self, handler: Any) -> None:
             installed.append(handler)
 
+        def set_channel_type_handler(self, handler: Any) -> None:
+            return None
+
         def set_agent_presentation_resolver(self, resolver: Any) -> None:
             # Not what this test is about; present so the stub satisfies what
             # `start` installs on its adapter.

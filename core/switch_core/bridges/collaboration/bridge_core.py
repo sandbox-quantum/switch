@@ -386,6 +386,7 @@ class BridgeCore:
         await self._load_channel_map()
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
+        self._adapter.set_channel_type_handler(self._record_channel_type)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         if self._approval_answers is not None:
             self._adapter.set_interaction_handler(
@@ -605,63 +606,57 @@ class BridgeCore:
                 )
 
     async def _correct_channel_types(self) -> None:
-        """Bring each room's saved channel type in line with the platform's.
-
-        A room created from an inbound event is saved with the type the event
-        implied, and a Teams event cannot say whether a channel is private. A
-        private channel's room saved as public is shown as public, and moving
-        it to another bridge opens a public channel there, since a move keeps
-        the room's saved type. The platform is the authority, so ask it."""
+        """Have the adapter re-read every channel this bridge's rooms are bound
+        to, so each answer reaches `_record_channel_type` even for a channel
+        nothing happens in. Archived rooms are left until they are used again."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
             rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
-        saved = {
-            room.id: (room.external_channel_id, room.channel_type)
-            for room in rooms
-            if room.external_channel_id
-            and room.channel_type in ("channel_public", "channel_private")
-        }
-        if not saved:
-            return
-        actual = await self._adapter.read_channel_types(
-            sorted({channel_id for channel_id, _ in saved.values()})
+        channel_ids = sorted(
+            {
+                room.external_channel_id
+                for room in rooms
+                if room.external_channel_id
+                and room.archived_at is None
+                and room.channel_type in ("channel_public", "channel_private")
+            }
         )
-        corrections: dict[str, tuple[str, str, ChannelType]] = {}
-        for room_id, (channel_id, saved_type) in saved.items():
-            reported = actual.get(channel_id)
-            if (
-                reported in ("channel_public", "channel_private")
-                and reported != saved_type
-            ):
-                corrections[room_id] = (channel_id, saved_type, reported)
-        if not corrections:
+        if channel_ids:
+            await self._adapter.refresh_channel_types(channel_ids)
+
+    async def _record_channel_type(
+        self, channel_id: str, channel_type: ChannelType
+    ) -> None:
+        """Correct the rooms bound to a channel whose saved type the platform
+        contradicts.
+
+        Installed on the adapter, which calls it whenever it learns a channel's
+        type from the platform. A room created from an inbound event is saved
+        with the type the event implied, and a Teams event cannot say whether a
+        channel is private. A private channel's room saved as public is shown
+        as public, and moving it to another bridge opens a public channel
+        there, since a move keeps the room's saved type."""
+        if channel_type not in ("channel_public", "channel_private"):
             return
-        applied: list[str] = []
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
-            for room_id, (channel_id, saved_type, corrected) in corrections.items():
-                if await self._room_store.correct_channel_type(
-                    session,
-                    room_id,
-                    bridge_id=self._bridge_id,
-                    external_channel_id=channel_id,
-                    saved_type=saved_type,
-                    channel_type=corrected,
-                ):
-                    applied.append(room_id)
+            corrected = await self._room_store.correct_channel_type(
+                session,
+                bridge_id=self._bridge_id,
+                external_channel_id=channel_id,
+                channel_type=channel_type,
+            )
             await session.commit()
-        for room_id in applied:
-            channel_id, saved_type, corrected = corrections[room_id]
+        for room_id in corrected:
             logger.warning(
-                "Room %s was saved as %s but %s reports its channel %s as %s; "
-                "corrected",
+                "Room %s was saved with the wrong privacy; %s reports its "
+                "channel %s as %s, and the room now says so",
                 room_id,
-                saved_type,
                 self._bridge_type,
                 channel_id,
-                corrected,
+                channel_type,
             )
 
     # ── Inbound (platform → room) ───────────────────────────────────────────

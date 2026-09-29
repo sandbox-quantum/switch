@@ -2027,21 +2027,17 @@ class TeamsAdapter(CollaborationAdapter):
         channel = await self._fetch_channel(channel_id)
         return _channel_type_of(channel)
 
-    async def read_channel_types(
-        self, channel_ids: list[str]
-    ) -> dict[str, ChannelType]:
-        types: dict[str, ChannelType] = {}
+    async def refresh_channel_types(self, channel_ids: list[str]) -> None:
         for channel_id in channel_ids:
             try:
-                types[channel_id] = await self.get_channel_type(channel_id)
+                await self._fetch_channel(channel_id)
             except Exception:
                 logger.warning(
                     "Could not read whether Teams channel %s is private; its "
-                    "room keeps the type it was saved with until the next start",
+                    "room keeps the type it was saved with until a read succeeds",
                     channel_id,
                     exc_info=True,
                 )
-        return types
 
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Search the AAD directory for people to claim as an identity.
@@ -2412,8 +2408,7 @@ class TeamsAdapter(CollaborationAdapter):
             channel_type = await self._inbound_channel_type(channel_id, chat_type)
             await self._dispatch_message(activity, channel_id, channel_type)
         elif activity_type == "conversationUpdate":
-            channel_type = await self._inbound_channel_type(channel_id, chat_type)
-            await self._dispatch_conversation_update(activity, channel_id, channel_type)
+            await self._dispatch_conversation_update(activity, channel_id, chat_type)
         elif activity_type == "invoke" and activity.get("name") == _INVOKE_CARD_ACTION:
             return await self._dispatch_card_action(activity, channel_id)
         return None
@@ -2451,9 +2446,9 @@ class TeamsAdapter(CollaborationAdapter):
         what is already known, else from Graph — the same read that learns its
         name and layout. When Graph cannot say, the channel is reported private
         and not recorded, so the adapter keeps asking. A room created for it in
-        the meantime is saved as private, the cautious reading, and stays so
-        until the bridge's check at its next start corrects it; `_read_channel`
-        warns once per retry window that this is happening."""
+        the meantime is saved as private, the cautious reading, until a read
+        succeeds and corrects it; `_read_channel` warns once per retry window
+        that this is happening."""
         if chat_type is not None:
             return chat_type
         known = self._channel_type.get(channel_id)
@@ -2461,16 +2456,8 @@ class TeamsAdapter(CollaborationAdapter):
             return known
         if self._read_recently_failed(channel_id):
             return "channel_private"
-        await self._read_channel(channel_id)
-        known = self._channel_type.get(channel_id)
-        if known is not None:
-            return known
-        logger.warning(
-            "Could not learn whether Teams channel %s is private; reporting it "
-            "as private until Graph can say",
-            channel_id,
-        )
-        return "channel_private"
+        channel = await self._read_channel(channel_id)
+        return "channel_private" if channel is None else _channel_type_of(channel)
 
     def _seen_activity(self, activity_id: str) -> bool:
         if not activity_id:
@@ -2786,9 +2773,14 @@ class TeamsAdapter(CollaborationAdapter):
             )
 
     async def _dispatch_conversation_update(
-        self, activity: dict[str, Any], channel_id: str, channel_type: ChannelType
+        self, activity: dict[str, Any], channel_id: str, chat_type: ChannelType | None
     ) -> None:
         members_added = activity.get("membersAdded") or []
+        if not members_added:
+            # Deletions, renames and departures carry nothing that needs the
+            # conversation's type, so a channel's is not looked up for them.
+            return
+        channel_type = await self._inbound_channel_type(channel_id, chat_type)
         recipient = activity.get("recipient") or {}
         bot_id = str(recipient.get("id", ""))
         channel_name = await self._resolve_channel_name(activity, channel_id)
@@ -2877,18 +2869,15 @@ class TeamsAdapter(CollaborationAdapter):
         capture die at a restart, and it is not worth repeating for a cheaper
         symptom.
         """
-        if self._graph is None or not self._is_channel(channel_id):
-            return None
-        if not (self._team_of_channel.get(channel_id) or self._config.team_id):
+        if not self._is_channel(channel_id):
             return None
         try:
             return await self._fetch_channel(channel_id)
         except Exception:
             logger.warning(
                 "Could not read Teams channel %s; until this succeeds a room "
-                "created for it is named after its id and saved as private "
-                "(corrected at the next start), and replies there are threaded "
-                "as if it used the posts layout",
+                "created for it is named after its id and saved as private, and "
+                "replies there are threaded as if it used the posts layout",
                 channel_id,
                 exc_info=True,
             )
@@ -2906,11 +2895,32 @@ class TeamsAdapter(CollaborationAdapter):
         if not team_id:
             raise RuntimeError(f"No team is known for Teams channel {channel_id}")
         channel = await self._graph.get_channel(team_id=team_id, channel_id=channel_id)
+        channel_type = _channel_type_of(channel)
         self._channel_read_failed_at.pop(channel_id, None)
-        self._channel_type[channel_id] = _channel_type_of(channel)
+        self._channel_type[channel_id] = channel_type
         self._channel_names[channel_id] = str(channel.get("displayName") or "")
         self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
+        await self._report_channel_type(channel_id, channel_type)
         return channel
+
+    async def _report_channel_type(
+        self, channel_id: str, channel_type: ChannelType
+    ) -> None:
+        """Hand a channel's type, as Graph gave it, to the bridge, which
+        corrects any room saved with the other one. A failure to do so is not
+        the read's failure: the adapter still knows the type, and the room is
+        corrected by the next read that reports it."""
+        if self._on_channel_type_learned is None:
+            return
+        try:
+            await self._on_channel_type_learned(channel_id, channel_type)
+        except Exception:
+            logger.warning(
+                "Could not record Teams channel %s as %s on its room",
+                channel_id,
+                channel_type,
+                exc_info=True,
+            )
 
     def _read_recently_failed(self, channel_id: str) -> bool:
         failed_at = self._channel_read_failed_at.get(channel_id)

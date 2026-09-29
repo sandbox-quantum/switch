@@ -447,6 +447,11 @@ class CollaborationAdapter(ABC):
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
+        # Set by set_channel_type_handler. Called with (channel_id, type) when
+        # the adapter learns a channel's type from the platform.
+        self._on_channel_type_learned: (
+            Callable[[str, ChannelType], Awaitable[None]] | None
+        ) = None
         # Set by set_agent_presentation_resolver. Returns the agent's stored
         # presentation, or None for a name that is not an agent. Left unset an
         # adapter still works — every agent renders under its identifier with
@@ -1189,17 +1194,17 @@ class CollaborationAdapter(ABC):
         bot having to be re-added to each channel."""
         return None
 
-    async def read_channel_types(
-        self, channel_ids: list[str]
-    ) -> dict[str, ChannelType]:
-        """The platform's own answer for each channel's type.
+    async def refresh_channel_types(self, channel_ids: list[str]) -> None:
+        """Ask the platform for each channel's type, reporting every answer
+        through the channel-type handler.
 
-        Called on bridge startup so a room saved with the wrong type is
-        corrected. Channels that could not be read are left out, and logged,
-        rather than failing the rest. Default is empty: only an adapter that
-        has ever saved a type it could not verify has anything to correct
-        (Teams, whose inbound events cannot say whether a channel is private)."""
-        return {}
+        Called on bridge startup, so a room saved with the wrong type is
+        corrected even if nothing happens in its channel. A channel that cannot
+        be read is logged and skipped rather than failing the rest. Default is
+        a no-op: only an adapter that may have saved a type it could not verify
+        has anything to refresh (Teams, whose inbound events cannot say whether
+        a channel is private)."""
+        return None
 
     def set_service_url_persister(
         self, persist: Callable[[str], Awaitable[None]]
@@ -1250,6 +1255,19 @@ class CollaborationAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_channel_type_handler(
+        self, handler: Callable[[str, ChannelType], Awaitable[None]]
+    ) -> None:
+        """Install the callback an adapter calls when it learns a channel's
+        type from the platform, so rooms saved with a different one follow.
+
+        Stored for every adapter and used by those that may have saved a type
+        they could not verify: Teams, where a room created from an inbound
+        event could not know whether its channel was private. A room wrongly
+        saved as public is shown as public, and moving it to another bridge
+        keeps the saved type — opening a public channel there."""
+        self._on_channel_type_learned = handler
 
     def set_interaction_handler(
         self, handler: Callable[[InboundInteraction], Awaitable[None]]
