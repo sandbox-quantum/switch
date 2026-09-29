@@ -166,13 +166,46 @@ async def _event_stream(
         resync[0] = True
     try:
         yield _frame("connection_state", _connection_state(conn))
+        # A worker's `worker_attached` comes before any gap or buffered event.
+        for event, data in conn.worker_frames.drain():
+            yield _frame(event, data)
 
         # A cursor ahead of everything we hold is a cursor from a previous
         # life of this process: the buffer is in memory, so a restart resets
         # the sequence. Say so. Staying quiet would leave the client believing
         # it is caught up when its numbering no longer means anything.
         head = buffer.head(agent_id)
-        if conn.cursor > head:
+        floor = buffer.sequence_floor
+        if 0 < conn.cursor < floor - 1:
+            # Every boot numbers above the previous one, so a cursor below this
+            # boot's floor is one a restart left behind. The client keeps its
+            # sequence-based dedupe (nothing is reused); what it has lost is
+            # every event the old buffer held.
+            logger.warning(
+                "[STREAM] agent=%s connection=%s resumed from cursor %s of an "
+                "earlier server boot (this boot starts at %s)",
+                agent_id,
+                conn.id,
+                conn.cursor,
+                floor,
+            )
+            previous = conn.cursor
+            conn.cursor = floor - 1
+            buffer.mark_restarted(agent_id)
+            yield _frame(
+                "gap",
+                {
+                    "from_sequence": previous,
+                    "resumed_at": conn.cursor,
+                    "rooms": sorted(conn.rooms),
+                    "all_rooms": True,
+                    "reason": "the server restarted since your last connection; "
+                    "events from before the restart are gone in every room, "
+                    "including any this connection has yet to claim — re-read "
+                    "room context",
+                },
+            )
+        elif conn.cursor > head:
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from cursor %s but the "
                 "buffer only reaches %s — treating as a restart",
@@ -237,6 +270,11 @@ async def _event_stream(
                 yield _frame("evicted", _eviction(TAKEN_OVER))
                 return
             if conn.closure is not None:
+                # A Stop's cancel is sent ahead of the eviction it causes, so
+                # the worker can release what it had not started yet.
+                for event, data in conn.worker_frames.drain():
+                    if event == "mailbox_cancel":
+                        yield _frame(event, data)
                 yield _frame("evicted", _eviction(conn.closure))
                 return
             if not conn.is_alive(time.monotonic()):
@@ -256,6 +294,10 @@ async def _event_stream(
                 registry.close(conn.id, HEARTBEAT_LAPSED)
                 yield _frame("evicted", _eviction(HEARTBEAT_LAPSED))
                 return
+
+            if conn.worker_frames:
+                for event, data in conn.worker_frames.drain():
+                    yield _frame(event, data)
 
             if conn.session_commands:
                 relayed = list(conn.session_commands)
@@ -396,6 +438,7 @@ async def _event_stream(
             # and the clear would otherwise wait for the keepalive timeout.
             if (
                 conn.session_commands
+                or conn.worker_frames
                 or conn.released_rooms
                 or outcomes
                 or resync[0]

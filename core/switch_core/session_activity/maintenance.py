@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,6 +27,12 @@ logger = logging.getLogger(__name__)
 EXPIRY_INTERVAL_SECONDS = 5.0
 PRUNE_EVERY_SECONDS = 3600.0
 ACTIVITY_RETENTION = timedelta(days=7)
+#: How often the hosted wake mailbox is reclaimed, expired, pruned and re-offered.
+MAILBOX_EVERY_SECONDS = 30.0
+
+#: One wake mailbox pass over the bound tenant; given the time of the previous
+#: pass, for its metrics.
+MailboxUpkeep = Callable[[datetime], Awaitable[None]]
 
 
 async def maintain_once(
@@ -52,12 +59,40 @@ async def maintain_once(
                 )
 
 
-async def maintenance_loop(session_factory: async_sessionmaker[AsyncSession]) -> None:
+async def _mailbox_pass(
+    session_factory: async_sessionmaker[AsyncSession],
+    mailbox_upkeep: MailboxUpkeep,
+    since: datetime,
+) -> datetime:
+    started = datetime.now(UTC)
+    try:
+        tenant_ids = await all_tenant_ids(session_factory)
+    except Exception:
+        logger.exception("Wake mailbox upkeep could not list tenants")
+        return started
+    for tenant_id in tenant_ids:
+        with tenant_scope(tenant_id):
+            try:
+                await mailbox_upkeep(since)
+            except Exception:
+                logger.exception("Wake mailbox upkeep failed for tenant %s", tenant_id)
+    return started
+
+
+async def maintenance_loop(
+    session_factory: async_sessionmaker[AsyncSession], mailbox_upkeep: MailboxUpkeep
+) -> None:
+    """Session-activity upkeep every 5 s; the wake mailbox at start and every 30 s."""
     with no_tenant():
+        mailbox_since = await _mailbox_pass(
+            session_factory, mailbox_upkeep, datetime.now(UTC)
+        )
+        since_mailbox = 0.0
         since_prune = PRUNE_EVERY_SECONDS
         while True:
             await asyncio.sleep(EXPIRY_INTERVAL_SECONDS)
             since_prune += EXPIRY_INTERVAL_SECONDS
+            since_mailbox += EXPIRY_INTERVAL_SECONDS
             prune = since_prune >= PRUNE_EVERY_SECONDS
             try:
                 await maintain_once(session_factory, prune=prune)
@@ -66,3 +101,8 @@ async def maintenance_loop(session_factory: async_sessionmaker[AsyncSession]) ->
             else:
                 if prune:
                     since_prune = 0.0
+            if since_mailbox >= MAILBOX_EVERY_SECONDS:
+                mailbox_since = await _mailbox_pass(
+                    session_factory, mailbox_upkeep, mailbox_since
+                )
+                since_mailbox = 0.0

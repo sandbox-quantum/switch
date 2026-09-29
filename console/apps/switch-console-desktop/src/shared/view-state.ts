@@ -76,6 +76,12 @@ export type SidebarSnapshot = {
    * older blob reads as on.
    */
   hideProviderMark?: boolean;
+  /**
+   * Expanded cloud-agent group keys. Tracked inverted from local agent groups
+   * (which are collapsed): a cloud row is expanded only when named here, so
+   * they default to collapsed.
+   */
+  expandedCloudGroups?: string[];
 };
 
 /** `filterBridgeTypes` entry standing for "no messaging app", which has no

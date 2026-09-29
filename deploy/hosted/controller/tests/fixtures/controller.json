@@ -1,0 +1,22 @@
+{
+  "installation_id": "test-installation",
+  "region": "us-east-1",
+  "availability_zone": "us-east-1a",
+  "subnet_id": "subnet-0123456789abcdef0",
+  "security_group_ids": ["sg-0123456789abcdef0"],
+  "image_id": "ami-0123456789abcdef0",
+  "root_device_name": "/dev/xvda",
+  "allowed_instance_types": ["m6i.large"],
+  "max_agents": 1,
+  "root_volume_gib": 20,
+  "data_volume_gib": 40,
+  "worker_assignments": {
+    "agent-1": {
+      "instance_profile_arn": "arn:aws:iam::123456789012:instance-profile/test-worker",
+      "assignment_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-agent"
+    }
+  },
+  "state_db_path": "/var/lib/switch-hosted/state.db",
+  "lock_path": "/var/lib/switch-hosted/controller.lock",
+  "poll_interval_seconds": 1
+}

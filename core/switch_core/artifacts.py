@@ -22,7 +22,7 @@ class ContractRange(NamedTuple):
 ARTIFACT_VERSIONS: Final[dict[str, str]] = {
     "switch-core": "0.28.1",
     "switch-console": "0.37.2",
-    "agent-runtime": "0.7.0",
+    "agent-runtime": "0.8.0",
     "sidecar": "1.9.10",
     "gateway": "0.28.1",
     "setup": "0.28.1",
@@ -33,8 +33,8 @@ ARTIFACT_VERSIONS: Final[dict[str, str]] = {
 CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
     # The wire protocol between switch-core's agent bridge and an agent runtime: the event stream, its frame shapes, the resume cursor, and the tool-call channel.
     "agent-protocol": {
-        "switch-core": ContractRange(speaks=6, accepts=1),
-        "agent-runtime": ContractRange(speaks=6, accepts=1),
+        "switch-core": ContractRange(speaks=7, accepts=1),
+        "agent-runtime": ContractRange(speaks=7, accepts=1),
     },
     # The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong.
     "gateway-api": {

@@ -1,15 +1,26 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Bot, ExternalLink, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import {
+  cloudOperationAttempts,
+  startAttemptKey,
+} from '@renderer/features/cloud-agents/cloud-operation-attempts';
+import { CloudStartAttemptStatus } from '@renderer/features/cloud-agents/cloud-start-attempt-status';
+import {
+  useCloudAgentSessions,
+  useCloudAgents,
+} from '@renderer/features/cloud-agents/use-cloud-agents';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
-import { useToast } from '@renderer/lib/hooks/use-toast';
+import { toast, useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -23,6 +34,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import type { Agent } from '@shared/core/agents/agents';
+import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
@@ -49,6 +61,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   }, [serverId]);
 
   const agents = agentsStore.agentsOnServer(serverId);
+  const cloud = useCloudAgents(serverId);
 
   return (
     <ServerPage
@@ -75,8 +88,222 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
+        {cloud.data
+          ?.filter((listed) => listed.launch.state !== 'deleted')
+          .map((listed) => (
+            <CloudAgentCard key={listed.key} listed={listed} serverId={serverId} />
+          ))}
       </div>
+      {cloud.error && (
+        <p role="alert" className="mt-3 text-sm text-destructive">
+          {failureText(cloud.error, 'Could not load cloud agents.')}
+        </p>
+      )}
     </ServerPage>
+  );
+});
+
+const CloudAgentCard = observer(function CloudAgentCard({
+  listed,
+  serverId,
+}: {
+  listed: CloudAgent;
+  serverId: string;
+}) {
+  const launch = listed.launch;
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  useEffect(() => setActionError(null), [launch.revision, launch.state]);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const queryClient = useQueryClient();
+  const { navigate } = useNavigate();
+  const agentKey = listed.key;
+  const attempt = cloudOperationAttempts.get(startAttemptKey(agentKey));
+  // Asked only while a start is unconfirmed, to tell whether its session exists.
+  const withSessions = useCloudAgentSessions(listed, attempt?.status === 'unknown');
+  const openSession = (sessionId: string) =>
+    navigate('cloudSession', {
+      agentKey,
+      sessionId,
+      name: `${launch.name} · Session ${sessionId.slice(0, 8)}`,
+    });
+  const newSession = async () => {
+    setActionError(null);
+    const result = await cloudOperationAttempts.run(
+      startAttemptKey(agentKey),
+      agentKey,
+      'start',
+      null
+    );
+    if (!result) return;
+    if (result.outcome.state === 'applied') openSession(result.sessionId);
+    else if (result.outcome.state === 'failed') setActionError(result.outcome.message);
+    else void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
+  };
+  const run = async (action: 'stop' | 'start' | 'restart' | 'remove' | 'retry') => {
+    setPending(true);
+    setActionError(null);
+    try {
+      const result = await rpc.switchServers.cloudLifecycle(
+        serverId,
+        launch.request_id,
+        action,
+        launch.revision
+      );
+      if (result.access_warning)
+        toast({ title: 'GitHub access cleanup is pending', description: result.access_warning });
+      await queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
+      setConfirmRemove(false);
+    } catch (error) {
+      setActionError(failureText(error, 'Cloud operation failed.'));
+      void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
+    } finally {
+      setPending(false);
+    }
+  };
+  const addToRooms = useShowModal('addAgentToRoomModal');
+  const { toastPromise } = useToast();
+  const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
+  const stateLabel =
+    launch.sleeping && launch.state === 'stopped'
+      ? 'Sleeping'
+      : launch.sleeping && launch.state === 'stopping'
+        ? 'Going to sleep…'
+        : launch.sleeping && ['queued', 'provisioning'].includes(launch.state)
+          ? 'Waking…'
+          : {
+              queued: 'Queued',
+              provisioning: 'Starting…',
+              ready: 'Ready',
+              error: 'Needs attention',
+              stopping: 'Stopping…',
+              stopped: 'Stopped',
+              deleting: 'Removing…',
+              deleted: 'Removed',
+            }[launch.state];
+  const add = () => {
+    if (!launch.agent_id) return;
+    const agentId = launch.agent_id;
+    void toastPromise(
+      switchRoomsStore.fetchAgentRooms(serverId, agentId).then((rooms) => {
+        if (rooms === null) throw new Error('Could not load the agent’s rooms.');
+        addToRooms({ serverId, switchAgentId: agentId, agentName: launch.name });
+      }),
+      {
+        loading: 'Loading rooms…',
+        success: 'Choose rooms for the agent',
+        error: (error) => failureText(error, 'Could not load the agent’s rooms.'),
+      }
+    );
+  };
+  return (
+    <div className="flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
+      <div className="flex flex-1 items-center justify-center py-3">
+        <AgentAvatar name={launch.name} iconUrl={iconUrl} size={66} />
+      </div>
+      <div className="truncate text-sm font-medium">{launch.name}</div>
+      <div className="text-xs text-foreground-muted">
+        {providerDisplayName(launch.provider)} · Cloud · {stateLabel}
+      </div>
+      {launch.error && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {launch.error_code === 'worker_needs_attention'
+            ? 'The cloud worker needs attention. Contact your server administrator.'
+            : 'The cloud worker could not start. Check your provider and GitHub connections, then retry. If it still fails, contact your server administrator.'}
+        </p>
+      )}
+      {actionError && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {actionError}
+        </p>
+      )}
+      <CloudStartAttemptStatus
+        agentKey={agentKey}
+        sessions={(withSessions.sessions ?? []).filter((session) => !session.retired)}
+        onOpen={openSession}
+        onCheckAgain={() => void newSession()}
+        className="mt-2 flex-wrap"
+      />
+      <div className="mt-2 flex flex-wrap gap-1">
+        {launch.state === 'ready' && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending || attempt?.status === 'pending'}
+              aria-busy={attempt?.status === 'pending'}
+              onClick={() => void newSession()}
+            >
+              {attempt?.status === 'pending' ? 'Starting session…' : 'New session'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => void run('restart')}
+            >
+              Restart
+            </Button>
+          </>
+        )}
+        {launch.sleeping && launch.state === 'stopped' && (
+          <p className="text-xs text-foreground-muted">
+            Stop worker prevents mentions from waking it. You can start it again here.
+          </p>
+        )}
+        {(launch.sleeping ||
+          ['ready', 'provisioning', 'queued', 'error'].includes(launch.state)) && (
+          <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
+            Stop worker
+          </Button>
+        )}
+        {launch.state === 'error' && launch.error_code !== 'worker_needs_attention' && (
+          <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('retry')}>
+            Retry
+          </Button>
+        )}
+        {launch.state === 'stopped' && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() => void run('start')}
+            >
+              Start worker
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => setConfirmRemove(true)}
+            >
+              Remove
+            </Button>
+          </>
+        )}
+      </div>
+      {confirmRemove && (
+        <div className="mt-2 text-xs">
+          <p>
+            Remove this agent and its sessions from Switch? Its data disk will be retained for
+            administrator recovery.
+          </p>
+          <Button size="sm" disabled={pending} onClick={() => void run('remove')}>
+            Remove worker
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setConfirmRemove(false)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+      {launch.state === 'ready' && (
+        <Button variant="ghost" size="sm" className="mt-2" onClick={add}>
+          <Plus className="size-3" />
+          Add to rooms
+        </Button>
+      )}
+    </div>
   );
 });
 

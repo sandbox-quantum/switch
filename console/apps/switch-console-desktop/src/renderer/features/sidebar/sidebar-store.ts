@@ -167,6 +167,8 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   expandedRoomKeys = observable.set<string>();
   /** Collapsed second-level group keys; absence means expanded (default open). */
   collapsedGroupKeys = observable.set<string>();
+  /** Expanded cloud-agent group keys; tracked inverted from local groups (default collapsed). */
+  expandedCloudGroups = observable.set<string>();
   /**
    * Optional sidebar filters. Each is additive and composes with the others (AND
    * across dimensions, OR within a dimension). Empty set / false = not filtering.
@@ -202,6 +204,7 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
       expandedLocationIds: false,
       expandedRoomKeys: false,
       collapsedGroupKeys: false,
+      expandedCloudGroups: false,
       filterConnections: false,
       filterProviderIds: false,
       filterBridgeTypes: false,
@@ -470,6 +473,7 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
       grouping: this.grouping,
       expandedRoomKeys: [...this.expandedRoomKeys],
       collapsedGroupKeys: [...this.collapsedGroupKeys],
+      expandedCloudGroups: [...this.expandedCloudGroups],
       roomOrder: [...this.roomOrder],
       filterConnections: [...this.filterConnections],
       filterProviderIds: [...this.filterProviderIds],
@@ -503,6 +507,9 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     }
     if (snapshot.collapsedGroupKeys !== undefined) {
       this.collapsedGroupKeys.replace(snapshot.collapsedGroupKeys);
+    }
+    if (snapshot.expandedCloudGroups !== undefined) {
+      this.expandedCloudGroups.replace(snapshot.expandedCloudGroups);
     }
     if (snapshot.roomOrder !== undefined) {
       this.roomOrder = [...snapshot.roomOrder];
@@ -650,6 +657,19 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
 
   ensureGroupExpanded(key: string): void {
     this.collapsedGroupKeys.delete(key);
+  }
+
+  /** Whether a cloud-agent group is open (tracked inverted: default collapsed). */
+  isCloudGroupExpanded(key: string): boolean {
+    return this.expandedCloudGroups.has(key);
+  }
+
+  toggleCloudGroupExpanded(key: string): void {
+    if (this.expandedCloudGroups.has(key)) {
+      this.expandedCloudGroups.delete(key);
+    } else {
+      this.expandedCloudGroups.add(key);
+    }
   }
 
   /**

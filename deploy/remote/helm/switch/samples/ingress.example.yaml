@@ -37,6 +37,9 @@ spec:
           - path: /agents
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
+          - path: /hosted
+            pathType: Prefix
+            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           - path: /mcp
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }

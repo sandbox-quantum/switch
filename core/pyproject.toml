@@ -51,6 +51,7 @@ Issues = "https://github.com/sandbox-quantum/switch/issues"
 [project.scripts]
 switch-core = "switch_core.main:main"
 switch-migrate = "switch_core.main:migrate"
+switch-hosted-cutover-upgrade = "switch_core.hosted_cutover_upgrade:main"
 
 [build-system]
 requires = ["hatchling"]

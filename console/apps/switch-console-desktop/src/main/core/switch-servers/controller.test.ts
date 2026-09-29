@@ -40,11 +40,17 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 vi.mock('@main/lib/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+vi.mock('./local-provider-sign-in', () => ({
+  getLocalProviderSignIn: vi.fn(),
+  localProviderAuthPath: vi.fn(),
+  readLocalProviderSignIn: vi.fn(),
+}));
 vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin }));
 // Reads this install's own agent rows, and through them the database client.
 vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 // Reaches the encrypted secrets store, and through it the database client.
 vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
+vi.mock('./managed-claude-credential', () => ({ deleteManagedClaudeCredential: vi.fn() }));
 vi.mock('./create-room', () => ({ createRoomOnServer }));
 vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
 vi.mock('./gateway-client', () => ({

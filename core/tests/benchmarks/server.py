@@ -54,6 +54,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.main import (
     _connection_sweep_loop,
@@ -442,7 +443,7 @@ async def _serve(
     # and left from different asyncio contexts, where resetting the token
     # raises instead of unbinding.
     bind_tenant_id(TENANT_ZERO_ID)
-    event_buffer = EventBuffer()
+    event_buffer = EventBuffer(sequence_base=0)
     connections = ConnectionRegistry()
     collab_lifecycle = _NoBridges()
 
@@ -494,6 +495,7 @@ async def _serve(
         agent_session_store=session_env.agent_session_store,
         room_role_store=session_env.room_role_store,
         external_user_store=session_env.external_user_store,
+        hosted_launch_store=HostedLaunchStore(),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )

@@ -17,6 +17,12 @@ from switch_core.bridges.agent.commands import (
 )
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_workers import (
+    NOTICE_MESSAGES,
+    attached_worker_for,
+    hosted_launch_of,
+    offer_key,
+)
 from switch_core.bridges.agent.protocol.presence import (
     agents_present_in,
     rooms_occupied,
@@ -53,13 +59,24 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent
+from switch_core.db.models import Agent, HostedLaunch
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.hosted_launch_store import (
+    HostedLaunchStore,
+    ProviderDisconnected,
+    is_waking,
+)
+from switch_core.db.stores.hosted_mailbox_store import (
+    MAILBOX_LIMIT,
+    HostedMailboxStore,
+    MailboxEntry,
+    MailboxFull,
+)
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -152,6 +169,68 @@ _UNAVAILABLE_MESSAGES = {
 # room where it has no live session but its connector is actively watching:
 # the connector will spin a session up on demand to handle the message.
 _STARTING_SESSION_MESSAGE = "Starting a session to handle this — one moment."
+
+_WAKING_MESSAGE = "Waking up my cloud worker — I'll answer in a minute or two."
+
+_MAILBOX_FULL_MESSAGE = (
+    f"My cloud worker already has {MAILBOX_LIMIT} messages waiting, so I did not "
+    "queue this one. Please send it again once I have caught up."
+)
+
+
+@dataclass(frozen=True)
+class HostedNote:
+    """What addressing a hosted agent did.
+
+    `refusal` is set when the event was not taken into the wake mailbox and
+    the room must be told why; the event is then not delivered either.
+    `deliver` is False for an event the mailbox already holds.
+    """
+
+    launch: HostedLaunch | None
+    refusal: str | None
+    deliver: bool
+
+
+_HOSTED_STOPPED_MESSAGE = (
+    "My cloud worker is stopped, so I did not process this message. "
+    "Start me again in Switch Console, then send it again."
+)
+_HOSTED_REMOVED_MESSAGE = (
+    "My cloud worker has been removed, so I cannot process messages."
+)
+_HOSTED_ERROR_MESSAGE = (
+    "My cloud worker has a problem, so I did not process this message. "
+    "My owner can check it in Switch Console."
+)
+
+
+def _hosted_unavailable(launch: HostedLaunch) -> str | None:
+    """Why a hosted agent that takes no mail cannot answer, for the room.
+
+    The generic unavailable reply offers a terminal command, which means
+    nothing for an agent that runs on a cloud worker.
+    """
+    if launch.desired_state == "deleted":
+        return _HOSTED_REMOVED_MESSAGE
+    if launch.state == "error":
+        return _HOSTED_ERROR_MESSAGE
+    if launch.desired_state == "stopped" and not launch.sleeping:
+        return _HOSTED_STOPPED_MESSAGE
+    return None
+
+
+def _takes_mail(launch: HostedLaunch) -> bool:
+    """Whether an addressed event goes into the launch's wake mailbox.
+
+    Not after an explicit Stop (stopped and not sleeping), a delete, or an
+    error: the unavailable reply tells the room instead.
+    """
+    return (
+        not (launch.desired_state == "stopped" and not launch.sleeping)
+        and launch.desired_state != "deleted"
+        and launch.state != "error"
+    )
 
 
 # Fallback (no known-agent connect command) for a session_addressable agent
@@ -247,6 +326,7 @@ class AgentClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
+        hosted_launch_store: HostedLaunchStore,
         connections: ConnectionRegistry,
         frontend_base_url: str | None,
         **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
@@ -261,6 +341,9 @@ class AgentClient(ClientBase[ClientConfig]):
         self._agent_session_store = agent_session_store
         self._room_role_store = room_role_store
         self._external_user_store = external_user_store
+        self._hosted_launch_store = hosted_launch_store
+        self._waking_notice_revisions: dict[str, int] = {}
+        self._unreachable_notice_revisions: dict[str, int] = {}
         self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
@@ -460,30 +543,6 @@ class AgentClient(ClientBase[ClientConfig]):
                             session, agent, meta, self._sender_handle(event)
                         )
 
-        if refusal is not None:
-            await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
-        if unavailable is not None:
-            await self._post_auto_reply(
-                room.room_id,
-                event,
-                unavailable,
-                # Where this lands depends on whether an answer follows it.
-                #
-                # "Starting a session" is a preamble: the real answer arrives
-                # after it, in the room the question was asked in. Threading it
-                # off the trigger buries the notice away from the answer it
-                # introduces, so it goes where the question was — `thread_id`,
-                # which is None for a message at the root (CHOO-2173).
-                #
-                # Everything else here is the whole reply and nothing follows
-                # it, so it threads off the triggering message: an owner mention
-                # and a paste-ready command are a wall of text to drop into a
-                # channel for something only one person can act on (CHOO-2344).
-                thread_id
-                if unavailable == _STARTING_SESSION_MESSAGE
-                else reply_thread_root,
-            )
-
         text = event.body
 
         sender_name = event.sender_name
@@ -522,6 +581,61 @@ class AgentClient(ClientBase[ClientConfig]):
                 thread_id=thread_id,
             ),
         )
+
+        hosted: HostedNote | None = None
+        if is_addressed:
+            hosted = await self._note_hosted_addressed(agent, agent_event)
+            launch = None if hosted is None else hosted.launch
+            if hosted is not None and hosted.refusal is not None:
+                unavailable = hosted.refusal
+            elif unavailable is not None and launch is not None and is_waking(launch):
+                unavailable = None
+                if self._waking_notice_revisions.get(meta.room_id) != launch.revision:
+                    self._waking_notice_revisions[meta.room_id] = launch.revision
+                    unavailable = _WAKING_MESSAGE
+            elif unavailable is not None and launch is not None:
+                stated = _hosted_unavailable(launch)
+                if stated is not None:
+                    unavailable = stated
+                elif attached_worker_for(self._connections, launch) is None:
+                    # Once per room per revision, like the waking notice: the
+                    # mailbox holds every message until the worker attaches.
+                    unavailable = None
+                    if (
+                        self._unreachable_notice_revisions.get(meta.room_id)
+                        != launch.revision
+                    ):
+                        self._unreachable_notice_revisions[meta.room_id] = (
+                            launch.revision
+                        )
+                        unavailable = NOTICE_MESSAGES["unreachable"]
+
+        if refusal is not None:
+            await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
+        if unavailable is not None:
+            await self._post_auto_reply(
+                room.room_id,
+                event,
+                unavailable,
+                # Where this lands depends on whether an answer follows it.
+                #
+                # "Starting a session" is a preamble: the real answer arrives
+                # after it, in the room the question was asked in. Threading it
+                # off the trigger buries the notice away from the answer it
+                # introduces, so it goes where the question was — `thread_id`,
+                # which is None for a message at the root (CHOO-2173).
+                #
+                # Everything else here is the whole reply and nothing follows
+                # it, so it threads off the triggering message: an owner mention
+                # and a paste-ready command are a wall of text to drop into a
+                # channel for something only one person can act on (CHOO-2344).
+                thread_id
+                if unavailable == _STARTING_SESSION_MESSAGE
+                else reply_thread_root,
+            )
+
+        if hosted is not None and not hosted.deliver:
+            return
 
         logger.debug("Enqueuing event %s", agent_event.model_dump_json(indent=2))
         self._event_buffer.enqueue(
@@ -695,10 +809,13 @@ class AgentClient(ClientBase[ClientConfig]):
         body: str,
     ) -> None:
         reply_thread_root = thread_id if thread_id is not None else event.event_id
+        gated: Agent | None = None
         if is_addressed:
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
                 gate = await self._gate_addressed(session, agent, event, meta)
+            if gate.addressed:
+                gated = agent
             is_addressed = gate.addressed
             if gate.refusal is not None:
                 await self._post_auto_reply(
@@ -735,6 +852,15 @@ class AgentClient(ClientBase[ClientConfig]):
             ),
         )
 
+        if gated is not None:
+            hosted = await self._note_hosted_addressed(gated, agent_event)
+            if hosted is not None and hosted.refusal is not None:
+                await self._post_auto_reply(
+                    room.room_id, event, hosted.refusal, reply_thread_root
+                )
+            if hosted is not None and not hosted.deliver:
+                return
+
         logger.debug("Enqueuing media event %s", agent_event.model_dump_json(indent=2))
         self._event_buffer.enqueue(
             self.agent.id,
@@ -766,6 +892,10 @@ class AgentClient(ClientBase[ClientConfig]):
         handled = await self._handle_command(room, event)
         if handled:
             return
+
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
+            agent = await self._fresh_agent(session)
+        await self._note_hosted_addressed(agent, None)
 
         self._event_buffer.enqueue(
             self.agent.id,
@@ -886,6 +1016,83 @@ class AgentClient(ClientBase[ClientConfig]):
         )
         self._room_meta[matrix_room_id] = meta
         return meta
+
+    async def _note_hosted_addressed(
+        self, agent: Agent, event: AgentEvent | None
+    ) -> HostedNote | None:
+        """Keep a hosted agent's cloud worker awake, waking it if it idled out.
+
+        `event`, when the watcher acts on it, is written to the wake mailbox
+        in the same transaction, already offered when the agent's worker is
+        attached at the launch's revision. None for a command, which is never
+        queued. A wake bumps the launch revision, so any worker still bound
+        to the old revision is evicted once the bump is committed. None when
+        the agent is not hosted or its launch could not be updated.
+        """
+        launch_id = hosted_launch_of(agent.metadata_)
+        if launch_id is None:
+            return None
+        entry = None if event is None else MailboxEntry.of(event)
+        refusal: str | None = None
+        written = True
+        try:
+            async with (
+                asyncio.timeout(5),
+                tenant_session(self.session_factory, self.tenant_id) as session,
+            ):
+                launch = await self._hosted_launch_store.note_addressed(
+                    session, launch_id
+                )
+                if launch is not None and entry is not None and _takes_mail(launch):
+                    worker = attached_worker_for(self._connections, launch)
+                    try:
+                        written = await HostedMailboxStore().write(
+                            session,
+                            agent_id=agent.id,
+                            launch_id=launch.id,
+                            entry=entry,
+                            offered_to=None
+                            if worker is None
+                            else offer_key(self._event_buffer.boot, worker),
+                        )
+                    except MailboxFull:
+                        logger.warning(
+                            "Wake mailbox of agent %s is full; refused message %s in room %s",
+                            agent.id,
+                            entry.message_id,
+                            entry.room_id,
+                        )
+                        refusal = _MAILBOX_FULL_MESSAGE
+                await session.commit()
+        except ProviderDisconnected:
+            logger.warning(
+                "Not waking the cloud worker of agent %s: its owner's provider connection is gone",
+                agent.id,
+            )
+            return HostedNote(
+                launch=None, refusal=NOTICE_MESSAGES["revoked"], deliver=False
+            )
+        except Exception:
+            logger.error(
+                "Could not wake cloud worker for agent %s or write its wake mailbox; "
+                "the event is only in the live buffer",
+                agent.id,
+                exc_info=True,
+            )
+            return None
+        if launch is None:
+            logger.error(
+                "Agent %s names cloud launch %s, which does not exist",
+                agent.id,
+                launch_id,
+            )
+            return None
+        self._connections.supersede(agent.id, launch.revision)
+        return HostedNote(
+            launch=launch,
+            refusal=refusal,
+            deliver=refusal is None and written,
+        )
 
     async def _reply_when_unavailable_here(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
@@ -1126,14 +1333,13 @@ class AgentClient(ClientBase[ClientConfig]):
     async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
-        await self.send_message(room.room_id, "Working on it.", format="markdown")
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
+            agent = await self._fresh_agent(session)
         meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
+        agent_event = (
+            None
+            if meta is None
+            else AgentEvent(
                 type="task_delegate",
                 room_id=meta.room_id,
                 bridge_id=meta.bridge_id,
@@ -1145,8 +1351,22 @@ class AgentClient(ClientBase[ClientConfig]):
                     summary=event.summary,
                     description=event.description,
                 ),
-            ),
+            )
         )
+        hosted = await self._note_hosted_addressed(agent, agent_event)
+        launch = None if hosted is None else hosted.launch
+        if hosted is not None and hosted.refusal is not None:
+            reply = hosted.refusal
+        elif launch is not None and is_waking(launch):
+            reply = _WAKING_MESSAGE
+        else:
+            reply = "Working on it."
+        await self.send_message(room.room_id, reply, format="markdown")
+        if meta is None or agent_event is None:
+            return
+        if hosted is not None and not hosted.deliver:
+            return
+        self._event_buffer.enqueue(self.agent.id, meta.room_id, agent_event)
 
     async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
         if event.requester_agent_id != self.agent.id:

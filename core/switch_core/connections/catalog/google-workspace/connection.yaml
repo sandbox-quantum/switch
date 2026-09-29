@@ -1,0 +1,7 @@
+slug: google-workspace
+name: Google Workspace
+category: Productivity
+description: Work with Google Drive, Docs, Sheets and Calendar.
+enabled: false
+auth:
+  type: oauth

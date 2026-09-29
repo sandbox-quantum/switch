@@ -1,7 +1,6 @@
+import { JournalUnavailableError, replayJournal } from '@switch-console/agent-providers';
 import {
-  SessionReplica,
   serverEventSchema,
-  snapshotSchema,
   type CommandStatus,
   type ServerEvent,
   type Snapshot,
@@ -93,12 +92,7 @@ const lineSchema = z.union([
   z.object({ alive: z.boolean(), lease: leaseSchema }),
 ]);
 
-export class JournalUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'JournalUnavailableError';
-  }
-}
+export { JournalUnavailableError };
 
 /** What the tail has said so far about one session. */
 export class JournalTail {
@@ -167,38 +161,7 @@ export class JournalTail {
 
   /** The session as its journal has it, with what only the host's state can add. */
   snapshot(): Snapshot {
-    const first = this.events.find((event) => event.body.type === 'session.upsert');
-    if (first?.body.type !== 'session.upsert')
-      throw new JournalUnavailableError('The session host has not recorded the session yet.');
-    let replica = new SessionReplica({
-      contractVersion: 1,
-      throughSequence: 0,
-      session: first.body.session,
-      turns: [],
-      items: [],
-      requests: [],
-      commandStatuses: [],
-      nextPageToken: null,
-    });
-    for (const event of this.events) {
-      // A reset starts a new epoch in the same journal; the host rebuilds its
-      // own view the same way.
-      if (
-        event.body.type === 'session.upsert' &&
-        event.body.session.epoch !== replica.snapshot().session.epoch
-      ) {
-        const prior = replica.snapshot();
-        prior.session = event.body.session;
-        replica = new SessionReplica(prior);
-      }
-      replica.apply(event);
-    }
-    const snapshot = replica.snapshot();
-    snapshot.session.connectivity = this.alive === false ? 'offline' : 'online';
-    if (this.lease?.roomIds) snapshot.session.roomIds = this.lease.roomIds;
-    if (this.lease?.retired !== null && this.lease?.retired !== undefined)
-      snapshot.session.retired = this.lease.retired;
-    return snapshotSchema.parse(snapshot);
+    return replayJournal(this.events, this.alive, this.lease);
   }
 
   /** The host's latest word on a command, or null if it has not recorded it. */

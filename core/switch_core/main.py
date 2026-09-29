@@ -8,6 +8,7 @@ import signal
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 
 import httpx
@@ -24,6 +25,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
+from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
     ConnectionRegistry,
@@ -89,7 +91,12 @@ from switch_core.db.engine import (
     create_session_factory,
     create_unpooled_engine,
 )
-from switch_core.db.models import TENANT_ZERO_ID, ApiKey, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    ApiKey,
+    User,
+    agent_event_boot_sequence,
+)
 from switch_core.db.runtime_role import (
     RuntimeRoleError,
     grant_runtime_role,
@@ -104,6 +111,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
@@ -403,13 +411,15 @@ async def run(config: SwitchConfig) -> None:
     # `_seed_agent_registration_bootstrap_key`'s docstring), so only a
     # session-level lock, held for the whole span, actually serialises it.
     async with boot_lock(config):
+        async with engine.begin() as connection:
+            event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
         await _seed_admin_user(session_factory, user_store, config)
         await _seed_agent_registration_bootstrap_key(
             session_factory, user_store, api_key_store, agent_store, config
         )
 
     # ── Event queue + request trackers ───────────────────────────────────────
-    event_buffer = EventBuffer()
+    event_buffer = EventBuffer(sequence_base=event_boot << 32)
     connector_store = ServerConnectorStore()
 
     # ── Product telemetry ────────────────────────────────────────────────────
@@ -487,6 +497,7 @@ async def run(config: SwitchConfig) -> None:
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
         external_user_store=external_user_store,
+        hosted_launch_store=HostedLaunchStore(),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
@@ -734,7 +745,9 @@ async def run(config: SwitchConfig) -> None:
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             session_activity_task = asyncio.create_task(
-                session_activity_maintenance_loop(session_factory)
+                session_activity_maintenance_loop(
+                    session_factory, partial(mailbox_upkeep, protocol)
+                )
             )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)

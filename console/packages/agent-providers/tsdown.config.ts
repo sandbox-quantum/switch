@@ -6,6 +6,7 @@ export default defineConfig({
     testing: 'src/testing/index.ts',
     'host-daemon': 'src/host/daemon.ts',
     'shared-host-daemon': 'src/host/shared-daemon.ts',
+    'hosted-bootstrap': 'src/host/hosted-bootstrap-cli.ts',
   },
   format: ['esm'],
   dts: true,

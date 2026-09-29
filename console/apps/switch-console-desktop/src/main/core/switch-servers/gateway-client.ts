@@ -1,11 +1,25 @@
+import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
   managedServerStoppedPhase,
 } from '@main/core/managed-switch-server/managed-server-status';
+import { cloudLaunchSchema } from '@shared/core/cloud-agents/cloud-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import type {
+  ClaudeCredentialKind,
+  ClaudeConnection,
+} from '@shared/core/switch-servers/claude-credential';
+import type { CloudLaunchInput } from '@shared/core/switch-servers/cloud-launch';
+import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
+import {
+  gitHubConnectionSchema,
+  gitHubFlowSchema,
+} from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
+import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
 import type {
   AddressingPolicy,
   BridgeConfigField,
@@ -145,10 +159,15 @@ async function resolveAuthCookie(server: SwitchServer): Promise<string> {
   throw new GatewayError('unauthorized', 'Not signed in to this Switch server.');
 }
 
-async function gatewayFetch(
+/**
+ * One authenticated call to the gateway, answered with whatever it returned:
+ * a refusal is the caller's to read, and a streaming body is left open. Only
+ * a rejected session is raised, as for every gateway call.
+ */
+export async function gatewayRequest(
   server: SwitchServer,
   path: string,
-  options: FetchOptions
+  options: FetchOptions & { signal: AbortSignal }
 ): Promise<Response> {
   // A remote-managed server's gateway is only reachable through the SSH forward.
   // Once the host is known unreachable the forward is dead, so a fetch can only
@@ -181,7 +200,7 @@ async function gatewayFetch(
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         // We attach the cookie explicitly; don't let the runtime manage a jar.
         redirect: 'manual',
-        signal: AbortSignal.timeout(30_000),
+        signal: options.signal,
       });
     } catch (cause) {
       throw new GatewayError(
@@ -208,6 +227,18 @@ async function gatewayFetch(
   if (response.status === 401) {
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
+  return response;
+}
+
+export async function gatewayFetch(
+  server: SwitchServer,
+  path: string,
+  options: FetchOptions
+): Promise<Response> {
+  const response = await gatewayRequest(server, path, {
+    ...options,
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw new GatewayError(
@@ -1663,4 +1694,220 @@ export async function createRoom(
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
+}
+
+async function readClaudeConnection(response: Response): Promise<ClaudeConnection> {
+  const value: unknown = await response.json();
+  if (typeof value === 'object' && value !== null && 'status' in value) {
+    if (value.status === 'not_connected') return { status: 'not_connected' };
+    if (
+      value.status === 'connected' &&
+      'kind' in value &&
+      (value.kind === 'api-key' || value.kind === 'setup-token') &&
+      'verified_at' in value &&
+      typeof value.verified_at === 'string' &&
+      Number.isFinite(Date.parse(value.verified_at))
+    ) {
+      return { status: 'connected', kind: value.kind, verified_at: value.verified_at };
+    }
+  }
+  throw new GatewayError('http', 'The server returned an invalid Claude connection status.');
+}
+
+export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeConnection> {
+  const response = await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+  });
+  return readClaudeConnection(response);
+}
+
+export async function createCloudLaunch(
+  server: SwitchServer,
+  input: CloudLaunchInput & { definition: string }
+) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('Cloud agents require an HTTPS Switch server.');
+  return cloudLaunchSchema.parse(
+    await (
+      await gatewayFetch(server, '/hosted-launches', {
+        authenticated: true,
+        method: 'POST',
+        body: input,
+      })
+    ).json()
+  );
+}
+
+export async function cloudLifecycle(
+  server: SwitchServer,
+  requestId: string,
+  action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
+  revision: number
+) {
+  return cloudLaunchSchema.extend({ access_warning: z.string().nullable().optional() }).parse(
+    await (
+      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
+        authenticated: true,
+        method: 'POST',
+        body: { action, revision },
+      })
+    ).json()
+  );
+}
+
+export async function connectClaude(
+  server: SwitchServer,
+  kind: ClaudeCredentialKind,
+  credential: string
+): Promise<ClaudeConnection> {
+  if (new URL(server.gatewayUrl).protocol !== 'https:') {
+    throw new GatewayError('http', 'Claude credentials require an HTTPS Switch server.');
+  }
+  const response = await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+    method: 'PUT',
+    body: { kind, credential },
+  });
+  return readClaudeConnection(response);
+}
+
+export async function disconnectClaude(server: SwitchServer): Promise<void> {
+  await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+export async function getConnectionCatalog(server: SwitchServer) {
+  return connectionCatalogSchema.parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/catalog', { authenticated: true })
+    ).json()
+  ).connections;
+}
+export async function getGitHubConnection(server: SwitchServer) {
+  return gitHubConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/github', { authenticated: true })
+    ).json()
+  );
+}
+export async function startGitHubConnection(
+  server: SwitchServer,
+  input: { port: number; state: string; completion_secret: string }
+) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('GitHub connections require HTTPS.');
+  const value = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() }).parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/github/flows', {
+        authenticated: true,
+        method: 'POST',
+        body: input,
+      })
+    ).json()
+  );
+  const url = new URL(value.url);
+  if (
+    url.origin !== new URL(server.gatewayUrl).origin ||
+    url.pathname !== '/gateway/provider-connections/github/authorize' ||
+    url.searchParams.get('state') !== value.id ||
+    url.username ||
+    url.password
+  )
+    throw new Error('The server returned an invalid GitHub authorization URL.');
+  return value;
+}
+export async function getGitHubFlow(server: SwitchServer, id: string) {
+  return gitHubFlowSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/github/flows/${encodeURIComponent(id)}`, {
+        authenticated: true,
+      })
+    ).json()
+  );
+}
+export async function confirmGitHubConnection(
+  server: SwitchServer,
+  id: string,
+  completionSecret: string
+) {
+  const response = await gatewayFetch(
+    server,
+    `/provider-connections/github/flows/${encodeURIComponent(id)}/confirm`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { completion_secret: completionSecret },
+    }
+  );
+  if (response.status === 204) return { warning: null };
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+export async function completeGitHubConnection(
+  server: SwitchServer,
+  id: string,
+  code: string,
+  completionSecret: string
+) {
+  await gatewayFetch(
+    server,
+    `/provider-connections/github/flows/${encodeURIComponent(id)}/complete`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { code, completion_secret: completionSecret },
+    }
+  );
+}
+export async function cancelGitHubConnection(server: SwitchServer, id: string) {
+  await gatewayFetch(server, `/provider-connections/github/flows/${encodeURIComponent(id)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+export async function disconnectGitHub(server: SwitchServer) {
+  const response = await gatewayFetch(server, '/provider-connections/github', {
+    authenticated: true,
+    method: 'DELETE',
+  });
+  if (response.status === 204) return { warning: null };
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+
+export async function getCloudProviderConnection(server: SwitchServer, provider: AgentProviderId) {
+  return cloudProviderConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+        authenticated: true,
+      })
+    ).json()
+  );
+}
+export async function connectCloudProvider(
+  server: SwitchServer,
+  provider: Exclude<AgentProviderId, 'claude'>,
+  kind: 'api-key' | 'auth-json',
+  credential: string
+) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('Provider credentials require HTTPS.');
+  return cloudProviderConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+        authenticated: true,
+        method: 'PUT',
+        body: { kind, credential },
+      })
+    ).json()
+  );
+}
+export async function disconnectCloudProvider(
+  server: SwitchServer,
+  provider: Exclude<AgentProviderId, 'claude'>
+) {
+  await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }

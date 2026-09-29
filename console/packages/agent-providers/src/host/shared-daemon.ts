@@ -2,7 +2,10 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { type EnsureSession, serveControl } from './control';
+import { AttachmentTransfers } from './attachment-transfers';
+import { type ControlContext, type EnsureSession, serveControl } from './control';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
+import { hostedWorker } from './hosted-watcher';
 import {
   detachedSupervision,
   ensureSharedProcess,
@@ -112,6 +115,7 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
+      logRedactions: [],
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
@@ -134,16 +138,26 @@ async function main(): Promise<void> {
     };
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
+    const transfers = new AttachmentTransfers(resolve(root));
+    await transfers.clear();
+    const context: ControlContext = {
+      agentId: config.session.agentId,
+      links,
+      ensure,
+      watcher: control,
+      transfers,
+    };
+    const hosted = await hostedWorker(config, resolve(root), context);
     // A watcher that stops (disabled, stood down after a takeover, or
     // signalled) takes the process with it: the control port and every
     // session host go too, so the supervisor sees a clean exit and does not
     // start it again.
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
+        runSharedWatcher(root, config, stop.signal, supervision, control, hosted).finally(() =>
           stop.abort()
         ),
-        serveControl(resolve(root), links, ensure, control, stop.signal),
+        serveControl(resolve(root), context, stop.signal),
       ]);
     } finally {
       await supervision.close();
@@ -208,17 +222,23 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  if (
-    root !== '--probe' &&
-    root !== '--models' &&
-    mode !== '--supervise' &&
-    mode !== '--watch-supervise'
-  ) {
-    await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
-    await replaceOwner(join(root, 'supervisor', 'failure.json'), {
-      message: error instanceof Error ? error.message : String(error),
-    });
+  if (error instanceof WorkerObsoleteError) {
+    // Not a failure of this bundle's to record: the worker service waits for a current one.
+    console.error(error.message);
+    process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
+  } else {
+    if (
+      root !== '--probe' &&
+      root !== '--models' &&
+      mode !== '--supervise' &&
+      mode !== '--watch-supervise'
+    ) {
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+      await replaceOwner(join(root, 'supervisor', 'failure.json'), {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    console.error(error);
+    process.exitCode = 1;
   }
-  console.error(error);
-  process.exitCode = 1;
 }

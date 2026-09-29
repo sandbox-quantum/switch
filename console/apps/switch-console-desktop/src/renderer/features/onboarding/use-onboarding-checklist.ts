@@ -2,6 +2,10 @@ import { useCallback, useEffect } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import {
+  managedCloudServerId,
+  useCloudLaunches,
+} from '@renderer/features/switch-servers/use-cloud-launches';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -28,11 +32,13 @@ import {
  */
 export function useOnboardingProgress(): OnboardingProgress {
   const { data: agentTypes } = useAgentTypeAvailability();
+  const cloud = useCloudLaunches(managedCloudServerId());
+  const hasCloudAgent = cloud.data?.some((agent) => agent.state === 'ready') ?? false;
 
   return {
     addServer: switchServersStore.servers.length > 0,
-    agentProviders: (agentTypes ?? []).some((type) => type.available),
-    onboardAgents: appState.locations.locations.size > 0,
+    agentProviders: hasCloudAgent || (agentTypes ?? []).some((type) => type.available),
+    onboardAgents: hasCloudAgent || appState.locations.locations.size > 0,
     createRoom: switchRoomsStore.listedRoomsOnAllServers.length > 0,
   };
 }

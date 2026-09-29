@@ -1,0 +1,5 @@
+apiVersion: v2
+name: switch-hosted-controller
+description: Single-controller EC2 hosted worker lifecycle service
+version: 0.1.1
+type: application

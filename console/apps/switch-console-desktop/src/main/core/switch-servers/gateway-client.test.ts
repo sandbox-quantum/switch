@@ -28,6 +28,14 @@ vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 
 const {
+  getConnectionCatalog,
+  getGitHubConnection,
+  startGitHubConnection,
+  completeGitHubConnection,
+  confirmGitHubConnection,
+  getClaudeConnection,
+  connectClaude,
+  disconnectClaude,
   createRoom,
   deleteBridge,
   fetchBridges,
@@ -756,5 +764,175 @@ describe('deleteBridge', () => {
     fetchMock.mockResolvedValue(errorResponse(500, 'adapter shutdown failed') as never);
 
     await expect(deleteBridge(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('Claude cloud connection transport', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(7200));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  it('refuses to send provider credentials over HTTP', async () => {
+    await expect(
+      connectClaude(
+        {
+          id: 'insecure',
+          name: 'Insecure',
+          gatewayUrl: 'http://switch.example.com',
+          managed: false,
+        } as never,
+        'api-key',
+        'SYNTHETIC'
+      )
+    ).rejects.toThrow('HTTPS');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('sends the credential only in an authenticated PUT body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'connected',
+          kind: 'api-key',
+          verified_at: '2026-01-01T00:00:00Z',
+        })
+      )
+    );
+    await connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL');
+    const [url, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/provider-connections/claude');
+    expect(options.method).toBe('PUT');
+    expect(JSON.parse(options.body as string)).toEqual({
+      kind: 'api-key',
+      credential: 'SYNTHETIC-CREDENTIAL',
+    });
+    expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
+  });
+  it('reads metadata and deletes without a credential body', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'not_connected' })));
+    expect(await getClaudeConnection(SERVER)).toEqual({ status: 'not_connected' });
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await disconnectClaude(SERVER);
+    const [, options] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(options.method).toBe('DELETE');
+    expect(options.body).toBeUndefined();
+  });
+  it('rejects malformed connection status', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: 'connected', kind: 'unknown' }))
+    );
+    await expect(getClaudeConnection(SERVER)).rejects.toThrow('invalid Claude connection status');
+  });
+  it('surfaces a failed verification instead of reporting a connection', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'Claude could not complete the check.' }), {
+        status: 422,
+      })
+    );
+    await expect(connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL')).rejects.toThrow();
+  });
+});
+
+describe('GitHub connection transport', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(7200));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  it('sends objects, encoded once, for start, complete and confirm', async () => {
+    const state = 'a'.repeat(43);
+    const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: state,
+          url: `https://switch.example.com/gateway/provider-connections/github/authorize?state=${state}`,
+        })
+      )
+    );
+    await startGitHubConnection(SERVER, input);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await completeGitHubConnection(SERVER, state, 'SYNTHETIC-CODE', input.completion_secret);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await confirmGitHubConnection(SERVER, state, input.completion_secret);
+    const bodies = (fetchMock.mock.calls as unknown[][]).map((call) =>
+      JSON.parse((call[1] as RequestInit).body as string)
+    );
+    expect(bodies).toEqual([
+      input,
+      { code: 'SYNTHETIC-CODE', completion_secret: input.completion_secret },
+      { completion_secret: input.completion_secret },
+    ]);
+  });
+  it('only accepts authorization URLs on the authenticated server', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: 'a'.repeat(43),
+          url:
+            'https://other.example.com/gateway/provider-connections/github/authorize?state=' +
+            'a'.repeat(43),
+        })
+      )
+    );
+    await expect(
+      startGitHubConnection(SERVER, {
+        port: 12345,
+        state: 'a'.repeat(43),
+        completion_secret: 'b'.repeat(43),
+      })
+    ).rejects.toThrow('invalid GitHub authorization URL');
+  });
+  it('checks state matches the returned authorization id', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: 'a'.repeat(43),
+          url: 'https://switch.example.com/gateway/provider-connections/github/authorize?state=wrong',
+        })
+      )
+    );
+    await expect(
+      startGitHubConnection(SERVER, {
+        port: 12345,
+        state: 'a'.repeat(43),
+        completion_secret: 'b'.repeat(43),
+      })
+    ).rejects.toThrow('invalid GitHub authorization URL');
+  });
+  it('validates repository status and strips unexpected secrets', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'connected',
+          login: 'example-user',
+          install_url: 'https://github.com/apps/example/installations/new',
+          installations: [],
+          access_token: 'SYNTHETIC',
+        })
+      )
+    );
+    expect(await getGitHubConnection(SERVER)).not.toHaveProperty('access_token');
+  });
+  it('reads the connection catalog and rejects an unknown status', async () => {
+    const github = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      status: 'connected',
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [github] })));
+    expect(await getConnectionCatalog(SERVER)).toEqual([github]);
+    const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/provider-connections/catalog');
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
+    );
+    await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
   });
 });

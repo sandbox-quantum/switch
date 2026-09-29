@@ -469,3 +469,57 @@ describe('who may delete a room', () => {
     expect(store.canDeleteRoom('srv-a', room('r', 'user-of-srv-a'))).toBe(false);
   });
 });
+
+it('keeps the newest membership when forced reads complete out of order', async () => {
+  let finishOld!: (value: unknown[]) => void;
+  listAgentRooms.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishOld = resolve;
+      })
+  );
+  const store = new SwitchRoomsStore();
+  const old = store.fetchAgentRooms('server', 'agent', { force: true });
+  const current = [
+    {
+      roomId: 'joined',
+      roomName: 'Joined room',
+      archived: false,
+      status: 'active',
+      roomRole: null,
+    },
+  ];
+  listAgentRooms.mockResolvedValueOnce(current);
+  await store.fetchAgentRooms('server', 'agent', { force: true });
+  finishOld([]);
+  await old;
+  expect(store.roomsFor('server', 'agent')).toEqual(current);
+});
+
+it('does not clear a newer loading state or error from an older request', async () => {
+  let failOld!: (error: Error) => void;
+  let failNew!: (error: Error) => void;
+  listAgentRooms.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        failOld = reject;
+      })
+  );
+  const store = new SwitchRoomsStore();
+  const old = store.fetchAgentRooms('server', 'agent', { force: true });
+  listAgentRooms.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        failNew = reject;
+      })
+  );
+  const current = store.fetchAgentRooms('server', 'agent', { force: true });
+  failOld(new Error('Old failure'));
+  await old;
+  expect(store.isLoading('server', 'agent')).toBe(true);
+  expect(store.errorFor('server', 'agent')).toBeNull();
+  failNew(new Error('Current failure'));
+  await current;
+  expect(store.isLoading('server', 'agent')).toBe(false);
+  expect(store.errorFor('server', 'agent')).toContain('Current failure');
+});

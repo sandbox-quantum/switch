@@ -7,7 +7,7 @@ import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
-import { sessionStatePill } from './session-state';
+import { sessionStatePill, type SessionStateTone } from './session-state';
 import { SessionStatePill } from './session-state-pill';
 import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
@@ -20,8 +20,11 @@ export function SessionV1Chat({
   startup,
   retireHost,
   initialPromptDelivery,
+  hostState,
 }: {
   client: SessionChatClient;
+  /** Overrides the session's status while its host cannot be asked. */
+  hostState: { label: string; tone: SessionStateTone } | null;
   initialPromptDelivery?: InitialPromptDelivery;
   restartHost?: () => Promise<void>;
   stopHost?: () => Promise<void>;
@@ -186,6 +189,7 @@ export function SessionV1Chat({
           {...sessionStatePill({
             action: busy ? (action ?? 'start') : null,
             elapsedSeconds: elapsed,
+            host: hostState,
             failed: Boolean(actionError) || startup?.status === 'error',
             retired: Boolean(session?.retired),
             status: session?.status ?? null,
@@ -472,7 +476,7 @@ export function SessionV1Chat({
               ) : item.kind === 'assistant-message' ? (
                 <div className="text-sm leading-relaxed">
                   <MarkdownRenderer variant="compact" content={item.text} />
-                  {item.status === 'in-progress' && (
+                  {item.status === 'in-progress' && !stoppedTurns.has(item.turnId) && (
                     <span
                       aria-label="Still writing"
                       className="inline-block h-3 w-1 animate-pulse bg-foreground-muted"
@@ -482,13 +486,17 @@ export function SessionV1Chat({
               ) : (
                 <details className="rounded-lg border border-border px-3 py-2 text-xs">
                   <summary className="flex cursor-pointer items-center gap-2">
-                    {item.status === 'in-progress' ? (
+                    {item.status === 'in-progress' && !stoppedTurns.has(item.turnId) ? (
                       <Loader2 className="size-3 animate-spin" />
                     ) : (
                       <Wrench className="size-3" />
                     )}
                     <span className="min-w-0 flex-1 break-words">{item.title}</span>
-                    <span>{item.status}</span>
+                    <span>
+                      {item.status === 'in-progress'
+                        ? (stoppedTurns.get(item.turnId) ?? item.status)
+                        : item.status}
+                    </span>
                   </summary>
                   {item.text && <p className="mt-2 whitespace-pre-wrap">{item.text}</p>}
                 </details>

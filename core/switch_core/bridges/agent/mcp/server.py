@@ -17,6 +17,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext, PingMiddleware
 from starlette.types import ASGIApp
@@ -25,6 +26,7 @@ from switch_core.bridges.agent.auth import BearerAuthMiddleware, OIDCTokenValida
 from switch_core.bridges.agent.operations import all_operations
 from switch_core.bridges.agent.operations.callctx import CallContext, call_context
 from switch_core.bridges.agent.operations.context import init_operations_protocol
+from switch_core.bridges.agent.protocol.hosted_workers import CodedPermissionError
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -72,7 +74,14 @@ class CallContextMiddleware(Middleware):
                 session=None,
             )
         ):
-            return await call_next(context)
+            try:
+                return await call_next(context)
+            except ToolError as exc:
+                # The server prefixes a tool's error with its name; a coded
+                # refusal is sent as its bare `{code, message}` object instead.
+                if isinstance(exc.__cause__, CodedPermissionError):
+                    raise ToolError(str(exc.__cause__)) from exc.__cause__
+                raise
 
 
 mcp = FastMCP("Switch")

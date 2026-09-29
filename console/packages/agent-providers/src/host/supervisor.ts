@@ -5,7 +5,8 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
+import { pipeRedactedHostedLogs } from './hosted-log';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner } from './process-fence';
 import type { SessionLinks } from './session-channel';
@@ -47,6 +48,8 @@ export async function superviseSharedHost(input: {
    * process does, and the host is then started without one.
    */
   links: SessionLinks | null;
+  /** Exact values scrubbed from the host's output before it reaches worker.log. */
+  logRedactions: string[];
 }): Promise<void> {
   const directory = join(input.root, 'supervisor');
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -67,14 +70,24 @@ export async function superviseSharedHost(input: {
         continue;
       }
       const log = await open(join(directory, 'worker.log'), 'a', 0o600);
+      const redacting = input.logRedactions.length > 0;
+      const output = redacting ? 'pipe' : log.fd;
       const child = spawn(input.executable, input.args, {
         detached: true,
         env: input.env,
-        stdio: input.links ? ['ignore', log.fd, log.fd, 'ipc'] : ['ignore', log.fd, log.fd],
+        stdio: input.links ? ['ignore', output, output, 'ipc'] : ['ignore', output, output],
       });
       input.links?.attach(input.root, child);
       const exited = once(child, 'exit');
-      await log.close();
+      const logged = redacting
+        ? pipeRedactedHostedLogs([child.stdout!, child.stderr!], log, input.logRedactions).catch(
+            (error: unknown) => {
+              child.kill('SIGKILL');
+              throw error;
+            }
+          )
+        : log.close();
+      logged.catch(() => {});
       const stop = () => child.kill('SIGTERM');
       input.signal.addEventListener('abort', stop, { once: true });
       if (input.signal.aborted) stop();
@@ -95,13 +108,16 @@ export async function superviseSharedHost(input: {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }
       }
+      if (redacting)
+        try {
+          await logged;
+        } finally {
+          await log.close();
+        }
       if (input.signal.aborted) return;
       if (code === 0) return;
-      if (code === LEASE_EXPIRED_EXIT_CODE) {
-        console.warn('Shared SDK host lease expired; relaunching from saved state after fencing.');
-        await delay(1000, undefined, { signal: input.signal });
-        continue;
-      }
+      if (code === OBSOLETE_BUNDLE_EXIT_CODE)
+        throw new WorkerObsoleteError('the watcher was refused as obsolete and stopped.');
       if (code !== null) {
         try {
           await readFile(join(directory, 'failure.json'));

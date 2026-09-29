@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import switch_core.clients.agent_client as ac
 from switch_core.clients.agent_client import AgentClient, _GateOutcome
@@ -94,6 +95,7 @@ def _fake_client() -> SimpleNamespace:
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
         queue=queue,
+        _note_hosted_addressed=AsyncMock(return_value=None),
     )
     ns._emit_media = AgentClient._emit_media.__get__(ns)
     ns._schedule_attachment_group_flush = (

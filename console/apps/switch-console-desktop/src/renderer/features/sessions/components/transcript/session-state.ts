@@ -13,6 +13,12 @@ export function sessionStatePill(input: {
   /** An action Console is running now: stop, resume, restart or start. */
   action: 'stop' | 'resume' | 'restart' | 'start' | null;
   elapsedSeconds: number;
+  /**
+   * The host's own state when it cannot be asked, such as a sleeping cloud
+   * worker. The session's last reported status is stale then, so this is shown
+   * instead.
+   */
+  host: { label: string; tone: SessionStateTone } | null;
   failed: boolean;
   retired: boolean;
   /** The session's own status, as the server last reported it. */
@@ -26,6 +32,7 @@ export function sessionStatePill(input: {
       label: `${{ stop: 'stopping', resume: 'resuming', restart: 'restarting', start: 'starting' }[input.action]} ${input.elapsedSeconds}s`,
       tone: 'busy',
     };
+  if (input.host) return input.host;
   if (input.failed) return { label: 'connection failed', tone: 'bad' };
   if (input.retired) return { label: 'retired', tone: 'idle' };
   if (input.status === 'stopped') return { label: 'stopped', tone: 'idle' };

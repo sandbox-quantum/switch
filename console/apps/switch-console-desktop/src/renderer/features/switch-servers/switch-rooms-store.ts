@@ -24,6 +24,7 @@ function key(serverId: string, switchAgentId: string): string {
 export class SwitchRoomsStore {
   /** Membership per `${serverId}:${switchAgentId}`. */
   private readonly roomsByAgent = new Map<string, RemoteAgentRoom[]>();
+  private readonly membershipRequests = new Map<string, number>();
   /** Room id → display name, aggregated across connected servers (room ids are
    * globally unique UUIDs, so a flat map is safe). Drives sidebar room headers. */
   private readonly roomNames = new Map<string, string>();
@@ -467,6 +468,8 @@ export class SwitchRoomsStore {
     const k = key(serverId, switchAgentId);
     const cached = this.roomsByAgent.get(k);
     if (cached && !options.force) return cached;
+    const request = (this.membershipRequests.get(k) ?? 0) + 1;
+    this.membershipRequests.set(k, request);
 
     runInAction(() => {
       this.loading.add(k);
@@ -475,17 +478,18 @@ export class SwitchRoomsStore {
     try {
       const rooms = await rpc.switchServers.listAgentRooms({ serverId, agentId: switchAgentId });
       runInAction(() => {
-        this.roomsByAgent.set(k, rooms);
+        if (this.membershipRequests.get(k) === request) this.roomsByAgent.set(k, rooms);
       });
       return rooms;
     } catch (cause) {
       runInAction(() => {
-        this.errors.set(k, failureText(cause, 'Could not load the rooms this agent belongs to.'));
+        if (this.membershipRequests.get(k) === request)
+          this.errors.set(k, failureText(cause, 'Could not load the rooms this agent belongs to.'));
       });
       return null;
     } finally {
       runInAction(() => {
-        this.loading.delete(k);
+        if (this.membershipRequests.get(k) === request) this.loading.delete(k);
       });
     }
   }

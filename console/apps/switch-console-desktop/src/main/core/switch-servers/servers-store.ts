@@ -13,6 +13,7 @@ import {
   type SwitchServer,
   type UpdateServerParams,
 } from '@shared/core/switch-servers/switch-servers';
+import { deleteManagedClaudeCredential } from './managed-claude-credential';
 
 const ACTIVE_SERVER_KV_KEY = 'activeSwitchServerId';
 
@@ -228,6 +229,7 @@ export async function removeServer(id: string): Promise<void> {
   // — but a read that exists only to describe the removal must not prevent it.
   const server = await getServer(id).catch(() => null);
 
+  await deleteManagedClaudeCredential(id);
   await deleteSessionCookie(id);
   // Unlink agents explicitly: SQLite's ALTER TABLE ADD COLUMN can't carry an
   // ON DELETE clause, so the FK's set-null isn't enforced by the engine.

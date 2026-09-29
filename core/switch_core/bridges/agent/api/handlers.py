@@ -19,6 +19,10 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response, StreamingResponse
 
+from switch_core.bridges.agent.api.hosted_worker_routes import (
+    admit_worker,
+    hosted_worker_only,
+)
 from switch_core.bridges.agent.api.schemas import (
     AcceptTaskRequest,
     AgentInfo,
@@ -76,10 +80,13 @@ from switch_core.bridges.agent.auth import (
 )
 from switch_core.bridges.agent.dependencies import (
     get_api_key_store,
+    get_config,
     get_protocol,
     get_session,
 )
+from switch_core.bridges.agent.hosted_mailbox import deliver_on_attach
 from switch_core.bridges.agent.protocol.connections import (
+    TAKEN_OVER,
     ClientDeclaration,
     Closure,
     Connection,
@@ -98,6 +105,7 @@ from switch_core.bridges.agent.protocol.connections import (
     evicted_session_warning,
 )
 from switch_core.bridges.agent.protocol.event_buffer import Reader
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.stream import event_stream
 from switch_core.bridges.agent.registration_bootstrap import (
@@ -105,7 +113,9 @@ from switch_core.bridges.agent.registration_bootstrap import (
     REGISTRATION_KEY_TYPES,
     resolve_registration_owner_id,
 )
-from switch_core.db.models import Agent, Task
+from switch_core.config import SwitchConfig
+from switch_core.db.models import Agent, HostedLaunch, Task, require_tenant_id
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
@@ -697,6 +707,7 @@ async def poll_events(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
     timeout: Annotated[float, Query()] = 10,
     accept: Annotated[str | None, Header()] = None,
     connection_id: Annotated[str | None, Query()] = None,
@@ -711,6 +722,16 @@ async def poll_events(
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
     last_event_id: Annotated[str | None, Header(alias="last-event-id")] = None,
+    worker_capability: Annotated[
+        str | None, Header(alias="x-switch-worker-capability")
+    ] = None,
+    host_boot_id: Annotated[str | None, Header(alias="x-switch-host-boot-id")] = None,
+    host_instance_id: Annotated[
+        str | None, Header(alias="x-switch-host-instance-id")
+    ] = None,
+    worker_state_version: Annotated[
+        int | None, Header(alias="x-switch-worker-state-version")
+    ] = None,
 ) -> EventResponse | Response:
     """Deliver the agent's events, as a push stream or a long poll.
 
@@ -729,6 +750,7 @@ async def poll_events(
         return await _open_event_stream(
             agent=agent,
             protocol=protocol,
+            config=config,
             connection_id=connection_id,
             scope=scope,
             event_filter=event_filter,
@@ -743,8 +765,14 @@ async def poll_events(
             rooms=rooms,
             last_event_id=last_event_id,
             expected_generation=expected_generation,
+            worker_capability=worker_capability,
+            host_boot_id=host_boot_id,
+            host_instance_id=host_instance_id,
+            worker_state_version=worker_state_version,
         )
 
+    if hosted_launch_of(agent.metadata_) is not None:
+        raise hosted_worker_only()
     events = await protocol.poll_events(agent.id, timeout=timeout)
     if not events:
         return Response(status_code=204)
@@ -774,39 +802,18 @@ def _resolve_start_cursor(
         ) from exc
 
 
-async def _open_event_stream(
+def _open_connection(
     *,
-    agent: Agent,
     protocol: ProtocolService,
-    connection_id: str | None,
+    agent: Agent,
+    connection_id: str,
     scope: str,
     event_filter: str,
-    start_from: str,
     spawn_capable: bool,
+    cursor: int,
     declaration: ClientDeclaration,
-    rooms: str | None,
-    last_event_id: str | None,
     expected_generation: int | None,
-) -> StreamingResponse:
-    if not connection_id:
-        raise HTTPException(
-            status_code=400,
-            detail="connection_id is required to open an event stream; generate a "
-            "UUID and reuse it when reconnecting so the connection survives the "
-            "drop",
-        )
-    if scope not in ("single", "all"):
-        raise HTTPException(
-            status_code=400, detail=f"scope must be 'single' or 'all', got {scope!r}"
-        )
-    if event_filter not in ("all", "addressed"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"filter must be 'all' or 'addressed', got {event_filter!r}",
-        )
-
-    cursor = _resolve_start_cursor(protocol, agent.id, start_from, last_event_id)
-
+) -> Connection:
     try:
         conn = protocol.connections.open(
             agent_id=agent.id,
@@ -847,6 +854,97 @@ async def _open_event_stream(
         ) from exc
     except ConnectionError_ as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return conn
+
+
+async def _open_event_stream(
+    *,
+    agent: Agent,
+    protocol: ProtocolService,
+    config: SwitchConfig,
+    connection_id: str | None,
+    scope: str,
+    event_filter: str,
+    start_from: str,
+    spawn_capable: bool,
+    declaration: ClientDeclaration,
+    rooms: str | None,
+    last_event_id: str | None,
+    expected_generation: int | None,
+    worker_capability: str | None,
+    host_boot_id: str | None,
+    host_instance_id: str | None,
+    worker_state_version: int | None,
+) -> StreamingResponse:
+    if not connection_id:
+        raise HTTPException(
+            status_code=400,
+            detail="connection_id is required to open an event stream; generate a "
+            "UUID and reuse it when reconnecting so the connection survives the "
+            "drop",
+        )
+    if scope not in ("single", "all"):
+        raise HTTPException(
+            status_code=400, detail=f"scope must be 'single' or 'all', got {scope!r}"
+        )
+    if event_filter not in ("all", "addressed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"filter must be 'all' or 'addressed', got {event_filter!r}",
+        )
+
+    cursor = _resolve_start_cursor(protocol, agent.id, start_from, last_event_id)
+
+    def open_connection() -> Connection:
+        return _open_connection(
+            protocol=protocol,
+            agent=agent,
+            connection_id=connection_id,
+            scope=scope,
+            event_filter=event_filter,
+            spawn_capable=spawn_capable,
+            cursor=cursor,
+            declaration=declaration,
+            expected_generation=expected_generation,
+        )
+
+    launch_id = hosted_launch_of(agent.metadata_)
+    if launch_id is None:
+        conn = open_connection()
+    else:
+        # Admission, the open and the binding all happen under the launch
+        # lock, so no revision bump lands between the check and the bind.
+        async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
+            attach = await admit_worker(
+                session=db,
+                registry=protocol.connections,
+                config=config,
+                agent=agent,
+                launch_id=launch_id,
+                connection_id=connection_id,
+                declaration=declaration,
+                capability=worker_capability,
+                boot_id=host_boot_id,
+                instance_id=host_instance_id,
+                state_version=worker_state_version,
+            )
+            conn = open_connection()
+            if attach.takes_over is not None and attach.takes_over.id != conn.id:
+                protocol.connections.close(attach.takes_over.id, TAKEN_OVER)
+            protocol.connections.bind_worker(conn, attach.binding, attach.attached)
+            launch = await db.get(HostedLaunch, (require_tenant_id(), launch_id))
+            assert launch is not None
+            await deliver_on_attach(db, protocol, launch)
+
+    # Built before anything below can yield, so it holds the generation this
+    # open produced; a reconnect during the bookkeeping supersedes it rather
+    # than being detached by it.
+    stream = event_stream(
+        conn=conn,
+        registry=protocol.connections,
+        buffer=protocol.event_buffer,
+        approvals=protocol.approval_outcomes,
+    )
 
     # After the connection is open, so a bookkeeping failure can never be the
     # reason an agent could not connect.
@@ -905,12 +1003,7 @@ async def _open_event_stream(
         await protocol.sessions.started(agent, conn)
 
     return StreamingResponse(
-        event_stream(
-            conn=conn,
-            registry=protocol.connections,
-            buffer=protocol.event_buffer,
-            approvals=protocol.approval_outcomes,
-        ),
+        stream,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -973,7 +1066,7 @@ async def connection_beat(
 
 def _current_connection(
     protocol: ProtocolService,
-    agent_id: str,
+    agent: Agent,
     req: ConnectionSubscribeRequest | ConnectionPlacementsRequest,
 ) -> Connection:
     """The connection this request may write to, or the refusal saying why not.
@@ -982,9 +1075,13 @@ def _current_connection(
     the client on it. Asked again after any wait, because what a caller was
     admitted on is not what it is still holding.
     """
+    if hosted_launch_of(agent.metadata_) is not None:
+        named = protocol.connections.get(req.connection_id)
+        if named is None or named.agent_id != agent.id or named.worker is None:
+            raise hosted_worker_only()
     try:
         return protocol.connections.require_current(
-            agent_id, req.connection_id, generation=req.generation
+            agent.id, req.connection_id, generation=req.generation
         )
     except (SupersededControlError, UnfencedControlError) as exc:
         raise HTTPException(
@@ -1014,7 +1111,7 @@ async def connection_subscribe(
     door names no session, so the connection is the whole of what it is, and
     replacing is what it has always been promised.
     """
-    conn = _current_connection(protocol, agent.id, req)
+    conn = _current_connection(protocol, agent, req)
 
     try:
         await protocol.require_room_member(agent.id, req.room_id)
@@ -1032,7 +1129,7 @@ async def connection_subscribe(
         # Named again now the wait for the slots is over, and with nothing
         # awaited between here and the write: a client displaced while it waited
         # would otherwise move a room on the connection its successor holds.
-        conn = _current_connection(protocol, agent.id, req)
+        conn = _current_connection(protocol, agent, req)
         try:
             evicted = protocol.connections.claim_room(
                 conn, req.room_id, takeover=req.takeover
@@ -1077,10 +1174,10 @@ async def connection_unsubscribe(
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict[str, Any]:
     """Release a room, returning coverage to any all-scope connection."""
-    conn = _current_connection(protocol, agent.id, req)
+    conn = _current_connection(protocol, agent, req)
 
     async with protocol.connections.slots(agent.id):
-        conn = _current_connection(protocol, agent.id, req)
+        conn = _current_connection(protocol, agent, req)
         protocol.connections.release_room(conn, req.room_id)
     return {"ok": True, "rooms": sorted(conn.rooms)}
 
@@ -1106,7 +1203,7 @@ async def connection_placements(
             status_code=403,
             detail=f"authenticated as agent {agent.id}, not {agent_id}",
         )
-    conn = _current_connection(protocol, agent.id, req)
+    conn = _current_connection(protocol, agent, req)
 
     for room_id in sorted(set(req.placements.values())):
         try:
@@ -1117,7 +1214,7 @@ async def connection_placements(
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     async with protocol.connections.slots(agent.id):
-        conn = _current_connection(protocol, agent.id, req)
+        conn = _current_connection(protocol, agent, req)
         before = protocol.connections.connection_placements(conn)
         try:
             released = protocol.connections.replace_placements(conn, req.placements)

@@ -15,7 +15,9 @@ from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import InboundInteraction
 from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
 from switch_core.db.models import Agent
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.session_activity.bridge_publisher import StopTarget
+from switch_core.tenant_context import current_tenant_id
 
 from .conftest import AGENT, make_room
 
@@ -69,6 +71,9 @@ def _bridge(service, registry, target, mxid) -> tuple[BridgeCore, Platform]:
     bridge._activity_publisher = Publisher(target)  # type: ignore[assignment]
     bridge._session_activity_service = service
     bridge._connections = registry
+    bridge._session_factory = service._sessions
+    bridge._bridge_tenant_id = current_tenant_id()
+    bridge._agent_store = AgentStore()
 
     async def identify(_actor) -> str | None:
         return mxid
