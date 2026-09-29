@@ -437,7 +437,7 @@ _CONFIG_KWARGS = dict(
     db_name="switch",
     matrix_server_name="switch.local",
     agent_registration_token="token",
-    jwt_secret_key="jwt",
+    jwt_secret_key="unit-test-jwt-key-unit-test-jwt-key-unit-test",
     gateway_admin_email="admin@example.com",
     gateway_admin_password="pw",
 )

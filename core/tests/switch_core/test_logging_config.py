@@ -25,7 +25,7 @@ BASE_ENV = {
     "DB_NAME": "switch",
     "MATRIX_SERVER_NAME": "switch.local",
     "AGENT_REGISTRATION_TOKEN": "token",
-    "JWT_SECRET_KEY": "jwt",
+    "JWT_SECRET_KEY": "unit-test-jwt-key-unit-test-jwt-key-unit-test",
     "GATEWAY_ADMIN_EMAIL": "admin@example.com",
     "GATEWAY_ADMIN_PASSWORD": "pw",
 }

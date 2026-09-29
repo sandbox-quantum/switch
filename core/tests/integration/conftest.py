@@ -101,7 +101,7 @@ RUNTIME_ROLE_PREFIX = "switch_app"
 
 # ── Throwaway test constants (not secrets — local ephemeral infra) ──────────────
 SERVER_NAME = "localhost"
-JWT_SECRET = "dev-jwt-secret-test"
+JWT_SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"
 REGISTRATION_TOKEN = "dev-test-token"
 GATEWAY_ADMIN_EMAIL = "admin@switch.local"
 GATEWAY_ADMIN_PASSWORD = "admin"
