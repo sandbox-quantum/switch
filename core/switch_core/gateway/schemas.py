@@ -492,6 +492,10 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Why no existing channel can be bound to a room by id on this connection,
+    # or None when one can. Set for a connection whose chats arrive only one
+    # way, so the room form can say so instead of offering the choice.
+    channel_ids_refused: str | None = None
     # Whether the platform has a user directory Switch can search. False where
     # the only people Switch can name are those who have spoken to it, which
     # makes "pick yourself from the directory" an empty list on a connection

@@ -77,6 +77,11 @@ export default function RoomCreateFormBody() {
     !!selectedBridge &&
     !(selectedBridge.channel_creation_supported && selectedBridge.channel_creation_enabled);
 
+  // A connection whose chats arrive only one way takes no channel id either,
+  // and says how its rooms come about instead.
+  const existingChannelRefusal = selectedBridge?.channel_ids_refused ?? null;
+  const noChannelSource = channelCreationBlocked && existingChannelRefusal !== null;
+
   const channelCreationBlockedReason = useMemo(() => {
     if (!selectedBridge || !channelCreationBlocked) return null;
     if (!selectedBridge.channel_creation_supported) {
@@ -88,10 +93,10 @@ export default function RoomCreateFormBody() {
   // If the user had "Create new channel" selected and then picks a bridge
   // that can't do that, flip the selection rather than leaving it invalid.
   useEffect(() => {
-    if (channelCreationBlocked && channelSource === "new") {
+    if (channelCreationBlocked && !noChannelSource && channelSource === "new") {
       setChannelSource("existing");
     }
-  }, [channelCreationBlocked, channelSource]);
+  }, [channelCreationBlocked, noChannelSource, channelSource]);
 
   const addRole = useCallback(
     () => setRoles((rs) => [...rs, { name: "", instructions: "", exclusive: false }]),
@@ -134,11 +139,12 @@ export default function RoomCreateFormBody() {
   const canSubmit = useMemo(() => {
     if (!name.trim() || !description.trim()) return false;
     if (hasBridge) {
+      if (noChannelSource) return false;
       if (channelSource === "existing" && !externalChannelId.trim()) return false;
       return true;
     }
     return agentIds.length >= 1;
-  }, [name, description, hasBridge, channelSource, externalChannelId, agentIds]);
+  }, [name, description, hasBridge, noChannelSource, channelSource, externalChannelId, agentIds]);
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -364,16 +370,17 @@ export default function RoomCreateFormBody() {
               value="existing"
               control={<Radio size="small" />}
               label="Use existing channel"
+              disabled={existingChannelRefusal !== null}
             />
           </RadioGroup>
 
-          {channelCreationBlockedReason && (
+          {(noChannelSource ? existingChannelRefusal : channelCreationBlockedReason) && (
             <Alert severity="info" variant="outlined">
-              {channelCreationBlockedReason}
+              {noChannelSource ? existingChannelRefusal : channelCreationBlockedReason}
             </Alert>
           )}
 
-          {channelSource === "existing" ? (
+          {noChannelSource ? null : channelSource === "existing" ? (
             <TextField
               label="External channel ID"
               value={externalChannelId}

@@ -39,6 +39,7 @@ from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, CommandArg
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
+    ChannelNotBindable,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -2158,6 +2159,27 @@ class TelegramAdapter(PlatformAdapter):
         if not self._bot_username:
             return None
         return f"https://t.me/{self._bot_username}"
+
+    def channel_ids_refused(self) -> str | None:
+        """Every id, on the shared bot: a chat joins it only by being claimed.
+
+        The shared bot is in every organisation's chats, and nothing it can
+        ask Telegram says whose a chat is — only a claim does, and a claimed
+        chat is given its room by the claim. A self-registered bot is the
+        organisation's own and reaches only chats someone added it to.
+        """
+        if not self._shared:
+            return None
+        return (
+            "Rooms on the Switch Telegram app come from connecting a chat: use "
+            "Connect a chat on the Telegram card under Installed apps, and the "
+            "chat gets its room. A chat cannot be linked to a room by its id."
+        )
+
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        refusal = self.channel_ids_refused()
+        if refusal is not None:
+            raise ChannelNotBindable(refusal)
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         bot = self._require_bot()
