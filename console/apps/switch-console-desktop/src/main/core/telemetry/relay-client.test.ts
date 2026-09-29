@@ -165,23 +165,37 @@ describe('the record that gets built', () => {
   });
 
   it('carries a count as a number, so it can be summed at the far end', () => {
+    // A count sent as text arrives as a category: it can be grouped by, never
+    // summed or averaged.
     const payload = buildOtlpPayload(
-      'session_started',
-      { ...SESSION_STARTED, has_initial_prompt: true },
+      'search_performed',
+      { status: 'ok', result_count: 3 },
       CONTEXT
     );
 
-    expect(rawLogAttributes(payload).has_initial_prompt).toEqual({ boolValue: true });
-    expect(rawLogAttributes(payload).entry_point).toEqual({ stringValue: 'sidebar' });
+    expect(rawLogAttributes(payload).result_count).toEqual({ doubleValue: 3 });
   });
 
-  it('refuses a count that is not a real number rather than sending null', () => {
-    // NaN and Infinity both serialise to `null` in JSON, which at the far end
-    // is indistinguishable from a property that was never sent.
-    const broken = { ...SESSION_STARTED, has_initial_prompt: Number.NaN } as never;
+  it('carries a count of zero as a number, not as a property that was never sent', () => {
+    const payload = buildOtlpPayload(
+      'search_performed',
+      { status: 'ok', result_count: 0 },
+      CONTEXT
+    );
 
-    expect(() => buildOtlpPayload('session_started', broken, CONTEXT)).toThrow(/non-finite/);
+    expect(rawLogAttributes(payload).result_count).toEqual({ doubleValue: 0 });
   });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'refuses a count of %s rather than sending null',
+    (count) => {
+      // NaN and Infinity both serialise to `null` in JSON, which at the far end
+      // is indistinguishable from a property that was never sent.
+      const broken = { status: 'ok', result_count: count } as const;
+
+      expect(() => buildOtlpPayload('search_performed', broken, CONTEXT)).toThrow(/non-finite/);
+    }
+  );
 
   it('stamps the time in nanoseconds, which is what OTLP counts in', () => {
     const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
