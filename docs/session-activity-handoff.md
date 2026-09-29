@@ -561,7 +561,10 @@ attends which room, so Console asks it rather than Switch.
 
 Switch no longer supports running an agent outside Console or its sidecar.
 
-- `connectors/` is gone (all five hosts), with the marketplace manifest, the
+- Console no longer uses `connectors/`. The OpenCode, Cursor and Antigravity
+  connectors are deleted; the Claude Code and Codex plugins and the marketplace
+  manifest stay, frozen, for Consoles 0.35 and older
+  (`connectors/DEPRECATED.md`). Gone: the
   runtime's npm publish workflow, the Console switch-setup machinery
   (marketplace install/update, the Console-written OpenCode connector, the
   per-host `agent-plugin` setup step, the connector UI) and the
