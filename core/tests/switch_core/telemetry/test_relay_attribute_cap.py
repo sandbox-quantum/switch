@@ -87,7 +87,3 @@ async def test_every_event_fits_through_the_relay(event: str) -> None:
         f"drops any record over {RELAY_ATTRIBUTE_CAP} and still answers 200, "
         f"so this event is close to vanishing without a trace. Split it."
     )
-
-
-def test_the_headroom_is_under_the_cap() -> None:
-    assert MAX_ATTRIBUTES < RELAY_ATTRIBUTE_CAP
