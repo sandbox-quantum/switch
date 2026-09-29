@@ -110,3 +110,35 @@ describe('asking before a shared stop or restart', () => {
     expect(run).toHaveBeenCalledOnce();
   });
 });
+
+describe('changing one’s mind', () => {
+  it('does nothing when the question is cancelled', async () => {
+    register.current = null;
+
+    const run = await clickStop('vm-1');
+    const cancel = [...document.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Cancel'
+    )!;
+    await act(async () => cancel.click());
+
+    expect(run).not.toHaveBeenCalled();
+    // It closes as a stop: the words do not change on the way out.
+    expect(dialogText()).not.toMatch(/Restart/);
+    await vi.waitFor(() => expect(dialogText()).toBe(''));
+  });
+
+  it('runs the action once when it is confirmed', async () => {
+    register.current = null;
+
+    const run = await clickStop('vm-1');
+    const confirm = [...document.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Stop for everyone'
+    )!;
+    await act(async () => confirm.click());
+
+    expect(run).toHaveBeenCalledOnce();
+    // It closes as a stop: the words do not change on the way out.
+    expect(dialogText()).not.toMatch(/Restart/);
+    await vi.waitFor(() => expect(dialogText()).toBe(''));
+  });
+});

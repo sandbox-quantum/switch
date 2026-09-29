@@ -38,18 +38,25 @@ export function useSharedActionConfirm(sshHost: string | null): {
   who: string | null;
 } {
   const [pending, setPending] = useState<{ action: SharedAction; run: () => void } | null>(null);
+  // Separate from `pending`, which is kept while the dialog animates closed so
+  // that its wording does not flip from Stop to Restart on the way out.
+  const [open, setOpen] = useState(false);
   const register = sshHost ? remoteServerStore.registerFor(sshHost) : null;
   const now = new Date();
   const shared = sshHost !== null && sharedWithOthers(register, now);
   const who = sshHost !== null ? whoElseSentence(register, now) : null;
 
   const request = (action: SharedAction, run: () => void) => {
-    if (shared) setPending({ action, run });
-    else run();
+    if (!shared) {
+      run();
+      return;
+    }
+    setPending({ action, run });
+    setOpen(true);
   };
 
   const dialog = (
-    <Dialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>
         <DialogHeader>
           <TriangleAlert className="size-4 text-amber-500" />
@@ -73,9 +80,8 @@ export function useSharedActionConfirm(sshHost: string | null): {
             variant={pending?.action === 'stop' ? 'destructive' : 'default'}
             size="sm"
             onClick={() => {
-              const run = pending?.run;
-              setPending(null);
-              run?.();
+              setOpen(false);
+              pending?.run();
             }}
           >
             {pending?.action === 'stop' ? 'Stop for everyone' : 'Restart for everyone'}
