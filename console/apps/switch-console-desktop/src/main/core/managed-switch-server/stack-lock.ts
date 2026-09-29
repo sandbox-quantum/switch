@@ -183,6 +183,18 @@ export function parseLockReply(stdout: string): LockReply {
   };
 }
 
+/** A holder as others are shown it: whether it is live is this module's
+ * business, and is not sent on to the status, a refusal or the renderer. */
+function shownHolder(holder: ServerLockHolder & { live: boolean }): ServerLockHolder {
+  return {
+    name: holder.name,
+    hostAccount: holder.hostAccount,
+    action: holder.action,
+    heldForSeconds: holder.heldForSeconds,
+    expiresInSeconds: holder.expiresInSeconds,
+  };
+}
+
 /** A Console id is our own random UUID; the script compares it as text. */
 const CONSOLE_ID = /^[0-9A-Fa-f-]{1,64}$/;
 
@@ -267,7 +279,7 @@ export class ServerLease {
       )
     );
     if (reply.status === 'renewed') return;
-    const holder = reply.holder?.live ? reply.holder : null;
+    const holder = reply.holder?.live ? shownHolder(reply.holder) : null;
     this.lostTo = { holder };
     log.error(`stack-lock: lost the lock on ${this.host.label} while holding it`, {
       action: this.claim.action,
@@ -380,9 +392,9 @@ export async function acquireServerLock(
     if (reply.status !== 'held' || reply.holder === null) {
       throw new Error(`Unexpected answer from the server lock on ${host.label}: ${reply.status}`);
     }
-    last = reply.holder;
-    if (opts.mode === 'refuse') throw new ServerBusyError(reply.holder, host.label);
-    opts.onWaiting(reply.holder);
+    last = shownHolder(reply.holder);
+    if (opts.mode === 'refuse') throw new ServerBusyError(last, host.label);
+    opts.onWaiting(last);
     try {
       await sleep(opts.timing.pollEveryMs, opts.signal);
     } catch {
@@ -396,12 +408,5 @@ export async function acquireServerLock(
 export async function readServerLock(host: StackStateHost): Promise<ServerLockHolder | null> {
   if (!(await stateVolumeExists(host))) return null;
   const { holder } = parseLockReply(await readStateVolume(host, PEEK_SCRIPT));
-  if (!holder?.live) return null;
-  return {
-    name: holder.name,
-    hostAccount: holder.hostAccount,
-    action: holder.action,
-    heldForSeconds: holder.heldForSeconds,
-    expiresInSeconds: holder.expiresInSeconds,
-  };
+  return holder?.live ? shownHolder(holder) : null;
 }

@@ -159,6 +159,14 @@ describe('taking the lock', () => {
 
     expect(error).toBeInstanceOf(ServerBusyError);
     expect((error as Error).message).toMatch(/^bob@desk \(as bob\) is starting the server on vm-1/);
+    // Only what a person reads goes on to the renderer.
+    expect((error as InstanceType<typeof ServerBusyError>).holder).toEqual({
+      name: 'bob@desk',
+      hostAccount: 'bob',
+      action: 'starting',
+      heldForSeconds: 40,
+      expiresInSeconds: 90,
+    });
   });
 
   it('waits, saying who for, and takes it once it is free', async () => {
@@ -178,7 +186,13 @@ describe('taking the lock', () => {
     const lease = await taking;
     await lease.release();
 
-    expect(onWaiting).toHaveBeenCalledWith(expect.objectContaining({ name: 'bob@desk' }));
+    expect(onWaiting).toHaveBeenCalledWith({
+      name: 'bob@desk',
+      hostAccount: 'bob',
+      action: 'starting',
+      heldForSeconds: 40,
+      expiresInSeconds: 90,
+    });
     expect(runStateScript.mock.calls.filter((c) => (c[2] as string[])[0] === 'take')).toHaveLength(
       2
     );
