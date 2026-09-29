@@ -73,8 +73,12 @@ vi.mock('./adopt-subagent', () => ({ adoptSubagent: vi.fn() }));
 vi.mock('./local-host', () => ({ startLocalWatcher: vi.fn(), stopLocalWatcher: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn() } }));
 
-const { configureSharedWatcher, keepAutoApproveChoice, recordAutoApproveOnHost } =
-  await import('./shared-watcher');
+const {
+  configureSharedWatcher,
+  configureSharedWatcherFor,
+  keepAutoApproveChoice,
+  recordAutoApproveOnHost,
+} = await import('./shared-watcher');
 
 const run = promisify(execFile);
 let root: string;
@@ -187,13 +191,10 @@ it('writes this Console’s value when the person using it has just changed it',
   mocks.agent.mockResolvedValue(agent(true));
   savedSpec('approval-required');
 
-  await configureSharedWatcher(
-    'agent-1',
-    { connected: true, spawning: true },
-    'explicit',
-    undefined,
-    'this-console'
-  );
+  await configureSharedWatcherFor('agent-1', { connected: true, spawning: true }, 'explicit', {
+    name: undefined,
+    autoApprove: 'this-console',
+  });
 
   expect(writtenMode()).toBe('full-access');
   expect(mocks.updateAgent).not.toHaveBeenCalled();

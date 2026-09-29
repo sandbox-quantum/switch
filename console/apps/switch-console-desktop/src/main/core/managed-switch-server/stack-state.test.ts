@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ExecResult } from '@main/core/execution-context/types';
 import { STACK_HELPER_IMAGE, STACK_STATE_LABEL } from './constants';
 import { buildEnvFile } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
@@ -15,6 +16,8 @@ import {
   probeFromStack,
   publishEnv,
   readPublishedCopy,
+  readStateVolume,
+  runStateScript,
   type StackStateHost,
   stackStateVolume,
   stampPublishedEnv,
@@ -62,6 +65,8 @@ type HostState = {
   /** When the daemon says the database volume was created. */
   databaseCreatedAt: string;
   own: string | null;
+  /** What this account's `.env.db` says, or null for none. */
+  ownStamp: string | null;
   imagePresent: boolean;
   /** Commands (joined args) that fail. */
   failing: RegExp | null;
@@ -77,13 +82,30 @@ function fakeHost(initial: Partial<HostState> = {}) {
     publishedStamp: null,
     databaseCreatedAt: '2026-09-01T10:00:00Z',
     own: null,
+    ownStamp: null,
     imagePresent: true,
     failing: null,
     readFileFails: false,
     ...initial,
   };
   const calls: string[][] = [];
-  const exec = vi.fn(async (_command: string, args: string[] = []) => {
+  /** The state launcher, as the host's shell would run it: its image check,
+   * its volume creation, and then the docker arguments it hands on. */
+  const launch = (args: string[]): string[] => {
+    const [, , , , , volume = '', label = '', create = ''] = args;
+    if (!state.imagePresent) {
+      throw Object.assign(new Error('exit 97'), {
+        stderr: 'switch-console: the helper image is not on this host',
+      });
+    }
+    if (create === 'yes') {
+      calls.push(['volume', 'create', '--label', label, volume]);
+      state.stateVolume = true;
+    }
+    return args.slice(8);
+  };
+  const exec = vi.fn(async (command: string, args: string[] = []): Promise<ExecResult> => {
+    if (command === 'sh') args = launch(args);
     calls.push(args);
     const joined = args.join(' ');
     if (state.failing?.test(joined)) {
@@ -122,7 +144,9 @@ function fakeHost(initial: Partial<HostState> = {}) {
     throw new Error(`unexpected docker ${joined}`);
   });
   const writeCommandInput = vi.fn(
-    async (_command: string, _args: string[], _input: string, _opts: { timeoutMs: number }) => {}
+    async (_command: string, args: string[], _input: string, _opts: { timeoutMs: number }) => {
+      calls.push(launch(args));
+    }
   );
   const host: StackStateHost = {
     ctx: { exec } as unknown as StackStateHost['ctx'],
@@ -130,9 +154,9 @@ function fakeHost(initial: Partial<HostState> = {}) {
     composeProjectName: PROJECT,
     label: 'vm-1',
     workingDir: WORKING_DIR,
-    readFile: vi.fn(async () => {
+    readFile: vi.fn(async (path: string) => {
       if (state.readFileFails) throw new Error('Permission denied');
-      return state.own;
+      return path === '.env.db' ? state.ownStamp : state.own;
     }),
     writeCommandInput,
   };
@@ -225,9 +249,8 @@ describe('the published copy', () => {
   it('reads a copy written before stamps existed as unstamped', async () => {
     const env = envFor();
     const { host, exec } = fakeHost({ stateVolume: true });
-    exec.mockImplementation(async (_command: string, args: string[] = []) => {
-      if (args[0] === 'run') return { stdout: env, stderr: '' };
-      if (args[0] === 'image') return { stdout: 'sha256:abc\n', stderr: '' };
+    exec.mockImplementation(async (command: string, args: string[] = []) => {
+      if (command === 'sh') return { stdout: env, stderr: '' };
       throw new Error(`unexpected docker ${args.join(' ')}`);
     });
 
@@ -240,19 +263,24 @@ describe('the published copy', () => {
     expect(await readPublishedCopy(host)).toBeNull();
   });
 
-  it('pulls the helper image on a host that does not have it yet, and asks only once', async () => {
-    const { host, calls } = fakeHost({
+  it('pulls a missing helper image under a pull’s timeout, then runs, in one trip each time', async () => {
+    // Not pulled by `docker run` inside a timeout meant for a quick script: a
+    // host whose image was pruned may take minutes to fetch it.
+    const { host, calls, exec } = fakeHost({
       stateVolume: true,
       published: envFor(),
       imagePresent: false,
     });
-    // A host this test file has not used, so nothing is known about its images.
-    const fresh = { ...host, label: 'fresh-host' };
 
-    await readPublishedCopy(fresh);
-    await readPublishedCopy(fresh);
+    await readPublishedCopy(host);
+    await readPublishedCopy(host);
 
-    expect(calls.map((args) => args[0])).toEqual(['image', 'pull', 'run', 'run']);
+    expect(calls.map((args) => args[0])).toEqual(['pull', 'run', 'run']);
+    expect(exec).toHaveBeenCalledWith(
+      'docker',
+      ['pull', '--quiet', STACK_HELPER_IMAGE],
+      expect.objectContaining({ timeout: 10 * 60_000 })
+    );
   });
 
   it('is published on stdin and never as an argument, which every account could read', async () => {
@@ -278,7 +306,7 @@ describe('the published copy', () => {
       expect.arrayContaining(['--interactive', `${PROJECT}_console-state:/state`])
     );
     // Written aside and moved into place, so a reader never sees half a file.
-    const script = args[args.indexOf('-c') + 1]!;
+    const script = args[args.lastIndexOf('-c') + 1]!;
     expect(script).toMatch(/umask 077\n.*\ncat > .*stack\.env\.tmp.*\nmv /s);
     expect(script).toContain('rm -f "/state/stack.db"');
     for (const argv of calls) expect(argv.join(' ')).not.toContain(secrets.jwtSecretKey);
@@ -290,8 +318,8 @@ describe('the published copy', () => {
     await publishEnv(host, envFor(), lease);
 
     const [, args] = writeCommandInput.mock.calls[0]!;
-    expect(args.slice(args.indexOf('-c') + 2)).toEqual(['stack-state', lease.token]);
-    expect(args[args.indexOf('-c') + 1]).toContain(WHILE_HOLDING_SERVER_LOCK);
+    expect(args.slice(args.lastIndexOf('-c') + 2)).toEqual(['stack-state', lease.token]);
+    expect(args[args.lastIndexOf('-c') + 1]).toContain(WHILE_HOLDING_SERVER_LOCK);
   });
 
   it('reads the database volume it was written for, when that was recorded', async () => {
@@ -333,7 +361,7 @@ describe('the published copy', () => {
 
     const [, args, input] = writeCommandInput.mock.calls[0]!;
     expect(input).toBe('2026-09-01T10:00:00Z\n');
-    expect(args[args.indexOf('-c') + 1]).toContain('/state/stack.db');
+    expect(args[args.lastIndexOf('-c') + 1]).toContain('/state/stack.db');
   });
 
   it('is withdrawn on reset, and only it: the activity record survives', async () => {
@@ -342,7 +370,7 @@ describe('the published copy', () => {
     await withdrawPublishedEnv(host, lease);
 
     const [, args] = writeCommandInput.mock.calls[0]!;
-    const script = args[args.indexOf('-c') + 1]!;
+    const script = args[args.lastIndexOf('-c') + 1]!;
     expect(script).toContain('rm -f "/state/stack.env"');
     expect(script).toContain('"/state/stack.db"');
     expect(script).not.toMatch(/rm -rf|activity/);
@@ -376,7 +404,7 @@ describe('the published copy’s scripts, run for real', () => {
     writeFileSync(join(dir, 'lock'), `switch-console-lock v1\n${lease.token}\n`);
     const env = stateScriptEnv();
     const sh = (args: string[], input: string) => {
-      const at = args.indexOf('-c');
+      const at = args.lastIndexOf('-c');
       const script = args[at + 1]!.replaceAll('/state', dir);
       return execFileSync('sh', ['-c', script, ...args.slice(at + 2)], {
         input,
@@ -389,7 +417,7 @@ describe('the published copy’s scripts, run for real', () => {
     });
     const exec = fake.exec.getMockImplementation()!;
     fake.exec.mockImplementation(async (command: string, args: string[] = []) =>
-      args[0] === 'run' ? { stdout: sh(args, ''), stderr: '' } : exec(command, args)
+      command === 'sh' ? { stdout: sh(args, ''), stderr: '' } : exec(command, args)
     );
     return fake;
   }
@@ -592,6 +620,45 @@ describe('inspectStack', () => {
     expect(await inspectStack(host)).toMatchObject({ kind: 'present', source: 'working-dir' });
   });
 
+  it('trusts this account’s settings written for the database that is there', async () => {
+    const { host } = fakeHost({
+      dataVolumes: [`${PROJECT}_pgdata`],
+      own: envFor(),
+      ownStamp: '2026-09-01T10:00:00Z\n',
+    });
+
+    expect(await inspectStack(host)).toMatchObject({
+      kind: 'present',
+      source: 'working-dir',
+      stamp: '2026-09-01T10:00:00Z',
+    });
+  });
+
+  it('does not take this account’s settings for a database since recreated elsewhere', async () => {
+    // A Console that does not share its settings reset the stack, started it
+    // with its own credentials and took its containers down: this account's
+    // copy opens nothing, and starting from it would lock that database out.
+    const { host } = fakeHost({
+      dataVolumes: [`${PROJECT}_pgdata`],
+      own: envFor(),
+      ownStamp: '2026-08-01T09:00:00Z\n',
+      databaseCreatedAt: '2026-09-20T08:30:00Z',
+    });
+
+    expect(await inspectStack(host)).toEqual({ kind: 'unshared', ownerDir: null, running: false });
+  });
+
+  it('cannot tell whose settings they are when the database cannot be asked about', async () => {
+    const { host } = fakeHost({
+      dataVolumes: [`${PROJECT}_pgdata`],
+      own: envFor(),
+      ownStamp: '2026-08-01T09:00:00Z\n',
+      failing: /^volume inspect/,
+    });
+
+    expect(await inspectStack(host)).toMatchObject({ kind: 'unreadable' });
+  });
+
   it('names what a partial published copy is missing', async () => {
     const partial = envFor().replace(/^JWT_SECRET_KEY=.*$/m, '');
     const { host } = fakeHost({
@@ -704,6 +771,7 @@ describe('what the setup step is told about a host', () => {
     running: true,
     published: true,
     runningVersion: null,
+    stamp: null,
   };
 
   it('compares the version a running stack runs, else the one its settings name', () => {
@@ -785,5 +853,86 @@ describe('what the setup step is told about a host', () => {
 
     expect(probeFromStack('vm-1', { kind: 'absent' }, busy)).toEqual({ kind: 'absent', busy });
     expect(probeFromStack('vm-1', present, busy)).toMatchObject({ kind: 'present', busy });
+  });
+});
+
+describe('the state launcher, run for real', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'state-launcher-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A host whose shell is this machine's and whose docker is a script that
+   * records what it was asked, and has the helper image only when told to. */
+  function launcherHost(imagePresent: boolean) {
+    const log = join(dir, 'docker.log');
+    const docker = join(dir, 'docker');
+    writeFileSync(
+      docker,
+      [
+        '#!/bin/sh',
+        `printf '%s\\n' "$*" >> '${log}'`,
+        `if [ "$1" = image ]; then ${imagePresent ? 'exit 0' : 'exit 1'}; fi`,
+        'if [ "$1" = run ]; then echo ran; fi',
+        'exit 0',
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    const { host } = fakeHost();
+    const real: StackStateHost = {
+      ...host,
+      dockerBin: docker,
+      ctx: {
+        exec: async (command: string, args: string[] = []) => {
+          try {
+            return { stdout: execFileSync(command, args, { encoding: 'utf8' }), stderr: '' };
+          } catch (error) {
+            const stderr = (error as { stderr?: Buffer | string }).stderr?.toString() ?? '';
+            throw Object.assign(new Error('exit'), { stderr });
+          }
+        },
+      } as unknown as StackStateHost['ctx'],
+    };
+    const asked = () => readFileSync(log, 'utf8').trim().split('\n');
+    return { host: real, asked };
+  }
+
+  it('checks the image, creates the volume labelled, and runs, in one command', async () => {
+    const { host, asked } = launcherHost(true);
+
+    expect((await runStateScript(host, 'echo hi', ['arg one'])).trim()).toBe('ran');
+
+    const [image, create, run] = asked();
+    expect(image).toBe(`image inspect ${STACK_HELPER_IMAGE}`);
+    expect(create).toBe(
+      `volume create --label ${STACK_STATE_LABEL}=${PROJECT} ${PROJECT}_console-state`
+    );
+    expect(run).toMatch(/^run --rm --network none --volume \S+_console-state:\/state /);
+    expect(run).toMatch(/-c echo hi stack-state arg one$/);
+  });
+
+  it('creates nothing for a read', async () => {
+    const { host, asked } = launcherHost(true);
+
+    await readStateVolume(host, 'cat /state/x');
+
+    expect(asked().some((line) => line.startsWith('volume create'))).toBe(false);
+    expect(asked().at(-1)).toMatch(/_console-state:\/state:ro /);
+  });
+
+  it('says the helper image is missing rather than letting docker run pull it', async () => {
+    const { host, asked } = launcherHost(false);
+
+    // The pull goes to the fake docker as well, which "succeeds" without
+    // fetching anything, so the retry finds the image still missing.
+    await expect(runStateScript(host, 'echo hi', [])).rejects.toThrow(
+      /helper image is not on this host/
+    );
+    expect(asked().filter((line) => line.startsWith('run'))).toEqual([]);
   });
 });

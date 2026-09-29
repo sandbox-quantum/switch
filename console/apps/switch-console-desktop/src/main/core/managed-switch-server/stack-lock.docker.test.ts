@@ -251,6 +251,17 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
     await holding;
   }, 60_000);
 
+  it('is not taken when its file cannot be written, so nobody else takes it too', async () => {
+    // A write that cannot happen — here the temp file's name is taken by a
+    // directory; on a real host, a full disk — must fail the take, not answer
+    // "taken" over an empty lock file the next Console would read as free.
+    await writeStateVolume(host, 'mkdir /state/.lock.tmp', '', []);
+
+    await expect(take(claim())).rejects.toThrow();
+
+    expect(await readServerLock(host)).toBeNull();
+  }, 60_000);
+
   it('is read without being changed, and reads as free once released', async () => {
     expect(await readServerLock(host)).toBeNull();
     const alice = await take(claim({ action: 'updating' }));

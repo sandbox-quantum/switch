@@ -30,6 +30,8 @@ export const RemoteServerControls = observer(function RemoteServerControls({
     void store.init();
     void store.checkDocker(sshHost);
     void store.loadRegister(sshHost);
+    // Someone else may have started or removed a stack shown as stopped.
+    void store.refresh(sshHost);
   }, [store, sshHost]);
 
   // A remote stack is shared by everyone with access to its host (CHOO-2893):

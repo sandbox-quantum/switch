@@ -1,7 +1,7 @@
 import { appSettingsService } from '@main/core/settings/settings-service';
 import type { DeployedTelemetry } from '@shared/core/managed-switch-server/managed-switch-server';
 import { runningServiceEnv } from './compose';
-import { ENV_FILE_NAME } from './constants';
+import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
 import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from './env-file';
 import type { ServerHost } from './host/types';
 
@@ -21,9 +21,6 @@ import type { ServerHost } from './host/types';
 export async function telemetryConsent(): Promise<boolean> {
   return (await appSettingsService.get('telemetry')).enabled;
 }
-
-/** The compose service whose environment carries the server's telemetry gate. */
-const CORE_SERVICE = 'switch';
 
 /**
  * Whether the stack on `host` is actually sharing usage data.

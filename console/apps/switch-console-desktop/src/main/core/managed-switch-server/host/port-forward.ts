@@ -2,6 +2,30 @@ import { createServer, type Server, type Socket } from 'node:net';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { log } from '@main/lib/logger';
 
+/** Listen on `127.0.0.1:<port>`, saying why not when that fails. */
+function bind(server: Server, port: number, label: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (err: NodeJS.ErrnoException) =>
+      reject(
+        new Error(
+          err.code === 'EADDRINUSE'
+            ? // Most likely on a shared host (CHOO-2893): the stack was set up
+              // from another computer, whose free ports this one's need not be.
+              `Port ${port} is already in use on this computer, so the Switch server on ` +
+                `${label} cannot be reached from here. Switch Console reaches a remote ` +
+                `server through the same port number on this computer as on the host, so ` +
+                `whatever is using port ${port} here has to stop first.`
+            : `cannot bind local port ${port} for ${label}: ${err.message}`
+        )
+      );
+    server.once('error', onError);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', onError);
+      resolve();
+    });
+  });
+}
+
 /**
  * A persistent local→remote loopback bridge over the SSH connection.
  *
@@ -41,33 +65,29 @@ export class PortForwarder {
     }
   }
 
-  private listen(port: number): Promise<void> {
+  /**
+   * Whether every port in `ports` can be listened on here — bound and let go
+   * at once — throwing what {@link start} would. A start on a shared host
+   * asks this before it changes anything there: the stack is restarted or
+   * updated for everyone before the forward is opened, and finding the port
+   * taken only then leaves them that, and this Console without the server.
+   */
+  static async check(ports: number[], label: string): Promise<void> {
+    for (const port of ports) {
+      const server = createServer();
+      await bind(server, port, label);
+      await new Promise((resolve) => server.close(() => resolve(null)));
+    }
+  }
+
+  private async listen(port: number): Promise<void> {
     const server = createServer((socket) => this.bridge(socket, port));
     this.servers.push(server);
-    return new Promise((resolve, reject) => {
-      const onError = (err: NodeJS.ErrnoException) =>
-        reject(
-          new Error(
-            err.code === 'EADDRINUSE'
-              ? // Most likely on a shared host (CHOO-2893): the stack was set up
-                // from another computer, whose free ports this one's need not be.
-                `Port ${port} is already in use on this computer, so the Switch server on ` +
-                  `${this.label} cannot be reached from here. Switch Console reaches a remote ` +
-                  `server through the same port number on this computer as on the host, so ` +
-                  `whatever is using port ${port} here has to stop first.`
-              : `cannot bind local port ${port} for ${this.label}: ${err.message}`
-          )
-        );
-      server.once('error', onError);
-      server.listen(port, '127.0.0.1', () => {
-        server.removeListener('error', onError);
-        // Later listener errors are non-fatal — log rather than crash.
-        server.on('error', (err) =>
-          log.warn(`port-forward: listener error on :${port} (${this.label})`, { err })
-        );
-        resolve();
-      });
-    });
+    await bind(server, port, this.label);
+    // Later listener errors are non-fatal — log rather than crash.
+    server.on('error', (err) =>
+      log.warn(`port-forward: listener error on :${port} (${this.label})`, { err })
+    );
   }
 
   private bridge(socket: Socket, port: number): void {

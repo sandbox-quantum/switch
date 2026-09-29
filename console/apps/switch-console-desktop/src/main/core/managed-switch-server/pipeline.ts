@@ -1,6 +1,10 @@
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { passwordLogin } from '@main/core/switch-servers/auth';
-import { ensureManagedServer, setActiveServerId } from '@main/core/switch-servers/servers-store';
+import {
+  assertManagedServerUrlFree,
+  ensureManagedServer,
+  setActiveServerId,
+} from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
@@ -18,6 +22,7 @@ import {
   BUILD_OVERRIDE_FILE_NAME,
   COMPOSE_FILE_NAME,
   ENV_FILE_NAME,
+  ENV_STAMP_FILE_NAME,
   GHCR_REGISTRY,
   LOCAL_SERVER_ADMIN_EMAIL,
 } from './constants';
@@ -33,6 +38,7 @@ import { type LocalServerSecrets, withRuntimePassword } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
 import type { ServerLease } from './stack-lock';
 import {
+  currentDatabaseStamp,
   driftOf,
   inspectStack,
   publishEnv,
@@ -357,10 +363,20 @@ export async function bringWorkingDirInStep(
   host: ServerHost,
   stack: Extract<StackOnHost, { kind: 'present' }>
 ): Promise<void> {
-  if (stack.source === 'published') await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
+  if (stack.source === 'published') {
+    await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
+    await writeEnvStamp(host, stack.stamp);
+  }
   if ((await host.readFile(COMPOSE_FILE_NAME)) === null) {
     await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
   }
+}
+
+/** Record beside this account's `.env` which database it was written for —
+ * or that nothing says, so that no earlier record vouches for it. */
+async function writeEnvStamp(host: ServerHost, stamp: string | null): Promise<void> {
+  if (stamp === null) await host.removeFile(ENV_STAMP_FILE_NAME);
+  else await host.writeFile(ENV_STAMP_FILE_NAME, `${stamp}\n`, 0o600);
 }
 
 /**
@@ -514,8 +530,17 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     // deployed one: refusing this start as a downgrade, or backing up a
     // database that does not exist.
     await host.removeFile(ENV_FILE_NAME);
+    await host.removeFile(ENV_STAMP_FILE_NAME);
     await finishUpgrade(host);
   }
+
+  // Before anything changes the stack — for everyone using it, on a shared
+  // host — make sure this Console can reach it afterwards: a port taken here,
+  // or already another server's address, found only after compose has run
+  // would leave the others restarted or updated and this Console without it.
+  const settings = await settingsFor(host, plan);
+  await host.checkNetworking(settings.ports);
+  await assertManagedServerUrlFree(gatewayUrlFor(settings.ports), ref);
 
   onMessage('Checking the deployed version…');
   const downgrade = await refuseDowngrade(host, checkoutRoot);
@@ -540,7 +565,6 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   if (checkoutRoot !== null) {
     await host.writeFile(BUILD_OVERRIDE_FILE_NAME, checkoutBuildOverrideYaml(checkoutRoot));
   }
-  const settings = await settingsFor(host, plan);
   // Read here rather than taken from the caller: a start is the moment the
   // user's answer reaches the server, and no supervisor can forget to carry it.
   const telemetryEnabled = await shareUsageData(host, plan, await telemetryConsent());
@@ -576,16 +600,17 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // that did not; but an unstamped copy is trusted as before, so the page says
   // what that leaves open.
   let warning: string | null = null;
-  if (shared !== null && !stamped) {
+  if (shared !== null) {
     try {
-      await stampPublishedEnv(shared.state, shared.lease);
+      if (!stamped) await stampPublishedEnv(shared.state, shared.lease);
+      await writeEnvStamp(host, await currentDatabaseStamp(shared.state));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       log.error(`managed-switch-server: could not stamp the published settings on ${host.label}`, {
         error,
       });
       warning =
-        `Started, but its shared settings on ${host.label} could not be stamped with its ` +
+        `Started, but its settings on ${host.label} could not be stamped with its ` +
         `database (${reason}). Until the next start stamps them, a reset from a Console older ` +
         `than sharing could leave them looking current to the others.`;
     }

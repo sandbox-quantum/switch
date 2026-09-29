@@ -45,7 +45,7 @@ it.each(['update', 'restart'] as const)(
     expect(mocks.apply).not.toHaveBeenCalled();
     finish();
     await pending;
-    expect(mocks.apply).toHaveBeenCalledWith('agent', 'explicit');
+    expect(mocks.apply).toHaveBeenCalledWith('agent', 'explicit', 'host');
   }
 );
 it('does not start a competing watcher if stopping fails', async () => {
@@ -57,7 +57,7 @@ it('restarts a controller whose automatic sessions are off', async () => {
   // There is a controller to restart either way now, so this no longer refuses
   // with "Automatic sessions are off" — and it does not turn them on to proceed.
   await manageAgentSidecar('agent', 'restart');
-  expect(mocks.apply).toHaveBeenCalledWith('agent', 'explicit');
+  expect(mocks.apply).toHaveBeenCalledWith('agent', 'explicit', 'host');
 });
 it('takes the connection away on stop and records that somebody did', async () => {
   await manageAgentSidecar('agent', 'stop');
@@ -73,7 +73,7 @@ it('puts a stopped agent back on the air on start, and stops recording it stoppe
   await manageAgentSidecar('agent', 'start');
   expect(mocks.setStopped).toHaveBeenCalledWith('agent', false);
   expect(mocks.configure).not.toHaveBeenCalled();
-  expect(mocks.apply).toHaveBeenCalledWith('agent', 'explicit');
+  expect(mocks.apply).toHaveBeenCalledWith('agent', 'explicit', 'host');
 });
 it('refuses to update a local agent, which has no deployed sidecar', async () => {
   mocks.remote.mockResolvedValue(null);

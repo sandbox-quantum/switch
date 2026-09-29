@@ -60,6 +60,7 @@ vi.mock('./telemetry-consent', () => ({
   readDeployedTelemetry: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
+  assertManagedServerUrlFree: () => Promise.resolve(),
   ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),
   setActiveServerId: vi.fn(),
 }));
@@ -84,6 +85,7 @@ function options(checkoutRoot: string | null = null) {
     sharedState: null,
     writeFile,
     detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
+    checkNetworking: vi.fn(() => Promise.resolve()),
     establishNetworking: vi.fn(() => Promise.resolve()),
   };
   return {

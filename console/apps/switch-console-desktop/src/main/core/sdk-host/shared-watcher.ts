@@ -186,19 +186,18 @@ export type ControllerState = { connected: boolean; spawning: boolean };
 export async function applyControllerState(
   agentId: string,
   intent: WatcherIntent,
-  autoApprove: AutoApproveSource = 'host'
+  autoApprove: AutoApproveSource
 ): Promise<void> {
   const [stopped, spawning] = await Promise.all([
     listStoppedControllerAgentIds(),
     listAutoSessionAgentIds(),
   ]);
   const connected = !stopped.includes(agentId);
-  await configureSharedWatcher(
+  await configureSharedWatcherFor(
     agentId,
     { connected, spawning: connected && spawning.includes(agentId) },
     intent,
-    undefined,
-    autoApprove
+    { name: undefined, autoApprove }
   );
 }
 
@@ -223,12 +222,25 @@ export async function discardControllerState(agentId: string): Promise<void> {
   await ctx.exec('node', ['-e', removeWatcherRoots, agent.switchAgentId]);
 }
 
-export async function configureSharedWatcher(
+/** Which watcher — the agent's own, or its subagent `name`'s — and where its
+ * auto-approve comes from. */
+export type WatcherTarget = { name: string | undefined; autoApprove: AutoApproveSource };
+
+/** {@link configureSharedWatcherFor}, taking auto-approve from the host. */
+export function configureSharedWatcher(
   agentId: string,
   state: ControllerState,
   intent: WatcherIntent,
-  name?: string,
-  autoApprove: AutoApproveSource = 'host'
+  name?: string
+): Promise<void> {
+  return configureSharedWatcherFor(agentId, state, intent, { name, autoApprove: 'host' });
+}
+
+export async function configureSharedWatcherFor(
+  agentId: string,
+  state: ControllerState,
+  intent: WatcherIntent,
+  { name, autoApprove }: WatcherTarget
 ): Promise<void> {
   const agent = await getAgentById(agentId);
   if (!agent) throw new Error(`Agent ${agentId} does not exist.`);

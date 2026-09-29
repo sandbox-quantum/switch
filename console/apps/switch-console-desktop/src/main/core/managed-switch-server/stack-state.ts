@@ -6,7 +6,9 @@ import type {
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
+  CORE_SERVICE,
   ENV_FILE_NAME,
+  ENV_STAMP_FILE_NAME,
   STACK_HELPER_IMAGE,
   STACK_STATE_LABEL,
   STACK_STATE_VOLUME_SUFFIX,
@@ -65,10 +67,6 @@ export type StackStateHost = Pick<
 const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
 const COMPOSE_SERVICE_LABEL = 'com.docker.compose.service';
 const COMPOSE_WORKING_DIR_LABEL = 'com.docker.compose.project.working_dir';
-
-/** The core service whose container stands for "the stack is up", as
- * `isStackRunning` in compose.ts. */
-const CORE_SERVICE = 'switch';
 
 /** Inside the state volume. */
 const STATE_MOUNT = '/state';
@@ -215,23 +213,89 @@ async function databaseStamp(host: StackStateHost, dataVolumes: string[]): Promi
   return stamp.trim() || null;
 }
 
-/** Hosts, by label, already known to have the helper image. A host keeps an
- * image it has, and `docker run` pulls one that has since been removed, so
- * each is asked once per run of this Console rather than before every read. */
-const hostsWithHelperImage = new Set<string>();
+/** What the launcher says on stderr when the host has no helper image, so the
+ * caller can pull it under a pull's timeout and try again. */
+const HELPER_IMAGE_MISSING = 'switch-console: the helper image is not on this host';
 
-/** Pull the helper image when this host does not have it yet. */
-async function ensureHelperImage(host: StackStateHost): Promise<void> {
-  if (hostsWithHelperImage.has(host.label)) return;
+/**
+ * Runs a container against the state volume in one round trip to the host:
+ * checks the helper image is there — saying so, rather than letting
+ * `docker run` pull it inside a timeout meant for a quick script — creates
+ * the volume, labelled, when asked, and runs the container. `$1…$5` are the
+ * docker binary, the image, the volume, its label and `yes` to create it; the
+ * rest are the arguments to `docker`.
+ */
+const LAUNCHER = [
+  'docker=$1 image=$2 volume=$3 label=$4 create=$5',
+  'shift 5',
+  `"$docker" image inspect "$image" >/dev/null 2>&1 || { echo '${HELPER_IMAGE_MISSING}' >&2; exit 97; }`,
+  'if [ "$create" = yes ]; then "$docker" volume create --label "$label" "$volume" >/dev/null || exit 1; fi',
+  'exec "$docker" "$@"',
+].join('\n');
+
+type StateContainer = {
+  /** A read never creates the volume; the caller has checked it exists. */
+  mode: 'read' | 'write';
+  script: string;
+  /** Arrive as `$1…`. Visible in the host's process table: never a secret. */
+  scriptArgs: string[];
+};
+
+function launcherArgs(host: StackStateHost, container: StateContainer, interactive: boolean) {
+  const mount = `${stackStateVolume(host)}:${STATE_MOUNT}${container.mode === 'read' ? ':ro' : ''}`;
+  return [
+    '-c',
+    LAUNCHER,
+    'state-launcher',
+    host.dockerBin,
+    STACK_HELPER_IMAGE,
+    stackStateVolume(host),
+    `${STACK_STATE_LABEL}=${host.composeProjectName}`,
+    container.mode === 'write' ? 'yes' : 'no',
+    'run',
+    '--rm',
+    ...(interactive ? ['--interactive'] : []),
+    '--network',
+    'none',
+    '--volume',
+    mount,
+    '--entrypoint',
+    'sh',
+    STACK_HELPER_IMAGE,
+    '-c',
+    container.script,
+    'stack-state',
+    ...container.scriptArgs,
+  ];
+}
+
+/** Run `launch` once, and again after pulling the helper image when the host
+ * turns out not to have it. */
+async function withHelperImage<T>(host: StackStateHost, launch: () => Promise<T>): Promise<T> {
   try {
-    await docker(host, ['image', 'inspect', '--format', '{{.Id}}', STACK_HELPER_IMAGE]);
-    hostsWithHelperImage.add(host.label);
-    return;
-  } catch {
-    // Absent (or unreadable, which the pull will report properly).
+    return await launch();
+  } catch (error) {
+    if (!errorText(error).includes(HELPER_IMAGE_MISSING)) throw error;
+    await docker(host, ['pull', '--quiet', STACK_HELPER_IMAGE], PULL_TIMEOUT_MS);
+    return launch();
   }
-  await docker(host, ['pull', '--quiet', STACK_HELPER_IMAGE], PULL_TIMEOUT_MS);
-  hostsWithHelperImage.add(host.label);
+}
+
+/** A state container whose stdout is the answer. Failures read like any other
+ * docker failure on the host. */
+async function runStateContainer(host: StackStateHost, container: StateContainer): Promise<string> {
+  return withHelperImage(host, async () => {
+    try {
+      const { stdout } = await host.ctx.exec('sh', launcherArgs(host, container, false), {
+        timeout: QUICK_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      return stdout;
+    } catch (error) {
+      const stderr = (error as { stderr?: string } | undefined)?.stderr?.trim();
+      throw new Error(`docker run on ${host.label} failed: ${stderr || errorText(error)}`);
+    }
+  });
 }
 
 /**
@@ -240,32 +304,7 @@ async function ensureHelperImage(host: StackStateHost): Promise<void> {
  * `docker run -v` would otherwise create it, and reading must not.
  */
 export async function readStateVolume(host: StackStateHost, script: string): Promise<string> {
-  await ensureHelperImage(host);
-  return docker(host, [
-    'run',
-    '--rm',
-    '--network',
-    'none',
-    '--volume',
-    `${stackStateVolume(host)}:${STATE_MOUNT}:ro`,
-    '--entrypoint',
-    'sh',
-    STACK_HELPER_IMAGE,
-    '-c',
-    script,
-    'stack-state',
-  ]);
-}
-
-/** Create the state volume if it is not there yet. Idempotent. */
-async function ensureStateVolume(host: StackStateHost): Promise<void> {
-  await docker(host, [
-    'volume',
-    'create',
-    '--label',
-    `${STACK_STATE_LABEL}=${host.composeProjectName}`,
-    stackStateVolume(host),
-  ]);
+  return runStateContainer(host, { mode: 'read', script, scriptArgs: [] });
 }
 
 /**
@@ -280,28 +319,13 @@ export async function writeStateVolume(
   input: string,
   scriptArgs: string[]
 ): Promise<void> {
-  await ensureHelperImage(host);
-  await ensureStateVolume(host);
-  await host.writeCommandInput(
-    host.dockerBin,
-    [
-      'run',
-      '--rm',
-      '--interactive',
-      '--network',
-      'none',
-      '--volume',
-      `${stackStateVolume(host)}:${STATE_MOUNT}`,
-      '--entrypoint',
+  await withHelperImage(host, () =>
+    host.writeCommandInput(
       'sh',
-      STACK_HELPER_IMAGE,
-      '-c',
-      script,
-      'stack-state',
-      ...scriptArgs,
-    ],
-    input,
-    { timeoutMs: QUICK_TIMEOUT_MS }
+      launcherArgs(host, { mode: 'write', script, scriptArgs }, true),
+      input,
+      { timeoutMs: QUICK_TIMEOUT_MS }
+    )
   );
 }
 
@@ -316,23 +340,7 @@ export async function runStateScript(
   script: string,
   scriptArgs: string[]
 ): Promise<string> {
-  await ensureHelperImage(host);
-  await ensureStateVolume(host);
-  return docker(host, [
-    'run',
-    '--rm',
-    '--network',
-    'none',
-    '--volume',
-    `${stackStateVolume(host)}:${STATE_MOUNT}`,
-    '--entrypoint',
-    'sh',
-    STACK_HELPER_IMAGE,
-    '-c',
-    script,
-    'stack-state',
-    ...scriptArgs,
-  ]);
+  return runStateContainer(host, { mode: 'write', script, scriptArgs });
 }
 
 /** The published `.env`, and the database volume it was written for (null
@@ -472,6 +480,9 @@ export type StackOnHost =
        * stack is, where `env.version` is what it was last asked to be — the
        * two differ when a start published its settings and then failed. */
       runningVersion: string | null;
+      /** The database volume these settings were written for, as recorded
+       * beside them; null where that was not recorded. */
+      stamp: string | null;
     }
   /** Someone else's stack that this account cannot read the settings of: it
    * was started from another account's working dir and never published.
@@ -562,7 +573,8 @@ function fromEnvText(
   raw: string,
   source: StackEnvSource,
   resources: ProjectResources,
-  published: boolean
+  published: boolean,
+  stamp: string | null
 ): StackOnHost {
   const running = isRunning(resources);
   const reading = readStackEnv(raw);
@@ -577,6 +589,7 @@ function fromEnvText(
     running,
     published,
     runningVersion: runningCoreVersion(resources),
+    stamp,
   };
 }
 
@@ -608,10 +621,12 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   let published: PublishedCopy | null = null;
   let database: string | null = null;
   let own: string | null;
+  let ownStamp: string | null;
   try {
-    [resources, own] = await Promise.all([
+    [resources, own, ownStamp] = await Promise.all([
       listProjectResources(host),
       host.readFile(ENV_FILE_NAME),
+      host.readFile(ENV_STAMP_FILE_NAME),
     ]);
     if (resources.stateVolume) published = await readPublishedCopy(host);
     if (published?.stamp) database = await databaseStamp(host, resources.dataVolumes);
@@ -627,7 +642,7 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   // with, cannot be judged, and is trusted as it always was.
   const stale = published?.stamp != null && database !== null && published.stamp !== database;
   if (published !== null && !stale) {
-    return fromEnvText(published.env, 'published', resources, true);
+    return fromEnvText(published.env, 'published', resources, true, published.stamp);
   }
   if (stale) {
     log.warn(
@@ -643,5 +658,32 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
     .find((dir): dir is string => dir !== null && dir !== host.workingDir);
   if (foreignDir !== undefined) return { kind: 'unshared', ownerDir: foreignDir, running };
   if (own === null) return { kind: 'unshared', ownerDir: null, running };
-  return fromEnvText(own, 'working-dir', resources, false);
+  // This account's copy says which database it was written for, unless it is
+  // from before that was recorded. One written for a database since recreated
+  // belongs to a stack that is gone: a Console that does not share its settings
+  // reset this one, started it with its own credentials, and took its
+  // containers down — leaving nothing else to say whose it is now.
+  const stamp = ownStamp?.trim() || null;
+  if (stamp !== null) {
+    let current: string | null;
+    try {
+      current = await databaseStamp(host, resources.dataVolumes);
+    } catch (error) {
+      return { kind: 'unreadable', reason: errorText(error) };
+    }
+    if (current !== null && current !== stamp) {
+      log.warn(
+        `stack-state: this account's settings on ${host.label} were written for a database ` +
+          `that has since been recreated elsewhere; not using them`
+      );
+      return { kind: 'unshared', ownerDir: null, running };
+    }
+  }
+  return fromEnvText(own, 'working-dir', resources, false, stamp);
+}
+
+/** The database volume the stack on `host` has now, as a stamp — null when it
+ * has none yet. */
+export async function currentDatabaseStamp(host: StackStateHost): Promise<string | null> {
+  return databaseStamp(host, await listDataVolumes(host));
 }

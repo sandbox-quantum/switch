@@ -23,6 +23,12 @@ export const remoteSwitchServerController = createRPCController({
   start: (params: { sshHost: string; name: string }): Promise<StartRemoteServerResult> =>
     remoteServerService.start(params.sshHost, params.name),
 
+  /** Look at a stack shown as stopped again, as its page opens. */
+  refresh: (sshHost: string): Promise<void> => {
+    remoteServerService.refresh(sshHost);
+    return Promise.resolve();
+  },
+
   /** Stop waiting for another Console's hold on the host's stack. */
   cancelWait: (sshHost: string): Promise<void> => {
     remoteServerService.cancelWait(sshHost);

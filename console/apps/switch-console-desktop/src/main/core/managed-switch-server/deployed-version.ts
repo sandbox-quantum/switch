@@ -5,7 +5,7 @@ import type {
   SwitchVersionDriftDirection,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { runningImages } from './compose';
-import { ENV_FILE_NAME } from './constants';
+import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
 import { readEnvValue } from './env-file';
 import type { ServerHost } from './host/types';
 
@@ -17,9 +17,6 @@ import type { ServerHost } from './host/types';
  * "did the app's pin move underneath a stack that is already up?" needs the
  * other side of the comparison, read back off the host.
  */
-
-/** The core service whose image tag defines the stack's version. */
-const CORE_SERVICE = 'switch';
 
 export type DeployedVersion =
   /** Read successfully. `source` records how, since the two differ in strength:

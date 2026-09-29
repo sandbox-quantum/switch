@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as SshExecution from '@main/core/execution-context/ssh-execution-context';
 
 /**
  * The two ways the remote host runs a command over SSH — streaming its output,
@@ -7,7 +8,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * exit status and timeout handling, so a fix to one reaches the other.
  */
 
-vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
+vi.mock('@main/core/execution-context/ssh-execution-context', async (importOriginal) => ({
+  exitDescription: (await importOriginal<typeof SshExecution>()).exitDescription,
   buildSshCommand: (dir: string, command: string, args: string[]) =>
     `cd ${dir} && ${command} ${args.join(' ')}`,
   SshExecutionContext: class {},
@@ -88,6 +90,26 @@ describe('streamCommand', () => {
     stream.emit('close', 1);
 
     await expect(done).rejects.toThrow('docker failed (exit 1): port is already allocated');
+  });
+
+  it('rejects a channel that closed without an exit status, as a dropped connection does', async () => {
+    const done = host().streamCommand('docker', ['ps'], () => {});
+    await started();
+
+    stream.emit('close');
+
+    await expect(done).rejects.toThrow(
+      'docker failed: The command ended without an exit status; the SSH connection may have dropped.'
+    );
+  });
+
+  it('rejects a command killed by a signal, saying which', async () => {
+    const done = host().streamCommand('docker', ['ps'], () => {});
+    await started();
+
+    stream.emit('close', null, 'SIGKILL');
+
+    await expect(done).rejects.toThrow('docker failed: The command was killed by SIGKILL.');
   });
 });
 

@@ -141,6 +141,10 @@ export class LocalServerHost implements ServerHost {
     return pickFreePorts();
   }
 
+  async checkNetworking(): Promise<void> {
+    // Nothing is forwarded, so nothing can be in the way here.
+  }
+
   async establishNetworking(): Promise<void> {
     // Local ports are already published on 127.0.0.1 — nothing to forward.
   }

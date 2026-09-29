@@ -100,11 +100,24 @@ export async function getConsoleIdentity(): Promise<ConsoleIdentity> {
  * share one sign-in, which is the gap the headers fill; a server someone else
  * runs signs each person in as themselves and has no use for the desktop's
  * user and host name, so it is not sent them.
+ *
+ * They only attribute the server's log lines, so an id that cannot be read or
+ * made costs that attribution — logged — and never the call they ride on: a
+ * sign-in or a request failing over a name for the logs would be worse.
  */
 export async function consoleIdentityHeaders(
   server: Pick<SwitchServer, 'managed'>
 ): Promise<Record<string, string>> {
   if (!server.managed) return {};
-  const identity = await getConsoleIdentity();
-  return { [CONSOLE_ID_HEADER]: identity.id, [CONSOLE_NAME_HEADER]: identity.name };
+  try {
+    const identity = await getConsoleIdentity();
+    return { [CONSOLE_ID_HEADER]: identity.id, [CONSOLE_NAME_HEADER]: identity.name };
+  } catch (error) {
+    log.warn(
+      "console-identity: could not read this Console's id, so the server will not be told " +
+        'which Console this request is from',
+      { error }
+    );
+    return {};
+  }
 }

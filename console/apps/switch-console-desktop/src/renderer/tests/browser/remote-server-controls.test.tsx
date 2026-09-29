@@ -43,6 +43,7 @@ const state = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
   cancelWait: vi.fn(),
+  refresh: vi.fn(),
 }));
 
 vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
@@ -67,6 +68,7 @@ vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
     start: (...args: unknown[]) => state.start(...args),
     stop: (...args: unknown[]) => state.stop(...args),
     cancelWait: (...args: unknown[]) => state.cancelWait(...args),
+    refresh: (...args: unknown[]) => state.refresh(...args),
   },
 }));
 
@@ -267,5 +269,14 @@ describe('waiting for another Console', () => {
 
     expect(document.body.textContent).toContain('Starting containers…');
     expect(() => button(/^Stop waiting$/)).toThrow();
+  });
+});
+
+describe('opening the page', () => {
+  it('has the host looked at again, in case someone else started or removed the server', async () => {
+    state.refresh.mockReset();
+    await render();
+
+    expect(state.refresh).toHaveBeenCalledWith('vm-1');
   });
 });

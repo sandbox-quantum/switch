@@ -85,7 +85,7 @@ class AutoSessionWatcher {
         // holding, not a decision to reclaim a connection something else has
         // since taken: one that stood down stays down until someone asks for it
         // by name.
-        await applyControllerState(agent.id, 'restore');
+        await applyControllerState(agent.id, 'restore', 'host');
       } catch (error) {
         log.error('Shared SDK watcher could not start', {
           agentId: agent.id,
@@ -152,7 +152,7 @@ class AutoSessionWatcher {
         // A host coming back is not somebody asking for a connection back, so
         // a controller that stood down after a takeover stays down and one
         // stopped by hand stays stopped.
-        await applyControllerState(agent.id, 'restore');
+        await applyControllerState(agent.id, 'restore', 'host');
       } catch (error) {
         log.error('Shared SDK watcher could not start after its host returned', {
           agentId: agent.id,
@@ -176,7 +176,7 @@ class AutoSessionWatcher {
    * way — only Stop, or deleting the agent, takes an agent's connection away.
    */
   reconcile(agentId: string): Promise<void> {
-    return applyControllerState(agentId, 'explicit');
+    return applyControllerState(agentId, 'explicit', 'host');
   }
   reconcileSubagent(agentId: string, name: string, enabled: boolean): Promise<void> {
     return configureSharedWatcher(

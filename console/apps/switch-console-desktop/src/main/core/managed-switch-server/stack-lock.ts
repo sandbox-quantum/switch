@@ -11,7 +11,12 @@ import {
   type StackStateHost,
   stateVolumeExists,
 } from './stack-state';
-import { LOCK_LOST_MESSAGE, SERVER_LOCK_FILE, UNDER_STATE_MUTEX } from './state-mutex';
+import {
+  CONSOLE_ID_PATTERN,
+  LOCK_LOST_MESSAGE,
+  SERVER_LOCK_FILE,
+  UNDER_STATE_MUTEX,
+} from './state-mutex';
 
 /**
  * The lock on a shared remote stack (CHOO-2893): held by whichever Console is
@@ -94,7 +99,9 @@ const LOCK_MAGIC = 'switch-console-lock v1';
  * token, console id, run, action, lease length and longest hold in seconds,
  * name and host account. Answers on stdout: a status line, the host's clock,
  * then the lock file as it now stands, so a refusal can say who holds it.
- * Exported for the test that runs it against a real volume.
+ * A write that fails ends the script with an error rather than an answer: on
+ * a full disk, "taken" over a lock file left empty would let the next Console
+ * take it too. Exported for the test that runs it against a real volume.
  */
 export const LOCK_SCRIPT = [
   'set -u',
@@ -113,18 +120,18 @@ export const LOCK_SCRIPT = [
   '    if [ -f "$lock" ] && number "$expires" && [ "$expires" -gt "$now" ]; then',
   '      [ "$(line 5)" = "$console" ] && [ "$(line 6)" != "$instance" ] || report held',
   '    fi',
-  `    printf "%s\\n" "${LOCK_MAGIC}" "$token" "$(until_for "$now")" "$now" "$console" "$instance" "$action" "$name" "$account" > /state/.lock.tmp`,
-  '    mv /state/.lock.tmp "$lock"',
+  `    printf "%s\\n" "${LOCK_MAGIC}" "$token" "$(until_for "$now")" "$now" "$console" "$instance" "$action" "$name" "$account" > /state/.lock.tmp || exit 1`,
+  '    mv /state/.lock.tmp "$lock" || exit 1',
   '    report taken ;;',
   '  renew)',
   '    [ -n "$held" ] && [ "$held" = "$token" ] && number "$since" || report lost',
   '    u=$(until_for "$since")',
   '    [ "$u" -gt "$now" ] || report lost',
-  '    sed "3s/.*/$u/" "$lock" > /state/.lock.tmp',
-  '    mv /state/.lock.tmp "$lock"',
+  '    sed "3s/.*/$u/" "$lock" > /state/.lock.tmp || exit 1',
+  '    mv /state/.lock.tmp "$lock" || exit 1',
   '    report renewed ;;',
   '  release)',
-  '    if [ -n "$held" ] && [ "$held" = "$token" ]; then rm -f "$lock"; report released; fi',
+  '    if [ -n "$held" ] && [ "$held" = "$token" ]; then rm -f "$lock" || exit 1; report released; fi',
   '    report other ;;',
   '  *) echo "unknown lock operation: $op" >&2; exit 2 ;;',
   'esac',
@@ -194,9 +201,6 @@ function shownHolder(holder: ServerLockHolder & { live: boolean }): ServerLockHo
     expiresInSeconds: holder.expiresInSeconds,
   };
 }
-
-/** A Console id is our own random UUID; the script compares it as text. */
-const CONSOLE_ID = /^[0-9A-Fa-f-]{1,64}$/;
 
 /** One line each in the lock file, which is read line by line. */
 function oneLine(text: string): string {
@@ -376,7 +380,7 @@ export async function acquireServerLock(
   claim: LockClaim,
   opts: AcquireOptions
 ): Promise<ServerLease> {
-  if (!CONSOLE_ID.test(claim.consoleId)) {
+  if (!CONSOLE_ID_PATTERN.test(claim.consoleId)) {
     throw new Error(
       `Refusing to take a server lock for a console id that is not one: ${claim.consoleId}`
     );

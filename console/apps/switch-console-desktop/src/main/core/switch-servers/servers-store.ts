@@ -134,6 +134,37 @@ export class ManagedServerUrlConflictError extends Error {
   }
 }
 
+/** The record `ref` already has, and the one at `gatewayUrl`, refusing a
+ * clash as {@link ensureManagedServer} describes. */
+async function managedServerSlot(
+  gatewayUrl: string,
+  ref: ManagedServerRef
+): Promise<{ existingForTarget: SwitchServer | null; atUrl: SwitchServer | null }> {
+  const existingForTarget =
+    ref.kind === 'remote' ? await getRemoteManagedServer(ref.sshHost) : await getManagedServer();
+  const atUrl = await getServerByGatewayUrl(gatewayUrl);
+  if (atUrl && atUrl.id !== existingForTarget?.id && (existingForTarget || atUrl.managed)) {
+    throw new ManagedServerUrlConflictError(
+      gatewayUrl,
+      atUrl,
+      ref.kind === 'remote' ? `on ${ref.sshHost}` : 'on this computer'
+    );
+  }
+  return { existingForTarget, atUrl };
+}
+
+/**
+ * Throw {@link ManagedServerUrlConflictError} when {@link ensureManagedServer}
+ * would, without writing anything — for a start to ask before it changes a
+ * stack others use, rather than only once it has.
+ */
+export async function assertManagedServerUrlFree(
+  gatewayUrl: string,
+  ref: ManagedServerRef
+): Promise<void> {
+  await managedServerSlot(normaliseUrl(gatewayUrl), ref);
+}
+
 /**
  * Upsert a managed server record for the given target (the single local stack,
  * or the stack on a specific remote host). Reuses the existing row for that
@@ -156,16 +187,7 @@ export async function ensureManagedServer(
   const apiUrl = normaliseUrl(params.apiUrl);
   const managementKind = ref.kind;
   const sshHost = ref.kind === 'remote' ? ref.sshHost : null;
-  const existingForTarget =
-    ref.kind === 'remote' ? await getRemoteManagedServer(ref.sshHost) : await getManagedServer();
-  const atUrl = await getServerByGatewayUrl(gatewayUrl);
-  if (atUrl && atUrl.id !== existingForTarget?.id && (existingForTarget || atUrl.managed)) {
-    throw new ManagedServerUrlConflictError(
-      gatewayUrl,
-      atUrl,
-      ref.kind === 'remote' ? `on ${ref.sshHost}` : 'on this computer'
-    );
-  }
+  const { existingForTarget, atUrl } = await managedServerSlot(gatewayUrl, ref);
   const existing = existingForTarget ?? atUrl;
   if (existing) {
     // Preserve the stored name on restart: the name is set once at creation and

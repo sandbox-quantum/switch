@@ -110,6 +110,26 @@ describe('PortForwarder', () => {
     );
   });
 
+  it('checks ports can be forwarded without keeping them, saying which is taken', async () => {
+    const { server, port: taken } = await occupy();
+    opened.push(server);
+    const { server: probe, port: free } = await occupy();
+    await new Promise((r) => probe.close(() => r(null)));
+
+    await expect(PortForwarder.check([free], 'vm-1')).resolves.toBeUndefined();
+    await expect(PortForwarder.check([free, taken], 'vm-1')).rejects.toThrow(
+      new RegExp(`Port ${taken} is already in use on this computer`)
+    );
+
+    // Checked, not kept: the free port can still be listened on.
+    const again = createServer();
+    await new Promise<void>((resolve, reject) => {
+      again.once('error', reject);
+      again.listen(free, '127.0.0.1', () => resolve());
+    });
+    opened.push(again);
+  });
+
   it('stops listening when stopped, and can be stopped twice', async () => {
     const { server: probe, port } = await occupy();
     await new Promise((r) => probe.close(() => r(null)));

@@ -16,8 +16,16 @@
  * build their scripts from it when they load.
  */
 
-/** Held for the rest of the script. */
-export const UNDER_STATE_MUTEX = ['exec 9>/state/.mutex', 'flock 9'].join('\n');
+/** A Console id as this Console makes them — a random UUID. It is a file name
+ * in the register and the lock's claim, so anything else is refused before it
+ * reaches a script. */
+export const CONSOLE_ID_PATTERN = /^[0-9A-Fa-f-]{1,64}$/;
+
+/** Held for the rest of the script, which ends — saying so — if it cannot be. */
+export const UNDER_STATE_MUTEX = [
+  'exec 9>/state/.mutex',
+  "flock 9 || { echo 'could not lock the state volume' >&2; exit 1; }",
+].join('\n');
 
 /** Where the server lock lives, and the line of it that names its holder's token. */
 export const SERVER_LOCK_FILE = '/state/lock';

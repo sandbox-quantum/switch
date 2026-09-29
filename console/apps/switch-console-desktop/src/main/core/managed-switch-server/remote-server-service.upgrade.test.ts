@@ -153,6 +153,7 @@ function present(running: boolean): StackOnHost {
     running,
     published: true,
     runningVersion: null,
+    stamp: null,
   };
 }
 

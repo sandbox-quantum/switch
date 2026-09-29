@@ -1,5 +1,6 @@
 import {
   buildSshCommand,
+  exitDescription,
   SshExecutionContext,
 } from '@main/core/execution-context/ssh-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -171,10 +172,17 @@ export class RemoteServerHost implements ServerHost {
               stderrTail = (stderrTail + buf.toString('utf8')).slice(-4000);
               emit(buf);
             });
-            stream.on('close', (code: number | null) => {
+            // Only an exit status of 0 is a success: see SshExecutionContext.exec.
+            stream.on('close', (code: number | null | undefined, signal?: string) => {
               settle(() => {
-                if ((code ?? 0) === 0) resolve();
-                else reject(new Error(`${command} failed (exit ${code}): ${stderrTail.trim()}`));
+                const tail = stderrTail.trim();
+                if (code === 0) resolve();
+                else if (typeof code === 'number') {
+                  reject(new Error(`${command} failed (exit ${code}): ${tail}`));
+                } else {
+                  const why = exitDescription(code, signal);
+                  reject(new Error(`${command} failed: ${why}${tail ? ` (${tail})` : ''}`));
+                }
               });
             });
             stream.on('error', (err: Error) => settle(() => reject(err)));
@@ -227,6 +235,13 @@ export class RemoteServerHost implements ServerHost {
 
   pickFreePorts(): Promise<LocalServerPorts> {
     return pickRemoteFreePorts(this.ctx);
+  }
+
+  async checkNetworking(ports: LocalServerPorts): Promise<void> {
+    await PortForwarder.check(
+      FORWARDED_SERVICES.map((s) => ports[s]),
+      this.label
+    );
   }
 
   async establishNetworking(ports: LocalServerPorts): Promise<void> {

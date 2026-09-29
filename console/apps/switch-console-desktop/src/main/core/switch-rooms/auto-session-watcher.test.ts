@@ -59,7 +59,7 @@ beforeEach(() => {
 
 it('gives every Switch-linked agent a controller at boot, and only those', async () => {
   await autoSessionWatcher.initialize();
-  expect(mocks.apply.mock.calls).toEqual([['linked', 'restore']]);
+  expect(mocks.apply.mock.calls).toEqual([['linked', 'restore', 'host']]);
 });
 
 it('restores controllers at boot rather than asking for one back', async () => {
@@ -67,7 +67,7 @@ it('restores controllers at boot rather than asking for one back', async () => {
   // A displaced controller stood down because another client took this agent's
   // connection. Booting Console is not somebody asking for it back, so the
   // sweep must not clear that and start the two trading the connection.
-  expect(mocks.apply).toHaveBeenCalledWith('linked', 'restore');
+  expect(mocks.apply).toHaveBeenCalledWith('linked', 'restore', 'host');
 });
 
 it('keeps sweeping when one agent’s controller cannot start', async () => {
@@ -77,7 +77,7 @@ it('keeps sweeping when one agent’s controller cannot start', async () => {
   ]);
   mocks.apply.mockRejectedValueOnce(new Error('Host unreachable'));
   await autoSessionWatcher.initialize();
-  expect(mocks.apply).toHaveBeenCalledWith('linked', 'restore');
+  expect(mocks.apply).toHaveBeenCalledWith('linked', 'restore', 'host');
 });
 
 it('drops a deleted agent from the automatic-session mirror', async () => {
@@ -101,7 +101,7 @@ it('starts a controller whose host was unreachable at boot, once the host comes 
   await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(2));
   // Still a restore: the host returning is not somebody asking for a connection
   // another client has since taken, nor for a controller stopped by hand.
-  expect(mocks.apply.mock.calls[1]).toEqual(['remote', 'restore']);
+  expect(mocks.apply.mock.calls[1]).toEqual(['remote', 'restore', 'host']);
 });
 
 it('leaves agents on other hosts alone when one host comes back', async () => {
@@ -118,7 +118,7 @@ it('leaves agents on other hosts alone when one host comes back', async () => {
   mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
 
   await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(1));
-  expect(mocks.apply).toHaveBeenCalledWith('here', 'restore');
+  expect(mocks.apply).toHaveBeenCalledWith('here', 'restore', 'host');
 });
 
 it('sweeps again for a host that flaps while its recovery is still running', async () => {
@@ -144,7 +144,7 @@ it('sweeps again for a host that flaps while its recovery is still running', asy
   arrive();
 
   await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(3));
-  expect(mocks.apply.mock.calls[2]).toEqual(['remote', 'restore']);
+  expect(mocks.apply.mock.calls[2]).toEqual(['remote', 'restore', 'host']);
 });
 
 it('does nothing for a host that has only just gone away', async () => {
@@ -161,7 +161,7 @@ it('does nothing for a host that has only just gone away', async () => {
 
 it('applies the saved settings when asked to reconcile an agent', async () => {
   await autoSessionWatcher.reconcile('agent');
-  expect(mocks.apply).toHaveBeenCalledWith('agent', 'explicit');
+  expect(mocks.apply).toHaveBeenCalledWith('agent', 'explicit', 'host');
 });
 
 it('stops everything it hosts when Console closes', async () => {
@@ -183,7 +183,7 @@ it('does not hold one server’s agents behind another server’s update', async
   });
   const boot = autoSessionWatcher.initialize();
 
-  await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledWith('elsewhere', 'restore'));
+  await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledWith('elsewhere', 'restore', 'host'));
   finish();
   await boot;
 });
@@ -200,5 +200,5 @@ it('starts the controllers of a server once an update they were refused for fini
   for (const listener of mocks.upgraded) listener('local');
 
   await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(1));
-  expect(mocks.apply).toHaveBeenCalledWith('upgraded', 'restore');
+  expect(mocks.apply).toHaveBeenCalledWith('upgraded', 'restore', 'host');
 });

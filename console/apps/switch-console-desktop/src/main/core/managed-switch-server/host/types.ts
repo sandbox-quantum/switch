@@ -103,6 +103,12 @@ export interface ServerHost {
    * over the SSH connection, kept alive across reconnects. */
   establishNetworking(ports: LocalServerPorts): Promise<void>;
 
+  /** Throw, saying why, when {@link establishNetworking} could not make
+   * `ports` reachable from here — asked before a start changes anything on the
+   * host. Local: never (nothing is forwarded). Remote: when a port is taken on
+   * the desktop. */
+  checkNetworking(ports: LocalServerPorts): Promise<void>;
+
   /** Tear down any networking started by {@link establishNetworking}. Called on
    * stop/reset and disposal. Idempotent. */
   teardownNetworking(): Promise<void>;

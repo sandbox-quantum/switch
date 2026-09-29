@@ -136,6 +136,18 @@ describe('consoleIdentityHeaders', () => {
     });
   });
 
+  it('sends no identity, and says so, rather than failing the call when the id cannot be had', async () => {
+    store.get.mockResolvedValue(null);
+    store.setOrThrow.mockRejectedValueOnce(new Error('disk full'));
+    const { consoleIdentityHeaders } = await loadModule();
+
+    await expect(consoleIdentityHeaders({ managed: true })).resolves.toEqual({});
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/will not be told which Console/),
+      expect.objectContaining({ error: expect.any(Error) })
+    );
+  });
+
   it('tells a server someone else runs nothing, and creates no id for it', async () => {
     const { consoleIdentityHeaders } = await loadModule();
 

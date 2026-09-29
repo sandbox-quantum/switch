@@ -37,7 +37,7 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({
 }));
 
 // Imported after the mocks so the module binds to the mocked db + secrets store.
-const { addServer, ensureManagedServer, removeServer, renameServer } =
+const { addServer, assertManagedServerUrlFree, ensureManagedServer, removeServer, renameServer } =
   await import('./servers-store');
 
 describe('servers-store: rename & delete', () => {
@@ -156,6 +156,25 @@ describe('servers-store: rename & delete', () => {
         .from(switchServers)
         .where(eq(switchServers.id, 'local-1'));
       expect(local).toMatchObject({ managementKind: 'local', sshHost: null });
+    });
+
+    it('says a start would clash before it runs, writing nothing', async () => {
+      await insertServer({
+        id: 'local-1',
+        name: 'My local server',
+        gatewayUrl: 'http://localhost:41000',
+        apiUrl: 'http://localhost:41001',
+        managed: true,
+        managementKind: 'local',
+      });
+
+      await expect(
+        assertManagedServerUrlFree('http://localhost:41000/', { kind: 'remote', sshHost: 'vm-1' })
+      ).rejects.toThrow(/already the address of “My local server”/);
+      await expect(
+        assertManagedServerUrlFree('http://localhost:42000', { kind: 'remote', sshHost: 'vm-1' })
+      ).resolves.toBeUndefined();
+      expect(await fixture.db.select().from(switchServers)).toHaveLength(1);
     });
 
     it('never gives the local server a remote server’s row by URL either', async () => {

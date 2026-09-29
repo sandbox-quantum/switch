@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,10 +30,13 @@ const { RECORD_SCRIPT, readRegister, writeRecord } = await import('./console-reg
 
 const SELF = '3f2a9c1e-5b7d-4e8f-a1b2-c3d4e5f6a7b8';
 
+let hosts = 0;
+
 function host(account = 'alice') {
   const exec = vi.fn(async () => ({ stdout: `${account}\n`, stderr: '' }));
   return {
-    host: { label: 'vm-1', ctx: { exec } } as unknown as StackStateHost,
+    // A label of its own each time: the account is remembered per host label.
+    host: { label: `vm-${++hosts}`, ctx: { exec } } as unknown as StackStateHost,
     exec,
   };
 }
@@ -112,11 +115,13 @@ describe('recording a Console on the host', () => {
     expect(JSON.parse(input.split('\n')[1]!)).toMatchObject({ action: 'disconnected' });
   });
 
-  it('asks the host which account it is once per connection, not per record', async () => {
+  it('asks a host which account it is once, not per record or per connection', async () => {
     const { host: h, exec } = host();
+    // Another connection to the same host, as each operation opens.
+    const again = { ...h, ctx: { exec } } as unknown as StackStateHost;
 
     await writeRecord(h, 'started');
-    await writeRecord(h, null);
+    await writeRecord(again, null);
 
     expect(exec).toHaveBeenCalledOnce();
     expect(writeStateVolume).toHaveBeenCalledTimes(2);
@@ -172,11 +177,21 @@ describe('the record script, run for real', () => {
   it('does everything under the state mutex, so two Consoles recording at once lose nothing', () => {
     // Whether the mutex holds across containers is tested against a real
     // volume, in stack-lock.docker.test.ts.
-    expect(RECORD_SCRIPT.startsWith(`${UNDER_STATE_MUTEX}\n`)).toBe(true);
+    expect(RECORD_SCRIPT.startsWith(`set -e\n${UNDER_STATE_MUTEX}\n`)).toBe(true);
   });
 
   const entry = (name: string) => JSON.stringify({ consoleId: name, lastSeenAt: 'now' });
   const line = (action: string) => JSON.stringify({ action });
+
+  it('fails, rather than reporting a record, when the write does not happen', () => {
+    // A full disk, or a read-only volume: the supervisor shows a failed record
+    // instead of clearing the warning for one that was never written.
+    mkdirSync(path.join(state, 'consoles'));
+    chmodSync(path.join(state, 'consoles'), 0o500);
+
+    expect(() => run('aaa', 'act', `${entry('aaa')}\n${line('started')}\n`)).toThrow();
+    chmodSync(path.join(state, 'consoles'), 0o700);
+  });
 
   it('keeps one entry per Console and appends activity only when something was done', () => {
     run('aaa', 'act', `${entry('aaa')}\n${line('started')}\n`);

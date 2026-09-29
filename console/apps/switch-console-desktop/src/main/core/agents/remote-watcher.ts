@@ -34,7 +34,7 @@ export async function startRemoteDiscovery(agentId: string): Promise<void> {
  */
 export async function ensureRemoteWatcher(agentId: string): Promise<void> {
   if (!(await getAgentById(agentId))?.switchAgentId) return;
-  await applyControllerState(agentId, 'restore');
+  await applyControllerState(agentId, 'restore', 'host');
   remoteSessionReconciler.start(agentId);
 }
 /** {@link ensureRemoteWatcher} after this Console's person changed the agent's

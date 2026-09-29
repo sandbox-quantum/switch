@@ -175,6 +175,37 @@ describe('SshExecutionContext.exec', () => {
     expect(isTransportFailure(error)).toBe(false);
     expect(error).toMatchObject({ code: 1 });
   });
+
+  it('never takes a channel that closed without an exit status for a success', async () => {
+    // A dropped connection closes the channel with whatever output had arrived
+    // — for `docker ps`, nothing — which must not read as "no containers".
+    const stream = makeStream();
+    const ctx = new SshExecutionContext(
+      makeProxy((_command, cb) => {
+        cb(undefined, stream);
+        queueMicrotask(() => {
+          stream.emit('data', Buffer.from(`${EXEC_STDOUT_MARKER}\n`));
+          stream.emit('close');
+        });
+      })
+    );
+
+    await expect(ctx.exec('docker', ['ps'])).rejects.toThrow(
+      'The command ended without an exit status; the SSH connection may have dropped.'
+    );
+  });
+
+  it('reports a command killed by a signal as failed', async () => {
+    const stream = makeStream();
+    const ctx = new SshExecutionContext(
+      makeProxy((_command, cb) => {
+        cb(undefined, stream);
+        queueMicrotask(() => stream.emit('close', null, 'SIGTERM'));
+      })
+    );
+
+    await expect(ctx.exec('docker', ['ps'])).rejects.toThrow('The command was killed by SIGTERM.');
+  });
 });
 
 describe('stripExecBanner', () => {

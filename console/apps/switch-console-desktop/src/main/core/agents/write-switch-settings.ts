@@ -185,7 +185,10 @@ export type RemoveSwitchSettingsResult =
   | { kind: 'write'; content: string }
   | { kind: 'delete' };
 
-export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSettingsResult {
+export function removeSwitchSettings(
+  existingRaw: string | null,
+  switchAgentId: string | null
+): RemoveSwitchSettingsResult {
   if (existingRaw === null) return { kind: 'skip' };
 
   let parsed: unknown;
@@ -208,6 +211,12 @@ export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSe
     env !== null &&
     ('SWITCH_API_ENDPOINT' in env || 'SWITCH_API_TOKEN' in env || 'SWITCH_AGENT_ID' in env);
   if (!hasSwitchCreds) return { kind: 'skip' };
+  // The credentials of another agent sharing the directory — the one-file
+  // layout from before each agent had its own — are that agent's to keep.
+  // A file that names no agent is a write that was cut short, and goes.
+  if (typeof env.SWITCH_AGENT_ID === 'string' && env.SWITCH_AGENT_ID !== switchAgentId) {
+    return { kind: 'skip' };
+  }
 
   const result: Record<string, unknown> = { ...existing };
 

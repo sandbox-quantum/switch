@@ -20,7 +20,6 @@ import {
   type ConnectRemoteServerResult,
   type DockerAvailability,
   type RemoteStackProbe,
-  ServerBusyError,
   type ServerLockAction,
   type ServerLockHolder,
   type StackActivityAction,
@@ -451,8 +450,44 @@ export class RemoteServerService {
    * Fire-and-forget; the outcome arrives as a status.
    */
   recheck(sshHost: string): void {
+    this.lookAgain(sshHost, 'running', async (server) => {
+      log.info(`remote-switch-server: ${sshHost} stopped answering; reading the host again`);
+      await this.reconcileHost(sshHost, server);
+    });
+  }
+
+  /**
+   * Look at a stack this Console shows as stopped, when its page is opened. A
+   * stopped stack is sent no requests, so nothing else notices another Console
+   * starting it again — or removing it. Taken up again only when the host
+   * says something has changed: a stack still stopped keeps what the page says
+   * about it, such as who stopped it. Rate-limited with {@link recheck}.
+   */
+  refresh(sshHost: string): void {
+    this.lookAgain(sshHost, 'stopped', async (server) => {
+      const host = await createRemoteServerHost(sshHost);
+      let stack: StackOnHost;
+      try {
+        stack = await inspectStack(host);
+      } finally {
+        host.dispose();
+      }
+      const unchanged = stack.kind === 'unreadable' || (stack.kind === 'present' && !stack.running);
+      if (unchanged || this.busy.has(sshHost)) return;
+      log.info(`remote-switch-server: ${sshHost} changed while this Console showed it stopped`);
+      await this.reconcileHost(sshHost, server);
+    });
+  }
+
+  /** Run `look` for a host this Console shows in `phase`, at most once per
+   * {@link RECHECK_INTERVAL_MS} and never beside another operation on it. */
+  private lookAgain(
+    sshHost: string,
+    phase: 'running' | 'stopped',
+    look: (server: { id: string; name: string }) => Promise<void>
+  ): void {
     if (this.busy.has(sshHost)) return;
-    if (this.getStatus(sshHost).phase !== 'running') return;
+    if (this.getStatus(sshHost).phase !== phase) return;
     if (hostReachabilityService.isBlocked(sshHost)) return;
     const now = Date.now();
     if (now - (this.lastRecheck.get(sshHost) ?? 0) < RECHECK_INTERVAL_MS) return;
@@ -460,8 +495,7 @@ export class RemoteServerService {
     void this.track(sshHost, async () => {
       const server = (await this.remoteHosts()).get(sshHost);
       if (!server || this.busy.has(sshHost)) return;
-      log.info(`remote-switch-server: ${sshHost} stopped answering; reading the host again`);
-      await this.reconcileHost(sshHost, server);
+      await look(server);
     }).catch((error: unknown) => {
       log.warn(`remote-switch-server: re-check failed for ${sshHost}`, { error });
     });
@@ -570,6 +604,9 @@ export class RemoteServerService {
           error: null,
           notice: null,
         });
+        // Brought up to date by someone else since this Console turned sessions
+        // away for the update: they can run now.
+        if (owed === null) this.releaseRefused(sshHost, server.id);
         // Only for a running stack: a stopped one sends nothing, so it
         // cannot be out of step with the user's answer.
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
@@ -900,7 +937,10 @@ export class RemoteServerService {
       }
       host.dispose();
       if (result.kind === 'behind') {
+        // Back to where it was: the update that follows is a start of its own,
+        // which takes this as the state to return to if its wait is cancelled.
         this.setStatus(sshHost, {
+          phase: before.phase,
           message: `Updating the server from switch-core ${result.deployed} to ${result.expected}…`,
         });
       } else if (result.kind === 'not-running' || result.kind === 'absent') {
@@ -1073,8 +1113,8 @@ export class RemoteServerService {
       await this.record(sshHost, host, 'stopped');
       reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
-      if (error instanceof ServerBusyError) {
-        // Nothing was touched: see lockOrRefuse.
+      if (lease === null && host !== null) {
+        // The lock was not had, so nothing was touched: see lockOrRefuse.
         host = null;
         throw error;
       }
@@ -1131,7 +1171,7 @@ export class RemoteServerService {
       await this.record(sshHost, host, 'reset');
       reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
-      if (error instanceof ServerBusyError) {
+      if (lease === null && host !== null) {
         host = null;
         throw error;
       }
@@ -1163,8 +1203,9 @@ export class RemoteServerService {
   }
 
   /**
-   * Take the lock for a stop or reset, which refuse rather than wait. One
-   * turned away has touched nothing, so the forward this Console holds stays:
+   * Take the lock for a stop or reset, which refuse rather than wait. A stop
+   * or reset that did not get it — someone else holds it, or it could not be
+   * asked for — has touched nothing, so the forward this Console holds stays:
    * the host is let go here only when it was opened for this, and the caller
    * must not release it again.
    */
@@ -1179,7 +1220,7 @@ export class RemoteServerService {
         timing: SERVER_LOCK_TIMING,
       });
     } catch (error) {
-      if (error instanceof ServerBusyError && host !== this.hosts.get(sshHost)) host.dispose();
+      if (host !== this.hosts.get(sshHost)) host.dispose();
       throw error;
     }
   }

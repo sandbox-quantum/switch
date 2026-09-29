@@ -13,7 +13,7 @@ import {
   stateVolumeExists,
   writeStateVolume,
 } from './stack-state';
-import { UNDER_STATE_MUTEX } from './state-mutex';
+import { CONSOLE_ID_PATTERN, UNDER_STATE_MUTEX } from './state-mutex';
 
 /**
  * Who uses a shared remote stack, and what they last did to it — kept on the
@@ -41,10 +41,6 @@ const ACTIVITY_KEPT = 500;
 /** Separates the two halves of a read, which come back as one stdout. */
 const ACTIVITY_MARKER = '---switch-console-activity---';
 
-/** A Console id is our own random UUID. It is also a file name inside the
- * volume, so anything else is refused rather than written. */
-const CONSOLE_ID = /^[0-9A-Fa-f-]{1,64}$/;
-
 /**
  * How a record touches the register: `seen` refreshes this Console's entry,
  * `act` refreshes it and adds a line of activity, and `leave` adds the line and
@@ -68,6 +64,9 @@ function recordModeFor(action: StackActivityAction | null): RecordMode {
  * directory.
  */
 export const RECORD_SCRIPT = [
+  // A write that fails fails the record, which the supervisor then shows,
+  // rather than reporting one that did not happen.
+  'set -e',
   UNDER_STATE_MUTEX,
   'umask 077',
   'mkdir -p /state/consoles',
@@ -102,19 +101,20 @@ const ACTIONS: readonly StackActivityAction[] = [
   'disconnected',
 ];
 
-/** The account each host connection logs in as. It cannot change for the life
- * of a connection, so it is asked once rather than on every record. */
-const accounts = new WeakMap<StackStateHost, Promise<string>>();
+/** The account each host is reached as, by its label. An SSH alias logs in as
+ * one account, so it is asked once per run of this Console rather than for
+ * every operation, each of which opens a host of its own. */
+const accounts = new Map<string, Promise<string>>();
 
 export function hostAccount(host: StackStateHost): Promise<string> {
-  let account = accounts.get(host);
+  let account = accounts.get(host.label);
   if (!account) {
     account = host.ctx
       .exec('id', ['-un'], { timeout: 20_000 })
       .then(({ stdout }) => stdout.trim() || 'unknown');
     // A failed ask is not remembered: the next record asks again.
-    account.catch(() => accounts.delete(host));
-    accounts.set(host, account);
+    account.catch(() => accounts.delete(host.label));
+    accounts.set(host.label, account);
   }
   return account;
 }
@@ -131,7 +131,7 @@ export async function writeRecord(
   action: StackActivityAction | null
 ): Promise<void> {
   const identity = await getConsoleIdentity();
-  if (!CONSOLE_ID.test(identity.id)) {
+  if (!CONSOLE_ID_PATTERN.test(identity.id)) {
     throw new Error(`Refusing to record a console id that is not one: ${identity.id}`);
   }
   const at = new Date().toISOString();

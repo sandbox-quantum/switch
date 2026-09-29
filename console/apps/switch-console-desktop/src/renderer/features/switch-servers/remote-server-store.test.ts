@@ -14,6 +14,7 @@ const rpcRemote = vi.hoisted(() => ({
   stop: vi.fn(),
   reset: vi.fn(),
   cancelWait: vi.fn(),
+  refresh: vi.fn(),
   getStatuses: vi.fn(),
 }));
 const agentsLoad = vi.hoisted(() => vi.fn(() => Promise.resolve()));
@@ -358,5 +359,32 @@ describe('the paths the rest leave', () => {
 
     expect(rpcRemote.register).not.toHaveBeenCalled();
     expect(store.registerErrorFor('vm-1')).toBeNull();
+  });
+});
+
+describe('looking again at a stopped server', () => {
+  it('asks the main process to look', async () => {
+    rpcRemote.refresh.mockResolvedValue(undefined);
+
+    await new RemoteServerStore().refresh('vm-1');
+
+    expect(rpcRemote.refresh).toHaveBeenCalledWith('vm-1');
+  });
+
+  it('asks nothing of a host that is out of reach', async () => {
+    isBlocked.mockReturnValue(true);
+
+    await new RemoteServerStore().refresh('vm-1');
+
+    expect(rpcRemote.refresh).not.toHaveBeenCalled();
+  });
+
+  it('says so when it could not ask', async () => {
+    rpcRemote.refresh.mockRejectedValue(new Error('ipc closed'));
+    const store = new RemoteServerStore();
+
+    await store.refresh('vm-1');
+
+    expect(store.error).toBe('Could not check the server again.');
   });
 });

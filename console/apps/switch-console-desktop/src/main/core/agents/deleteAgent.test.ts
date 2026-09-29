@@ -145,6 +145,25 @@ describe('deleteAgent', () => {
     expect(await fs.exists(agentSettingsRelativePath('codex-hoot'))).toBe(false);
   });
 
+  it('strips the shared settings file only of this agent’s own credentials', async () => {
+    h.state.agent = {
+      id: 'agent-1',
+      name: 'cc-hoot',
+      providerId: 'claude-code',
+      locationId: 'loc',
+      switchAgentId: 'sw-1',
+    };
+    h.state.fs = fakeFs({});
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: true,
+      trigger: 'user',
+    });
+
+    expect(h.removeSwitchCredentials).toHaveBeenCalledWith(expect.anything(), 'sw-1');
+  });
+
   it('removes both the credentials and the definition for a repo-agents provider', async () => {
     const fs = fakeFs({
       [agentSettingsRelativePath('cc-hoot')]: CREDS,

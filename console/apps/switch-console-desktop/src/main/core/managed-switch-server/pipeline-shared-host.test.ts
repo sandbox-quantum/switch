@@ -50,8 +50,12 @@ vi.mock('@shared/app-identity', async (importOriginal) => ({
   COMPATIBLE_SWITCH_VERSION: '0.11.0',
 }));
 vi.mock('@main/lib/logger', () => ({ log: { error: logError, warn: logWarn, info: vi.fn() } }));
+const currentDatabaseStampMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<string | null> => '2026-09-01T10:00:00Z')
+);
 vi.mock('./stack-state', async (importOriginal) => ({
   ...(await importOriginal<typeof StackState>()),
+  currentDatabaseStamp: currentDatabaseStampMock,
   inspectStack: inspectStackMock,
   publishEnv: publishEnvMock,
   stampPublishedEnv: stampPublishedEnvMock,
@@ -88,7 +92,9 @@ vi.mock('./ports', () => ({
 }));
 const telemetryConsentMock = vi.hoisted(() => vi.fn(() => Promise.resolve(false)));
 vi.mock('./telemetry-consent', () => ({ telemetryConsent: telemetryConsentMock }));
+const assertManagedServerUrlFreeMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
+  assertManagedServerUrlFree: assertManagedServerUrlFreeMock,
   ensureManagedServer: ensureManagedServerMock,
   setActiveServerId: vi.fn(() => Promise.resolve()),
 }));
@@ -127,6 +133,7 @@ function present(
     running: true,
     published: true,
     runningVersion: null,
+    stamp: null,
     ...overrides,
   };
 }
@@ -135,6 +142,7 @@ function sharedHost() {
   const writeFile = vi.fn<(relPath: string, content: string, mode?: number) => Promise<void>>(() =>
     Promise.resolve()
   );
+  const checkNetworking = vi.fn(() => Promise.resolve());
   const establishNetworking = vi.fn(() => Promise.resolve());
   const teardownNetworking = vi.fn(() => Promise.resolve());
   const readFile = vi.fn<(relPath: string) => Promise<string | null>>(() => Promise.resolve(null));
@@ -146,6 +154,7 @@ function sharedHost() {
     writeFile,
     readFile,
     removeFile,
+    checkNetworking,
     establishNetworking,
     teardownNetworking,
     detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
@@ -156,6 +165,7 @@ function sharedHost() {
     writeFile,
     readFile,
     removeFile,
+    checkNetworking,
     establishNetworking,
     teardownNetworking,
   };
@@ -950,5 +960,111 @@ describe('the server lock through a start, a join, a stop and a reset', () => {
 
     await expect(stopStack(local, held.lease)).rejects.toThrow(/no lock to hold/);
     expect(composeDownMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('what a start makes sure of before it changes anything', () => {
+  it('checks this Console can reach the stack before updating it for everyone', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const { host, checkNetworking } = sharedHost();
+    const order: string[] = [];
+    checkNetworking.mockImplementation(async () => void order.push('check ports'));
+    assertManagedServerUrlFreeMock.mockImplementation(async () => void order.push('check address'));
+    prepareUpgradeMock.mockImplementation(async () => {
+      order.push('back up');
+      return null;
+    });
+    composeUpMock.mockImplementation(async () => void order.push('compose up'));
+
+    await startStack(startOptions(host));
+
+    expect(checkNetworking).toHaveBeenCalledWith(hostPorts);
+    expect(assertManagedServerUrlFreeMock).toHaveBeenCalledWith('http://localhost:41000', {
+      kind: 'remote',
+      sshHost: 'vm-1',
+    });
+    expect(order).toEqual(['check ports', 'check address', 'back up', 'compose up']);
+  });
+
+  it('changes nothing on the host when a port it needs is taken on this computer', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const { host, checkNetworking } = sharedHost();
+    checkNetworking.mockRejectedValueOnce(
+      new Error('Port 41000 is already in use on this computer')
+    );
+
+    await expect(startStack(startOptions(host))).rejects.toThrow(/41000 is already in use/);
+
+    expect(prepareUpgradeMock).not.toHaveBeenCalled();
+    expect(publishEnvMock).not.toHaveBeenCalled();
+    expect(composeUpMock).not.toHaveBeenCalled();
+  });
+
+  it('changes nothing on the host when its address is already another server’s here', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    assertManagedServerUrlFreeMock.mockRejectedValueOnce(
+      new Error('http://localhost:41000 is already the address of “My local server”')
+    );
+
+    await expect(startStack(startOptions(sharedHost().host))).rejects.toThrow(
+      /already the address/
+    );
+
+    expect(composeUpMock).not.toHaveBeenCalled();
+    expect(publishEnvMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('recording which database this account’s settings are for', () => {
+  it('stamps the .env it started the stack with, once compose has made the database', async () => {
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    const { host, writeFile } = sharedHost();
+
+    const result = await startStack(startOptions(host));
+
+    expect(result).toMatchObject({ kind: 'started', warning: null });
+    expect(writeFile).toHaveBeenCalledWith('.env.db', '2026-09-01T10:00:00Z\n', 0o600);
+    expect(composeUpMock.mock.invocationCallOrder[0]).toBeLessThan(
+      currentDatabaseStampMock.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('leaves no stamp to vouch for settings when the stack has no database to stamp', async () => {
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    currentDatabaseStampMock.mockResolvedValueOnce(null);
+    const { host, removeFile } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    expect(removeFile).toHaveBeenCalledWith('.env.db');
+  });
+
+  it('copies the published stamp with the published settings it brings into the working dir', async () => {
+    inspectStackMock.mockResolvedValue(present({ stamp: '2026-09-02T11:00:00Z' }));
+    const { host, writeFile } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    expect(writeFile).toHaveBeenCalledWith('.env.db', '2026-09-02T11:00:00Z\n', 0o600);
+  });
+
+  it('drops the stamp with the rest of what a gone stack left behind', async () => {
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    const { host, removeFile } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    expect(removeFile.mock.calls.slice(0, 2)).toEqual([['.env'], ['.env.db']]);
+  });
+
+  it('says so, without failing the start, when this account’s stamp cannot be written', async () => {
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    currentDatabaseStampMock.mockRejectedValueOnce(new Error('volume inspect timed out'));
+
+    const result = await startStack(startOptions(sharedHost().host));
+
+    expect(result.kind === 'started' && result.warning).toMatch(
+      /could not be stamped with its database \(volume inspect timed out\)/
+    );
   });
 });

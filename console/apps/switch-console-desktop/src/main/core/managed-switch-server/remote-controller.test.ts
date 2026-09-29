@@ -11,6 +11,7 @@ const service = vi.hoisted(() => ({
   stop: vi.fn(),
   reset: vi.fn(),
   cancelWait: vi.fn(),
+  refresh: vi.fn(),
 }));
 vi.mock('./remote-server-service', () => ({ remoteServerService: service }));
 
@@ -30,6 +31,7 @@ it('hands the renderer’s shared-server calls to the supervisor for the host th
   await rpc.reset('vm-1');
   await rpc.detectDocker('vm-1');
   await rpc.cancelWait('vm-1');
+  await rpc.refresh('vm-1');
 
   expect(service.probe).toHaveBeenCalledWith('vm-1');
   expect(service.register).toHaveBeenCalledWith('vm-1');
@@ -40,5 +42,6 @@ it('hands the renderer’s shared-server calls to the supervisor for the host th
   expect(service.reset).toHaveBeenCalledWith('vm-1');
   expect(service.detectDocker).toHaveBeenCalledWith('vm-1');
   expect(service.cancelWait).toHaveBeenCalledWith('vm-1');
+  expect(service.refresh).toHaveBeenCalledWith('vm-1');
   expect(await rpc.getStatuses()).toEqual([]);
 });

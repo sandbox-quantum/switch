@@ -98,7 +98,14 @@ stack's `.env` and took the running server down. Now:
   daemon can read it, where the working dir holding the real `.env` belongs to
   whoever started the stack first. It is read and written through a throwaway
   container of the stack's own Postgres image, with secrets on stdin, never in
-  a command line — see `stack-state.ts`.
+  a command line — see `stack-state.ts`. One shell launcher per round trip
+  checks the image is there, creates the volume when writing, and runs the
+  container; a missing image is pulled under a pull's timeout, never by
+  `docker run` inside a quick one.
+- "Nothing of the stack" is read from empty `docker ps` / `docker volume ls`
+  output, so a command over SSH succeeds only on an exit status of 0: a channel
+  that closes without one — a dropped connection — or on a signal is a failure,
+  never an empty answer (`SshExecutionContext.exec`, `RemoteServerHost`).
 - A start reads the host first (`inspectStack`) and takes the published copy,
   then this account's `.env`. New credentials are made **only** on a host with
   nothing of the stack at all. Another account's unpublished stack, or a host
@@ -112,6 +119,10 @@ stack's `.env` and took the running server down. Now:
   not exist at publish). A copy whose stamp no longer matches is ignored: a
   Console from before settings were shared can reset the stack without
   knowing the copy exists, leaving it naming credentials that open nothing.
+  This account's own `.env` is stamped the same way (`.env.db` beside it), and
+  one written for a database since recreated is not used either — it reads as
+  another account's unshared stack — so a reset, start and `compose down` from
+  such a Console cannot leave a stale copy to be trusted.
 - Every account's Console writes the published `.env` verbatim. Compose run
   from a second working dir with a byte-identical `.env` recreates nothing
   (measured; it follows from the bundled compose referencing nothing by path),
@@ -122,8 +133,16 @@ stack's `.env` and took the running server down. Now:
   so it stops counting as a user; leaving does not wait on the host for that.
 - A Console re-reads the host at launch, on reachability recovery, and when a
   running stack stops answering (rate-limited), so a stack another Console
-  stopped, restarted on new ports or reset shows as it is. The status carries a
+  stopped, restarted on new ports or reset shows as it is. A stack shown as
+  stopped is sent nothing, so opening its page has the host looked at again:
+  one someone has started or removed is taken up; one still stopped keeps
+  what the page says about it. An update this Console held sessions back for is
+  finished once the host is at its pin, whoever made it. The status carries a
   `notice` for what this Console did not do.
+- A start checks, before it changes anything on the host, that this Console
+  can reach the stack afterwards — its ports free here, its address not
+  another server's (`checkNetworking`, `assertManagedServerUrlFree`) — since
+  compose restarts or updates it for everyone before the forward is opened.
 
 **One Console changes a shared stack at a time.** Two Consoles pressing Start
 on an empty host together would otherwise both find nothing, both make
@@ -155,12 +174,16 @@ the state volume:
   taking over one lapsed lease. The containers share one volume on one kernel,
   so the lock holds across them and dies with the script. Every script that
   writes the volume takes that mutex (`state-mutex.ts`); the register's trim and
-  the published copy's temp files needed it anyway.
+  the published copy's temp files needed it anyway. A write that fails ends the
+  script with an error: "taken" over a lock file a full disk left empty would
+  let the next Console take it too.
 - A Console that lost its lease while away could come back and carry on, so
   publishing, stamping and withdrawing the settings check the lease's token
   under the mutex in the same step, and compose runs only after
   `assertHeld`. The pipeline refuses a shared host without a lease, and a local
   one with one.
+- A stop or reset that did not get the lock — held, or not askable — touched
+  nothing, so this Console keeps its forward and the phase it had.
 
 This only binds Consoles that have it, which is every Console that shares
 stacks at all. The lock scripts and the mutex are tested against a real volume
@@ -237,7 +260,9 @@ sidecar.
 leaves the agent running on its host, for its automatic sessions and anyone
 else using it there. *Also remove it from the host* stops it there and deletes
 the files Console provisioned. Deleting it in Switch implies that: a deleted
-identity has nothing left to run.
+identity has nothing left to run. In a directory several agents share, only
+this agent's credentials go: the one-file settings from before each agent had
+its own are stripped only when they name this agent.
 
 **Agents another account runs are not loaded.** Their working directories,
 credentials, watchers and sessions are in that account's home, which this

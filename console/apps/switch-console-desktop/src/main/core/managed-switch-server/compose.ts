@@ -2,6 +2,7 @@ import { log } from '@main/lib/logger';
 import {
   BUILD_OVERRIDE_FILE_NAME,
   COMPOSE_FILE_NAME,
+  CORE_SERVICE,
   ENV_FILE_NAME,
   LOCAL_SERVER_PROFILES,
 } from './constants';
@@ -182,9 +183,9 @@ export async function runningServices(host: ServerHost): Promise<string[]> {
   }
 }
 
-/** Whether the core `switch` service is up — our proxy for "the stack is up". */
+/** Whether the core service is up — our proxy for "the stack is up". */
 export async function isStackRunning(host: ServerHost): Promise<boolean> {
-  return (await runningServices(host)).includes('switch');
+  return (await runningServices(host)).includes(CORE_SERVICE);
 }
 
 /**

@@ -64,6 +64,9 @@ export const STACK_HELPER_IMAGE = 'postgres:16-alpine';
  * dir on either host, independent of its absolute path. */
 export const COMPOSE_FILE_NAME = 'standalone-docker-compose.yml';
 export const ENV_FILE_NAME = '.env';
+/** Beside the `.env` on a shared host: the database volume it was written for,
+ * as the published copy's stamp is. */
+export const ENV_STAMP_FILE_NAME = '.env.db';
 
 /** File name of the dev-only build override layered on top of the compose file
  * when the stack is built from a local checkout (see checkout-build.ts). */
@@ -106,3 +109,8 @@ export const LOCAL_SERVER_MATTERMOST_TEAM = 'switch';
  * name the seeder actually used — the generated env, the embed's silent login,
  * and the sign-in Switch Console shows the user — so it is named once here. */
 export const LOCAL_SERVER_MATTERMOST_USER = 'user';
+
+/** The stack's core compose service: its container stands for "the stack is
+ * up", its image tag is the stack's version, and its environment carries the
+ * server's settings. */
+export const CORE_SERVICE = 'switch';

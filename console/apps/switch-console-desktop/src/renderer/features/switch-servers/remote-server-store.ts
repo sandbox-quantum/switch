@@ -145,6 +145,18 @@ export class RemoteServerStore {
     );
   }
 
+  /** Have the main process look at a stack shown as stopped again, since a
+   * stopped one is sent nothing that would notice another Console starting it
+   * (CHOO-2893). What it finds arrives as a status. */
+  async refresh(sshHost: string): Promise<void> {
+    if (this.isHostBlocked(sshHost)) return;
+    try {
+      await rpc.remoteSwitchServer.refresh(sshHost);
+    } catch (cause) {
+      this.setError(cause, 'Could not check the server again.');
+    }
+  }
+
   /** Stop waiting for another Console's hold on the host's stack (CHOO-2893).
    * Whatever was waiting ends having changed nothing, and says so itself. */
   async cancelWait(sshHost: string): Promise<void> {

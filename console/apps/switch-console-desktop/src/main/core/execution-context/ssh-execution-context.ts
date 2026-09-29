@@ -79,6 +79,18 @@ export function buildSshCommand(
   return buildRemoteShellCommand(profile ?? FALLBACK_REMOTE_SHELL_PROFILE, body);
 }
 
+/** Why a remote command that did not exit 0 failed, from what ssh2 reported. */
+export function exitDescription(
+  code: number | null | undefined,
+  signal: string | undefined
+): string {
+  if (code === undefined) {
+    return 'The command ended without an exit status; the SSH connection may have dropped.';
+  }
+  if (code === null) return `The command was killed${signal ? ` by ${signal}` : ''}.`;
+  return `Process exited with code ${code}`;
+}
+
 export class SshExecutionContext implements IExecutionContext {
   readonly root?: string;
   readonly supportsLocalSpawn = false;
@@ -165,14 +177,19 @@ export class SshExecutionContext implements IExecutionContext {
           stderr += d.toString('utf-8');
         });
 
-        stream.on('close', (code: number | null) => {
+        // ssh2 passes the exit status when the server sent one, null with a
+        // signal name when the command was killed, and nothing at all when the
+        // channel closed without either — a dropped connection. Only a 0 is a
+        // success: taking the other two for one hands the caller whatever
+        // partial output arrived as if it were the answer.
+        stream.on('close', (code: number | null | undefined, signal?: string) => {
           settle(() => {
             const cleanStdout = stripExecBanner(stdout, EXEC_STDOUT_MARKER);
-            if ((code ?? 0) === 0) {
+            if (code === 0) {
               resolve({ stdout: cleanStdout, stderr });
             } else {
               reject(
-                Object.assign(new Error(stderr || `Process exited with code ${code}`), {
+                Object.assign(new Error(stderr || exitDescription(code, signal)), {
                   stdout: cleanStdout,
                   stderr,
                   code: code ?? undefined,

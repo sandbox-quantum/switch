@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as AppIdentity from '@shared/app-identity';
 import type { RemoteServerStatus } from '@shared/events/remoteSwitchServerEvents';
 import type * as DeployedVersion from './deployed-version';
@@ -155,6 +155,7 @@ function present(running: boolean): StackOnHost {
     running,
     published: true,
     runningVersion: null,
+    stamp: null,
   };
 }
 
@@ -1356,7 +1357,7 @@ describe('the server lock', () => {
     expect(service.getStatus('vm-1')).toMatchObject({ phase: 'stopped', error: null });
   });
 
-  it('reports a lock that could not be asked for as a failed stop, and gives the forward back', async () => {
+  it('keeps a running server and its forward when a stop cannot even ask for the lock', async () => {
     const live = fakeHost();
     createRemoteServerHost.mockResolvedValue(live);
     connectStack.mockResolvedValue(connected);
@@ -1366,11 +1367,45 @@ describe('the server lock', () => {
 
     await expect(service.stop('vm-1')).rejects.toThrow(/no daemon/);
 
-    expect(service.getStatus('vm-1')).toMatchObject({
-      phase: 'error',
-      error: 'docker run on vm-1 failed: no daemon',
+    // Nothing was touched: the stack still runs for everyone, and this
+    // Console can still reach it.
+    expect(stopStack).not.toHaveBeenCalled();
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'running', error: null });
+    expect(live.dispose).not.toHaveBeenCalled();
+  });
+
+  it('lets go of a host a reset opened for itself when it cannot ask for the lock', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    const service = await loadService();
+    acquireServerLock.mockRejectedValueOnce(new Error('id: cannot find name for user ID 1001'));
+
+    await expect(service.reset('vm-1')).rejects.toThrow(/cannot find name/);
+
+    expect(deleteAgentsForServer).not.toHaveBeenCalled();
+    expect(host.dispose).toHaveBeenCalledOnce();
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'stopped', error: null });
+  });
+
+  it('comes back to where it was when the update after Update and connect stops waiting', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockResolvedValue({ kind: 'behind', deployed: '0.10.0', expected: '0.11.0' });
+    const take = acquireServerLock.getMockImplementation()!;
+    acquireServerLock.mockImplementationOnce(take).mockImplementationOnce(async (_h, _c, opts) => {
+      const { signal, onWaiting } = opts as WaitOptions;
+      onWaiting(bob);
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      const { ServerLockWaitCancelled } = await import('./stack-lock');
+      throw new ServerLockWaitCancelled(bob);
     });
-    expect(live.dispose).toHaveBeenCalledOnce();
+    const service = await loadService();
+
+    const joining = service.connect('vm-1', 'Team server');
+    await vi.waitFor(() => expect(service.getStatus('vm-1').waitingFor).toEqual(bob));
+    service.cancelWait('vm-1');
+
+    expect(await joining).toEqual({ kind: 'cancelled' });
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'stopped', waitingFor: null });
   });
 
   it('refuses a reset while someone else changes the server, before deleting any agent', async () => {
@@ -1475,6 +1510,107 @@ describe('the paths the rest leave', () => {
     });
     expect(writeRecord).not.toHaveBeenCalled();
     expect(lockEvents).toEqual(['take resetting', 'release resetting']);
+  });
+
+  it('wakes what it turned away for an update once someone else has made it', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(true));
+    readVersionStatus.mockResolvedValueOnce({
+      deployedVersion: '0.10.0',
+      drift: { deployed: '0.10.0', expected: '0.11.0', direction: 'upgrade' },
+    } as never);
+    readRegister.mockResolvedValue({
+      self: 'me',
+      consoles: [
+        {
+          consoleId: 'bob',
+          name: 'bob@desk',
+          hostAccount: 'bob',
+          appVersion: '0.37.0',
+          lastSeenAt: new Date().toISOString(),
+        },
+      ],
+      activity: [],
+    });
+    const service = await loadService();
+    const woken = vi.fn();
+    service.onUpgradeFinished(woken);
+    await service.initialize();
+    await expect(service.ensureReady('vm-1', 'Team server')).rejects.toThrow(/Others use it too/);
+
+    // Bob updates it; this Console's calls fail while it restarts, and it looks again.
+    service.recheck('vm-1');
+
+    await vi.waitFor(() => expect(woken).toHaveBeenCalledWith('srv-1'));
+    expect(service.getStatus('vm-1').upgrade).toBeNull();
+  });
+
+  describe('looking again at a stopped server when its page opens', () => {
+    /** Booted onto a stack another Console stopped while this one watched. */
+    async function stoppedByOthers() {
+      createRemoteServerHost.mockResolvedValue(fakeHost());
+      inspectStack.mockResolvedValue(present(true));
+      const service = await loadService();
+      await boot(service);
+      inspectStack.mockResolvedValue(present(false));
+      service.recheck('vm-1');
+      await vi.waitFor(() => expect(service.getStatus('vm-1').phase).toBe('stopped'));
+      expect(service.getStatus('vm-1').notice).toMatch(/stopped outside this Console/);
+      // Past the interval the re-check above started.
+      vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+      lockEvents.length = 0;
+      return service;
+    }
+
+    afterEach(() => vi.restoreAllMocks());
+
+    it('picks up a stack someone has started again', async () => {
+      const service = await stoppedByOthers();
+      inspectStack.mockResolvedValue(present(true));
+
+      service.refresh('vm-1');
+
+      await vi.waitFor(() => expect(service.getStatus('vm-1').phase).toBe('running'));
+      expect(service.getStatus('vm-1').notice).toBeNull();
+    });
+
+    it('leaves a stack still stopped as the page shows it, saying who stopped it', async () => {
+      const service = await stoppedByOthers();
+
+      service.refresh('vm-1');
+      await vi.waitFor(() => expect(inspectStack).toHaveBeenCalledTimes(3));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(service.getStatus('vm-1')).toMatchObject({
+        phase: 'stopped',
+        notice: expect.stringMatching(/stopped outside this Console/),
+      });
+      // A look, not a check: no lock taken.
+      expect(lockEvents).toEqual([]);
+    });
+
+    it('says so when someone has removed it', async () => {
+      const service = await stoppedByOthers();
+      inspectStack.mockResolvedValue({ kind: 'absent' });
+
+      service.refresh('vm-1');
+
+      await vi.waitFor(() =>
+        expect(service.getStatus('vm-1').notice).toMatch(/Nothing is set up on vm-1 any more/)
+      );
+    });
+
+    it('does nothing for a server shown running, which its own requests keep an eye on', async () => {
+      createRemoteServerHost.mockResolvedValue(fakeHost());
+      inspectStack.mockResolvedValue(present(true));
+      const service = await loadService();
+      await boot(service);
+      createRemoteServerHost.mockClear();
+
+      service.refresh('vm-1');
+
+      expect(createRemoteServerHost).not.toHaveBeenCalled();
+    });
   });
 
   it('passes a start’s steps, log lines and update on to the page', async () => {

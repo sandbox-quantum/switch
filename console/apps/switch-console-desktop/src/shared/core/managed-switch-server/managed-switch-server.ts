@@ -320,13 +320,9 @@ export const RECENTLY_SEEN_DAYS = 14;
 
 /** The other Consoles seen on the server recently, most recent first — the
  * people a stop, restart, reset or update from here will affect. */
-export function othersRecentlySeen(
-  register: StackRegister | null,
-  now: Date,
-  withinDays: number = RECENTLY_SEEN_DAYS
-): StackConsole[] {
+export function othersRecentlySeen(register: StackRegister | null, now: Date): StackConsole[] {
   if (!register) return [];
-  const cutoff = now.getTime() - withinDays * 24 * 60 * 60 * 1000;
+  const cutoff = now.getTime() - RECENTLY_SEEN_DAYS * 24 * 60 * 60 * 1000;
   return register.consoles.filter((c) => {
     if (c.consoleId === register.self) return false;
     const seen = Date.parse(c.lastSeenAt);
