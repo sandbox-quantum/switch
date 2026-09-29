@@ -2037,6 +2037,22 @@ class TeamsAdapter(CollaborationAdapter):
         )
         return resolved
 
+    async def read_channel_types(
+        self, channel_ids: list[str]
+    ) -> dict[str, ChannelType]:
+        types: dict[str, ChannelType] = {}
+        for channel_id in channel_ids:
+            try:
+                types[channel_id] = await self.get_channel_type(channel_id)
+            except Exception:
+                logger.warning(
+                    "Could not read whether Teams channel %s is private; its "
+                    "room keeps the type it was saved with until the next start",
+                    channel_id,
+                    exc_info=True,
+                )
+        return types
+
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Search the AAD directory for people to claim as an identity.
 

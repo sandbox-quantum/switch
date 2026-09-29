@@ -195,6 +195,15 @@ class RoomStore:
         room.external_channel_id = external_channel_id
         await session.flush()
 
+    async def set_channel_type(
+        self, session: AsyncSession, room_id: str, channel_type: str
+    ) -> None:
+        room = await session.get(Room, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        room.channel_type = channel_type
+        await session.flush()
+
     async def clear_bridge(self, session: AsyncSession, room_id: str) -> None:
         room = await session.get(Room, room_id)
         if room is None:

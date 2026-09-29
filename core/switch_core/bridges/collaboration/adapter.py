@@ -1189,6 +1189,18 @@ class CollaborationAdapter(ABC):
         bot having to be re-added to each channel."""
         return None
 
+    async def read_channel_types(
+        self, channel_ids: list[str]
+    ) -> dict[str, ChannelType]:
+        """The platform's own answer for each channel's type.
+
+        Called on bridge startup so a room saved with the wrong type is
+        corrected. Channels that could not be read are left out, and logged,
+        rather than failing the rest. Default is empty: only an adapter that
+        has ever saved a type it could not verify has anything to correct
+        (Teams, whose inbound events cannot say whether a channel is private)."""
+        return {}
+
     def set_service_url_persister(
         self, persist: Callable[[str], Awaitable[None]]
     ) -> None:

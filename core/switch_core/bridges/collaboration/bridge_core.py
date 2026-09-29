@@ -240,6 +240,7 @@ class BridgeCore:
         self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
+        self._channel_type_task: asyncio.Task[None] | None = None
         # Turns and request cards from the tables the host reports to, pushed
         # as they change. Only where the platform draws session activity.
         self._connections = connections
@@ -415,6 +416,11 @@ class BridgeCore:
         # restarts one. Messages do not depend on it: an agent is addressable
         # by name whether or not its platform identity exists yet.
         self._identity_task = asyncio.create_task(self._run_agent_identities())
+        # Not awaited for the same reason: one platform read per channel,
+        # and nothing waits on the answer.
+        self._channel_type_task = asyncio.create_task(
+            self._run_channel_type_correction()
+        )
 
     async def stop(self) -> None:
         if self._activity_publisher is not None:
@@ -422,6 +428,9 @@ class BridgeCore:
         if self._identity_task and not self._identity_task.done():
             self._identity_task.cancel()
         self._identity_task = None
+        if self._channel_type_task and not self._channel_type_task.done():
+            self._channel_type_task.cancel()
+        self._channel_type_task = None
         await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
@@ -577,6 +586,72 @@ class BridgeCore:
                 channels.append((room.external_channel_id, room.channel_type))
         if channels:
             await self._adapter.ensure_channel_subscriptions(channels)
+
+    async def _run_channel_type_correction(self) -> None:
+        """Wrapper for the background channel-type check; see
+        `_run_agent_identities` for why it exists and unbinds the tenant."""
+        with no_tenant():
+            try:
+                await self._correct_channel_types()
+            except asyncio.CancelledError:
+                logger.info(
+                    "%s channel type check cancelled before finishing",
+                    self._bridge_type,
+                )
+                raise
+            except Exception:
+                logger.exception(
+                    "%s channel type check stopped unexpectedly", self._bridge_type
+                )
+
+    async def _correct_channel_types(self) -> None:
+        """Bring each room's saved channel type in line with the platform's.
+
+        A room created from an inbound event is saved with the type the event
+        implied, and a Teams event cannot say whether a channel is private. A
+        private channel's room saved as public is shown as public, and moving
+        it to another bridge opens a public channel there, since a move keeps
+        the room's saved type. The platform is the authority, so ask it."""
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
+        saved = {
+            room.id: (room.external_channel_id, room.channel_type)
+            for room in rooms
+            if room.external_channel_id
+            and room.channel_type in ("channel_public", "channel_private")
+        }
+        if not saved:
+            return
+        actual = await self._adapter.read_channel_types(
+            sorted({channel_id for channel_id, _ in saved.values()})
+        )
+        corrections: dict[str, tuple[str, str, ChannelType]] = {}
+        for room_id, (channel_id, saved_type) in saved.items():
+            reported = actual.get(channel_id)
+            if (
+                reported in ("channel_public", "channel_private")
+                and reported != saved_type
+            ):
+                corrections[room_id] = (channel_id, saved_type, reported)
+        if not corrections:
+            return
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            for room_id, (channel_id, saved_type, corrected) in corrections.items():
+                await self._room_store.set_channel_type(session, room_id, corrected)
+                logger.warning(
+                    "Room %s was saved as %s but %s reports its channel %s as "
+                    "%s; corrected",
+                    room_id,
+                    saved_type,
+                    self._bridge_type,
+                    channel_id,
+                    corrected,
+                )
+            await session.commit()
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 

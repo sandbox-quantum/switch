@@ -286,3 +286,40 @@ def test_captured_message_from_a_private_channel_reports_it_private() -> None:
     )
 
     assert [m.channel_type for m in captured] == ["channel_private"]
+
+
+# ── Correcting saved rooms at startup ────────────────────────────────────────
+
+
+class _PerChannelGraph(_FakeGraph):
+    def __init__(self, types: dict[str, str | None]) -> None:
+        super().__init__(membership_type="standard")
+        self._types = types
+
+    async def get_channel(self, *, team_id: str, channel_id: str) -> dict[str, Any]:
+        membership = self._types[channel_id]
+        if membership is None:
+            raise RuntimeError("Graph refused the read")
+        return {"id": channel_id, "membershipType": membership}
+
+
+def test_read_channel_types_reports_what_teams_says_and_skips_failures() -> None:
+    graph = _PerChannelGraph(
+        {
+            "19:std@thread.tacv2": "standard",
+            "19:prv@thread.tacv2": "private",
+            "19:bad@thread.tacv2": None,
+        }
+    )
+    adapter = _adapter(graph)
+
+    types = _run(
+        adapter.read_channel_types(
+            ["19:std@thread.tacv2", "19:prv@thread.tacv2", "19:bad@thread.tacv2"]
+        )
+    )
+
+    assert types == {
+        "19:std@thread.tacv2": "channel_public",
+        "19:prv@thread.tacv2": "channel_private",
+    }
