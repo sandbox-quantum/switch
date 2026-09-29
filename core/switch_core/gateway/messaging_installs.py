@@ -10,10 +10,11 @@ the shape that works.
 a connection, and connections are a tenant admin's. A claim-based platform
 (Telegram) shares one connection per organisation across every chat claimed, so
 one chat is a room: an admin connects the first, which turns the platform on,
-and after that members connect and disconnect chats. Removing all of them is an
-admin's again. Every check for an OAuth platform is the tenant-admin check
-`require_tenant_admin` makes, read here as `get_tenant_is_admin` so a route
-that serves both kinds of platform can tell them apart.
+and after that members connect and disconnect chats. Turning it off again is
+deleting that connection, which is an admin's. Every check for an OAuth
+platform is the tenant-admin check `require_tenant_admin` makes, read here as
+`get_tenant_is_admin` so a route that serves both kinds of platform can tell
+them apart.
 """
 
 from __future__ import annotations
@@ -53,7 +54,6 @@ class ClaimablePlatform(BaseModel):
     # The organisation already has a connection, so a chat is a room.
     connected: bool
     can_add_chat: bool
-    can_disconnect_all: bool
 
 
 class InstallablePlatforms(BaseModel):
@@ -152,7 +152,6 @@ async def installable_platforms(
                 platform=platform,
                 connected=connected,
                 can_add_chat=connected or is_admin,
-                can_disconnect_all=connected and is_admin,
             )
         )
     return InstallablePlatforms(
@@ -312,35 +311,3 @@ async def disconnect_install(
     logger.info("User %s disconnected messaging install %s", user.id, install_id)
     # Ended, so it has let go of whatever it was called.
     return _installed(ended, None)
-
-
-@router.delete("/{platform}/installs")
-async def disconnect_platform(
-    platform: str,
-    service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> InstalledApps:
-    """Disconnect every chat of a claim-based platform, which removes its bridge.
-
-    An admin's, because it undoes what connecting the first chat did: the
-    platform is off for the organisation until an admin connects a chat again.
-    """
-    installs = _require_installs(service)
-    if not _by_claim(installs, platform):
-        raise HTTPException(
-            status_code=404, detail=f"{platform} is not installed by claiming a chat"
-        )
-    if not is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Only an admin can disconnect every {platform} chat.",
-        )
-    try:
-        ended = await installs.disconnect_platform(
-            tenant_id=require_tenant_id(), platform=platform
-        )
-    except MessagingInstallError as failure:
-        raise HTTPException(status_code=502, detail=str(failure)) from failure
-    logger.info("User %s disconnected %d %s chat(s)", user.id, len(ended), platform)
-    return InstalledApps(installs=[_installed(install, None) for install in ended])

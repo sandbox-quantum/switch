@@ -65,7 +65,8 @@ const PLATFORM_COPY: Record<string, Copy> = {
     rooms:
       "The chat's room is kept, but becomes internal-only, and connecting " +
       "the chat again creates a new room rather than reattaching it. Other " +
-      "connected Telegram chats are not affected.",
+      "connected Telegram chats are not affected, and Telegram stays on for " +
+      "this organisation even when this is its last chat.",
   },
 };
 const DEFAULT_COPY: Copy = {

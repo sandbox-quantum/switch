@@ -766,14 +766,17 @@ async def delete_bridge(
             if len(installs) == 1
             else f"{len(installs)} {install.platform} workspaces"
         )
+        them = "it" if len(installs) == 1 else "them"
+        # Worded for both kinds of install. Disconnecting an OAuth one removes
+        # this connection with it; a claimed chat leaves the connection behind,
+        # to be deleted here once no chat uses it.
         raise HTTPException(
             status_code=409,
             detail=(
-                f"This connection was created by installing the Switch app into "
-                f"{where}, so "
-                "it cannot be deleted here — the app would stay installed and its "
-                "token would stay valid. Disconnect the app instead, which revokes "
-                "the token at the platform and then removes this connection."
+                f"The Switch app is still installed in {where} through this "
+                f"connection, so it cannot be deleted here: that would leave the "
+                f"app behind in {them}. Disconnect {them} under Installed apps "
+                "first."
             ),
         )
 

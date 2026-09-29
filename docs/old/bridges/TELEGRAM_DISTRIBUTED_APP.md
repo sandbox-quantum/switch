@@ -115,9 +115,9 @@ Who may connect one:
 - **The first chat is an admin's.** It creates the organisation's Telegram
   connection, which is what turns Telegram on for it.
 - **After that, any member** may connect more chats and disconnect any one of
-  them. A chat is a room, and rooms are members'.
-- **Disconnecting every chat is an admin's**, because it turns Telegram off
-  again.
+  them, the last included. A chat is a room, and rooms are members'.
+- **Turning Telegram off is an admin's**: it is deleting the connection, and
+  connections are admins'.
 
 Every chat an organisation connects shares its one connection, so a person
 links their Telegram account once and is recognised in all of them.
@@ -146,16 +146,19 @@ as the self-registered bot's does.
 
 ## Disconnecting
 
-- **One chat:** **Disconnect** on the chat's row in the Telegram card. The bot
+- **A chat:** **Disconnect** on the chat's row in the Telegram card. The bot
   leaves the chat and its room becomes internal-only; every other chat keeps
   working. If Telegram refuses to let the bot leave, nothing changes and the
   error says to try again.
-- **Every chat:** the Telegram card's ⋯ menu → **Disconnect Telegram**, for
-  admins. The bot leaves each chat and the connection goes. It stops at the
-  first chat Telegram refuses, with the rest still connected, so trying again
-  finishes it.
 - **Removing the bot in Telegram** ends that chat's connection the same way,
   from Telegram's side.
+- **Telegram itself:** the organisation's Telegram connection stays when its
+  last chat goes, however it went, so Telegram stays on and a member can
+  connect a chat again. To turn it off, an admin disconnects any chats left
+  and then deletes the Telegram connection from the list of connections. The
+  delete is refused while any chat is still connected, since the bot would
+  stay in it. Deleting the connection also forgets everyone's linked Telegram
+  account; the next admin to connect a chat starts a new one.
 
 ## Rotating credentials
 

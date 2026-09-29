@@ -28,7 +28,6 @@ from switch_core.gateway.messaging_installs import (
     begin_claim,
     begin_install,
     disconnect_install,
-    disconnect_platform,
     installable_platforms,
     list_installs,
 )
@@ -58,7 +57,6 @@ class _Service:
         default_factory=lambda: [_install("s1", "slack"), _install("t1", "telegram")]
     )
     disconnected: list[str] = field(default_factory=list)
-    platforms_disconnected: list[str] = field(default_factory=list)
 
     def platforms(self) -> list[str]:
         return ["slack", "telegram"]
@@ -98,12 +96,6 @@ class _Service:
         self.disconnected.append(install_id)
         return next(i for i in self.installs if i.id == install_id)
 
-    async def disconnect_platform(
-        self, *, tenant_id: str, platform: str
-    ) -> list[SimpleNamespace]:
-        self.platforms_disconnected.append(platform)
-        return [i for i in self.installs if i.platform == platform]
-
 
 class _Session:
     async def commit(self) -> None:
@@ -123,7 +115,7 @@ class TestWhatIsOffered:
         )
         assert offered.platforms == ["slack"]
         (telegram,) = offered.claimable
-        assert telegram.can_add_chat and not telegram.can_disconnect_all
+        assert telegram.can_add_chat
 
     async def test_a_member_is_offered_no_oauth_install(self) -> None:
         offered = await installable_platforms(
@@ -141,7 +133,6 @@ class TestWhatIsOffered:
         )
         (telegram,) = offered.claimable
         assert telegram.can_add_chat
-        assert not telegram.can_disconnect_all
 
     async def test_a_member_may_not_turn_it_on(self) -> None:
         offered = await installable_platforms(
@@ -151,15 +142,6 @@ class TestWhatIsOffered:
         )
         (telegram,) = offered.claimable
         assert not telegram.can_add_chat
-
-    async def test_an_admin_may_disconnect_everything(self) -> None:
-        offered = await installable_platforms(
-            _Session(),
-            _Service(connected=True),
-            True,  # type: ignore[arg-type]
-        )
-        (telegram,) = offered.claimable
-        assert telegram.can_disconnect_all
 
 
 class TestClaimLinks:
@@ -264,17 +246,3 @@ class TestChats:
         with tenant_scope(_TENANT):
             await disconnect_install("t1", _Session(), service, _user(), False)  # type: ignore[arg-type]
         assert service.disconnected == ["t1"]
-
-    async def test_only_an_admin_disconnects_every_chat(self) -> None:
-        service = _Service(connected=True)
-        with tenant_scope(_TENANT), pytest.raises(HTTPException) as refused:
-            await disconnect_platform("telegram", service, _user(), False)  # type: ignore[arg-type]
-        assert refused.value.status_code == 403
-        assert service.platforms_disconnected == []
-
-    async def test_an_admin_disconnects_every_chat(self) -> None:
-        service = _Service(connected=True)
-        with tenant_scope(_TENANT):
-            ended = await disconnect_platform("telegram", service, _user(), True)  # type: ignore[arg-type]
-        assert service.platforms_disconnected == ["telegram"]
-        assert [i.id for i in ended.installs] == ["t1"]
