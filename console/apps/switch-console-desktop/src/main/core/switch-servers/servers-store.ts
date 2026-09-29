@@ -114,13 +114,8 @@ function managedPlace(server: SwitchServer): string {
     : 'on this computer';
 }
 
-/**
- * Two server records cannot share a gateway URL, and a managed stack's URL is
- * `http://localhost:<port>` — on a remote stack, a port mirrored onto this
- * computer. A stack someone else set up on a shared host brings the port
- * numbers it was started with (CHOO-2893), which can be ones this Console
- * already gave another server.
- */
+/** Two server records cannot share a gateway URL, and a shared remote stack's
+ * mirrored `localhost` port may be one this Console already gave another server. */
 export class ManagedServerUrlConflictError extends Error {
   constructor(gatewayUrl: string, holder: SwitchServer, target: string) {
     super(
@@ -153,11 +148,8 @@ async function managedServerSlot(
   return { existingForTarget, atUrl };
 }
 
-/**
- * Throw {@link ManagedServerUrlConflictError} when {@link ensureManagedServer}
- * would, without writing anything — for a start to ask before it changes a
- * stack others use, rather than only once it has.
- */
+/** Throw {@link ManagedServerUrlConflictError} when {@link ensureManagedServer}
+ * would, without writing anything, so a start can check before changing the stack. */
 export async function assertManagedServerUrlFree(
   gatewayUrl: string,
   ref: ManagedServerRef
@@ -173,11 +165,9 @@ export async function assertManagedServerUrlFree(
  * inserts. Keeps exactly one row per managed target rather than duplicating on
  * URL changes.
  *
- * Another managed target's row is never adopted by URL: the two share a port
- * number, not a server, and taking the row over would silently repoint that
- * server and its agents at a different stack. A clash of any kind is refused
- * with {@link ManagedServerUrlConflictError}, rather than left to the unique
- * index to reject in words nobody can act on.
+ * Another managed target's row is never adopted by URL: taking it over would
+ * silently repoint that server and its agents at a different stack. Clashes
+ * throw {@link ManagedServerUrlConflictError}.
  */
 export async function ensureManagedServer(
   params: AddServerParams,

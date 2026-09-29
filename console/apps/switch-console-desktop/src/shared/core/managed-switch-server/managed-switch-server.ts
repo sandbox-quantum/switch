@@ -138,8 +138,8 @@ export type DeployedTelemetry =
  * - `pending` — the stack is stopped. It is upgraded when it is next started,
  *   never started at the old version.
  * - `held` — the stack is running on a shared host and others have used it
- *   recently (CHOO-2893). The update restarts it for all of them, so it waits
- *   for someone here to run it rather than happening under them unasked.
+ *   recently. The update restarts it for all of them, so it waits for someone
+ *   here to run it.
  */
 export type ManagedServerUpgrade =
   | { state: 'updating'; from: string; to: string }
@@ -246,13 +246,13 @@ export type StartLocalServerResult =
   | { kind: 'error'; message: string };
 
 /** Outcome of starting a remote stack: a start's, or `cancelled` when the user
- * stopped waiting for another Console's hold on the stack (CHOO-2893) — before
- * anything was changed, so there is nothing to report as failed. */
+ * stopped waiting for another Console's hold on the stack, before anything
+ * was changed. */
 export type StartRemoteServerResult = StartLocalServerResult | { kind: 'cancelled' };
 
 /**
- * Outcome of joining a remote stack another Console started (CHOO-2893).
- * Everything short of `connected` leaves the host exactly as it was.
+ * Outcome of joining a remote stack another Console started. Everything short
+ * of `connected` leaves the host exactly as it was.
  */
 export type ConnectRemoteServerResult =
   | {
@@ -278,9 +278,8 @@ export type StackActivityAction = 'started' | 'connected' | 'stopped' | 'reset' 
 
 /**
  * A Console that uses a shared remote stack, as it last recorded itself on the
- * stack's host (CHOO-2893). Everyone sharing the stack signs in as the one
- * admin account, so this — not the server — is where the people behind it are
- * told apart.
+ * stack's host. Everyone sharing the stack signs in as the one admin account,
+ * so this, not the server, is where they are told apart.
  */
 export type StackConsole = {
   /** The Console's random id: the same one it sends the server. */
@@ -340,9 +339,9 @@ export type ServerLockAction =
   | 'resetting';
 
 /**
- * A Console's hold on a shared server's lock (CHOO-2893): whoever changes a
- * server others use holds it, so two Consoles cannot start, update, stop or
- * reset it over each other. Both durations are by the host's clock.
+ * A Console's hold on a shared server's lock: whoever changes a server others
+ * use holds it, so two Consoles cannot start, update, stop or reset it over
+ * each other. Both durations are by the host's clock.
  */
 export type ServerLockHolder = {
   name: string;
@@ -405,9 +404,9 @@ export function serverBusyMessage(hostLabel: string, holder: ServerLockHolder): 
 
 /**
  * A stop or reset of a shared server turned away because another Console is
- * changing it right now (CHOO-2893). Nothing was touched. Lives with the model,
- * like {@link ManagedServerStoppedError}, so the RPC boundary and the renderer
- * can recognise a refusal that is a state to show rather than a fault.
+ * changing it right now. Nothing was touched. Lives with the model, like
+ * {@link ManagedServerStoppedError}, so the RPC boundary and the renderer can
+ * recognise a refusal that is a state to show rather than a fault.
  */
 export class ServerBusyError extends Error {
   constructor(

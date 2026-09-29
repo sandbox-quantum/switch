@@ -53,10 +53,8 @@ export interface ServerHost {
    * the SSH alias). */
   readonly label: string;
 
-  /** The host's handle on the stack state every Console sharing the stack
-   * reads (see `stack-state.ts`), or null for a host whose stack is nobody
-   * else's. A remote host is shared by everyone with access to it; the local
-   * stack belongs to this desktop alone, so it has nothing to agree with. */
+  /** Handle on the stack state every Console sharing this host reads (see
+   * `stack-state.ts`); null for the local stack, which is this desktop's alone. */
   readonly sharedState: StackStateHost | null;
 
   /** Write `content` to `relPath` under {@link workingDir}, creating parent
@@ -103,10 +101,9 @@ export interface ServerHost {
    * over the SSH connection, kept alive across reconnects. */
   establishNetworking(ports: LocalServerPorts): Promise<void>;
 
-  /** Throw, saying why, when {@link establishNetworking} could not make
-   * `ports` reachable from here — asked before a start changes anything on the
-   * host. Local: never (nothing is forwarded). Remote: when a port is taken on
-   * the desktop. */
+  /** Throw, saying why, when {@link establishNetworking} could not make `ports`
+   * reachable (e.g. a port taken on the desktop). Asked before a start changes
+   * anything on the host. */
   checkNetworking(ports: LocalServerPorts): Promise<void>;
 
   /** Tear down any networking started by {@link establishNetworking}. Called on

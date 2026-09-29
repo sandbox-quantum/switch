@@ -59,9 +59,8 @@ export async function openAuthenticatedGatewayPage(
     }
   }
 
-  // The dashboard acts as the same shared account the Console signs in as, so
-  // its requests say which Console they came from too. Only the gateway's own
-  // origin is told, for the reason the cookie is confined to it above.
+  // Tag the dashboard's requests with this Console too, confined to the
+  // gateway's origin for the same reason as the cookie.
   const identity = await consoleIdentityHeaders(server);
   if (Object.keys(identity).length > 0) {
     ses.webRequest.onBeforeSendHeaders({ urls: [`${gatewayOrigin}/*`] }, (details, callback) => {

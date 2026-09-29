@@ -10,11 +10,9 @@ import type * as StackState from './stack-state';
 import type { StackOnHost, StackStateHost } from './stack-state';
 
 /**
- * The start and connect paths on a host whose stack other Consoles share
- * (CHOO-2893). The rule under test throughout: a remote stack's settings are
- * the host's, a desktop's copy is a cache, and new credentials are made only
- * when the host has nothing of the stack at all — anything else locks a
- * running server out of its own database, for everyone using it.
+ * Start and connect on a host whose stack other Consoles share (CHOO-2893).
+ * The rule under test: the host's settings win over this desktop's copy, and
+ * new credentials are made only when the host has nothing of the stack.
  */
 
 const inspectStackMock = vi.hoisted(() => vi.fn<() => Promise<StackOnHost>>());
@@ -169,8 +167,6 @@ function sharedHost() {
   };
 }
 
-/** The server lock as the supervisor hands it over: held, until a test says
- * it was taken over. */
 function heldLease() {
   const assertHeld = vi.fn(() => Promise.resolve());
   const release = vi.fn(() => Promise.resolve());
@@ -225,8 +221,6 @@ beforeEach(() => {
 
 describe('starting a shared stack', () => {
   it('gives an account that never joined the stack a compose file before the upgrade backup reads it', async () => {
-    // Found on a real host: a second account updating a stack it had never
-    // joined had no compose file, and the backup refused to run without one.
     inspectStackMock.mockResolvedValue(present({}, { version: '0.10.0' }));
     const { host, writeFile } = sharedHost();
 
@@ -258,8 +252,6 @@ describe('starting a shared stack', () => {
   });
 
   it('replaces an account’s older compose file for a stack at this build’s version', async () => {
-    // Stop and Reset run compose from this file: one from an older Console
-    // would miss a service the stack now has.
     inspectStackMock.mockResolvedValue(present({ running: true }));
     const { host, writeFile, readFile } = sharedHost();
     readFile.mockImplementation(async (path) =>
@@ -286,7 +278,7 @@ describe('starting a shared stack', () => {
     );
     expect(loadOrCreateSecretsMock).not.toHaveBeenCalled();
     expect(resolvePortsMock).not.toHaveBeenCalled();
-    // The desktop's copy is refreshed from the host, which it is a cache of.
+    // The desktop's copy is refreshed from the host.
     expect(storeSecretsMock).toHaveBeenCalledWith(host, hostSecrets);
     expect(rememberPortsMock).toHaveBeenCalledWith(host, hostPorts);
     expect(ensureManagedServerMock).toHaveBeenCalledWith(
@@ -305,8 +297,6 @@ describe('starting a shared stack', () => {
   });
 
   it('brings this account’s working dir in step with the stack before checking its version', async () => {
-    // Another account may have updated or reset the stack since this one last
-    // wrote its own copy; the version check must read the stack's.
     inspectStackMock.mockResolvedValue(present());
     const { host, writeFile } = sharedHost();
     const order: string[] = [];
@@ -353,7 +343,6 @@ describe('starting a shared stack', () => {
     await startStack(startOptions(host));
 
     expect(publishEnvMock).toHaveBeenCalledWith(sharedState, 'BUILT_ENV\n', held.lease);
-    // Stamped once compose has created the database volume the copy is for.
     expect(stampPublishedEnvMock).toHaveBeenCalledWith(sharedState, held.lease);
     expect(order).toEqual(['publish', 'compose up', 'stamp']);
   });
@@ -427,8 +416,6 @@ describe('starting a shared stack', () => {
   });
 
   it('refuses a host it cannot read even when this desktop holds a copy', async () => {
-    // Nothing here can tell whether someone reset the stack since this copy was
-    // taken, and starting from it — and publishing it — would lock everyone out.
     inspectStackMock.mockResolvedValue({ kind: 'unreadable', reason: 'published copy timed out' });
     readSecretsMock.mockResolvedValue(cachedSecrets);
     readPersistedPortsMock.mockResolvedValue(cachedPorts);
@@ -468,8 +455,6 @@ describe('starting a shared stack', () => {
   });
 
   it('refuses to fill a partial settings file from a copy of another generation', async () => {
-    // The host's file lost a key after someone else reset the stack and
-    // started it again; this desktop's copy is from before the reset.
     inspectStackMock.mockResolvedValue({
       kind: 'incomplete',
       source: 'published',
@@ -515,8 +500,7 @@ describe('connecting to a shared stack', () => {
     expect(composeUpMock).not.toHaveBeenCalled();
     expect(buildEnvFileMock).not.toHaveBeenCalled();
     expect(publishEnvMock).not.toHaveBeenCalled();
-    // This account's copy is the stack's own, byte for byte, so Stop and
-    // Restart work from here without changing anything.
+    // The stack's own `.env`, so Stop and Restart work from here.
     expect(writeFile).toHaveBeenCalledWith('.env', 'PUBLISHED_ENV\n', 0o600);
     expect(writeFile).toHaveBeenCalledWith('standalone-docker-compose.yml', 'services: {}');
     expect(establishNetworking).toHaveBeenCalledWith(hostPorts);
@@ -540,8 +524,6 @@ describe('connecting to a shared stack', () => {
   });
 
   it('brings an account’s older compose file to the one the stack runs, when joining it', async () => {
-    // Joined only at this build's version, whose compose file is the stack's:
-    // Stop and Reset from here then know every service it runs.
     inspectStackMock.mockResolvedValue(present());
     const { host, writeFile, readFile } = sharedHost();
     readFile.mockResolvedValue('services: { older: {} }');
@@ -568,9 +550,8 @@ describe('connecting to a shared stack', () => {
   });
 
   it('goes by the version the stack runs, not the one its settings ask for', async () => {
-    // A start elsewhere published the new version and then failed: the old
-    // containers still run, and joining them as current would run this Console
-    // against a switch-core it cannot use.
+    // A start elsewhere published the new version and then failed, leaving
+    // the old containers running.
     inspectStackMock.mockResolvedValue(
       present({ runningVersion: '0.10.0' }, { version: '0.11.0' })
     );
@@ -691,8 +672,6 @@ describe('resetting a shared stack', () => {
 
 describe('starting where nothing of the stack is left', () => {
   it('drops what this account still holds of a stack that is gone before checking versions', async () => {
-    // Another account updated the stack and then it was reset: the working dir
-    // still names the newer version, which is no deployment to protect.
     inspectStackMock.mockResolvedValue({ kind: 'absent' });
     const { host, removeFile } = sharedHost();
     const order: string[] = [];
@@ -741,8 +720,6 @@ describe('usage data on a shared stack', () => {
   });
 
   it('does not turn sharing on over the others using the stack', async () => {
-    // Someone using it said no, or never said yes; one person's yes does not
-    // take that away from them.
     inspectStackMock.mockResolvedValue(present({ raw: 'TELEMETRY_ENABLED=false\n' }));
     telemetryConsentMock.mockResolvedValue(true);
     readRegisterMock.mockResolvedValue(bobRecently);
@@ -775,8 +752,7 @@ describe('usage data on a shared stack', () => {
   });
 
   it('keeps sharing off for a stack started afresh where others were using the one before', async () => {
-    // A reset keeps the register, and whoever said no there has not changed
-    // their answer by the server being reset.
+    // A reset keeps the register.
     inspectStackMock.mockResolvedValue({ kind: 'absent' });
     telemetryConsentMock.mockResolvedValue(true);
     readRegisterMock.mockResolvedValue(bobRecently);
@@ -811,8 +787,6 @@ describe('stamping the published settings', () => {
   });
 
   it('does not fail a start that happened because the stamp could not be written, and says what it leaves open', async () => {
-    // compose up has restarted the stack for everyone by then; reporting a
-    // failed start would strand this Console without its forward or sign-in.
     inspectStackMock.mockResolvedValue(present());
     stampPublishedEnvMock.mockRejectedValueOnce(new Error('helper container timed out'));
 
@@ -859,7 +833,6 @@ describe('the paths a shared start or join refuses or degrades on', () => {
   });
 
   it('starts a stack whose automatic sign-in fails, leaving the sign-in to the page', async () => {
-    // The stack is up and healthy; only the silent sign-in did not take.
     inspectStackMock.mockResolvedValue(present());
     passwordLoginMock.mockResolvedValueOnce({ success: false, error: 'bad password' } as never);
 

@@ -29,9 +29,8 @@ export function managedTelemetryNotice(args: {
   deployed: DeployedTelemetry | null;
   /** The user's current answer. */
   consent: boolean;
-  /** Whether others use this server too, or it cannot be told (CHOO-2893). A
-   * start keeps a shared server's sharing off over them, so a "yes" it is not
-   * acting on is nothing a restart from here would change. */
+  /** Whether others use this server too, or it cannot be told. A start keeps a
+   * shared server's sharing off, so a restart from here cannot apply a "yes". */
   sharedWithOthers: boolean;
 }): ManagedTelemetryNotice {
   const { running, deployed, consent, sharedWithOthers } = args;

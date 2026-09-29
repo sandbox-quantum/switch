@@ -24,8 +24,7 @@ afterEach(() => {
 const theirs = { gateway: 41000, api: 41001, mattermost: 41002, postgres: 41003 };
 
 it('keeps the ports a shared stack publishes as this desktop’s copy, so a later start reuses them', async () => {
-  // Adopted from the host (CHOO-2893): picking new ones here would move the
-  // stack off the ports everyone else reaches it on.
+  // Picking new ones would move the stack off the ports everyone else reaches it on.
   await rememberPorts(host(), theirs);
 
   expect(await readPersistedPorts(host())).toEqual(theirs);

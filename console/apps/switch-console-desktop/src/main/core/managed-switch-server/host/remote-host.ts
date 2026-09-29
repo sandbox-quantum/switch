@@ -104,13 +104,9 @@ export class RemoteServerHost implements ServerHost {
   }
 
   /**
-   * Run a command on the host with `input` as its stdin, rooted at
-   * {@link workingDir}. Rejects on non-zero exit or timeout.
-   *
-   * For handing a command a secret: stdin never appears in the host's process
-   * table, where anything passed as an argument is readable by every account
-   * on the machine. Its output is discarded — the login shell may print to
-   * stdout before the command does, and nothing that writes needs to read.
+   * Run a command on the host with `input` as its stdin, for handing it a secret:
+   * stdin never shows in the host's process table, where arguments are readable
+   * by every account. Output is discarded. Rejects on non-zero exit or timeout.
    */
   writeCommandInput(
     command: string,
@@ -122,11 +118,9 @@ export class RemoteServerHost implements ServerHost {
   }
 
   /**
-   * Run `command` in the host's login shell, rooted at {@link workingDir}, and
-   * settle once it exits: resolved on status 0, rejected otherwise with the
-   * tail of its stderr, or on timeout. `onLine` gets each non-empty line of its
-   * stdout and stderr; without one, output is drained and dropped. `input`,
-   * when given, is written to its stdin, which is then closed.
+   * Run `command` in the host's login shell under {@link workingDir}, rejecting
+   * with the stderr tail on a non-zero exit or on timeout. `onLine` gets each
+   * non-empty output line; `input`, if given, is written to stdin and closed.
    */
   private runOverSsh(
     command: string,

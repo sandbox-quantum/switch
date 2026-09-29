@@ -19,47 +19,28 @@ import {
 } from './state-mutex';
 
 /**
- * The lock on a shared remote stack (CHOO-2893): held by whichever Console is
- * changing the stack, so that two Consoles cannot act on it at once.
- *
- * Without it, two Consoles pressing Start on an empty host together both find
- * nothing there, both make credentials, and both publish them and run
- * compose — and whichever publishes second has the stack's database created
- * with credentials nobody else holds. Everything that reads the stack to act
- * on it takes the lock first, so the second Console finds the first one's
- * stack and joins it.
- *
- * It lives in the stack's state volume, beside the published settings, which
- * every Console using the stack can write and which a reset keeps. It is a
- * lease: held for {@link LockTiming.ttlSeconds} at a time and renewed while
- * its holder works, so a Console that crashes or loses its network holds it
- * for at most that long. Expiry is decided by the host's clock inside the
- * script, never a desktop's. Taking and renewing happen under the state mutex
- * (state-mutex.ts), so exactly one of two Consoles taking it at once — or
- * taking over the same lapsed lease — gets it.
- *
- * A Console that lost its lease while away can come back and carry on, so the
- * writes that decide a stack's credentials check the token in the same step
- * (`WHILE_HOLDING_SERVER_LOCK`), and compose is only run after
+ * The lock on a shared remote stack (CHOO-2893), held by whichever Console is
+ * changing it. Without it, two Consoles starting an empty host at once would
+ * both publish credentials, and the database would be created with ones only
+ * one of them holds. It is a lease in the state volume, renewed while its
+ * holder works and expired by the host's clock. A holder may lose it while
+ * away, so credential writes check the token in the same step
+ * (`WHILE_HOLDING_SERVER_LOCK`) and compose runs only after
  * {@link ServerLease.assertHeld}.
  */
 
-/** This run of this Console. A Console restarted after a crash takes back a
- * lease its previous run left, rather than waiting for it to lapse; a lease
- * held by this same run — another operation on the same host under a second
- * alias — it waits for like anyone else's. */
+/** A restarted Console takes back a lease its crashed run left, but waits on
+ * one held by this same run (the same host under a second alias). */
 export const CONSOLE_INSTANCE = randomUUID();
 
 export type LockTiming = {
   /** How long a lease lasts from its last renewal. */
   ttlSeconds: number;
   renewEveryMs: number;
-  /** The longest one lease can be held, however often it is renewed, so a
-   * Console that hangs while renewing cannot keep everyone out. Longer than
-   * anything a start can legitimately take: a backup may run 30 minutes and
-   * compose 20. */
+  /** Caps a lease however often it is renewed, so a Console hung while
+   * renewing cannot keep everyone out. Must exceed a start: a backup may run
+   * 30 minutes and compose 20. */
   maxHoldSeconds: number;
-  /** How often a Console waiting for the lock tries again. */
   pollEveryMs: number;
 };
 
@@ -70,8 +51,7 @@ export const SERVER_LOCK_TIMING: LockTiming = {
   pollEveryMs: 5_000,
 };
 
-/** Who is taking the lock, and for what — what the others are shown while
- * they wait. */
+/** Who is taking the lock and why; shown to the others while they wait. */
 export type LockClaim = {
   consoleId: string;
   instance: string;
@@ -95,15 +75,11 @@ const LOCK_ACTIONS: readonly ServerLockAction[] = [
 const LOCK_MAGIC = 'switch-console-lock v1';
 
 /**
- * `$1` is the operation — `take`, `renew` or `release` — and `$2…$9` the
- * token, console id, run, action, lease length and longest hold in seconds,
- * name and host account; `$10` lists, space-separated, leases this run failed
- * to give back, which it may take over. Answers on stdout: a status line, the
- * host's clock, then the lock file as it now stands, so a refusal can say who
- * holds it.
- * A write that fails ends the script with an error rather than an answer: on
- * a full disk, "taken" over a lock file left empty would let the next Console
- * take it too. Exported for the test that runs it against a real volume.
+ * `$10` lists, space-separated, leases this run failed to give back, which it
+ * may take over. Prints a status line, the host's clock, then the lock file,
+ * so a refusal can say who holds it. A failed write exits with an error, not
+ * an answer: "taken" over an empty lock file on a full disk would let the next
+ * Console take it too.
  */
 export const LOCK_SCRIPT = [
   'set -u',
@@ -120,8 +96,8 @@ export const LOCK_SCRIPT = [
   'case $op in',
   '  take)',
   '    if [ -f "$lock" ] && number "$expires" && [ "$expires" -gt "$now" ]; then',
-  // This Console's previous run — the same id and name, another run — left
-  // it when it crashed; this run left it when giving it back failed.
+  // Taken over when this Console's crashed previous run left it, or this run
+  // failed to give it back.
   '      if [ "$(line 5)" = "$console" ] && [ "$(line 6)" != "$instance" ] && [ "$(line 8)" = "$name" ]; then :',
   '      else case " $stale " in *" $held "*) ;; *) report held ;; esac',
   '      fi',
@@ -143,7 +119,6 @@ export const LOCK_SCRIPT = [
   'esac',
 ].join('\n');
 
-/** Prints the host's clock and the lock file, for a look that changes nothing. */
 const PEEK_SCRIPT = [
   'printf "%s\\n%s\\n" peek "$(date +%s)"',
   `[ -f ${SERVER_LOCK_FILE} ] && cat ${SERVER_LOCK_FILE}`,
@@ -154,7 +129,7 @@ type LockStatus = 'taken' | 'held' | 'renewed' | 'lost' | 'released' | 'other' |
 
 export type LockReply = {
   status: LockStatus;
-  /** Whoever the lock file names, lapsed or not; null when there is none. */
+  /** Whoever the lock file names, lapsed or not. */
   holder: (ServerLockHolder & { live: boolean }) | null;
 };
 
@@ -168,8 +143,8 @@ const STATUSES: readonly LockStatus[] = [
   'peek',
 ];
 
-/** Read a {@link LOCK_SCRIPT} or peek answer. Throws on anything else: a lock
- * that cannot be understood must not be taken for one that is free. */
+/** Throws on anything unrecognized: a lock that cannot be understood must not
+ * be taken for one that is free. */
 export function parseLockReply(stdout: string): LockReply {
   const [status = '', clock = '', ...file] = stdout.split('\n');
   const now = Number(clock);
@@ -196,8 +171,7 @@ export function parseLockReply(stdout: string): LockReply {
   };
 }
 
-/** A holder as others are shown it: whether it is live is this module's
- * business, and is not sent on to the status, a refusal or the renderer. */
+/** `live` is this module's business and is not sent on. */
 function shownHolder(holder: ServerLockHolder & { live: boolean }): ServerLockHolder {
   return {
     name: holder.name,
@@ -218,11 +192,8 @@ function oneLine(text: string): string {
   return printable.trim().slice(0, 200) || 'unknown';
 }
 
-/**
- * Leases this run could not give back, by host: its own, which it must not
- * then wait for as if they were someone else's. Taken over by the next take
- * on that host, and forgotten once it succeeds.
- */
+/** Leases this run failed to give back, by host, so its next take there takes
+ * them over rather than waiting on itself. */
 const unreleased = new Map<string, Set<string>>();
 
 function scriptArgs(
@@ -254,7 +225,6 @@ export class ServerLockLostError extends Error {
   }
 }
 
-/** The wait for the lock was cancelled; nothing was changed. */
 export class ServerLockWaitCancelled extends Error {
   constructor(readonly holder: ServerLockHolder | null) {
     super('Stopped waiting for the server, so nothing was changed.');
@@ -262,12 +232,9 @@ export class ServerLockWaitCancelled extends Error {
   }
 }
 
-/**
- * A held lock. Renews itself every {@link LockTiming.renewEveryMs} until
- * released, and notices when a renewal finds it taken over — after which
+/** Renews itself until released; once a renewal finds it taken over,
  * {@link assertHeld} throws without asking the host again. Release it in a
- * `finally`; releasing twice is harmless.
- */
+ * `finally`; releasing twice is harmless. */
 export class ServerLease {
   private released = false;
   private lostTo: { holder: ServerLockHolder | null } | null = null;
@@ -311,8 +278,8 @@ export class ServerLease {
     if (this.released || this.lostTo || this.renewing) return;
     this.renewing = this.renew()
       .catch((error: unknown) => {
-        // Losing it is recorded by renew; anything else is a failure to ask,
-        // which the next renewal retries — the lease runs for several of them.
+        // Loss is recorded by renew; any other failure is retried next time,
+        // and the lease outlasts several renewals.
         if (!(error instanceof ServerLockLostError)) {
           log.warn(`stack-lock: could not renew the lock on ${this.host.label}; retrying`, {
             error,
@@ -332,9 +299,8 @@ export class ServerLease {
     await this.renew();
   }
 
-  /** Give the lock back. A failure to reach the host is logged, not thrown:
-   * the operation it guarded is over either way, and the lease lapses by
-   * itself within {@link LockTiming.ttlSeconds}. */
+  /** A failure to reach the host is logged, not thrown: the guarded operation
+   * is over either way, and the lease lapses within {@link LockTiming.ttlSeconds}. */
   async release(): Promise<void> {
     if (this.released) return;
     this.released = true;
@@ -362,8 +328,7 @@ export class ServerLease {
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Aborted while the lock was being asked for: the listener below would
-    // never hear it.
+    // Already aborted: the listener below would never hear it.
     if (signal.aborted) {
       reject(signal.reason);
       return;
@@ -381,8 +346,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 export type AcquireOptions =
-  /** Wait for whoever holds it, telling `onWaiting` who that is each time the
-   * lock is found held, until it is free or `signal` aborts. */
+  /** Wait until free or `signal` aborts, telling `onWaiting` the holder each
+   * time the lock is found held. */
   | {
       mode: 'wait';
       timing: LockTiming;
@@ -392,7 +357,6 @@ export type AcquireOptions =
   /** Throw `ServerBusyError` at once if someone else holds it. */
   | { mode: 'refuse'; timing: LockTiming };
 
-/** Take the lock on the stack on `host` for `claim`. */
 export async function acquireServerLock(
   host: StackStateHost,
   claim: LockClaim,
@@ -429,8 +393,7 @@ export async function acquireServerLock(
   }
 }
 
-/** Who holds the lock on the stack on `host` right now, or null — a look that
- * changes nothing, and creates no volume where there is none. */
+/** A look that changes nothing and creates no volume where there is none. */
 export async function readServerLock(host: StackStateHost): Promise<ServerLockHolder | null> {
   if (!(await stateVolumeExists(host))) return null;
   const { holder } = parseLockReply(await readStateVolume(host, PEEK_SCRIPT));

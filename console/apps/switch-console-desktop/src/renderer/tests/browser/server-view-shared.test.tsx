@@ -122,12 +122,6 @@ vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({
   useServerSignIn: () => ({}),
 }));
 
-/**
- * The server page's side of a shared remote server (CHOO-2893): what its menu
- * offers, and that every restart it offers from a notice — to update, to
- * retry an update, to apply a usage-data choice — asks first when it reaches
- * others, while a held update, which names them on its own button, does not.
- */
 import { serverView } from '@renderer/features/switch-servers/view';
 import '@renderer/index.css';
 

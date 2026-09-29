@@ -34,8 +34,7 @@ export const RemoteServerControls = observer(function RemoteServerControls({
     void store.refresh(sshHost);
   }, [store, sshHost]);
 
-  // A remote stack is shared by everyone with access to its host (CHOO-2893):
-  // stopping or restarting it here stops or restarts it for them.
+  // A remote stack is shared: stopping or restarting it here does so for everyone.
   const others = othersRecentlySeen(store.registerFor(sshHost), new Date());
 
   const status = store.statusFor(sshHost);
@@ -123,7 +122,7 @@ export const RemoteServerControls = observer(function RemoteServerControls({
             <Spinner className="size-3.5" />
             <span>{status.message}</span>
             {/* Only a wait for another Console can be cancelled: nothing has
-                been changed yet (CHOO-2893). */}
+                been changed yet. */}
             {status.waitingFor && (
               <button
                 type="button"

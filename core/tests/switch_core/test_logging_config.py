@@ -270,8 +270,6 @@ def test_filter_stamps_every_field(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_console_rides_alongside_the_user_in_json(json_lines) -> None:
-    """Several people can share one sign-in on a server a Console runs, so the
-    Console is what tells their actions apart in a shipped line."""
     logger, lines = json_lines
 
     with log_context(user_id="admin", console_id="c-1", console_name="bob@vm"):

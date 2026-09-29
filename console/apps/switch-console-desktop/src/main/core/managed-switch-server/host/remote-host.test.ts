@@ -2,12 +2,6 @@ import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as SshExecution from '@main/core/execution-context/ssh-execution-context';
 
-/**
- * The two ways the remote host runs a command over SSH — streaming its output,
- * and handing it a secret on stdin — share one implementation of the exec,
- * exit status and timeout handling, so a fix to one reaches the other.
- */
-
 vi.mock('@main/core/execution-context/ssh-execution-context', async (importOriginal) => ({
   exitDescription: (await importOriginal<typeof SshExecution>()).exitDescription,
   buildSshCommand: (dir: string, command: string, args: string[]) =>
@@ -78,7 +72,6 @@ describe('streamCommand', () => {
     await expect(done).resolves.toBeUndefined();
     expect(lines).toEqual(['pulling', 'starting', 'warning: slow']);
     expect(commands).toEqual(['cd /home/bob/stack && docker compose up']);
-    // Nothing is written to a streamed command's stdin.
     expect(stream.written).toBeNull();
   });
 
@@ -125,7 +118,6 @@ describe('writeCommandInput', () => {
 
     await expect(done).resolves.toBeUndefined();
     expect(stream.written).toBe('SECRET=1\n');
-    // The secret is on stdin, never in the command line.
     expect(commands[0]).not.toContain('SECRET');
   });
 

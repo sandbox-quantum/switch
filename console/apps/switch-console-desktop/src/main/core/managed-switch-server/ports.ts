@@ -49,9 +49,7 @@ export function readPersistedPorts(host: HostStateDir): Promise<LocalServerPorts
   return loadPersisted(host);
 }
 
-/** Keep `ports` as this desktop's record of the ports a host's stack publishes
- * — the numbers read off the host itself when a remote stack's settings are
- * adopted from there (CHOO-2893). */
+/** Record the ports a host's stack publishes, as read off the host itself. */
 export async function rememberPorts(host: ServerHost, ports: LocalServerPorts): Promise<void> {
   await persist(host, ports);
 }

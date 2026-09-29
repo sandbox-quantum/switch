@@ -6,14 +6,9 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 /**
- * Several Consoles under one account on a shared host each hold a row for the
- * same agent, and each writes the one watcher on the host (CHOO-2893). What
- * they share is the last choice a person made, kept beside the watcher: every
- * write takes auto-approve from it but the one that follows a change, and a
- * saved spec is never taken for a choice.
- *
- * The scripts run for real, with `node`, against a directory standing in for
- * the watcher's state root on the host.
+ * Auto-approve on a watcher that several Consoles under one account write
+ * (CHOO-2893). The scripts run for real, with `node`, against a directory
+ * standing in for the watcher's state root on the host.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -115,7 +110,6 @@ function readSpec(): { start: { input: { runtimeMode: string } } } {
   return JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'));
 }
 
-/** The runtime mode the watcher was last written with. */
 function writtenMode(): string {
   const [, , config] = mocks.runCommand.mock.calls.at(-1) as [
     unknown,
@@ -142,8 +136,6 @@ afterEach(() => {
 });
 
 it('takes auto-approve from the host when another Console changed it', async () => {
-  // This Console's row says off; a Console under the same account turned it
-  // on since. Restarting must not turn it back off.
   mocks.agent.mockResolvedValue(agent(false));
   savedSpec('full-access');
   chosen('full-access');
@@ -151,7 +143,6 @@ it('takes auto-approve from the host when another Console changed it', async () 
   await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
 
   expect(writtenMode()).toBe('full-access');
-  // And this Console's toggle is brought in line with what the agent runs with.
   expect(mocks.updateAgent).toHaveBeenCalledWith({ agentId: 'agent-1', autoApprove: true });
 });
 
@@ -167,8 +158,7 @@ it('leaves the row alone when it already agrees with the host', async () => {
 });
 
 it('does not take a saved spec for a choice when nobody made one', async () => {
-  // An older Console wrote the spec from its own row and never kept a choice:
-  // a change this row holds that the spec missed must not be reverted.
+  // An older Console wrote this spec from its own row and kept no choice.
   mocks.agent.mockResolvedValue(agent(true));
   savedSpec('approval-required');
 
@@ -234,7 +224,6 @@ it('keeps a changed setting on the host for a watcher that starts no sessions', 
   expect(readSpec().start.input.runtimeMode).toBe('full-access');
   expect(readChoice().runtimeMode).toBe('full-access');
   expect(mocks.runCommand).not.toHaveBeenCalled();
-  // A small edit beside the watcher: nothing is deployed for it.
   expect(mocks.deploy).not.toHaveBeenCalled();
 });
 
@@ -255,7 +244,6 @@ it('keeps a choice on the host without touching a watcher about to be rewritten'
   await keepAutoApproveChoice('agent-1', true);
 
   expect(readChoice().runtimeMode).toBe('full-access');
-  // The push that follows rewrites the spec from the row.
   expect(readSpec().start.input.runtimeMode).toBe('approval-required');
   expect(mocks.deploy).not.toHaveBeenCalled();
 });

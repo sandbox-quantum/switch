@@ -22,11 +22,6 @@ vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
   },
 }));
 
-/**
- * Who uses a shared remote server (CHOO-2893): everyone signs in as the
- * server's one admin account, so this reads the record each Console leaves on
- * the host instead of the server's own user list.
- */
 import { SharedConsolesSection } from '@renderer/features/switch-servers/shared-consoles-section';
 import '@renderer/index.css';
 

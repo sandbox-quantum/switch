@@ -43,7 +43,6 @@ it('discovers existing and newly onboarded agents and stops removed identities',
 });
 
 it('rewrites the watcher with this Console’s auto-approve, not the host’s, then follows its sessions', async () => {
-  // The person using this Console has just changed it (CHOO-2893).
   await pushRemoteAutoApprove('agent-1');
 
   expect(mocks.applyControllerState).toHaveBeenCalledWith('agent-1', 'restore', 'this-console');

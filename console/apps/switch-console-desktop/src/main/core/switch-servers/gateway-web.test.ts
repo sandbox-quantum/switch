@@ -110,7 +110,6 @@ describe('openAuthenticatedGatewayPage', () => {
         callback: (response: { requestHeaders: Record<string, string> }) => void
       ) => void,
     ];
-    // Only the gateway's own origin, for the reason the cookie is confined there.
     expect(filter.urls).toEqual(['http://127.0.0.1:8080/*']);
     const callback = vi.fn();
     listener({ requestHeaders: { Accept: 'text/html' } }, callback);

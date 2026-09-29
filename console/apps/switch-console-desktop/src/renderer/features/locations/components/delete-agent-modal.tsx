@@ -33,8 +33,7 @@ export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose 
   const onThisMachine = sshHost === null;
   const filesPlace = dir ? (sshHost ? `${sshHost}:${dir}` : dir) : null;
   const removeProvisionedFiles = removesProvisionedFiles({ sshHost, dir, chosen, deleteInSwitch });
-  // Deleting it in Switch takes it off the host as well, so the host box
-  // follows and cannot be unticked (CHOO-2893).
+  // Deleting in Switch forces removal from the host, so the host box follows it.
   const removeFromHost = !onThisMachine && removeProvisionedFiles;
 
   return (

@@ -33,7 +33,6 @@ it('leaves the choice to the operator on a shared host', () => {
 });
 
 it('removes a remote agent from its host when it is deleted in Switch', () => {
-  // A deleted identity has nothing left to run there (CHOO-2893).
   expect(
     removesProvisionedFiles({
       sshHost: 'builder',

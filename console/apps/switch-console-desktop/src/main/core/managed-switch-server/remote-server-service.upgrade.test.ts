@@ -8,9 +8,8 @@ import type { StackOnHost } from './stack-state';
 import type * as StackState from './stack-state';
 
 /**
- * The remote supervisor keeping each host's stack at this build's switch-core
- * pin: upgrading at reconcile, and holding sessions until that has finished.
- * Its side of shared stacks is in remote-server-service.test.ts.
+ * Upgrading remote stacks to this build's switch-core pin, and holding sessions
+ * until that has finished. Shared stacks are covered in remote-server-service.test.ts.
  */
 
 type Change = { current: { sshHost: string; status: string } };
@@ -74,8 +73,8 @@ vi.mock('./console-register', () => ({
   hostAccount: async () => 'me',
 }));
 
-/** The server lock (CHOO-2893): taken and given back in order, or — per test —
- * held by someone else. The real module's errors and constants are kept. */
+/** The server lock, recording takes and releases in order. The real module's
+ * errors and constants are kept. */
 const lockEvents = vi.hoisted(() => [] as string[]);
 const acquireServerLock = vi.hoisted(() =>
   vi.fn(async (_host: unknown, claim: { action: string }, _opts: unknown) => {
@@ -96,8 +95,6 @@ vi.mock('./stack-lock', async (importOriginal) => ({
   acquireServerLock,
   readServerLock,
 }));
-/** The KV store, in memory, cleared before each case: what the service keeps
- * across launches. */
 const kvStore = vi.hoisted(() => new Map<string, unknown>());
 vi.mock('@main/db/kv', () => ({
   KV: class {
@@ -395,7 +392,6 @@ function usedByBob(daysAgo: number) {
 }
 
 it('holds the update of a running server others used lately, until someone here runs it', async () => {
-  // It restarts the server for them, so it is not done under them unasked.
   m.register.mockResolvedValue(usedByBob(1));
   const service = new RemoteServerService();
   const upgraded = vi.fn();
@@ -447,7 +443,6 @@ it('asks rather than updates when it cannot tell who uses the server', async () 
 });
 
 it('lets turned-away sessions run once a Connect finds the stack brought up to date elsewhere', async () => {
-  // At launch the stack is stopped and behind: sessions are turned away.
   m.inspect.mockResolvedValue(present(false));
   const service = new RemoteServerService();
   const upgraded = vi.fn();

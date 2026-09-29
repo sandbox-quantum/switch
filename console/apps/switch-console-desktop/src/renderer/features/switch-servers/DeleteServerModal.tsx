@@ -23,8 +23,7 @@ type DeleteServerModalArgs = {
 
 type Props = BaseModalProps<void> & DeleteServerModalArgs;
 
-/** What removing a server Switch Console runs on a remote host does: stop
- * using it from here, or destroy it for everyone (CHOO-2893). */
+/** Removing a remote server: stop using it from here, or destroy it for everyone. */
 type RemoteRemoval = 'disconnect' | 'delete';
 
 function countLinkedAgents(serverId: string): number {
@@ -74,8 +73,7 @@ export const DeleteServerModal = observer(function DeleteServerModal({
   const [confirmText, setConfirmText] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Leaving is the default: on a shared host the stack is other people's too,
-  // and destroying it has to be chosen, not fallen into.
+  // On a shared host destroying the stack has to be chosen, not fallen into.
   const [removal, setRemoval] = useState<RemoteRemoval>('disconnect');
 
   useEffect(() => {

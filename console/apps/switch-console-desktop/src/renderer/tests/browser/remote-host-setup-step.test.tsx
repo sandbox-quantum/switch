@@ -54,11 +54,6 @@ vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
   },
 }));
 
-/**
- * The Add Server step for a remote host (CHOO-2893): what it offers for what
- * the host already has, who else an update there reaches, and what it says
- * while another Console is changing the server.
- */
 import { RemoteHostSetupStep } from '@renderer/features/switch-servers/AddServerModal';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 import '@renderer/index.css';

@@ -77,16 +77,13 @@ export type StartStackOptions = {
   /** Dev-only: root of the Switch checkout to build the stack's images from,
    * instead of pulling this build's pinned images. Null is the released path. */
   checkoutRoot: string | null;
-  /** The shared stack's lock, taken before the start looked at the host and
-   * held until it is over. Null for the local stack, which nobody shares. */
+  /** The shared stack's lock, held for the whole start. Null for the local
+   * stack, which nobody shares. */
   lease: ServerLease | null;
 };
 
-/**
- * The shared state and the lock that lets this Console change it, or null
- * for a stack nobody shares. Anything else is a caller that forgot the lock —
- * or took one where there is nothing to lock — and is refused outright.
- */
+/** The shared state and its lock, or null for a stack nobody shares. A lock
+ * without shared state, or shared state without a lock, throws. */
 function sharedUnderLock(
   host: ServerHost,
   lease: ServerLease | null
@@ -100,8 +97,8 @@ function sharedUnderLock(
   );
 }
 
-/** {@link sharedUnderLock} for what only a shared stack has: `what` names it
- * in the refusal of one nobody shares. */
+/** {@link sharedUnderLock} for an operation only a shared stack has; `what`
+ * names it in the error. */
 function requireSharedUnderLock(
   host: ServerHost,
   lease: ServerLease,
@@ -229,26 +226,19 @@ async function migrateOffMatrix(
 export type StackSettings = { secrets: LocalServerSecrets; ports: LocalServerPorts };
 
 /**
- * Where a start's ports and credentials come from (CHOO-2893).
- *
- * A remote stack is shared, so its settings are read off the host and a
- * desktop's own copy is only a cache of them. New credentials are made in
- * exactly one case — nothing of the stack on the host at all — because making
- * them anywhere else locks the stack out of the Postgres volume its first
- * credentials created, and takes down a server someone else is using.
+ * Where a start's ports and credentials come from. New credentials are made
+ * only when nothing of the stack is on the host: made anywhere else, they lock
+ * the stack out of the Postgres volume its first credentials created.
  */
 type StartPlan =
-  /** The host's own settings. Every remote start that finds a stack. */
   | { kind: 'adopt'; stack: Extract<StackOnHost, { kind: 'present' }> }
-  /** Nothing on the host, or the local stack, which nobody else shares: this
-   * desktop's copy, or new credentials when it has none. */
+  /** Nothing on the host, or the local stack: this desktop's copy, or new
+   * credentials when it has none. */
   | { kind: 'fresh' }
-  /** The host's settings have gaps, and this desktop holds a copy of what the
-   * stack last ran with — one that agrees with every setting the host does
-   * hold. The copy fills the gaps, and the degradation is logged. */
+  /** The host's settings have gaps, and this desktop's copy agrees with every
+   * setting the host does hold, so the copy fills them. */
   | { kind: 'cached'; reason: string }
-  /** Starting here could replace the credentials of a stack that is already
-   * there. Nothing may be written. */
+  /** Starting could replace the credentials of a stack already there. */
   | { kind: 'refused'; message: string };
 
 async function planStart(host: ServerHost): Promise<StartPlan> {
@@ -262,9 +252,8 @@ async function planStart(host: ServerHost): Promise<StartPlan> {
     case 'unshared':
       return { kind: 'refused', message: unsharedStackMessage(host.label, stack.ownerDir) };
     case 'unreadable':
-      // Not answered from this desktop's copy: nothing here can tell whether
-      // someone has reset the stack since, and starting from — and publishing
-      // — credentials that open nothing would lock everyone out of it.
+      // Not answered from this desktop's copy: someone may have reset the stack
+      // since, and publishing stale credentials would lock everyone out.
       return {
         kind: 'refused',
         message:
@@ -285,9 +274,7 @@ async function planStart(host: ServerHost): Promise<StartPlan> {
             `there, so nothing was changed.`,
         };
       }
-      // A copy that disagrees with what the host does hold is from another
-      // generation of the stack — typically from before someone else reset it
-      // — and starting from it would lock the stack out of its database.
+      // A copy that disagrees with the host predates a reset of the stack.
       const disagreeing = keysDisagreeing(stack.raw, { secrets, ports });
       if (disagreeing.length > 0) {
         return {
@@ -314,9 +301,8 @@ async function adoptSettings(
   host: ServerHost,
   stack: Extract<StackOnHost, { kind: 'present' }>
 ): Promise<StackSettings> {
-  // A `.env` from before the database role split names no runtime password;
-  // one is made for it, as for a stored copy from then, and the start that
-  // follows gives the role it.
+  // A `.env` from before the database role split has no runtime password; one
+  // is made here, and the next start gives the role it.
   const { secrets } = withRuntimePassword({
     ...stack.env.secrets,
     dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? '',
@@ -327,16 +313,9 @@ async function adoptSettings(
 }
 
 /**
- * Take up a stack that is running on a shared host without touching it: keep
- * its settings as this desktop's copy, and bring this account's working dir in
- * step so compose — for Stop, Restart and the status probes — reads the same
- * `.env` the stack runs with, and the compose file it runs with where this
- * build's is that one. A stack this account started
- * before settings were shared is published on the way, so the next person can
- * join it.
- *
- * Shared by joining a stack and by picking one back up at launch, which is the
- * same act from a Console that has joined before.
+ * Take up a stack running on a shared host without touching it: keep its
+ * settings as this desktop's copy, bring the working dir in step, and publish
+ * its `.env` if it predates shared settings so the next person can join.
  */
 export async function adoptRunningStack(
   host: ServerHost,
@@ -350,14 +329,8 @@ export async function adoptRunningStack(
   return settings;
 }
 
-/**
- * Bring this account's working dir in step with a stack found on the host, so
- * compose — for the version check, an upgrade's backup, Stop, Restart — reads
- * what the stack runs with: the published `.env` byte for byte, and this
- * build's compose file where the account has none or the stack runs this
- * build's version. An older stack's file is a start's to rewrite. A published
- * stack is past the Matrix line, so this build's file serves it.
- */
+/** Make this account's working dir match a stack found on the host, so compose
+ * (version check, upgrade backup, Stop, Restart) reads what the stack runs with. */
 export async function bringWorkingDirInStep(
   host: ServerHost,
   stack: Extract<StackOnHost, { kind: 'present' }>
@@ -366,32 +339,26 @@ export async function bringWorkingDirInStep(
     await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
     await writeEnvStamp(host, stack.stamp);
   }
-  // At this build's version the bundled file is the one the stack runs, so an
-  // account's older copy — from before it last updated its Console — is
-  // replaced: Stop and Reset must know every service. At another version it
-  // is a start's to rewrite, after any backup has read the old one.
+  // At this build's version the bundled file is what the stack runs, and Stop
+  // and Reset must know every service. At another version an existing file is
+  // left for a start to rewrite after any backup has read it; a missing one
+  // gets this build's, since a published stack is past the Matrix line.
   if (driftOf(stack) === null || (await host.readFile(COMPOSE_FILE_NAME)) === null) {
     await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
   }
 }
 
-/** Record beside this account's `.env` which database it was written for —
- * or that nothing says, so that no earlier record vouches for it. */
+/** Record which database this account's `.env` was written for. Null removes
+ * the record, so a stale one cannot vouch for it. */
 async function writeEnvStamp(host: ServerHost, stamp: string | null): Promise<void> {
   if (stamp === null) await host.removeFile(ENV_STAMP_FILE_NAME);
   else await host.writeFile(ENV_STAMP_FILE_NAME, `${stamp}\n`, 0o600);
 }
 
 /**
- * Whether a start shares usage data from the server.
- *
- * One answer covers a Console and the server it runs, but a shared server
- * serves everyone using it (CHOO-2893). A start always applies this Console's
- * "no". It applies a "yes" only where that takes nobody's "no" away: the stack
- * already shares, or nobody else has used it lately — including through a
- * stack since reset, whose register carries on. A register that cannot be
- * read counts as others using it — the guess that cannot be defended is the one
- * in favour.
+ * Whether a start shares usage data. This Console's "no" always applies; its
+ * "yes" only where it overrides nobody's "no": the stack already shares, or
+ * nobody else has used it lately. An unreadable register counts as others.
  */
 async function shareUsageData(
   host: ServerHost,
@@ -399,8 +366,8 @@ async function shareUsageData(
   consent: boolean
 ): Promise<boolean> {
   if (!consent || host.sharedState === null) return consent;
-  // Whatever the start's plan: the register outlives a reset, and a stack
-  // with partial settings is someone's stack all the same.
+  // The register is read whatever the plan: it outlives a reset, and a stack
+  // with partial settings is still someone's.
   if (plan.kind === 'adopt' && telemetryRequested(plan.stack.raw)) return true;
   try {
     const others = othersRecentlySeen(await readRegister(host.sharedState), new Date());
@@ -426,11 +393,8 @@ async function settingsFor(
   return { secrets: await loadOrCreateSecrets(host), ports: await resolvePorts(host) };
 }
 
-/**
- * A fresh stack's ports are this desktop's to choose — nothing on the host
- * depends on them yet — so a choice kept from a stack since gone is chosen
- * again when a port in it is now taken here, rather than refusing every start.
- */
+/** Re-pick a fresh stack's remembered ports when one is now taken here:
+ * nothing on the host depends on them yet. */
 async function portsReachableHere(
   host: ServerHost,
   plan: Exclude<StartPlan, { kind: 'refused' }>,
@@ -451,10 +415,8 @@ async function portsReachableHere(
 }
 
 /**
- * Register the running stack, make it the active server when asked, and sign
- * in as its admin. Switch Console generated that password, so it signs in on the user's
- * behalf rather than showing a login wall for a secret they never saw. A
- * failed sign-in does not fail the caller — the stack is healthy, and the
+ * Register the stack, activate it if asked, and sign in as its admin with the
+ * password Switch Console generated. A failed sign-in is only logged: the
  * server view falls back to its sign-in panel.
  */
 async function registerAndSignIn(
@@ -504,12 +466,6 @@ async function registerAndSignIn(
  * re-pulls the newly pinned tags and recreates only the changed containers,
  * leaving the data volumes in place for switch-core to migrate forward. A
  * stack behind the pin has its database dumped first (see managed-upgrade.ts).
- * On a shared host that is an update for everyone using the stack, which is why
- * the settings it writes are the host's own rather than this desktop's.
- *
- * On a shared host the caller holds the stack's lock (see stack-lock.ts) from
- * before anything here reads the host until the start is over, so the plan is
- * made from a stack nobody else is changing.
  *
  * With `checkoutRoot` set (dev only) the images are built from that working
  * tree on every start instead of pulled, and tagged {@link CHECKOUT_IMAGE_TAG}
@@ -544,27 +500,22 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     return { kind: 'error', message: plan.message };
   }
 
-  // Bring this account's working dir in step with the stack before anything
-  // reads it. Another account may have started, updated or reset the stack
-  // since this one last did, and the version check below reads the `.env`
-  // compose would use — which has to be the stack's, not a stale copy.
+  // Before anything reads the working dir: another account may have changed
+  // the stack since, and the version check below reads this `.env`.
   if (plan.kind === 'adopt') {
     await bringWorkingDirInStep(host, plan.stack);
   } else if (plan.kind === 'fresh' && host.sharedState !== null) {
-    // Nothing of the stack is on the host, so what this account's working dir
-    // still holds belongs to a stack that is gone — reset, perhaps, after
-    // another account updated it. Left there, its version would pass for the
-    // deployed one: refusing this start as a downgrade, or backing up a
-    // database that does not exist.
+    // The working dir belongs to a stack that is gone. Left there, its version
+    // would pass for the deployed one: a false downgrade refusal, or a backup
+    // of a database that does not exist.
     await host.removeFile(ENV_FILE_NAME);
     await host.removeFile(ENV_STAMP_FILE_NAME);
     await finishUpgrade(host);
   }
 
-  // Before anything changes the stack — for everyone using it, on a shared
-  // host — make sure this Console can reach it afterwards: a port taken here,
-  // or already another server's address, found only after compose has run
-  // would leave the others restarted or updated and this Console without it.
+  // Check this Console can reach the stack before changing it: a port clash
+  // found only after compose would leave everyone else's server restarted and
+  // this Console without it.
   const settings = await portsReachableHere(host, plan, await settingsFor(host, plan));
   await host.checkNetworking(settings.ports);
   await assertManagedServerUrlFree(gatewayUrlFor(settings.ports), ref);
@@ -581,8 +532,8 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // thing that can read it. Runs against the stack as currently deployed, so
   // it must happen before the compose file and `.env` are re-materialised for
   // the new version — those are what would take Tuwunel away.
-  // Compose is run from here on, which cannot check the lock in the same step
-  // the way publishing does: a Console that lost it while away stops here.
+  // Compose cannot check the lock atomically the way publishing does, so a
+  // Console that lost it stops here.
   await shared?.lease.assertHeld();
   const migration = await migrateOffMatrix(host, checkoutRoot, onMessage, onLog);
   if (migration) return migration;
@@ -605,11 +556,9 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   });
   await host.writeFile(ENV_FILE_NAME, env, 0o600);
 
-  // Published before compose reads it, so the shared copy always names what
-  // the stack was last asked to run with — including when `up` then fails
-  // halfway. A start whose settings nobody else can read is the state that
-  // led the next person's Console to overwrite them, so this failing fails
-  // the start rather than being logged past.
+  // Published before compose runs, so the shared copy names what the stack was
+  // last asked to run with even if `up` fails halfway. A failure fails the
+  // start: unpublished settings get overwritten by the next Console.
   let publishedStamp: string | null = null;
   if (shared !== null) {
     onMessage('Sharing the server’s settings on the host…');
@@ -622,14 +571,11 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
       : 'Starting containers (pulling images if needed)…'
   );
   await composeUp(host, onLog, checkoutRoot !== null);
-  // Bookkeeping for a copy published before its database existed. The stack
-  // is up by now, so failing here must not report a start that happened as one
-  // that did not; but an unstamped copy is trusted as before, so the page says
-  // what that leaves open.
+  // A copy published before its database existed is stamped now. The stack is
+  // up, so a failure here is a warning, not a failed start.
   let warning: string | null = null;
   if (shared !== null) {
     try {
-      // The database exists by now; stamped at publish if it did then.
       await writeEnvStamp(
         host,
         publishedStamp ?? (await stampPublishedEnv(shared.state, shared.lease))
@@ -669,33 +615,21 @@ export type ConnectStackOptions = {
   onMessage: (message: string) => void;
   /** Aborts an in-flight health wait (cancel/quit). */
   signal: AbortSignal;
-  /** The stack's lock, taken before reading it: a stack half-way through
-   * someone else's start would read as stopped. Released here once its
-   * settings are adopted — waiting for it to answer holds nobody up. */
+  /** The stack's lock, so a stack half-way through someone else's start does
+   * not read as stopped. Released once its settings are adopted. */
   lease: ServerLease;
 };
 
-/** What joining found: joined, a reason it could not, or a stack at an older
- * switch-core than this build pins — which this Console cannot use as it is,
- * and which the caller brings up to date as a start. */
+/** `behind` is a stack at an older switch-core than this build pins, which the
+ * caller updates as a start. */
 export type ConnectStackResult =
   | Exclude<ConnectRemoteServerResult, { kind: 'cancelled' }>
   | { kind: 'behind'; deployed: string; expected: string };
 
 /**
- * Join a stack that is already running on a shared host, from a Console that
- * did not start it (CHOO-2893): read its settings off the host, forward its
- * ports, register it and sign in — without writing its `.env` differently or
- * running compose, so nobody else using it notices.
- *
- * This account's working dir is brought in step with the stack on the way, so
- * Stop and Restart work from here afterwards. A stack this account started
- * before settings were shared is published, so the next person can join too.
- *
- * Anything short of a running stack at this build's switch-core, whose
- * settings this account can read, is reported rather than worked around: a
- * stopped or older stack is for Start, and nothing here ever makes new
- * credentials.
+ * Join a stack already running on a shared host without running compose, so
+ * nobody else using it notices. A stopped, older or unreadable stack is
+ * reported rather than worked around, and nothing here makes new credentials.
  */
 export async function connectStack(opts: ConnectStackOptions): Promise<ConnectStackResult> {
   const { host, ref, serverName, onMessage, signal, lease } = opts;
@@ -733,10 +667,6 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
       break;
   }
   if (!stack.running) return { kind: 'not-running' };
-  // Joined as it is only at this build's own switch-core. An older one cannot
-  // serve this Console, and bringing it up to date is an update for everyone
-  // using it, which the caller runs as a start. A newer one has migrated its
-  // database past anything this build can run.
   const drift = driftOf(stack);
   if (drift?.direction === 'upgrade') {
     return { kind: 'behind', deployed: drift.deployed, expected: drift.expected };
@@ -784,8 +714,7 @@ export async function stopStack(host: ServerHost, lease: ServerLease | null): Pr
 
 /** Destroy the stack, its data volumes, stored secrets, and port choice — the
  * irreversible clean-slate reset. On a shared host the published settings go
- * too, since the credentials in them now open nothing; the record of who did
- * this is kept. */
+ * too, since their credentials now open nothing. */
 export async function resetStack(host: ServerHost, lease: ServerLease | null): Promise<void> {
   const shared = sharedUnderLock(host, lease);
   await shared?.lease.assertHeld();

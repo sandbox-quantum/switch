@@ -221,8 +221,7 @@ describe('deleteAgent', () => {
 
   describe('the auto-session watcher', () => {
     it('leaves a remote agent’s watcher running on a plain remove', async () => {
-      // It runs on the host and serves every Console using the agent — on a
-      // shared host, other people's too (CHOO-2893). The removal dialog
+      // It serves every Console using the agent, and the removal dialog
       // promises the sidecar is untouched unless asked.
       vi.mocked(getAgentLocation).mockResolvedValueOnce({ sshHost: 'vm-1', dir: '/repo' } as never);
 
@@ -249,8 +248,6 @@ describe('deleteAgent', () => {
     });
 
     it('removes a remote agent from its host when it is deleted in Switch', async () => {
-      // A deleted identity has nothing left to run, so it goes from the host
-      // too, whether or not the host's files were also asked for.
       h.state.sshHost = 'vm-1';
       h.state.agent = {
         id: 'agent-1',

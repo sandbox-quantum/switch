@@ -2,17 +2,14 @@ import type { RemoteStackProbe } from '@shared/core/managed-switch-server/manage
 
 /**
  * What the remote setup step offers for a host, from what the host was found
- * to have (CHOO-2893). A host is shared by everyone with access to it, so the
- * step never assumes it is empty: it looks first, then offers the one action
- * that is safe there.
+ * to have (CHOO-2893). A host is shared, so the step never assumes it is empty:
+ * it looks first, then offers the one action that is safe there.
  */
 export type RemoteSetupAction =
   /** Not looked at yet, or being looked at. */
   | { kind: 'checking' }
-  /** A running stack this account can read: join it, touching nothing — or,
-   * when `updatesTo` is set, bring it up to this build's switch-core first,
-   * since this Console cannot use it as it is. That update is for everyone
-   * using it. */
+  /** Join a running stack as it is or, when `updatesTo` is set, update it for
+   * everyone first, since this Console cannot use it as it is. */
   | {
       kind: 'connect';
       deployedVersion: string | null;
@@ -37,8 +34,7 @@ export function remoteSetupAction(
     case 'absent':
       return { kind: 'start', existing: false };
     case 'present':
-      // Stopped or running: a start is refused as a downgrade either way, so
-      // it is not offered only to be turned away once it has waited its turn.
+      // Stopped or running, a start is refused as a downgrade, so none is offered.
       if (probe.drift?.direction === 'downgrade') {
         return {
           kind: 'blocked',

@@ -76,8 +76,6 @@ describe('reauthenticateManagedServer', () => {
   });
 
   it('gives up, and makes up no password, when none is stored', async () => {
-    // A password minted here would match no running stack, and would then be
-    // kept as though it were the stack's (CHOO-2893).
     readSecrets.mockResolvedValue(null);
 
     expect(await reauthenticateManagedServer(REMOTE)).toBeNull();
@@ -112,8 +110,6 @@ describe('reauthenticateManagedServer', () => {
 
 describe('refreshSession', () => {
   it('identifies the Console to a server it manages while renewing, and keeps the new session', async () => {
-    // Everyone shares one sign-in on a managed server (CHOO-2893); the headers
-    // are how the server tells the Consoles behind it apart.
     consoleIdentityHeaders.mockResolvedValueOnce({
       'X-Switch-Console-Id': 'console-1',
       'X-Switch-Console-Name': 'alice@laptop',

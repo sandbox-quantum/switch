@@ -3,19 +3,13 @@ import { RelativeTime } from '@renderer/lib/ui/relative-time';
 import { remoteServerStore } from './remote-server-store';
 import { activitySentence, describeConsole } from './shared-consoles';
 
-/** How much of the host's activity record the page shows. */
 const ACTIVITY_SHOWN = 5;
 
 /**
- * Who uses a shared remote server, and what they last did to it (CHOO-2893).
- *
- * Everyone with access to the host can connect, and they all sign in as the
- * server's one admin account, so the server's own records cannot tell them
- * apart. Each Console records itself on the host instead, and this is where
- * that record is read — including how this Console appears to the others.
- *
- * Shows nothing until the record has been read, and nothing at all for a
- * server nobody has recorded anything on.
+ * Who uses a shared remote server, and what they last did to it. Everyone signs
+ * in as the server's one admin, so the server cannot tell them apart; each
+ * Console records itself on the host instead, and this reads that record.
+ * Shows nothing until the record has been read, or when it is empty.
  */
 export const SharedConsolesSection = observer(function SharedConsolesSection({
   sshHost,

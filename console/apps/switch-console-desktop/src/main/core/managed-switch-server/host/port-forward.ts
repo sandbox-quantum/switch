@@ -9,8 +9,8 @@ function bind(server: Server, port: number, label: string): Promise<void> {
       reject(
         new Error(
           err.code === 'EADDRINUSE'
-            ? // Most likely on a shared host (CHOO-2893): the stack was set up
-              // from another computer, whose free ports this one's need not be.
+            ? // Likely on a shared host: the stack was set up from another
+              // computer, whose free ports this one's need not be.
               `Port ${port} is already in use on this computer, so the Switch server on ` +
                 `${label} cannot be reached from here. Switch Console reaches a remote ` +
                 `server through the same port number on this computer as on the host, so ` +
@@ -66,11 +66,9 @@ export class PortForwarder {
   }
 
   /**
-   * Whether every port in `ports` can be listened on here — bound and let go
-   * at once — throwing what {@link start} would. A start on a shared host
-   * asks this before it changes anything there: the stack is restarted or
-   * updated for everyone before the forward is opened, and finding the port
-   * taken only then leaves them that, and this Console without the server.
+   * Throw what {@link start} would if any of `ports` cannot be bound here, without
+   * keeping them. Asked before a shared-host start changes anything, so a taken
+   * port is found before the stack is restarted for everyone.
    */
   static async check(ports: number[], label: string): Promise<void> {
     for (const port of ports) {

@@ -116,9 +116,6 @@ describe('servers-store: rename & delete', () => {
   });
 
   describe('ensureManagedServer URL clashes', () => {
-    // A stack someone else set up on a shared host brings the ports it was
-    // started with, which can be numbers this Console already gave another
-    // server (CHOO-2893). Sharing a port is not sharing a server.
     async function insertServer(values: Partial<typeof switchServers.$inferInsert>) {
       await fixture.db.insert(switchServers).values({
         id: 'x',

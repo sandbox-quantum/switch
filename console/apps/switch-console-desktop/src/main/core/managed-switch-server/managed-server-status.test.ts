@@ -215,8 +215,6 @@ describe('noteManagedServerUnanswered', () => {
   });
 
   it('asks the host again about a remote stack that stopped answering', () => {
-    // Shared by everyone with access to the host, so another Console may have
-    // stopped or moved it (CHOO-2893).
     noteManagedServerUnanswered(server({ managementKind: 'remote', sshHost: 'host-a' }));
 
     expect(recheck).toHaveBeenCalledExactlyOnceWith('host-a');

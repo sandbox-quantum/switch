@@ -6,16 +6,11 @@ identifiers a request is *about* are bound further in, where they are resolved:
 the agent by the bearer middleware, the user by the gateway's authentication
 dependency.
 
-Two things are read here, from the request itself:
-
-- **The request id**, from ``X-Request-Id`` or generated.
-- **The Switch Console that sent it**, from ``X-Switch-Console-Id`` and
-  ``X-Switch-Console-Name``. A server a Console runs for its user on a shared
-  VM is signed into by everyone with access to that VM, all as the one account
-  the stack was seeded with, so ``user_id`` cannot say which of them acted.
-  These two can. They are attribution for someone reading the logs, not
-  authentication — any caller can send them — so nothing may be authorised on
-  them, and a request without them is served exactly as before.
+Two are read here: the request id (``X-Request-Id``, or generated) and the
+Switch Console that sent it (``X-Switch-Console-Id``, ``X-Switch-Console-Name``),
+which tells apart people sharing one sign-in. The console headers are
+attribution, not authentication: any caller can send them, so nothing may be
+authorised on them.
 
 Plain ASGI rather than Starlette's ``BaseHTTPMiddleware`` on purpose: that one
 runs the rest of the app in a separate task, so a context variable set here
@@ -90,7 +85,6 @@ def _restricted(
     headers: dict[bytes, bytes], name: bytes, allowed: frozenset[str], limit: int
 ) -> str | None:
     """The header's value reduced to `allowed` characters and `limit` long, or
-    None when nothing is left — an absent header and a wholly hostile one are
-    both simply unattributed."""
+    None when nothing is left."""
     kept = "".join(c for c in _header(headers, name) if c in allowed)
     return kept[:limit] or None

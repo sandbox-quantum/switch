@@ -10,11 +10,6 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
-/**
- * Resetting a managed stack (CHOO-2893): a remote one is shared by everyone
- * with access to its host, so the confirmation has to say the reset is not
- * only for this Console — a local, unshared one says none of that.
- */
 import { ServerResetSection } from '@renderer/features/switch-servers/server-reset-section';
 import '@renderer/index.css';
 

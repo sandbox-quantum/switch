@@ -5,24 +5,16 @@ import { log } from '@main/lib/logger';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 /**
- * Who this copy of Switch Console is, to the servers it runs and the people it
- * shares them with (CHOO-2893).
+ * Who this copy of Switch Console is, to the servers it manages (CHOO-2893).
+ * Everyone on a shared VM signs in as the stack's one admin, so the Console
+ * identifies itself on every call and in the register kept beside the stack.
  *
- * A server Switch Console manages on a shared VM is used by everyone with
- * access to that VM, and they all sign in as the one admin account the stack
- * was seeded with. The server's own records then say the same thing for each
- * of them, so the Console says who it is: on every call to that server (the
- * server stamps it on its log lines) and in the register of Consoles kept on
- * the VM beside the stack.
- *
- * Deliberately not the telemetry install id. That one exists only with the
- * user's consent and is promised to go nowhere but the telemetry relay; this
- * one goes to servers the user runs, whether or not they share usage data.
+ * Deliberately not the telemetry install id, which exists only with consent
+ * and is promised to go nowhere but the telemetry relay.
  */
 
-/** What the server keeps of each header: see `request_context.py` in core. The
- * name is reduced to the same set here, so what the Console shows as "you" is
- * exactly what the server records. */
+/** Matches what `request_context.py` in core keeps of the header, so the
+ * Console shows the same name the server records. */
 const NAME_CHARACTERS = /[^A-Za-z0-9._@+-]/g;
 const MAX_NAME_LENGTH = 64;
 
@@ -30,8 +22,8 @@ export const CONSOLE_ID_HEADER = 'X-Switch-Console-Id';
 export const CONSOLE_NAME_HEADER = 'X-Switch-Console-Name';
 
 export type ConsoleIdentity = {
-  /** Random, created on first use and kept in the local database. Nothing
-   * about it is derived from the machine or the user. */
+  /** Random, created on first use and stored locally; not derived from the
+   * machine or the user. */
   id: string;
   /** `user@host` of the desktop this Console runs on, for people to read. */
   name: string;
@@ -64,17 +56,14 @@ function namePart(raw: string): string {
   return raw.replace(/\s+/g, '-').replace(NAME_CHARACTERS, '') || 'unknown';
 }
 
-/** Whether the missing user name has been reported: it is asked for on every
- * managed-server request, and one warning says all there is to say. */
+/** Warn once: the name is read on every managed-server request. */
 let userNameMissingReported = false;
 
 function desktopUser(): string {
   try {
     return userInfo().username;
   } catch (error) {
-    // A user with no passwd entry (some containers) has no name to give. The
-    // Console still works; its register entry just says so rather than
-    // inventing one.
+    // A user with no passwd entry (some containers) has no name to give.
     if (!userNameMissingReported) {
       userNameMissingReported = true;
       log.warn('console-identity: could not read the desktop user name', { error });
@@ -94,16 +83,9 @@ export async function getConsoleIdentity(): Promise<ConsoleIdentity> {
 }
 
 /**
- * The headers that identify this Console to `server`, or none.
- *
- * Only a server this Console manages is told. That is where several people
- * share one sign-in, which is the gap the headers fill; a server someone else
- * runs signs each person in as themselves and has no use for the desktop's
- * user and host name, so it is not sent them.
- *
- * They only attribute the server's log lines, so an id that cannot be read or
- * made costs that attribution — logged — and never the call they ride on: a
- * sign-in or a request failing over a name for the logs would be worse.
+ * The headers that identify this Console to `server`, or none. Only a managed
+ * server is told: that is where people share one sign-in. An id that cannot be
+ * read is logged and sends no headers rather than failing the call.
  */
 export async function consoleIdentityHeaders(
   server: Pick<SwitchServer, 'managed'>

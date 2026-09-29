@@ -51,21 +51,13 @@ async function readSubagentSwitchId(
 }
 
 /**
- * Where a remote watcher's auto-approve is taken from when it is written
- * (CHOO-2893). Several Consoles under one account on a shared host each hold
- * a row for the same agent, and each writes the one watcher on the host from
- * its own row — so a Console that only restarted, or changed something else,
- * would put back an auto-approve another Console had since changed.
+ * Where a remote watcher's auto-approve comes from when it is written. Several
+ * Consoles on one account write the same watcher from their own rows, so the
+ * shared value is the last explicit choice, kept in `auto-approve.json` rather
+ * than read from the saved spec, which any Console's row may have written.
  *
- * What they share is the last choice a person made, kept beside the watcher
- * (`auto-approve.json`). Only an explicit change writes it, so a saved spec
- * written from some Console's row — an older Console's above all, which never
- * wrote a choice — is never taken for one.
- *
- * - `host`: the choice on the host, when there is one, and this Console's row
- *   is brought in line with it. Everything but a change to auto-approve.
- * - `this-console`: this Console's row, because the person using it has just
- *   changed it; {@link keepAutoApproveChoice} has put it on the host first.
+ * - `host`: that choice, when there is one; this Console's row is synced to it.
+ * - `this-console`: this Console's row, just changed by its user.
  */
 export type AutoApproveSource = 'host' | 'this-console';
 
@@ -77,10 +69,9 @@ const AUTO_APPROVE_CHOICE_FILE = 'auto-approve.json';
 const READ_AUTO_APPROVE_CHOICE = `const fs=require('node:fs');try{const c=JSON.parse(fs.readFileSync(require('node:path').join(process.argv[1],'${AUTO_APPROVE_CHOICE_FILE}'),'utf8'));console.log(c?.runtimeMode??'')}catch(e){if(e.code!=='ENOENT')throw e}`;
 
 /**
- * Keeps an auto-approve choice beside a watcher, atomically, and — with the
- * third argument `spec` — sets it in the watcher's saved spec too, for one
- * that nothing is about to rewrite. Nothing to do for an agent that has never
- * had a watcher: the first one is written from the row.
+ * Atomically keeps an auto-approve choice beside a watcher and, with a third
+ * argument `spec`, in its saved spec too. A missing root is a no-op: the first
+ * watcher is written from the row.
  */
 const RECORD_AUTO_APPROVE_CHOICE = `const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');const [root,mode,spec]=process.argv.slice(1);if(!fs.existsSync(root))process.exit(0);const put=(file,data)=>{const tmp=file+'.'+crypto.randomUUID();fs.writeFileSync(tmp,JSON.stringify(data),{mode:0o600});fs.renameSync(tmp,file)};if(spec==='spec'){const f=path.join(root,'config.json');let c=null;try{c=JSON.parse(fs.readFileSync(f,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e}if(c){c.start.input.runtimeMode=mode;put(f,c)}}put(path.join(root,'${AUTO_APPROVE_CHOICE_FILE}'),{runtimeMode:mode,at:new Date().toISOString()})`;
 
@@ -141,24 +132,16 @@ async function writeAutoApproveChoice(
 }
 
 /**
- * Keep a person's auto-approve choice on the host, where every Console on the
- * account takes it from — ahead of the push that rewrites the watcher, so a
- * watcher write racing that push takes the new value rather than putting the
- * old one back.
- *
- * Takes the value rather than reading the row, so the caller can put it on the
- * host before the row.
+ * Keep a person's auto-approve choice on the host ahead of the push that
+ * rewrites the watcher, so a racing watcher write takes the new value. Takes
+ * the value rather than reading the row, so the caller can write it first.
  */
 export async function keepAutoApproveChoice(agentId: string, autoApprove: boolean): Promise<void> {
   await writeAutoApproveChoice(agentId, autoApprove, 'choice-only');
 }
 
-/**
- * {@link keepAutoApproveChoice}, and the watcher's saved spec too, for an
- * agent whose watcher is not starting sessions — stopped, or connected with
- * automatic sessions off — so nothing is about to rewrite the spec, and the
- * next session it starts should run with the value.
- */
+/** {@link keepAutoApproveChoice}, and the saved spec too, for a watcher that is
+ * not starting sessions and so has nothing about to rewrite its spec. */
 export async function recordAutoApproveOnHost(
   agentId: string,
   autoApprove: boolean

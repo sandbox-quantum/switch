@@ -27,7 +27,6 @@ import { LOCK_LOST_MESSAGE, WHILE_HOLDING_SERVER_LOCK } from './state-mutex';
 import { stateScriptEnv } from './test-helpers/state-script-shell';
 
 const PROJECT = 'switchdash-remote';
-/** The server lock as the start holding it passes it on. */
 const lease = { token: 'lease-token' } as ServerLease;
 const WORKING_DIR = '/home/bob/.switchdash/switch-server';
 const OTHER_DIR = '/home/alice/.switchdash/switch-server';
@@ -55,17 +54,16 @@ function envFor(overrides: Partial<LocalServerSecrets> = {}, version = '0.27.0')
 }
 
 type HostState = {
-  /** `service\tstate\tworking_dir` lines, as `docker ps --format` prints them. */
+  /** `docker ps --format` lines: service, state, working dir, image. */
   containers: string[];
   dataVolumes: string[];
   stateVolume: boolean;
   published: string | null;
   /** The database volume the published copy says it was written for. */
   publishedStamp: string | null;
-  /** When the daemon says the database volume was created. */
   databaseCreatedAt: string;
   own: string | null;
-  /** What this account's `.env.db` says, or null for none. */
+  /** This account's `.env.db`. */
   ownStamp: string | null;
   imagePresent: boolean;
   /** Commands (joined args) that fail. */
@@ -110,8 +108,7 @@ function fakeHost(initial: Partial<HostState> = {}) {
     ...initial,
   };
   const calls: string[][] = [];
-  /** The state launcher, as the host's shell would run it: its image check,
-   * its volume creation, and then the `docker run` it execs. */
+  /** Mimics the launcher: image check, volume creation, then its `docker run`. */
   const launch = (args: string[]): string[] => {
     const [, , , , , volume = '', label = '', create = ''] = args;
     if (!state.imagePresent) {
@@ -285,8 +282,6 @@ describe('the published copy', () => {
   });
 
   it('pulls a missing helper image under a pull’s timeout, then runs, in one trip each time', async () => {
-    // Not pulled by `docker run` inside a timeout meant for a quick script: a
-    // host whose image was pruned may take minutes to fetch it.
     const { host, calls, exec } = fakeHost({
       stateVolume: true,
       published: envFor(),
@@ -423,7 +418,6 @@ describe('the published copy’s scripts, run for real', () => {
   /** A host whose state volume is `dir`, with every script run by `sh`. */
   function realHost(initial: Partial<HostState> = {}) {
     const fake = fakeHost({ stateVolume: true, ...initial });
-    // Held by the start doing the writing, as the supervisor would have it.
     writeFileSync(join(dir, 'lock'), `switch-console-lock v1\n${lease.token}\n`);
     const env = stateScriptEnv();
     const sh = (args: string[], input: string) => {
@@ -459,7 +453,7 @@ describe('the published copy’s scripts, run for real', () => {
     const { host, state } = realHost({ dataVolumes: [`${PROJECT}_pgdata`] });
     await publishEnv(host, envFor({ dbPassword: 'first' }), lease);
 
-    // Reset: the volume is gone when the next start publishes.
+    // A reset: no database volume when the next start publishes.
     state.dataVolumes = [];
     const env = envFor({ dbPassword: 'second' });
     await publishEnv(host, env, lease);
@@ -526,8 +520,6 @@ describe('inspectStack', () => {
   });
 
   it('takes the published copy over a stale one left in this account’s working dir', async () => {
-    // Someone else reset and restarted the stack: its credentials are new, and
-    // the file this account wrote before that opens nothing.
     const { host } = fakeHost({
       containers: [`switch\trunning\t${OTHER_DIR}`],
       stateVolume: true,
@@ -554,8 +546,6 @@ describe('inspectStack', () => {
   });
 
   it('ignores a published copy written for a database that has since been recreated', async () => {
-    // A Console from before settings were shared reset the stack from another
-    // account and started it with new credentials, leaving the copy behind.
     const { host } = fakeHost({
       containers: [`switch\trunning\t${OTHER_DIR}`],
       dataVolumes: [`${PROJECT}_pgdata`],
@@ -608,9 +598,6 @@ describe('inspectStack', () => {
   });
 
   it('treats settings with no stack behind them as a first start', async () => {
-    // What a reset leaves: this account's `.env`, and possibly a published copy
-    // from a Console that did not withdraw it. Their credentials open nothing,
-    // and a stopped stack that "keeps its data" is not what is there.
     const { host } = fakeHost({ own: envFor(), stateVolume: true, published: envFor() });
 
     expect(await inspectStack(host)).toEqual({ kind: 'absent' });
@@ -637,8 +624,7 @@ describe('inspectStack', () => {
   });
 
   it('treats data with no containers as this account’s when it has the settings', async () => {
-    // A stack stopped by an older Console: `compose down` removed its
-    // containers, and it never published.
+    // As `compose down` from an older Console leaves it: no containers, never published.
     const { host } = fakeHost({ dataVolumes: [`${PROJECT}_pgdata`], own: envFor() });
 
     expect(await inspectStack(host)).toMatchObject({ kind: 'present', source: 'working-dir' });
@@ -659,9 +645,6 @@ describe('inspectStack', () => {
   });
 
   it('does not take this account’s settings for a database since recreated elsewhere', async () => {
-    // A Console that does not share its settings reset the stack, started it
-    // with its own credentials and took its containers down: this account's
-    // copy opens nothing, and starting from it would lock that database out.
     const { host } = fakeHost({
       dataVolumes: [`${PROJECT}_pgdata`],
       own: envFor(),
@@ -770,8 +753,6 @@ describe('inspectStack', () => {
 
 describe('the version a stack runs', () => {
   it('is read from the image of its running core, beside the version its settings ask for', async () => {
-    // A start that published and then failed leaves the old containers
-    // running: what they run is what the stack is.
     const { host } = fakeHost({
       containers: [
         `switch\trunning\t${OTHER_DIR}\tghcr.io/sandbox-quantum/switch-core:0.26.0`,
@@ -906,8 +887,8 @@ describe('the state launcher, run for real', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** A host whose shell is this machine's and whose docker is a script that
-   * records what it was asked, and has the helper image only when told to. */
+  /** Real `sh`, with a fake docker that logs its arguments and has the helper
+   * image only when told to. */
   function launcherHost(imagePresent: boolean, ownImage: string | null = null) {
     const log = join(dir, 'docker.log');
     const docker = join(dir, 'docker');
@@ -967,8 +948,6 @@ describe('the state launcher, run for real', () => {
   });
 
   it('runs in the stack’s own Postgres image on a host without the helper image', async () => {
-    // Stop and Reset take the lock too: a host that cannot pull the helper
-    // image still has the image its stack's database runs.
     const { host, asked } = launcherHost(false, 'postgres:17-alpine');
 
     await runStateScript(host, 'echo hi', []);

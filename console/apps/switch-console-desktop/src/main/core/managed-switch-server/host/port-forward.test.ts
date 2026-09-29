@@ -27,8 +27,6 @@ afterEach(async () => {
 
 describe('PortForwarder', () => {
   it('says which port is taken here, and why it has to be that one', async () => {
-    // A stack set up from another computer publishes ports that computer found
-    // free; this one may already be using them (CHOO-2893).
     const { server, port } = await occupy();
     opened.push(server);
     const forwarder = new PortForwarder({} as SshClientProxy, 'vm-1');

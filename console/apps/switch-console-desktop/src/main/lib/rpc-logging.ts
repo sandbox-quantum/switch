@@ -51,12 +51,10 @@ export const withRPCLogContext: RPCInvocationWrapper = (channel, args, invoke) =
   });
 
 function logRPCFailure(channel: string, error: unknown) {
-  // An unreachable host — or a managed stack the user has stopped, or one
-  // another Console is changing — is a modeled, displayed state, not a fault
-  // of the call: every view scoped to it
-  // refuses in the same way, so logging each one as an error buries real
-  // failures under a repeating wall of the same fact. The state's own
-  // transition is logged once, where it belongs.
+  // An unreachable host, a stopped managed stack, or one another Console is
+  // changing is a modeled, displayed state, not a fault of the call: every view
+  // scoped to it refuses the same way, so logging each as an error buries real
+  // failures. The state's own transition is logged once, where it belongs.
   const modeled =
     error instanceof HostUnreachableError ||
     error instanceof ManagedServerStoppedError ||

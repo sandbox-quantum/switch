@@ -177,8 +177,7 @@ describe('SshExecutionContext.exec', () => {
   });
 
   it('never takes a channel that closed without an exit status for a success', async () => {
-    // A dropped connection closes the channel with whatever output had arrived
-    // — for `docker ps`, nothing — which must not read as "no containers".
+    // A dropped `docker ps` yields empty output, which must not read as "no containers".
     const stream = makeStream();
     const ctx = new SshExecutionContext(
       makeProxy((_command, cb) => {

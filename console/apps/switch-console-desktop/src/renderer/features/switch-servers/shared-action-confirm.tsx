@@ -19,13 +19,9 @@ export type SharedAction = 'stop' | 'restart';
 
 /**
  * Ask before a stop or restart of a remote server reaches the other people
- * using it (CHOO-2893), wherever the action is offered — the stack's controls,
- * or a notice that restarts it to apply something.
- *
- * Asked when others have used it lately, and also when that cannot be told
- * because who uses it has not been read: the same rule the main process
- * follows, where an unreadable register counts as others using the server.
- * Pass null for a server nobody else shares (the local one), which never asks.
+ * using it. Asks when others have used it lately or when the register has not
+ * been read, the same rule the main process follows. Pass null for a server
+ * nobody else shares (the local one), which never asks.
  *
  * Read from an observer component, since the register lives in a MobX store.
  */

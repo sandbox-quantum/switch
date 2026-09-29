@@ -462,8 +462,6 @@ describe('removeSwitchSettings', () => {
   });
 
   it('leaves another agent’s credentials in a shared directory alone', () => {
-    // The one-file layout from before each agent had its own: deleting one
-    // agent must not take the credentials of the agent that file belongs to.
     const existing = JSON.stringify({
       env: { SWITCH_API_ENDPOINT: 'e', SWITCH_API_TOKEN: 't', SWITCH_AGENT_ID: 'agent-main' },
     });

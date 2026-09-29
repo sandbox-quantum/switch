@@ -15,11 +15,6 @@ vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
   remoteServerStore: { registerFor: () => register.current },
 }));
 
-/**
- * A stop or restart of a remote server reaches everyone using it (CHOO-2893),
- * so it asks first when others have used it lately — and when that cannot be
- * told, which the main process treats the same way.
- */
 import { useSharedActionConfirm } from '@renderer/features/switch-servers/shared-action-confirm';
 import '@renderer/index.css';
 
@@ -137,7 +132,6 @@ describe('changing one’s mind', () => {
     await act(async () => confirm.click());
 
     expect(run).toHaveBeenCalledOnce();
-    // It closes as a stop: the words do not change on the way out.
     expect(dialogText()).not.toMatch(/Restart/);
     await vi.waitFor(() => expect(dialogText()).toBe(''));
   });

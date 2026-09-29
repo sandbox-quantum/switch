@@ -22,37 +22,15 @@ import { WHILE_HOLDING_SERVER_LOCK } from './state-mutex';
 
 /**
  * What a remote host has of a Switch Console-managed stack, read off the host
- * itself rather than out of this desktop's store (CHOO-2893).
- *
- * A stack on a shared VM is used by everyone with access to that VM, from their
- * own Consoles and often under their own accounts. Every one of them needs the
- * ports it publishes and the credentials its volumes were created with: a
- * Console without them would generate its own, rewrite the stack's `.env` with
- * them, and lock the stack out of its own database. The host is the one place
- * every Console can reach, so the host is the source of truth, and each
- * desktop's copy is a cache of it.
- *
- * Two places on the host hold that truth:
- *
- * - **The published copy**: the `.env` the stack was last started with, kept in
- *   a Docker volume beside the stack's own (see `STACK_STATE_VOLUME_SUFFIX`).
- *   Every account that can run the stack can reach the daemon, so every
- *   account can read it. It is written after every start, from whichever
- *   Console did the starting.
- * - **This account's working dir**, where the `.env` compose actually reads
- *   lives. It is the only copy a stack started before publishing existed has,
- *   and it is readable only to the account that started it.
- *
- * Running compose from a second account's working dir with a byte-identical
- * `.env` leaves the containers alone — measured, and it follows from the
- * bundled compose file referencing nothing by path — so publishing one `.env`
- * that every Console then writes verbatim is what lets several accounts run
- * one stack.
+ * rather than this desktop's store (CHOO-2893). Every account sharing the host
+ * needs the credentials the stack's volumes were created with; a Console that
+ * generated its own would lock the stack out of its database. So the `.env`
+ * the stack last started with is published to a Docker volume every account
+ * reaches through the daemon, and compose run from any working dir with that
+ * byte-identical `.env` leaves the containers alone.
  */
 
-/** What stack-state work needs of a host: run docker there, read its own
- * working dir, and hand a command a secret on stdin. Only the remote host
- * shares its stack, so only it provides this. */
+/** Only the remote host shares its stack, so only it provides this. */
 export type StackStateHost = Pick<
   ServerHost,
   'ctx' | 'dockerBin' | 'composeProjectName' | 'label' | 'workingDir' | 'readFile'
@@ -69,7 +47,6 @@ const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
 const COMPOSE_SERVICE_LABEL = 'com.docker.compose.service';
 const COMPOSE_WORKING_DIR_LABEL = 'com.docker.compose.project.working_dir';
 
-/** Inside the state volume. */
 const STATE_MOUNT = '/state';
 const PUBLISHED_ENV_FILE = 'stack.env';
 /** Beside the published copy: which database volume it was written for. */
@@ -77,8 +54,7 @@ const PUBLISHED_STAMP_FILE = 'stack.db';
 /** Separates the copy from its stamp when both come back from one read. */
 const STAMP_MARKER = '---switch-console-stamp---';
 
-/** The compose volume holding the stack's Postgres data, whose credentials the
- * published copy has to match. */
+/** Holds the Postgres data whose credentials the published copy must match. */
 const DATABASE_VOLUME = 'pgdata';
 
 const QUICK_TIMEOUT_MS = 60_000;
@@ -89,9 +65,8 @@ export function stackStateVolume(host: Pick<StackStateHost, 'composeProjectName'
   return `${host.composeProjectName}_${STACK_STATE_VOLUME_SUFFIX}`;
 }
 
-/** Run `docker <args>` on the host, returning stdout. Failures name the host
- * and carry docker's own complaint. Nothing passed here may be a secret: the
- * arguments are visible in the host's process table. */
+/** Nothing passed here may be a secret: the arguments are visible in the
+ * host's process table. */
 async function docker(
   host: StackStateHost,
   args: string[],
@@ -119,10 +94,8 @@ export type ProjectContainer = {
   service: string;
   /** Docker's own word: `running`, `exited`, `created`, … */
   state: string;
-  /** The directory compose was run from when it created this container — the
-   * working dir of the account that started it. Null when the label is absent. */
+  /** The working dir of the account whose compose created this container. */
   workingDir: string | null;
-  /** The image the container runs, as Docker reports it. */
   image: string;
 };
 
@@ -131,17 +104,12 @@ export type ProjectResources = {
   containers: ProjectContainer[];
   /** The stack's own named volumes — Postgres and Mattermost data. */
   dataVolumes: string[];
-  /** Whether the shared state volume exists. */
   stateVolume: boolean;
 };
 
-/**
- * Everything the stack's compose project has on the host's daemon, found by
- * label rather than through a compose file — so it sees a stack another
- * account started from a working dir this one cannot read.
- */
+/** Found by label rather than through a compose file, so it sees a stack
+ * another account started from a working dir this one cannot read. */
 export async function listProjectResources(host: StackStateHost): Promise<ProjectResources> {
-  // Independent questions, asked at once: each is an SSH round trip.
   const [containers, dataVolumes, stateVolume] = await Promise.all([
     listContainers(host),
     listDataVolumes(host),
@@ -166,8 +134,6 @@ async function listContainers(host: StackStateHost): Promise<ProjectContainer[]>
   });
 }
 
-/** Whether the shared state volume exists — the one question a read of the
- * register or a withdrawal needs answered before touching it. */
 export async function stateVolumeExists(host: StackStateHost): Promise<boolean> {
   const stateVolumes = lines(
     await docker(host, [
@@ -182,7 +148,6 @@ export async function stateVolumeExists(host: StackStateHost): Promise<boolean> 
   return stateVolumes.includes(stackStateVolume(host));
 }
 
-/** The stack's own named volumes — Postgres and Mattermost data. */
 async function listDataVolumes(host: StackStateHost): Promise<string[]> {
   return lines(
     await docker(host, [
@@ -196,12 +161,9 @@ async function listDataVolumes(host: StackStateHost): Promise<string[]> {
   );
 }
 
-/**
- * When the stack's database volume was created, as the daemon records it, or
- * null when there is no such volume. It changes exactly when the volume is
- * recreated — which is what a reset does — so it tells a published copy
- * written for this database from one left over from the database before.
- */
+/** The database volume's creation time. It changes exactly when a reset
+ * recreates the volume, so it tells a copy written for this database from a
+ * leftover. */
 async function databaseStamp(host: StackStateHost, dataVolumes: string[]): Promise<string | null> {
   const volume = `${host.composeProjectName}_${DATABASE_VOLUME}`;
   if (!dataVolumes.includes(volume)) return null;
@@ -214,17 +176,13 @@ async function databaseStamp(host: StackStateHost, dataVolumes: string[]): Promi
 const HELPER_IMAGE_MISSING = 'switch-console: the helper image is not on this host';
 
 /**
- * Runs a container against the state volume in one round trip to the host.
- * The image is the helper image — the stack's own Postgres image — or, on a
- * host that lacks it, the image the stack's own Postgres container runs,
- * which is there whenever the stack is and has the same shell and `flock`.
- * Only when neither is there does it say so, for the caller to pull the
- * helper image under a pull's timeout rather than `docker run` pulling it
- * inside a quick one. It creates the volume, labelled, when asked.
+ * Runs a container against the state volume in one round trip. Without the
+ * helper image it falls back to the image the stack's Postgres container runs
+ * (same shell and `flock`); only when neither exists does it fail, so the
+ * caller pulls under a pull's timeout rather than inside a quick one.
  *
- * `$1…$8` are the docker binary, the helper image, the volume, its label,
- * `yes` to create it, the compose project, the mount and `yes` for stdin;
- * then the script and its arguments.
+ * `$1…$8`: docker binary, helper image, volume, its label, `yes` to create it,
+ * compose project, mount, `yes` for stdin; then the script and its arguments.
  */
 const LAUNCHER = [
   'docker=$1 image=$2 volume=$3 label=$4 create=$5 project=$6 mount=$7 stdin=$8',
@@ -281,8 +239,6 @@ async function withHelperImage<T>(host: StackStateHost, launch: () => Promise<T>
   }
 }
 
-/** A state container whose stdout is the answer. Failures read like any other
- * docker failure on the host. */
 async function runStateContainer(host: StackStateHost, container: StateContainer): Promise<string> {
   return withHelperImage(host, async () => {
     try {
@@ -297,21 +253,14 @@ async function runStateContainer(host: StackStateHost, container: StateContainer
   });
 }
 
-/**
- * Run a shell `script` in a throwaway container with the state volume mounted
- * read-only at `/state`, returning its stdout. The volume must already exist —
- * `docker run -v` would otherwise create it, and reading must not.
- */
+/** Mounts the state volume read-only. The volume must already exist: `docker
+ * run -v` would otherwise create it, and a read must not. */
 export async function readStateVolume(host: StackStateHost, script: string): Promise<string> {
   return runStateContainer(host, { mode: 'read', script, scriptArgs: [] });
 }
 
-/**
- * Run a shell `script` against the state volume with `input` on its stdin.
- * Input is the only way a secret reaches it, for the reason
- * `writeCommandInput` gives; `scriptArgs` arrive as `$1…`, so no value is
- * spliced into the script's text. Creates the volume on first use.
- */
+/** `input` goes on stdin, the only way a secret may reach the script. Creates
+ * the volume on first use. */
 export async function writeStateVolume(
   host: StackStateHost,
   script: string,
@@ -328,12 +277,9 @@ export async function writeStateVolume(
   );
 }
 
-/**
- * Run a shell `script` against the state volume, read-write, returning its
- * stdout. `scriptArgs` arrive as `$1…` and are visible in the host's process
- * table, so none may be a secret — a secret goes through
- * {@link writeStateVolume}'s stdin. Creates the volume on first use.
- */
+/** Read-write, returning stdout. `scriptArgs` are visible in the host's
+ * process table; a secret goes through {@link writeStateVolume}'s stdin.
+ * Creates the volume on first use. */
 export async function runStateScript(
   host: StackStateHost,
   script: string,
@@ -346,15 +292,14 @@ export async function runStateScript(
  * when that was not recorded). */
 export type PublishedCopy = { env: string; stamp: string | null };
 
-/** The published copy, or null when the volume holds none. */
 export async function readPublishedCopy(host: StackStateHost): Promise<PublishedCopy | null> {
   const out = await readStateVolume(
     host,
     `cat "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" 2>/dev/null; printf '\\n%s\\n' '${STAMP_MARKER}'; ` +
       `cat "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}" 2>/dev/null; true`
   );
-  // The marker is printed after a newline of its own, so taking exactly that
-  // one back off leaves the copy byte for byte as it was published.
+  // The marker follows a newline of its own; taking exactly that one back off
+  // leaves the copy byte for byte as published.
   const split = out.lastIndexOf(`\n${STAMP_MARKER}`);
   const env = split === -1 ? out : out.slice(0, split);
   const stamp = split === -1 ? '' : out.slice(split + 1 + STAMP_MARKER.length).trim();
@@ -380,25 +325,12 @@ const PUBLISH_SCRIPT = [
 ].join('\n');
 
 /**
- * Publish `env` as the stack's shared copy, replacing any earlier one
- * atomically, readable only through the daemon. Called on every start with
- * the exact file that start gives compose.
- *
- * Only while `lease` still holds the server lock, checked in the same step as
- * the write: a Console that lost the lock while it was away would otherwise
- * come back and publish its credentials over those of the Console that took
- * over, which is the lockout the lock exists to prevent.
- *
- * Stamped with the database volume it is for, when there is one yet — a first
- * start publishes before compose creates it, and stamps after, with
- * {@link stampPublishedEnv}. A stamp from before is removed rather than left
- * to vouch for a copy it was not written with. The copy is written before its
- * stamp, so a read between the two sees a mismatch and distrusts it, never
- * the other way round.
- *
- * Returns the stamp it was written with, or null when there was no database
- * yet — which tells a start it still has to stamp it once compose has created
- * the volume.
+ * Atomically publish `env`, the exact file a start gives compose, only while
+ * `lease` still holds the server lock (checked in the same step), so a Console
+ * that lost the lock cannot publish its credentials over its successor's. The
+ * copy is written before its stamp, so a read in between sees a mismatch,
+ * never a false match. Returns null when there is no database volume yet; the
+ * start then calls {@link stampPublishedEnv} once compose has created it.
  */
 export async function publishEnv(
   host: StackStateHost,
@@ -410,12 +342,8 @@ export async function publishEnv(
   return stamp;
 }
 
-/**
- * Stamp the published copy with the database volume a start has just
- * created, which did not exist when the copy was published. Without it a
- * first start's copy vouches for nothing, and a later reset from a Console
- * that does not publish would leave it looking current.
- */
+/** Unstamped, a first start's copy would still look current after a reset
+ * from a Console that does not publish. */
 export async function stampPublishedEnv(
   host: StackStateHost,
   lease: ServerLease
@@ -440,12 +368,9 @@ export async function stampPublishedEnv(
   return stamp;
 }
 
-/**
- * Take the published copy away, for a reset: the credentials in it die with
- * the data volumes, and leaving them would have the next Console adopt
- * credentials that open nothing. Everything else in the volume — the activity
- * record above all — is kept.
- */
+/** For a reset: the copy's credentials die with the data volumes, and the next
+ * Console would otherwise adopt credentials that open nothing. The rest of the
+ * volume, including the activity record, is kept. */
 export async function withdrawPublishedEnv(
   host: StackStateHost,
   lease: ServerLease
@@ -461,16 +386,13 @@ export async function withdrawPublishedEnv(
   );
 }
 
-/** Where the settings a stack runs with were read from. */
 export type StackEnvSource = 'published' | 'working-dir';
 
 export type StackOnHost =
-  /** Nothing of the stack's project on this daemon — no containers, no data:
-   * a first start, and the only case where new credentials may be made. */
+  /** No containers or data: the only case where new credentials may be made. */
   | { kind: 'absent' }
-  /** The stack's settings, readable by this account. `published` says whether
-   * other accounts can read them too — false for a stack started before
-   * publishing existed, which the next start or connect publishes. */
+  /** `published` is false for a stack started before publishing existed,
+   * which the next start or connect publishes. */
   | {
       kind: 'present';
       env: StackEnv;
@@ -479,23 +401,17 @@ export type StackOnHost =
       source: StackEnvSource;
       running: boolean;
       published: boolean;
-      /** The switch-core version the running core container is on, or null
-       * when it is not running or its image names no version. It is what the
-       * stack is, where `env.version` is what it was last asked to be — the
-       * two differ when a start published its settings and then failed. */
+      /** What the running core container is on, where `env.version` is what it
+       * was last asked to be; they differ when a start published then failed. */
       runningVersion: string | null;
-      /** The database volume these settings were written for, as recorded
-       * beside them; null where that was not recorded. */
+      /** The database volume these settings were written for, if recorded. */
       stamp: string | null;
     }
-  /** Someone else's stack that this account cannot read the settings of: it
-   * was started from another account's working dir and never published.
-   * `ownerDir` is that working dir when the containers still say it. Starting
-   * here would recreate that stack with new credentials, so nothing may. */
+  /** Another account's never-published stack, whose settings this account
+   * cannot read. Starting here would recreate it with new credentials. */
   | { kind: 'unshared'; ownerDir: string | null; running: boolean }
-  /** A `.env` was found but does not carry everything the stack needs. `raw`
-   * is its text, so a start can check a copy of the settings against what it
-   * does carry before filling the gaps from that copy. */
+  /** `raw` lets a start check another copy of the settings against what this
+   * one does carry before filling the gaps from it. */
   | {
       kind: 'incomplete';
       source: StackEnvSource;
@@ -503,16 +419,9 @@ export type StackOnHost =
       raw: string;
       running: boolean;
     }
-  /** The host could not be asked. Distinct from `absent`, for the reason
-   * `readDeployedVersion` keeps them apart: an unreachable daemon is not an
-   * empty host. */
+  /** Distinct from `absent`: an unreachable daemon is not an empty host. */
   | { kind: 'unreadable'; reason: string };
 
-/**
- * Why this account may neither start nor join a stack another account set up
- * and never shared — and what fixes it, which is not something this account
- * can do.
- */
 export function unsharedStackMessage(hostLabel: string, ownerDir: string | null): string {
   const where = ownerDir ? ` (from ${ownerDir})` : '';
   return (
@@ -523,8 +432,8 @@ export function unsharedStackMessage(hostLabel: string, ownerDir: string | null)
   );
 }
 
-/** How the stack compares with this build's pin: by the version it runs when
- * it is running, else by the one its settings name. */
+/** Compared with this build's pin by the version it runs when running, else
+ * by the one its settings name. */
 export function driftOf(
   stack: Extract<StackOnHost, { kind: 'present' }>
 ): SwitchVersionDrift | null {
@@ -532,9 +441,8 @@ export function driftOf(
   return version === null ? null : classifyVersionDrift(version, COMPATIBLE_SWITCH_VERSION);
 }
 
-/** What the renderer is told of a host's stack: enough to choose between
- * Connect and Start, and nothing secret. `busy` is the Console holding the
- * stack's lock, if any: what the probe offers waits for it. */
+/** Enough for the renderer to choose between Connect and Start, and nothing
+ * secret. `busy` is the Console holding the stack's lock, if any. */
 export function probeFromStack(
   hostLabel: string,
   stack: StackOnHost,
@@ -604,20 +512,11 @@ function runningCoreVersion(resources: ProjectResources): string | null {
 }
 
 /**
- * Find out what this host has of the stack, in the order that can be trusted:
- *
- * 1. nothing of the stack's project on the daemon — no containers, no data —
- *    which is a first start whatever settings are lying about: a `.env` or a
- *    published copy with no stack behind it belongs to one that was reset or
- *    removed, and the credentials in it open nothing;
- * 2. the published copy, which every account shares and every start refreshes
- *    — unless it was written for a database volume that is no longer there:
- *    a Console from before settings were shared can reset the stack and start
- *    it with new credentials without knowing the copy exists, and the copy
- *    then names credentials that open nothing;
- * 3. this account's own `.env`, but only when nothing on the daemon says the
- *    stack belongs to another account — a stale file left from before someone
- *    else reset and restarted the stack would otherwise be taken for the truth.
+ * Trusted in this order: no containers or data means a first start, whatever
+ * settings are lying about; then the published copy, unless stamped for a
+ * database volume since recreated by a Console that does not publish; then
+ * this account's own `.env`, only when nothing on the daemon says the stack
+ * belongs to another account.
  */
 export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   let resources: ProjectResources;
@@ -642,8 +541,8 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   if (!hasProject) return { kind: 'absent' };
 
   const running = isRunning(resources);
-  // A copy with no stamp, or a stack with no database volume to compare it
-  // with, cannot be judged, and is trusted as it always was.
+  // A copy with no stamp, or no database volume to compare it with, cannot be
+  // judged and is trusted.
   const stale = published?.stamp != null && database != null && published.stamp !== database;
   if (published !== null && !stale) {
     return fromEnvText(published.env, 'published', resources, true, published.stamp);
@@ -655,18 +554,15 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
     );
   }
 
-  // The stack exists and was never published: it is ours only if the account
-  // that created its containers is this one.
+  // Never published: it is ours only if this account created its containers.
   const foreignDir = resources.containers
     .map((container) => container.workingDir)
     .find((dir): dir is string => dir !== null && dir !== host.workingDir);
   if (foreignDir !== undefined) return { kind: 'unshared', ownerDir: foreignDir, running };
   if (own === null) return { kind: 'unshared', ownerDir: null, running };
-  // This account's copy says which database it was written for, unless it is
-  // from before that was recorded. One written for a database since recreated
-  // belongs to a stack that is gone: a Console that does not share its settings
-  // reset this one, started it with its own credentials, and took its
-  // containers down — leaving nothing else to say whose it is now.
+  // A copy stamped for a database since recreated belongs to a stack that is
+  // gone: a Console that does not share its settings reset it and started it
+  // with its own credentials, leaving nothing else to say whose it is now.
   const stamp = ownStamp?.trim() || null;
   if (stamp !== null) {
     let current: string | null;

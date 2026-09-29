@@ -167,8 +167,6 @@ describe('readStackEnv', () => {
   });
 
   it('reads back exactly what buildEnvFile wrote', () => {
-    // The inverse has to be exact: another Console starts the stack from these
-    // values, and one that differs recreates the containers or locks them out.
     expect(readStackEnv(written)).toEqual({
       kind: 'complete',
       env: { ports, secrets, version: '1.2.3' },
@@ -176,8 +174,6 @@ describe('readStackEnv', () => {
   });
 
   it('reads a file written before the database role split', () => {
-    // Then DB_USER was the schema owner and DB_PASSWORD its password; there was
-    // no runtime role, so that password is reported absent rather than guessed.
     const legacy = written
       .replace('DB_USER=switch_app', 'DB_USER=postgres')
       .replace(`DB_PASSWORD=${secrets.dbRuntimePassword}`, `DB_PASSWORD=${secrets.dbPassword}`)

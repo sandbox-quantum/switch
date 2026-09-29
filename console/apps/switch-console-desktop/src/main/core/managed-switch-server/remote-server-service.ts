@@ -80,19 +80,16 @@ import {
 } from './stack-state';
 import { readDeployedTelemetry } from './telemetry-consent';
 
-/** How often a stack that stopped answering may be looked at again. The check
- * is an SSH round trip and a handful of `docker` calls, and it is prompted by
- * failing requests, which arrive in bursts. */
+/** Minimum gap between re-reads of a stack that stopped answering: each is an
+ * SSH round trip plus `docker` calls, prompted by failing requests that burst. */
 const RECHECK_INTERVAL_MS = 30_000;
 
-/** How often picking a stack back up also records that this Console still
- * uses it. Every real action records it too; this only keeps a Console that
- * does nothing but use the server inside the register's two-week window,
- * without a container run on the host at every launch and re-check. */
+/** How often picking a stack back up also records this Console as a user, so an
+ * idle Console stays inside the register's two-week window without a host write
+ * at every launch. */
 const SIGHTING_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-/** When this Console last got a record onto each host, by alias — kept across
- * launches, so picking a stack back up at launch does not record it again. */
+/** When this Console last got a record onto each host, by alias, across launches. */
 const sightings = new KV<Record<string, string>>('remote-server-sightings');
 
 /** How long leaving waits to take this Console off a host's register. Leaving
@@ -128,8 +125,6 @@ const RECORDED_AS: Record<StackActivityAction, string> = {
   disconnected: 'disconnected from it',
 };
 
-/** What the server page says when this Console's record of `action` could not
- * be written to the host — and what that costs the other people sharing it. */
 function recordWarningFor(
   hostLabel: string,
   action: StackActivityAction | null,
@@ -147,12 +142,8 @@ function recordWarningFor(
   );
 }
 
-/**
- * What to tell the user about a stack that is not running when this Console
- * looked, or null when there is nothing to say. `wasRunning` is whether this
- * Console last saw it up — a stack that was stopped from here needs no
- * explanation; one that stopped under us does.
- */
+/** The notice for a stack found not running, or null. `wasRunning` means this
+ * Console last saw it up, so it stopped under us and needs explaining. */
 function noticeForIdleStack(
   hostLabel: string,
   stack: Exclude<StackOnHost, { kind: 'unreadable' }>,
@@ -165,7 +156,6 @@ function noticeForIdleStack(
         ? `The server on ${hostLabel} was stopped outside this Console — from another Console, or on the host.`
         : null;
     case 'absent':
-      // Removed from here: nothing this Console needs telling.
       if (removedHere) return null;
       return (
         `Nothing is set up on ${hostLabel} any more: the server was removed. Its activity says ` +
@@ -192,11 +182,9 @@ function noticeForIdleStack(
  * is reconciled — at boot, and whenever the host becomes reachable again — and
  * {@link ensureReady} holds sessions for its agents until that has finished.
  *
- * A remote stack is shared by everyone with access to its host (CHOO-2893), so
- * this Console is one of possibly several supervising it. Its view is taken
- * from the host rather than remembered: at launch, when the host comes back,
- * and whenever the stack stops answering, the host is read again, so a stack
- * another Console stopped, restarted or reset is shown as it is.
+ * A remote stack is shared by everyone with access to its host, so its state is
+ * read from the host (at launch, on reconnect, and when it stops answering)
+ * rather than remembered.
  */
 export class RemoteServerService {
   private readonly statuses = new Map<string, RemoteServerStatus>();
@@ -237,12 +225,9 @@ export class RemoteServerService {
     events.emit(remoteServerStatusChannel, next);
   }
 
-  /**
-   * Record this Console, and what it did, on the stack's host. A record that
-   * cannot be written does not undo or fail the operation it describes — the
-   * stack was still started or stopped — so the failure is logged and shown on
-   * the server page, where it stays until a later record succeeds.
-   */
+  /** Record this Console, and what it did, on the stack's host. A failed write
+   * does not fail the operation it describes; it shows on the server page until
+   * a later record succeeds. */
   private async record(
     sshHost: string,
     host: StackStateHost,
@@ -276,12 +261,8 @@ export class RemoteServerService {
     };
   }
 
-  /**
-   * Take the lock on the stack on `sshHost` for `action`, waiting for whoever
-   * holds it (CHOO-2893). The wait is on the status — who it is for, and a way
-   * to cancel it through {@link cancelWait} — and ends in
-   * {@link ServerLockWaitCancelled} when cancelled.
-   */
+  /** Take the stack's lock for `action`, waiting for whoever holds it. The wait
+   * shows on the status; {@link cancelWait} ends it with {@link ServerLockWaitCancelled}. */
   private async waitForLock(
     sshHost: string,
     host: RemoteServerHost,
@@ -341,9 +322,8 @@ export class RemoteServerService {
     }
   }
 
-  /** Who holds the lock on the stack on `host`, for the setup step to say.
-   * Only a hint — whatever it offers takes the lock itself — so a failure to
-   * read it is logged and shown as nobody. */
+  /** Who holds the stack's lock, for the setup step to show. Only a hint (whatever
+   * it offers takes the lock itself), so a failed read is logged and shown as nobody. */
   private async lockHolder(host: RemoteServerHost): Promise<ServerLockHolder | null> {
     try {
       return await readServerLock(host);
@@ -454,14 +434,8 @@ export class RemoteServerService {
     await this.reconcileHost(sshHost, server);
   }
 
-  /**
-   * Look at a stack that was running and has stopped answering, at most once
-   * per {@link RECHECK_INTERVAL_MS}. Prompted by failing gateway calls: on a
-   * shared host the likeliest reason is that another Console stopped,
-   * restarted or reset the stack, and reading the host says which — rather
-   * than every later call reporting a local port that was never the problem.
-   * Fire-and-forget; the outcome arrives as a status.
-   */
+  /** Re-read a running stack that stopped answering, at most once per
+   * {@link RECHECK_INTERVAL_MS}. Fire-and-forget; the outcome arrives as a status. */
   recheck(sshHost: string): void {
     this.lookAgain(sshHost, 'running', async (server) => {
       log.info(`remote-switch-server: ${sshHost} stopped answering; reading the host again`);
@@ -470,11 +444,10 @@ export class RemoteServerService {
   }
 
   /**
-   * Look at a stack this Console shows as stopped, when its page is opened. A
-   * stopped stack is sent no requests, so nothing else notices another Console
-   * starting it again — or removing it. Taken up again only when the host
-   * says something has changed: a stack still stopped keeps what the page says
-   * about it, such as who stopped it. Rate-limited with {@link recheck}.
+   * Re-read a stack shown as stopped when its page opens: it gets no requests, so
+   * nothing else would notice another Console starting or removing it. Reconciled
+   * only if it changed, so a still-stopped stack keeps its notice. Rate-limited
+   * with {@link recheck}.
    */
   refresh(sshHost: string): void {
     this.lookAgain(sshHost, 'stopped', async (server) => {
@@ -515,36 +488,30 @@ export class RemoteServerService {
   }
 
   /**
-   * Read the host and take its stack up as it is. A running stack is adopted
-   * with the settings the host holds — so a stack another Console restarted on
-   * new ports is forwarded to the new ones, and its record follows — and a
-   * stack that is not running is shown as stopped, saying why when this
-   * Console did not stop it. Skipped while the host is blocked — the
-   * reachability manager calls back through {@link onHostReachable} when it
-   * recovers.
+   * Read the host and take its stack up as it is: a running stack is adopted with
+   * the host's settings (following its ports if they moved), one not running is
+   * shown as stopped. Skipped while the host is blocked — the reachability
+   * manager calls back through {@link onHostReachable} when it recovers.
    *
    * Also records how the host's deployed switch-core compares to this build's
    * pin (CHOO-1736). A running stack that is behind, or one whose last upgrade
    * from this account was interrupted, is upgraded instead of adopted; a
-   * stopped one that is behind is marked to be upgraded at its next start. On a
-   * shared host that upgrade is for everyone, like any start. The check runs
-   * even when the stack is down: its data volumes still hold the schema the
-   * last version migrated to, which is what makes a downgrade unsafe.
+   * stopped one that is behind is marked to be upgraded at its next start. The
+   * check runs even when the stack is down: its data volumes still hold the
+   * schema the last version migrated to, which is what makes a downgrade unsafe.
    */
   private async reconcileHost(
     sshHost: string,
     server: { id: string; name: string }
   ): Promise<void> {
     if (hostReachabilityService.isBlocked(sshHost)) return;
-    // Checked here, with no await before the add, and not only by the callers:
-    // they look before awaiting the server list, and a Start clicked in that
-    // gap must not have this read run beside it and give back its flag.
+    // Checked here too, with no await before the add: callers check before
+    // awaiting the server list, and a Start clicked in that gap must not run beside this.
     if (this.busy.has(sshHost)) return;
     const wasRunning = this.getStatus(sshHost).phase === 'running';
     this.busy.add(sshHost);
-    // The forward this Console holds stays until the host gives an answer that
-    // replaces it: a failure to ask says nothing about the stack, and dropping
-    // the forward on one would strand a server that is still up.
+    // The live forward stays until the host answers: a failed read says nothing
+    // about the stack, and dropping the forward would strand a server still up.
     const live = this.hosts.get(sshHost) ?? null;
     let host: RemoteServerHost | null = null;
     let lease: ServerLease | null = null;
@@ -562,10 +529,8 @@ export class RemoteServerService {
         return;
       }
       seenRunning = stack.kind !== 'absent' && stack.running;
-      // The version of a stopped stack is read from this account's `.env`,
-      // which is stale once another account has updated the stack; the
-      // published copy is what the stack was last started with. A read that
-      // cannot bring it in step still reports what it can.
+      // A stopped stack's version is read from this account's `.env`, stale once
+      // another account has updated it; refresh it from the published copy, best-effort.
       if (stack.kind === 'present' && !stack.running) {
         await bringWorkingDirInStep(host, stack).catch((error: unknown) => {
           log.warn(
@@ -596,10 +561,9 @@ export class RemoteServerService {
       // Only a stack this account can start from the host's own settings: an
       // upgrade is a start, and a start is refused for anything else.
       upgradeNow = owed !== null && stack.kind === 'present' && (stack.running || journal !== null);
-      // Updating a running stack restarts it for everyone using it, so one that
-      // others have used lately is not updated under them unasked (CHOO-2893);
-      // it waits for someone here to run it. An update this account already
-      // started is resumed: it is past asking, and the stack is half-migrated.
+      // Updating restarts the stack for everyone, so one others used lately waits
+      // for someone here to run it. An update this account already started is
+      // resumed: the stack is half-migrated.
       const held = upgradeNow && journal === null && (await this.othersUseIt(sshHost, host));
       if (held) upgradeNow = false;
       if (upgradeNow) {
@@ -629,9 +593,8 @@ export class RemoteServerService {
           await this.record(sshHost, host, null);
         }
       } else if (stack.kind !== 'present' && stack.kind !== 'absent' && stack.running && live) {
-        // Up, and reached through the forward this Console already holds, but
-        // its settings cannot be read from here now: keep what works, and say
-        // why it could not be taken up afresh.
+        // Up and reached through the forward already held, but its settings are
+        // unreadable from here: keep what works and say why.
         this.setStatus(sshHost, {
           phase: 'running',
           serverId: server.id,
@@ -678,11 +641,8 @@ export class RemoteServerService {
     }
   }
 
-  /**
-   * Whether other Consoles have used the stack on `host` lately, by the
-   * register they keep there. One that cannot be read is taken as yes: an
-   * update is asked about when there is no telling who it would reach.
-   */
+  /** Whether other Consoles have used the stack lately, per its register. An
+   * unreadable register counts as yes, so an update is asked about, not forced. */
   private async othersUseIt(sshHost: string, host: RemoteServerHost): Promise<boolean> {
     try {
       return othersRecentlySeen(await readRegister(host), new Date()).length > 0;
@@ -694,13 +654,9 @@ export class RemoteServerService {
     }
   }
 
-  /**
-   * The host could not be asked what it has, or a stack it has could not be
-   * taken up. That is not news about the stack, so the phase and any forward
-   * this Console holds stay as they were — but the page says why, rather than
-   * showing a server that runs for everyone else as simply stopped.
-   * `seenRunning` is whether the stack was read as running before it failed.
-   */
+  /** The host could not be read, or its stack not taken up. That is not news
+   * about the stack, so the phase and forward stay as they were and only the
+   * notice says why. `seenRunning`: the stack read as running before the failure. */
   private leaveUnanswered(sshHost: string, reason: string, seenRunning: boolean): void {
     log.warn(`remote-switch-server: could not check the stack on ${sshHost}`, { reason });
     this.setStatus(sshHost, {
@@ -720,9 +676,8 @@ export class RemoteServerService {
     return Number.isFinite(at) ? at : 0;
   }
 
-  /** Point the server's record at the ports the stack actually publishes,
-   * when another Console has restarted it on different ones. Returns whether
-   * they moved — the record holds the ports this Console forwards. */
+  /** Point the server's record at the ports the stack publishes, if another
+   * Console restarted it on different ones. Returns whether they moved. */
   private async followPorts(
     sshHost: string,
     serverId: string,
@@ -903,12 +858,8 @@ export class RemoteServerService {
     });
   }
 
-  /**
-   * Join the stack already running on `sshHost`, started by another Console
-   * or another account (CHOO-2893). Nothing on the host changes: see
-   * {@link connectStack}. The host is kept on success for the same reason a
-   * started one is — it owns the forward.
-   */
+  /** Join the stack already running on `sshHost` without changing anything on the
+   * host (see {@link connectStack}). The host is kept on success: it owns the forward. */
   connect(sshHost: string, serverName: string): Promise<ConnectRemoteServerResult> {
     return this.track(sshHost, async () => {
       const result = await this.runConnect(sshHost, serverName);
@@ -956,9 +907,7 @@ export class RemoteServerService {
       }
       if (result.kind === 'connected') {
         this.hosts.set(sshHost, host);
-        // Joined only at this build's pin, so nothing is owed any more —
-        // whatever this Console last saw of the stack before someone else
-        // brought it up to date.
+        // Joined only at this build's pin, so nothing is owed any more.
         this.setStatus(sshHost, {
           phase: 'running',
           serverId: result.serverId,
@@ -1012,13 +961,8 @@ export class RemoteServerService {
     }
   }
 
-  /**
-   * Join a stack that runs an older switch-core than this build pins, which
-   * this Console cannot use as it is, by updating it. That is a start — from
-   * the stack's own settings, with its database backed up first — and, like
-   * any start on a shared host, an update for everyone using it, which the
-   * connect step says before it is clicked.
-   */
+  /** Join a stack behind this build's switch-core pin by updating it: a start from
+   * the stack's own settings, and so an update for everyone using it. */
   private async connectByUpdating(
     sshHost: string,
     serverName: string
@@ -1049,23 +993,18 @@ export class RemoteServerService {
   }
 
   /**
-   * Stop using the stack on `sshHost` from this Console, leaving it running
-   * for everyone else (CHOO-2893): close the forward, remove the server
-   * record — its agents are unlinked and kept, as for any server — and drop
-   * this desktop's copy of the stack's credentials, which it no longer needs.
-   * On the host only this Console's entry in the register changes, and only
-   * when the host can be reached in good time: leaving never waits on it.
+   * Stop using the stack on `sshHost` from this Console, leaving it running for
+   * everyone else: close the forward, remove the server record (its agents are
+   * unlinked and kept) and drop the local credentials.
    */
   async disconnect(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost))
       throw new Error(`An operation is already in progress for ${sshHost}.`);
     this.busy.add(sshHost);
     try {
-      // Said on the host whenever it can be reached — a Console left listed
-      // counts as a user for weeks, holding the others' updates and named in
-      // their prompts — but leaving must not wait on, or fail for, a host
-      // that is out of reach. Logged only: the server leaves this Console with
-      // the disconnect, so there is no page left to show a failure on.
+      // Recorded when the host is reachable: a Console left listed counts as a
+      // user for weeks, holding the others' updates. Leaving must not wait on or
+      // fail for the host, and a failure is only logged: the page goes with it.
       const live = this.hosts.get(sshHost) ?? null;
       if (!hostReachabilityService.isBlocked(sshHost)) await this.recordLeaving(sshHost, live);
       this.releaseHost(sshHost, live);
@@ -1084,10 +1023,8 @@ export class RemoteServerService {
     }
   }
 
-  /** Take this Console off the register on `sshHost`, through the live host
-   * when there is one and a host of its own otherwise — given up after
-   * {@link LEAVE_RECORD_TIMEOUT_MS}, and never creating a register where the
-   * stack has none. */
+  /** Record this Console leaving on `sshHost`'s register, given up after
+   * {@link LEAVE_RECORD_TIMEOUT_MS}. Never creates a register where there is none. */
   private async recordLeaving(sshHost: string, live: RemoteServerHost | null): Promise<void> {
     const opened: { host: RemoteServerHost | null; abandoned: boolean } = {
       host: null,
@@ -1137,9 +1074,8 @@ export class RemoteServerService {
     try {
       hostReachabilityService.requireReachable(sshHost);
       host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
-      // Refused rather than waited for: stopping a server someone has just
-      // started, because Stop was clicked while they were starting it, is not
-      // what was asked.
+      // Refused rather than waited for: stopping a server someone else just
+      // started is not what the click asked for.
       lease = await this.lockOrRefuse(sshHost, host, 'stopping');
       this.setStatus(sshHost, { phase: 'stopping', message: 'Stopping containers…' });
       await stopStack(host, lease);
@@ -1167,7 +1103,6 @@ export class RemoteServerService {
       reportManagedServerOutcome('stop', 'remote', 'failure');
       throw error;
     } finally {
-      // Before the host goes: giving the lock back runs over its connection.
       await lease?.release();
       this.releaseHost(sshHost, host);
       this.busy.delete(sshHost);
@@ -1246,11 +1181,9 @@ export class RemoteServerService {
   }
 
   /**
-   * Take the lock for a stop or reset, which refuse rather than wait. A stop
-   * or reset that did not get it — someone else holds it, or it could not be
-   * asked for — has touched nothing, so the forward this Console holds stays:
-   * the host is let go here only when it was opened for this, and the caller
-   * must not release it again.
+   * Take the lock for a stop or reset, refusing rather than waiting. On failure
+   * nothing was touched, so a live forward stays; a host opened just for this is
+   * disposed here, and the caller must not release it again.
    */
   private async lockOrRefuse(
     sshHost: string,

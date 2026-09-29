@@ -8,11 +8,6 @@ import {
   waitingForLockMessage,
 } from './managed-switch-server';
 
-/**
- * What a Console says about another one holding a shared server's lock
- * (CHOO-2893): who it is, what it is doing, and what that means here.
- */
-
 const bob: ServerLockHolder = {
   name: 'bob@desk',
   hostAccount: 'bob',

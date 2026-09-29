@@ -20,8 +20,6 @@ const { remoteSwitchServerController: rpc } = await import('./remote-controller'
 beforeEach(() => vi.clearAllMocks());
 
 it('hands the renderer’s shared-server calls to the supervisor for the host they name', async () => {
-  // The renderer reaches the host only through these (CHOO-2893); each must
-  // reach the supervisor with the host and name it was given.
   await rpc.probe('vm-1');
   await rpc.register('vm-1');
   await rpc.connect({ sshHost: 'vm-1', name: 'Team server' });

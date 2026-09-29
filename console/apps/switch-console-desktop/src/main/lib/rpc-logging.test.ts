@@ -12,13 +12,6 @@ vi.mock('./log-context', () => ({
 
 const { withRPCLogContext } = await import('./rpc-logging');
 
-/**
- * Every failed RPC call is logged once, where every call passes. A failure that
- * is a state the page already shows — a stopped server, or a shared one another
- * Console is changing (CHOO-2893) — is not a fault, and is kept out of the
- * error log so real failures are not buried under it.
- */
-
 beforeEach(() => vi.clearAllMocks());
 
 async function fail(error: unknown): Promise<void> {

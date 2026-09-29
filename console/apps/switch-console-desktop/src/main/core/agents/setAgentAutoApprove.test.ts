@@ -59,8 +59,8 @@ describe('setAgentAutoApprove', () => {
   });
 
   it('keeps the choice on the host, then the row, then rewrites a watcher that starts sessions', async () => {
-    // The choice first, so a watcher write racing this one takes the new value
-    // instead of putting the old one back; the push writes the watcher from the row.
+    // The choice first, so a racing watcher write takes the new value instead
+    // of putting the old one back.
     listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
 
     await setAgentAutoApprove({ agentId: 'agent-1', enabled: true });
@@ -69,9 +69,8 @@ describe('setAgentAutoApprove', () => {
   });
 
   it('says the watcher lags when the push does not reach the host, keeping the saved choice', async () => {
-    // The choice on the host is the source of truth and holds the new value, so
-    // the row does too; putting it back would have the next watcher write
-    // silently turn it on again.
+    // The host's choice already holds the new value; rolling the row back
+    // would let the next watcher write silently undo it.
     listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
     pushRemoteAutoApprove.mockRejectedValueOnce(new Error('host unreachable'));
 

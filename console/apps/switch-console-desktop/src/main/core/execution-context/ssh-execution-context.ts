@@ -177,11 +177,9 @@ export class SshExecutionContext implements IExecutionContext {
           stderr += d.toString('utf-8');
         });
 
-        // ssh2 passes the exit status when the server sent one, null with a
-        // signal name when the command was killed, and nothing at all when the
-        // channel closed without either — a dropped connection. Only a 0 is a
-        // success: taking the other two for one hands the caller whatever
-        // partial output arrived as if it were the answer.
+        // ssh2 passes the exit status, null plus a signal when the command was
+        // killed, or nothing when the channel closed without either (a dropped
+        // connection). Only 0 is success; partial output is not an answer.
         stream.on('close', (code: number | null | undefined, signal?: string) => {
           settle(() => {
             const cleanStdout = stripExecBanner(stdout, EXEC_STDOUT_MARKER);

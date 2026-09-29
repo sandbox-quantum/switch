@@ -47,8 +47,8 @@ export type DeleteAgentOptions = {
   /**
    * Also tear down what was provisioned on disk for this agent (its
    * `.switch/agents/<name>.json` credentials, provider definition files, launch
-   * profile) and kill its sidecar on the host. Implied for a remote agent by
-   * `deleteInSwitch`: an agent deleted in Switch is removed from its host too.
+   * profile) and kill its sidecar on the host. Implied by `deleteInSwitch` for
+   * a remote agent.
    *
    * Required with no default, because the right answer depends on who owns the
    * on-disk state: an agent this Console created can carry its files out, but an
@@ -226,9 +226,8 @@ async function removeAgent(
   location: Location | null,
   options: DeleteAgentOptions
 ): Promise<void> {
-  // Deleting a remote agent in Switch removes it from its host too: a deleted
-  // identity has nothing left to run, and the credentials left for it there
-  // open nothing. A plain remove leaves it running on the host (CHOO-2893).
+  // A remote agent deleted in Switch has nothing left to run, so it is removed
+  // from its host too.
   const removeFiles =
     options.removeProvisionedFiles || (options.deleteInSwitch && !!location?.sshHost);
   const terminate = removeFiles || options.deleteInSwitch;

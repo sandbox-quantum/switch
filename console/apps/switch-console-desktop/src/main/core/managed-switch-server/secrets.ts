@@ -82,12 +82,8 @@ export async function readSecrets(
   return stored.kind === 'present' ? withRuntimePassword(stored.secrets).secrets : null;
 }
 
-/**
- * Keep `secrets` as this desktop's copy of the host's bundle — the cache a
- * remote stack's settings are adopted into from the host, which is their
- * source of truth (CHOO-2893). Replaces whatever copy was kept before: a
- * bundle the host no longer runs with is one that opens nothing.
- */
+/** Cache `secrets` as this desktop's copy of the host's bundle, replacing any
+ * earlier copy. The host, not this cache, is the source of truth. */
 export async function storeSecrets(
   host: Pick<ServerHost, 'secretsKey'>,
   secrets: LocalServerSecrets

@@ -95,8 +95,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const serverId = useServerId();
   const store = switchServersStore;
   const server = store.servers.find((s) => s.id === serverId);
-  // A remote server is shared by everyone with access to its host
-  // (CHOO-2893), so restarting it from a notice reaches them too.
+  // A remote server is shared, so restarting it from a notice reaches everyone.
   const remoteHost = server?.managementKind === 'remote' ? server.sshHost : null;
   const confirm = useSharedActionConfirm(remoteHost);
   const showEditServerModal = useShowModal('addServerModal');
@@ -267,8 +266,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                 <DropdownMenuSeparator />
                 {/* Only a server Switch Console runs is one it can delete; for
                     anyone else's, all we can do is let go of it. A remote one
-                    offers both, since its host is shared (CHOO-2893). All stay
-                    red: either way every agent pointed at this server loses it. */}
+                    offers both, since its host is shared. All stay red: either
+                    way every agent pointed at this server loses it. */}
                 <DropdownMenuItem
                   variant="destructive"
                   onClick={() =>

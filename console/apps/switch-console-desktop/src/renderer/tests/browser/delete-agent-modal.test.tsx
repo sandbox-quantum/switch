@@ -10,11 +10,6 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
-/**
- * Removing a remote agent (CHOO-2893): a plain remove leaves it running on its
- * host, removing it from the host is a choice, and deleting it in Switch takes
- * it off the host as well — so that choice follows and cannot be unticked.
- */
 import {
   DeleteAgentModal,
   type DeleteAgentModalResult,

@@ -64,9 +64,8 @@ class LogContext:
     agent_id: str | None = None
     room_id: str | None = None
     user_id: str | None = None
-    # Which Switch Console made the request, when one says so. Several people
-    # can share one sign-in on a server a Console runs for them, so `user_id`
-    # alone cannot tell their actions apart; see `request_context.py`.
+    # The Switch Console that sent the request (see `request_context.py`):
+    # people can share one sign-in, so `user_id` alone cannot tell them apart.
     console_id: str | None = None
     console_name: str | None = None
 

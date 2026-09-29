@@ -80,7 +80,6 @@ describe('recording a Console on the host', () => {
       hostAccount: 'alice',
     });
     expect(rest).toBe('');
-    // No value is spliced into the script; each arrives as data.
     expect(script).not.toContain('alice');
     expect(script).toContain('read -r entry');
   });
@@ -117,7 +116,6 @@ describe('recording a Console on the host', () => {
 
   it('asks a host which account it is once, not per record or per connection', async () => {
     const { host: h, exec } = host();
-    // Another connection to the same host, as each operation opens.
     const again = { ...h, ctx: { exec } } as unknown as StackStateHost;
 
     await writeRecord(h, 'started');
@@ -175,8 +173,7 @@ describe('the record script, run for real', () => {
   }
 
   it('does everything under the state mutex, so two Consoles recording at once lose nothing', () => {
-    // Whether the mutex holds across containers is tested against a real
-    // volume, in stack-lock.docker.test.ts.
+    // Whether the mutex holds is tested in stack-lock.docker.test.ts.
     expect(RECORD_SCRIPT.startsWith(`set -e\n${UNDER_STATE_MUTEX}\n`)).toBe(true);
   });
 
@@ -184,8 +181,7 @@ describe('the record script, run for real', () => {
   const line = (action: string) => JSON.stringify({ action });
 
   it('fails, rather than reporting a record, when the write does not happen', () => {
-    // A full disk, or a read-only volume: the supervisor shows a failed record
-    // instead of clearing the warning for one that was never written.
+    // A read-only dir stands in for a full disk or read-only volume.
     mkdirSync(path.join(state, 'consoles'));
     chmodSync(path.join(state, 'consoles'), 0o500);
 

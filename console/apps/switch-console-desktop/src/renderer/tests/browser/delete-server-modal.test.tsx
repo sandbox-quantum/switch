@@ -53,11 +53,6 @@ vi.mock('@renderer/features/locations/stores/agents-store', () => ({
   },
 }));
 
-/**
- * Removing a server Switch Console runs on a shared remote host (CHOO-2893):
- * leaving is the default, destroying it for everyone is a typed choice, and it
- * says who else that choice reaches.
- */
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 import '@renderer/index.css';

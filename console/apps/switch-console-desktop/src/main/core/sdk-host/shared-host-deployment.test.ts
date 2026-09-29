@@ -56,8 +56,6 @@ it.each([false, true])(
 );
 
 it('finds a watcher’s state root on a host without deploying anything there', async () => {
-  // For a one-field edit beside the watcher (CHOO-2893): uploading and pruning
-  // the host bundle would be work for nothing.
   const { root } = await resolveWatcherRoot(
     { kind: 'ssh', connectionId: 'conn-1', host: 'vm-1', dir: '/work' } as never,
     '/work',

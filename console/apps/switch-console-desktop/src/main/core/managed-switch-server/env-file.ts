@@ -115,14 +115,9 @@ export function readEnvValue(env: string, key: string): string | null {
 }
 
 /**
- * Everything a stack's `.env` pins that another Console needs to run the same
- * stack: the ports it publishes, the credentials its volumes were created with,
- * and the switch-core version it last asked for.
- *
- * `dbRuntimePassword` is null for a `.env` written before switch-core split its
- * database roles (CHOO-2623): that file named the schema owner as `DB_USER`
- * and had no runtime role at all. The caller fills it in rather than refusing —
- * see `withRuntimePassword` in `secret-values.ts` for why that is safe.
+ * What another Console needs to run the same stack. `dbRuntimePassword` is
+ * null for a `.env` from before switch-core split its database roles; the
+ * caller fills it in (see `withRuntimePassword` in `secret-values.ts`).
  */
 export type StackEnv = {
   ports: LocalServerPorts;
@@ -132,10 +127,8 @@ export type StackEnv = {
 
 export type StackEnvReading =
   | { kind: 'complete'; env: StackEnv }
-  /** The file is there but does not carry everything a stack needs. Named
-   * rather than guessed: minting a replacement for any of these would lock the
-   * stack out of a volume the original created, so the caller must refuse or
-   * fall back to a copy it trusts — and say which keys were missing. */
+  /** Never guessed: minting a replacement for any of these would lock the
+   * stack out of a volume the original created. */
   | { kind: 'incomplete'; missing: string[] };
 
 const PORT_KEYS: [keyof LocalServerPorts, string][] = [
@@ -194,14 +187,9 @@ function readDatabasePasswords(
 }
 
 /**
- * The keys of a stack's `.env` whose values differ from a copy of its settings
- * — empty when the copy agrees with everything the file does carry.
- *
- * For a `.env` that is incomplete: a desktop's copy may fill what the file is
- * missing only when it is demonstrably the same stack's, since a copy from
- * before someone else reset the stack would lock it out of the database the
- * reset created. Only what pins the stack is compared — ports and credentials
- * — not what a start rewrites anyway, such as the version.
+ * Keys whose values differ from `copy`, ignoring keys the file lacks. A
+ * desktop's copy may fill an incomplete `.env` only when it agrees: a copy from
+ * before someone else's reset would lock the stack out of its new database.
  */
 export function keysDisagreeing(
   env: string,
@@ -228,17 +216,9 @@ export function keysDisagreeing(
 }
 
 /**
- * Read a stack's generated `.env` back into the values {@link buildEnvFile}
- * wrote it from — the inverse of that function, kept beside it so the two
- * cannot drift.
- *
- * Two layouts are accepted, because a stack keeps whatever file its last start
- * wrote and another Console may be the first to read it after an upgrade:
- *
- * - current: `DB_OWNER_PASSWORD` is the schema owner's (`dbPassword`) and
- *   `DB_PASSWORD` the runtime role's (`dbRuntimePassword`);
- * - before the role split: no `DB_OWNER_PASSWORD`, `DB_USER=postgres`, and
- *   `DB_PASSWORD` the owner's. The runtime password is then null.
+ * The inverse of {@link buildEnvFile}. Accepts the current layout
+ * (`DB_OWNER_PASSWORD` the owner's, `DB_PASSWORD` the runtime role's) and the
+ * one from before the role split (`DB_USER=postgres`, `DB_PASSWORD` the owner's).
  */
 export function readStackEnv(env: string): StackEnvReading {
   const missing: string[] = [];

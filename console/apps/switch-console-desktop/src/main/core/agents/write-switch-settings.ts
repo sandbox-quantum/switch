@@ -211,9 +211,8 @@ export function removeSwitchSettings(
     env !== null &&
     ('SWITCH_API_ENDPOINT' in env || 'SWITCH_API_TOKEN' in env || 'SWITCH_AGENT_ID' in env);
   if (!hasSwitchCreds) return { kind: 'skip' };
-  // The credentials of another agent sharing the directory — the one-file
-  // layout from before each agent had its own — are that agent's to keep.
-  // A file that names no agent is a write that was cut short, and goes.
+  // Another agent's credentials in the legacy one-file layout are its to keep.
+  // A file naming no agent is an interrupted write, and goes.
   if (typeof env.SWITCH_AGENT_ID === 'string' && env.SWITCH_AGENT_ID !== switchAgentId) {
     return { kind: 'skip' };
   }

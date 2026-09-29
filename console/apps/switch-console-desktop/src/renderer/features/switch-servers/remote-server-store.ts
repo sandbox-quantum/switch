@@ -57,7 +57,6 @@ export class RemoteServerStore {
   private readonly logsByHost = new Map<string, string[]>();
   private readonly dockerByHost = new Map<string, DockerAvailability>();
   private readonly busyHosts = new Set<string>();
-  /** What each host was last found to have of a stack (CHOO-2893). */
   private readonly probes = new Map<string, RemoteStackProbe>();
   private readonly probingHosts = new Set<string>();
   /** Who uses each host's stack, as recorded on the host. */
@@ -146,8 +145,8 @@ export class RemoteServerStore {
   }
 
   /** Have the main process look at a stack shown as stopped again, since a
-   * stopped one is sent nothing that would notice another Console starting it
-   * (CHOO-2893). What it finds arrives as a status. */
+   * stopped one is sent nothing that would notice another Console starting it.
+   * What it finds arrives as a status. */
   async refresh(sshHost: string): Promise<void> {
     if (this.isHostBlocked(sshHost)) return;
     try {
@@ -157,8 +156,8 @@ export class RemoteServerStore {
     }
   }
 
-  /** Stop waiting for another Console's hold on the host's stack (CHOO-2893).
-   * Whatever was waiting ends having changed nothing, and says so itself. */
+  /** Stop waiting for another Console's hold on the host's stack. Whatever was
+   * waiting ends having changed nothing, and says so itself. */
   async cancelWait(sshHost: string): Promise<void> {
     try {
       await rpc.remoteSwitchServer.cancelWait(sshHost);
@@ -282,9 +281,9 @@ export class RemoteServerStore {
   }
 
   /**
-   * Join the stack already running on `sshHost` (CHOO-2893). Anything short of
-   * joining it re-reads the host, so the step shows what is there now — a
-   * stack found stopped offers Start instead.
+   * Join the stack already running on `sshHost`. Anything short of joining it,
+   * a cancelled wait included, re-reads the host so the step shows what is
+   * there now — a stack found stopped offers Start instead.
    */
   async connect(sshHost: string, name: string): Promise<ConnectRemoteServerResult | null> {
     runInAction(() => {
@@ -312,7 +311,6 @@ export class RemoteServerStore {
           this.error = result.message;
         });
       }
-      // A cancelled wait included: the step shows what is there now.
       if (result.kind !== 'connected') void this.probe(sshHost);
       return result;
     } catch (cause) {
@@ -340,10 +338,8 @@ export class RemoteServerStore {
 
   /**
    * Stop using the server on `sshHost` from this Console, leaving it running
-   * for everyone else (CHOO-2893): the stack, its data and its other users are
-   * untouched, while this Console forgets the server, its forward and its
-   * credentials. Agents are unlinked and kept, as for any removal. Returns
-   * false when it failed, with `error` saying why.
+   * for everyone else. Agents are unlinked and kept, as for any removal.
+   * Returns false when it failed, with `error` saying why.
    */
   async disconnect(sshHost: string, serverId: string): Promise<boolean> {
     runInAction(() => {
@@ -366,11 +362,10 @@ export class RemoteServerStore {
   }
 
   /**
-   * Delete the server on `sshHost` for everyone: reset its stack — its data,
-   * its agents — and then leave it, so this Console also stops counting as one
-   * of its users (CHOO-2893). The reset keeps the register, which says who did
-   * it. Returns false when it failed, with `error` saying why; a server whose
-   * stack could not be reset is kept.
+   * Delete the server on `sshHost` for everyone: reset its stack, then
+   * disconnect so this Console stops counting as one of its users. Returns
+   * false when it failed, with `error` saying why; a server whose stack could
+   * not be reset is kept.
    */
   async deleteForEveryone(sshHost: string, serverId: string): Promise<boolean> {
     runInAction(() => {
@@ -427,8 +422,7 @@ export class RemoteServerStore {
           this.error = result.message;
         });
       } else if (result.kind === 'cancelled') {
-        // The user stopped waiting for another Console; nothing was changed,
-        // and the status is back to what it was.
+        // The user stopped waiting for another Console; nothing was changed.
       } else {
         await switchServersStore.init();
         void this.loadRegister(sshHost);

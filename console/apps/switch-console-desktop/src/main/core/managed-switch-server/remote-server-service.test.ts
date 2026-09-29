@@ -8,10 +8,8 @@ import type { StackOnHost } from './stack-state';
 import type * as StackState from './stack-state';
 
 /**
- * The remote supervisor's side of shared stacks (CHOO-2893): joining one,
- * leaving one without touching it, and keeping its view of one that other
- * Consoles can stop, restart or reset — taken from the host each time rather
- * than remembered.
+ * The remote supervisor's side of shared stacks: joining one, leaving one
+ * without touching it, and following what other Consoles do to it.
  */
 
 const requireReachable = vi.hoisted(() => vi.fn());
@@ -101,8 +99,8 @@ vi.mock('./console-register', () => ({
   hostAccount: async () => 'me',
 }));
 
-/** The server lock (CHOO-2893): taken and given back in order, or — per test —
- * held by someone else. The real module's errors and constants are kept. */
+/** The server lock, recording takes and releases in order unless a test holds it
+ * for someone else. The real module's errors and constants are kept. */
 const lockEvents = vi.hoisted(() => [] as string[]);
 const acquireServerLock = vi.hoisted(() =>
   vi.fn(async (_host: unknown, claim: { action: string }, _opts: unknown) => {
@@ -123,8 +121,6 @@ vi.mock('./stack-lock', async (importOriginal) => ({
   acquireServerLock,
   readServerLock,
 }));
-/** The KV store, in memory, cleared before each case: what the service keeps
- * across launches. */
 const kvStore = vi.hoisted(() => new Map<string, unknown>());
 vi.mock('@main/db/kv', () => ({
   KV: class {
@@ -271,8 +267,7 @@ describe('connect', () => {
       deployedVersion: '0.11.0',
     });
 
-    // The update is a start from the stack's own settings, made the active
-    // server the way a Connect click does.
+    // Made the active server, as a Connect click does.
     expect(startStack).toHaveBeenCalledWith(
       expect.objectContaining({ host: starting, serverName: 'Team server', activate: true })
     );
@@ -308,7 +303,6 @@ describe('connect', () => {
     expect(await service.connect('vm-1', 'Team server')).toEqual({ kind: 'not-running' });
     expect(service.getStatus('vm-1').phase).toBe('stopped');
     expect(host.dispose).toHaveBeenCalledOnce();
-    // Nothing happened on the host, so there is nothing to record there.
     expect(writeRecord).not.toHaveBeenCalled();
   });
 
@@ -362,8 +356,6 @@ describe('disconnect', () => {
   });
 
   it('leaves the register of a stopped server too, through a host of its own', async () => {
-    // Left listed, this Console would count as a user for two weeks — holding
-    // the others' updates and named in their prompts.
     const host = fakeHost();
     createRemoteServerHost.mockResolvedValue(host);
     getRemoteManagedServer.mockResolvedValue(RECORD);
@@ -501,7 +493,6 @@ describe('picking a shared stack back up', () => {
     await boot(service);
 
     expect(adoptRunningStack).toHaveBeenCalledWith(host, present(true), expect.anything());
-    // Read under the lock, and the lock given back once the read is done.
     expect(lockEvents).toEqual(['take checking', 'release checking']);
     expect(host.establishNetworking).toHaveBeenCalledWith(ports);
     expect(host.dispose).not.toHaveBeenCalled();
@@ -652,8 +643,6 @@ describe('recheck', () => {
       },
     ],
   ])('keeps a running stack running, and its forward, when the host %s', async (_, arrange) => {
-    // A failure to ask says nothing about the stack; dropping the forward on
-    // one would strand a server that is still up, for good.
     const { service, first } = await runningService();
     arrange();
 
@@ -765,7 +754,6 @@ describe('connecting after the stack was brought up to date elsewhere', () => {
   it('drops the update this Console last saw owed', async () => {
     const host = fakeHost();
     createRemoteServerHost.mockResolvedValue(host);
-    // At launch the stack was stopped and behind the pin.
     inspectStack.mockResolvedValue(present(false));
     readVersionStatus.mockResolvedValueOnce({
       deployedVersion: '0.10.0',
@@ -825,7 +813,6 @@ describe('probe', () => {
       drift: null,
       busy: null,
     });
-    // A look, which takes no lock.
     expect(acquireServerLock).not.toHaveBeenCalled();
     expect(JSON.stringify(probe)).not.toContain('admin-pw');
     expect(host.dispose).toHaveBeenCalledOnce();
@@ -1222,8 +1209,8 @@ describe('the server lock', () => {
     return () => free();
   }
 
-  /** Built from the module the service loaded — so call it after loadService —
-   * since the service checks for that module's class. */
+  /** Call after loadService: built from the module the service loaded, whose
+   * class it checks for. */
   async function busyError() {
     const { ServerBusyError } =
       await import('@shared/core/managed-switch-server/managed-switch-server');
@@ -1385,8 +1372,6 @@ describe('the server lock', () => {
 
     await expect(service.stop('vm-1')).rejects.toThrow(/no daemon/);
 
-    // Nothing was touched: the stack still runs for everyone, and this
-    // Console can still reach it.
     expect(stopStack).not.toHaveBeenCalled();
     expect(service.getStatus('vm-1')).toMatchObject({ phase: 'running', error: null });
     expect(live.dispose).not.toHaveBeenCalled();

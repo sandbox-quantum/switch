@@ -71,12 +71,9 @@ export function managedServerStoppedPhase(server: SwitchServer): LocalServerPhas
 }
 
 /**
- * A call to a managed server got no answer at all. For a remote stack this
- * Console last saw running, the host is read again — at most every so often —
- * because a remote stack is shared (CHOO-2893): the likeliest reason is that
- * another Console stopped, restarted or reset it, and reading the host turns
- * that into a status the user can see instead of a string of failed calls.
- * Nothing for the local stack, which nobody else can change under us.
+ * A call to a managed server got no answer. A remote stack is shared, so the
+ * likeliest cause is another Console stopping or resetting it: re-read the host
+ * (throttled) so that shows as a status rather than a string of failed calls.
  */
 export function noteManagedServerUnanswered(server: SwitchServer): void {
   if (!server.managed || server.managementKind !== 'remote' || server.sshHost === null) return;

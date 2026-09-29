@@ -8,12 +8,9 @@ import type { LockClaim, LockTiming, ServerLease } from './stack-lock';
 import type { StackStateHost } from './stack-state';
 
 /**
- * The server lock and the state mutex against a real state volume, through
- * the real helper image (CHOO-2893). Nothing short of that shows the lock
- * holding: it rests on `flock` across throwaway containers sharing one
- * volume, and on the host's clock — neither of which a laptop's shell has
- * (macOS has no flock at all). Needs a Docker daemon, so it is skipped,
- * visibly, where there is none; CI runs it on Linux.
+ * Only a real volume and helper image show the lock holding: it rests on
+ * `flock` across containers sharing one volume, and on the host's clock.
+ * Skipped where there is no Docker daemon; CI runs it on Linux.
  */
 
 vi.mock('@main/core/switch-servers/console-identity', () => ({
@@ -46,7 +43,6 @@ function dockerAvailable(): boolean {
 
 const DOCKER = dockerAvailable();
 
-/** A host whose docker is this machine's. */
 function localHost(project: string): StackStateHost {
   return {
     label: 'test-host',
@@ -285,9 +281,7 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
   }, 60_000);
 
   it('is not taken when its file cannot be written, so nobody else takes it too', async () => {
-    // A write that cannot happen — here the temp file's name is taken by a
-    // directory; on a real host, a full disk — must fail the take, not answer
-    // "taken" over an empty lock file the next Console would read as free.
+    // A directory in the temp file's place stands in for a full disk.
     await writeStateVolume(host, 'mkdir /state/.lock.tmp', '', []);
 
     await expect(take(claim())).rejects.toThrow();

@@ -4,14 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * An environment for running the state volume's scripts in this machine's
- * `sh`, against a directory standing in for the volume.
- *
- * The scripts take `flock` on the state mutex, which the helper image has and
- * macOS does not. Where there is none, a stand-in that takes nothing is put
- * first on the PATH: these tests are about what the scripts write, one at a
- * time. Whether the mutex holds is tested against a real volume, in
- * stack-lock.docker.test.ts.
+ * For running the state scripts in local `sh`. Where there is no `flock`
+ * (macOS), a no-op stand-in goes first on the PATH: these tests run one script
+ * at a time, and stack-lock.docker.test.ts tests the mutex on a real volume.
  */
 export function stateScriptEnv(): NodeJS.ProcessEnv {
   try {

@@ -40,17 +40,9 @@ export function generateSecrets(): LocalServerSecrets {
 }
 
 /**
- * `dbRuntimePassword` did not exist before switch-core split its database
- * connection into an owner role and a restricted runtime role, so a bundle
- * stored before that split parses as `LocalServerSecrets` with that one field
- * missing — and a stack's `.env` written before that split names no runtime
- * role either (see `readStackEnv`). Filling it in is safe in a way regenerating the bundle is not:
- * nothing on the existing Postgres volume was ever created with it, since the
- * runtime role did not exist yet either. `init-db` creates that role and
- * `ALTER ROLE`s its password idempotently on every start (see
- * `deploy/local/standalone-docker-compose.yml`), so whatever value lands here
- * simply becomes the role's password on the next start, the same way a
- * freshly generated bundle's would.
+ * Fill in `dbRuntimePassword` for secrets written before switch-core added its
+ * restricted runtime role. Safe where regenerating the bundle is not: nothing on
+ * the existing volume used it, and `init-db` sets the role's password on every start.
  */
 export function withRuntimePassword(secrets: LocalServerSecrets): {
   secrets: LocalServerSecrets;

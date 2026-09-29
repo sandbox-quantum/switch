@@ -421,8 +421,7 @@ export class SwitchServersStore {
 
   /**
    * Re-read what a server's removal leaves behind in this store. Public for the
-   * other way a record goes: disconnecting from a shared remote server, which
-   * the remote store drives.
+   * remote store, which disconnects from a shared remote server itself.
    */
   async forgetRemovedServer(serverId: string): Promise<void> {
     const [servers, activeServerId] = await Promise.all([

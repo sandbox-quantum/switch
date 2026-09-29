@@ -544,9 +544,8 @@ export const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
     });
   }, [store]);
 
-  // A host is shared by everyone with access to it (CHOO-2893), so what is
-  // offered depends on what is already there: look before offering anything —
-  // and again when a host that was out of reach comes back.
+  // What is offered depends on what the host already has, so look first, and
+  // again when a host that was out of reach comes back.
   const hostBlocked = sshHost ? store.isHostBlocked(sshHost) : false;
   useEffect(() => {
     if (!sshHost || hostBlocked) return;
@@ -563,8 +562,7 @@ export const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   const logs = sshHost ? store.logsFor(sshHost) : [];
   const probe = sshHost ? store.probeFor(sshHost) : null;
   const action = sshHost ? remoteSetupAction(sshHost, probe, store.isProbing(sshHost)) : null;
-  // Someone else changing the server right now, which Start or Connect will
-  // wait for (CHOO-2893).
+  // Another Console changing the server right now; Start or Connect will wait for it.
   const busy = probe?.kind === 'absent' || probe?.kind === 'present' ? probe.busy : null;
   const waiting = status?.waitingFor ?? null;
   const joining = action?.kind === 'connect';
@@ -577,8 +575,7 @@ export const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
     !hostBlocked &&
     (action?.kind === 'connect' || action?.kind === 'start');
   const updating = action?.kind === 'connect' && action.updatesTo !== null;
-  // Joining an older server updates it for everyone using it, so the step
-  // names who that is (CHOO-2893).
+  // Joining an older server updates it for everyone using it, so name who that is.
   useEffect(() => {
     if (sshHost && updating) void store.loadRegister(sshHost);
   }, [store, sshHost, updating]);
@@ -773,8 +770,8 @@ export const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
 });
 
 /**
- * What the chosen host already has, and so what the primary button will do
- * (CHOO-2893). Silent for an empty host, where Start does what it always did.
+ * What the chosen host already has, and so what the primary button will do.
+ * Renders nothing for an empty host.
  */
 export function RemoteStackNotice({
   sshHost,

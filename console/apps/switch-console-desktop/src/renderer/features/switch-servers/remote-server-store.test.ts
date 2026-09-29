@@ -1,10 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-/**
- * The renderer's side of shared remote servers (CHOO-2893): looking before
- * offering anything, joining without starting, and leaving without deleting.
- */
-
 const rpcRemote = vi.hoisted(() => ({
   probe: vi.fn(),
   connect: vi.fn(),
@@ -93,8 +88,6 @@ describe('probe', () => {
   });
 
   it('stops looking, and says why, when the host cannot be asked', async () => {
-    // Otherwise the setup step says it is looking for a server forever, with
-    // nothing offered and nothing to press.
     rpcRemote.probe.mockRejectedValue(new Error('ssh: connection refused'));
     const store = new RemoteServerStore();
 
@@ -178,9 +171,8 @@ describe('connect', () => {
 
 describe('deleting a server for everyone', () => {
   it('resets its stack and then leaves it, forgetting what it knew of the host', async () => {
-    // Left on the register, this Console would count as a user for two weeks,
-    // holding the others' updates; and a stale register kept here would decide
-    // the "for everyone?" question on the next server on this host.
+    // Left on the register, this Console would count as a user and hold the
+    // others' updates; a stale register here would mislead the next server.
     const store = new RemoteServerStore();
     await store.loadRegister('vm-1');
 

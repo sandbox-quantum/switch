@@ -58,9 +58,8 @@ export function sharedWithOthers(register: StackRegister | null, now: Date): boo
 }
 
 /**
- * Who else an action on a shared server reaches, for its confirmation or
- * notice: each other Console with when it was last seen, or that it could not
- * be told. Null when nobody else uses it.
+ * Who else an action on a shared server reaches, or that it could not be told.
+ * Null when nobody else uses it.
  */
 export function whoElseSentence(register: StackRegister | null, now: Date): string | null {
   if (register === null) return 'Switch Console could not check who else uses it.';

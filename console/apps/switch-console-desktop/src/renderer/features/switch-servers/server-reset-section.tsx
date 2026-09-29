@@ -28,8 +28,7 @@ export function ServerResetSection({
 }: {
   /** Names the stack being destroyed — the confirmation has to say which. */
   dialogTitle: string;
-  /** Whether other people can be using the stack: true for a remote one, which
-   * everyone with access to its host can connect to (CHOO-2893). */
+  /** Whether other people can be using the stack: true for a remote one. */
   shared: boolean;
   /** Who else it reaches, for the confirmation to name — or that it could not
    * be told; null when nobody. */

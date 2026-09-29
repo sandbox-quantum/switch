@@ -3,11 +3,8 @@ import type { LockClaim, LockTiming } from './stack-lock';
 import type * as StackState from './stack-state';
 import type { StackStateHost } from './stack-state';
 
-/**
- * The server lock's own logic (CHOO-2893) — reading the script's answers,
- * waiting, renewing, giving back — with the host's answers scripted. That the
- * script itself holds on a real volume is tested in stack-lock.docker.test.ts.
- */
+/** The host's answers are scripted here; stack-lock.docker.test.ts runs the
+ * script against a real volume. */
 
 const runStateScript = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string>>());
 const readStateVolume = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string>>());
@@ -51,7 +48,6 @@ const timing: LockTiming = {
   pollEveryMs: 5_000,
 };
 
-/** The lock file as the script writes it. */
 function lockFile(fields: { expires: number; since: number; action?: string; name?: string }) {
   return [
     'switch-console-lock v1',

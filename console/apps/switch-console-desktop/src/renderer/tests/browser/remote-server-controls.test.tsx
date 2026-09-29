@@ -72,11 +72,6 @@ vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
   },
 }));
 
-/**
- * A remote stack is shared by everyone with access to its host (CHOO-2893):
- * the controls say so, surface the host's own notices, and gate Stop/Restart
- * behind a confirmation once someone else has used it lately.
- */
 import { RemoteServerControls } from '@renderer/features/switch-servers/RemoteServerControls';
 import '@renderer/index.css';
 

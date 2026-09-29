@@ -16,20 +16,11 @@ import {
 import { CONSOLE_ID_PATTERN, UNDER_STATE_MUTEX } from './state-mutex';
 
 /**
- * Who uses a shared remote stack, and what they last did to it — kept on the
- * stack's host, in its state volume, beside the settings (CHOO-2893).
- *
- * Everyone sharing the stack signs in as its one admin account, so nothing on
- * the server can say whether it was you or a colleague who stopped it an hour
- * ago. Each Console records itself here instead: a register of the Consoles
- * that use the stack (`consoles/<id>.json`, one per Console, rewritten each
- * time it is seen) and a log of what they did (`activity.jsonl`, appended).
- * It is what the server page lists as the Consoles using the server, and what
- * a Stop or a Reset names as the people it will affect.
- *
- * Readable by every account that can reach the host's Docker daemon, which is
- * the set of people who can run the stack at all. It is a record for them, not
- * a control: nothing is allowed or refused on the strength of it, and a
+ * Who uses a shared remote stack and what they last did to it, kept in its
+ * state volume (CHOO-2893). Everyone signs in to the server as its one admin,
+ * so the server cannot say who stopped it; each Console records itself in
+ * `consoles/<id>.json` and an appended `activity.jsonl` instead. It is a
+ * record, not a control: nothing is allowed or refused on its strength, and a
  * Console that fails to write it still does what it was asked.
  */
 
@@ -41,12 +32,9 @@ const ACTIVITY_KEPT = 500;
 /** Separates the two halves of a read, which come back as one stdout. */
 const ACTIVITY_MARKER = '---switch-console-activity---';
 
-/**
- * How a record touches the register: `seen` refreshes this Console's entry,
- * `act` refreshes it and adds a line of activity, and `leave` adds the line and
- * takes the entry out — a Console that has disconnected no longer uses the
- * stack, and must not go on being named to everyone else as if it did.
- */
+/** `seen` refreshes this Console's entry, `act` also adds an activity line,
+ * and `leave` adds the line and removes the entry, so a disconnected Console
+ * is no longer named as using the stack. */
 type RecordMode = 'seen' | 'act' | 'leave';
 
 function recordModeFor(action: StackActivityAction | null): RecordMode {
@@ -54,18 +42,9 @@ function recordModeFor(action: StackActivityAction | null): RecordMode {
   return action === 'disconnected' ? 'leave' : 'act';
 }
 
-/**
- * Applies a {@link RecordMode} (`$2`) for the Console `$1`. The entry and the
- * activity line are read from stdin, so no value is spliced into the script
- * and none has to be quoted. The activity file is trimmed once it doubles past
- * what is kept — under the state mutex, as the whole script is, so two
- * Consoles recording at once cannot lose each other's lines to a trim or
- * write the same temp file. Exported for the test that runs it against a real
- * directory.
- */
+/** Applies a {@link RecordMode} (`$2`) for the Console `$1`, reading the entry
+ * and activity line from stdin so no value is spliced into the script. */
 export const RECORD_SCRIPT = [
-  // A write that fails fails the record, which the supervisor then shows,
-  // rather than reporting one that did not happen.
   'set -e',
   UNDER_STATE_MUTEX,
   'umask 077',
@@ -101,9 +80,8 @@ const ACTIONS: readonly StackActivityAction[] = [
   'disconnected',
 ];
 
-/** The account each host is reached as, by its label. An SSH alias logs in as
- * one account, so it is asked once per run of this Console rather than for
- * every operation, each of which opens a host of its own. */
+/** By host label. An SSH alias always logs in as one account, so it is asked
+ * once per run rather than per operation. */
 const accounts = new Map<string, Promise<string>>();
 
 export function hostAccount(host: StackStateHost): Promise<string> {
@@ -119,13 +97,8 @@ export function hostAccount(host: StackStateHost): Promise<string> {
   return account;
 }
 
-/**
- * Record this Console on the stack's host: refresh its register entry and,
- * for anything but a quiet sighting (`action` null), add a line of activity.
- * A disconnect adds its line and takes the entry out instead of refreshing it.
- * Throws on failure: the supervisor decides what a failed record means for
- * the operation it describes.
- */
+/** `action` null is a quiet sighting that only refreshes the entry. Throws on
+ * failure: the supervisor decides what a failed record means for its operation. */
 export async function writeRecord(
   host: StackStateHost,
   action: StackActivityAction | null
@@ -216,12 +189,8 @@ function parseLines<T>(
   return { items, bad };
 }
 
-/**
- * The register and recent activity for the stack on `host`, newest first.
- * Empty — not an error — on a host whose stack has no state volume yet.
- * Lines that do not parse are skipped and counted in the log rather than
- * failing the read: one Console's bad write must not hide everyone else.
- */
+/** Newest first; empty on a host with no state volume yet. Unparseable lines
+ * are skipped and logged: one Console's bad write must not hide everyone else. */
 export async function readRegister(host: StackStateHost): Promise<StackRegister> {
   const self = (await getConsoleIdentity()).id;
   if (!(await stateVolumeExists(host))) return { self, consoles: [], activity: [] };

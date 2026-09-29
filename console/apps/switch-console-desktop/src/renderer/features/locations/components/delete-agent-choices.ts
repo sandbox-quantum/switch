@@ -4,10 +4,8 @@
  *
  * On a shared SSH host those files may belong to another install — an agent
  * loaded rather than created — so removing them is the operator's choice,
- * except when the agent is also deleted in Switch: a deleted identity has
- * nothing left to run, so it goes from the host too (CHOO-2893). On this
- * machine Console put the files there and nothing else reads them, so leaving
- * stale credentials behind is not a choice worth offering.
+ * unless the agent is also deleted in Switch and has nothing left to run. On
+ * this machine Console put the files there and nothing else reads them.
  */
 export function removesProvisionedFiles(input: {
   sshHost: string | null;

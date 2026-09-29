@@ -75,8 +75,6 @@ describe('managedTelemetryNotice', () => {
   });
 
   it('does not offer to turn sharing on over others using the server', () => {
-    // A start keeps a shared server's sharing off over them, so a restart
-    // from here would change nothing.
     expect(
       managedTelemetryNotice({
         running: true,

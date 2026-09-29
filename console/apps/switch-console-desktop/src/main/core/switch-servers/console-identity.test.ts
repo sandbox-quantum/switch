@@ -87,7 +87,6 @@ describe('the console name', () => {
   });
 
   it('says unknown for a user or host name nothing of which the server would keep', async () => {
-    // A bare "@" would tell nobody apart in the list of who uses a server.
     os.userInfo.mockReturnValue({ username: '☃' });
     os.hostname.mockReturnValue('☃☃');
     const { consoleName } = await loadModule();
@@ -103,7 +102,6 @@ describe('the console name', () => {
   });
 
   it('warns about an unreadable desktop user once, however often the name is asked for', async () => {
-    // It is asked for on every request to a managed server.
     os.userInfo.mockImplementation(() => {
       throw new Error('no passwd entry');
     });

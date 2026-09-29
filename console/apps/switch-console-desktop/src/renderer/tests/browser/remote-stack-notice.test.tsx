@@ -10,11 +10,6 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
-/**
- * What joining or starting a stack on a shared remote host will do (CHOO-2893):
- * the notice above the primary button in the add-server wizard, testable on
- * its own since it is exported purely for this.
- */
 import { RemoteStackNotice } from '@renderer/features/switch-servers/AddServerModal';
 import '@renderer/index.css';
 

@@ -4,9 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 
 /**
- * A local port that cannot be bound for a reason other than being taken —
- * which a real socket cannot be made to do portably (binding a low port is
- * refused on Linux and allowed on macOS), so the listener is stood in for.
+ * A real socket cannot portably fail to bind for a reason other than being taken
+ * (a low port is refused on Linux, allowed on macOS), so the listener is faked.
  */
 
 class RefusingServer extends EventEmitter {
