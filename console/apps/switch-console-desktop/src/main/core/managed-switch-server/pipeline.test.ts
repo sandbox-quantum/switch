@@ -105,6 +105,7 @@ function options() {
       onUpgrade: vi.fn(),
       signal: new AbortController().signal,
       checkoutRoot: null as string | null,
+      lease: null,
     },
   };
 }

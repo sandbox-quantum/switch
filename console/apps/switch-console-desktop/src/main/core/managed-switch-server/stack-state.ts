@@ -2,6 +2,7 @@ import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import type {
   RemoteStackProbe,
+  ServerLockHolder,
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -13,6 +14,8 @@ import {
 import { classifyVersionDrift, imageTag } from './deployed-version';
 import { readStackEnv, type StackEnv } from './env-file';
 import type { ServerHost } from './host/types';
+import type { ServerLease } from './stack-lock';
+import { WHILE_HOLDING_SERVER_LOCK } from './state-mutex';
 
 /**
  * What a remote host has of a Switch Console-managed stack, read off the host
@@ -302,6 +305,36 @@ export async function writeStateVolume(
   );
 }
 
+/**
+ * Run a shell `script` against the state volume, read-write, returning its
+ * stdout. `scriptArgs` arrive as `$1…` and are visible in the host's process
+ * table, so none may be a secret — a secret goes through
+ * {@link writeStateVolume}'s stdin. Creates the volume on first use.
+ */
+export async function runStateScript(
+  host: StackStateHost,
+  script: string,
+  scriptArgs: string[]
+): Promise<string> {
+  await ensureHelperImage(host);
+  await ensureStateVolume(host);
+  return docker(host, [
+    'run',
+    '--rm',
+    '--network',
+    'none',
+    '--volume',
+    `${stackStateVolume(host)}:${STATE_MOUNT}`,
+    '--entrypoint',
+    'sh',
+    STACK_HELPER_IMAGE,
+    '-c',
+    script,
+    'stack-state',
+    ...scriptArgs,
+  ]);
+}
+
 /** The published `.env`, and the database volume it was written for (null
  * when that was not recorded). */
 export type PublishedCopy = { env: string; stamp: string | null };
@@ -322,9 +355,11 @@ export async function readPublishedCopy(host: StackStateHost): Promise<Published
   return { env, stamp: stamp || null };
 }
 
-/** Reads the stamp from stdin's first line and the copy from the rest. */
+/** Reads the stamp from stdin's first line and the copy from the rest; the
+ * server lock's token is `$1`. */
 const PUBLISH_SCRIPT = [
   'set -e',
+  WHILE_HOLDING_SERVER_LOCK,
   'umask 077',
   'IFS= read -r stamp',
   `cat > "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp"`,
@@ -342,6 +377,11 @@ const PUBLISH_SCRIPT = [
  * atomically, readable only through the daemon. Called on every start with
  * the exact file that start gives compose.
  *
+ * Only while `lease` still holds the server lock, checked in the same step as
+ * the write: a Console that lost the lock while it was away would otherwise
+ * come back and publish its credentials over those of the Console that took
+ * over, which is the lockout the lock exists to prevent.
+ *
  * Stamped with the database volume it is for, when there is one yet — a first
  * start publishes before compose creates it, and stamps after, with
  * {@link stampPublishedEnv}. A stamp from before is removed rather than left
@@ -352,9 +392,13 @@ const PUBLISH_SCRIPT = [
  * Returns whether the copy was stamped, which tells a start whether it still
  * has to stamp it once compose has created the volume.
  */
-export async function publishEnv(host: StackStateHost, env: string): Promise<boolean> {
+export async function publishEnv(
+  host: StackStateHost,
+  env: string,
+  lease: ServerLease
+): Promise<boolean> {
   const stamp = await databaseStamp(host, await listDataVolumes(host));
-  await writeStateVolume(host, PUBLISH_SCRIPT, `${stamp ?? ''}\n${env}`, []);
+  await writeStateVolume(host, PUBLISH_SCRIPT, `${stamp ?? ''}\n${env}`, [lease.token]);
   return stamp !== null;
 }
 
@@ -364,7 +408,7 @@ export async function publishEnv(host: StackStateHost, env: string): Promise<boo
  * first start's copy vouches for nothing, and a later reset from a Console
  * that does not publish would leave it looking current.
  */
-export async function stampPublishedEnv(host: StackStateHost): Promise<void> {
+export async function stampPublishedEnv(host: StackStateHost, lease: ServerLease): Promise<void> {
   const stamp = await databaseStamp(host, await listDataVolumes(host));
   if (stamp === null) {
     log.warn(
@@ -375,11 +419,12 @@ export async function stampPublishedEnv(host: StackStateHost): Promise<void> {
   }
   await writeStateVolume(
     host,
-    `umask 077 && IFS= read -r stamp && ` +
+    `set -e\n${WHILE_HOLDING_SERVER_LOCK}\n` +
+      `umask 077 && IFS= read -r stamp && ` +
       `printf "%s\\n" "$stamp" > "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp" && ` +
       `mv "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
     `${stamp}\n`,
-    []
+    [lease.token]
   );
 }
 
@@ -389,14 +434,18 @@ export async function stampPublishedEnv(host: StackStateHost): Promise<void> {
  * credentials that open nothing. Everything else in the volume — the activity
  * record above all — is kept.
  */
-export async function withdrawPublishedEnv(host: StackStateHost): Promise<void> {
+export async function withdrawPublishedEnv(
+  host: StackStateHost,
+  lease: ServerLease
+): Promise<void> {
   if (!(await stateVolumeExists(host))) return;
   await writeStateVolume(
     host,
-    `rm -f "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" ` +
+    `set -e\n${WHILE_HOLDING_SERVER_LOCK}\n` +
+      `rm -f "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" ` +
       `"${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
     '',
-    []
+    [lease.token]
   );
 }
 
@@ -470,10 +519,16 @@ export function driftOf(
   return version === null ? null : classifyVersionDrift(version, COMPATIBLE_SWITCH_VERSION);
 }
 
-export function probeFromStack(hostLabel: string, stack: StackOnHost): RemoteStackProbe {
+/** `busy` is the Console holding the stack's lock, if any: what the probe
+ * offers waits for it. */
+export function probeFromStack(
+  hostLabel: string,
+  stack: StackOnHost,
+  busy: ServerLockHolder | null
+): RemoteStackProbe {
   switch (stack.kind) {
     case 'absent':
-      return { kind: 'absent' };
+      return { kind: 'absent', busy };
     case 'present':
       return {
         kind: 'present',
@@ -481,6 +536,7 @@ export function probeFromStack(hostLabel: string, stack: StackOnHost): RemoteSta
         deployedVersion: stack.runningVersion ?? stack.env.version,
         shared: stack.published,
         drift: driftOf(stack),
+        busy,
       };
     case 'unshared':
       return {

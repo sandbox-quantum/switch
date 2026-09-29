@@ -245,6 +245,11 @@ export type StartLocalServerResult =
   | { kind: 'matrix-migration-failed'; deployed: string; expected: string; detail: string }
   | { kind: 'error'; message: string };
 
+/** Outcome of starting a remote stack: a start's, or `cancelled` when the user
+ * stopped waiting for another Console's hold on the stack (CHOO-2893) — before
+ * anything was changed, so there is nothing to report as failed. */
+export type StartRemoteServerResult = StartLocalServerResult | { kind: 'cancelled' };
+
 /**
  * Outcome of joining a remote stack another Console started (CHOO-2893).
  * Everything short of `connected` leaves the host exactly as it was.
@@ -264,6 +269,8 @@ export type ConnectRemoteServerResult =
    * so and what fixes it. */
   | { kind: 'unshared'; ownerDir: string | null; message: string }
   | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string }
+  /** The user stopped waiting for another Console's hold on the stack. */
+  | { kind: 'cancelled' }
   | { kind: 'error'; message: string };
 
 /** Something a Console did to a shared remote stack, as recorded on its host. */
@@ -327,13 +334,103 @@ export function othersRecentlySeen(
   });
 }
 
+/** What a Console holding a shared server's lock is doing to it. */
+export type ServerLockAction =
+  | 'starting'
+  | 'updating'
+  | 'connecting'
+  | 'checking'
+  | 'stopping'
+  | 'resetting';
+
+/**
+ * A Console's hold on a shared server's lock (CHOO-2893): whoever changes a
+ * server others use holds it, so two Consoles cannot start, update, stop or
+ * reset it over each other. Both durations are by the host's clock.
+ */
+export type ServerLockHolder = {
+  name: string;
+  hostAccount: string;
+  action: ServerLockAction;
+  heldForSeconds: number;
+  /** When the lock lapses unless its holder renews it — which a Console that
+   * has gone away no longer does. */
+  expiresInSeconds: number;
+};
+
+const LOCK_ACTION_PHRASE: Record<ServerLockAction, string> = {
+  starting: 'starting',
+  updating: 'updating',
+  connecting: 'connecting to',
+  checking: 'checking',
+  stopping: 'stopping',
+  resetting: 'resetting',
+};
+
+function lockHolderName(holder: ServerLockHolder): string {
+  return `${holder.name} (as ${holder.hostAccount})`;
+}
+
+function minutes(seconds: number): string {
+  const whole = Math.max(1, Math.ceil(seconds / 60));
+  return whole === 1 ? 'a minute' : `${whole} minutes`;
+}
+
+/** What a Console waiting for the lock says while it waits. */
+export function waitingForLockMessage(holder: ServerLockHolder): string {
+  return `Waiting for ${lockHolderName(holder)} to finish ${LOCK_ACTION_PHRASE[holder.action]} the server…`;
+}
+
+/** What a check of the server says when the user stopped waiting to make it. */
+export function stoppedWaitingForLockMessage(holder: ServerLockHolder | null): string {
+  const what = holder
+    ? `${lockHolderName(holder)} to finish ${LOCK_ACTION_PHRASE[holder.action]} the server`
+    : 'the server';
+  return `Stopped waiting for ${what}, so this Console has not checked it since.`;
+}
+
+/** What the Add Server step says of a server someone is changing right now. */
+export function lockHolderSentence(holder: ServerLockHolder): string {
+  return (
+    `${lockHolderName(holder)} is ${LOCK_ACTION_PHRASE[holder.action]} this server right now. ` +
+    `Starting or connecting here waits until they are done.`
+  );
+}
+
+/** Why a stop or reset was refused: someone else is changing the server. */
+export function serverBusyMessage(hostLabel: string, holder: ServerLockHolder): string {
+  return (
+    `${lockHolderName(holder)} is ${LOCK_ACTION_PHRASE[holder.action]} the server on ` +
+    `${hostLabel} right now, so nothing was changed. Try again once they are done. If that ` +
+    `Console has gone away, its hold on the server clears by itself within ` +
+    `${minutes(holder.expiresInSeconds)}.`
+  );
+}
+
+/**
+ * A stop or reset of a shared server turned away because another Console is
+ * changing it right now (CHOO-2893). Nothing was touched. Lives with the model,
+ * like {@link ManagedServerStoppedError}, so the RPC boundary and the renderer
+ * can recognise a refusal that is a state to show rather than a fault.
+ */
+export class ServerBusyError extends Error {
+  constructor(
+    readonly holder: ServerLockHolder,
+    hostLabel: string
+  ) {
+    super(serverBusyMessage(hostLabel, holder));
+    this.name = 'ServerBusyError';
+  }
+}
+
 /**
  * What a remote host has of a stack, for the renderer to decide what to offer
  * — Connect, Start, or neither. The main process's reading of the host with
- * every secret left out.
+ * every secret left out. `busy` is the Console changing the stack right now,
+ * if any, which whatever is offered will wait for.
  */
 export type RemoteStackProbe =
-  | { kind: 'absent' }
+  | { kind: 'absent'; busy: ServerLockHolder | null }
   /** A stack whose settings this account can read. `shared` is false for one
    * this account started before settings were shared; connecting shares it.
    * `drift` compares the version its settings name with this build's pin. */
@@ -343,6 +440,7 @@ export type RemoteStackProbe =
       deployedVersion: string | null;
       shared: boolean;
       drift: SwitchVersionDrift | null;
+      busy: ServerLockHolder | null;
     }
   | { kind: 'unshared'; running: boolean; ownerDir: string | null; message: string }
   | { kind: 'incomplete'; running: boolean; missing: string[] }

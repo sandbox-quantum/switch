@@ -31,12 +31,14 @@ import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
 import { type LocalServerSecrets, withRuntimePassword } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
+import type { ServerLease } from './stack-lock';
 import {
   driftOf,
   inspectStack,
   publishEnv,
   stampPublishedEnv,
   type StackOnHost,
+  type StackStateHost,
   unsharedStackMessage,
   withdrawPublishedEnv,
 } from './stack-state';
@@ -70,7 +72,28 @@ export type StartStackOptions = {
   /** Dev-only: root of the Switch checkout to build the stack's images from,
    * instead of pulling this build's pinned images. Null is the released path. */
   checkoutRoot: string | null;
+  /** The shared stack's lock, taken before the start looked at the host and
+   * held until it is over. Null for the local stack, which nobody shares. */
+  lease: ServerLease | null;
 };
+
+/**
+ * The shared state and the lock that lets this Console change it, or null
+ * for a stack nobody shares. Anything else is a caller that forgot the lock —
+ * or took one where there is nothing to lock — and is refused outright.
+ */
+function sharedUnderLock(
+  host: ServerHost,
+  lease: ServerLease | null
+): { state: StackStateHost; lease: ServerLease } | null {
+  if (host.sharedState !== null && lease !== null) return { state: host.sharedState, lease };
+  if (host.sharedState === null && lease === null) return null;
+  throw new Error(
+    host.sharedState !== null
+      ? `Refusing to change the shared stack on ${host.label} without holding its lock.`
+      : `The stack on ${host.label} is not shared, so it has no lock to hold.`
+  );
+}
 
 /**
  * Refuse to point an existing stack at an OLDER switch-core than it already
@@ -299,15 +322,16 @@ async function adoptSettings(
  */
 export async function adoptRunningStack(
   host: ServerHost,
-  stack: Extract<StackOnHost, { kind: 'present' }>
+  stack: Extract<StackOnHost, { kind: 'present' }>,
+  lease: ServerLease
 ): Promise<StackSettings> {
-  const shared = host.sharedState;
+  const shared = sharedUnderLock(host, lease);
   if (shared === null) {
     throw new Error(`The stack on ${host.label} is not shared, so there is nothing to adopt.`);
   }
   const settings = await adoptSettings(host, stack);
   await bringWorkingDirInStep(host, stack);
-  if (!stack.published) await publishEnv(shared, stack.raw);
+  if (!stack.published) await publishEnv(shared.state, stack.raw, shared.lease);
   return settings;
 }
 
@@ -430,13 +454,28 @@ async function registerAndSignIn(
  * On a shared host that is an update for everyone using the stack, which is why
  * the settings it writes are the host's own rather than this desktop's.
  *
+ * On a shared host the caller holds the stack's lock (see stack-lock.ts) from
+ * before anything here reads the host until the start is over, so the plan is
+ * made from a stack nobody else is changing.
+ *
  * With `checkoutRoot` set (dev only) the images are built from that working
  * tree on every start instead of pulled, and tagged {@link CHECKOUT_IMAGE_TAG}
  * so nothing downstream mistakes them for a release.
  */
 export async function startStack(opts: StartStackOptions): Promise<StartLocalServerResult> {
-  const { host, ref, serverName, activate, onMessage, onLog, onUpgrade, signal, checkoutRoot } =
-    opts;
+  const {
+    host,
+    ref,
+    serverName,
+    activate,
+    onMessage,
+    onLog,
+    onUpgrade,
+    signal,
+    checkoutRoot,
+    lease,
+  } = opts;
+  const shared = sharedUnderLock(host, lease);
 
   const docker = await host.detectDocker();
   if (!docker.available) {
@@ -480,6 +519,9 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // thing that can read it. Runs against the stack as currently deployed, so
   // it must happen before the compose file and `.env` are re-materialised for
   // the new version — those are what would take Tuwunel away.
+  // Compose is run from here on, which cannot check the lock in the same step
+  // the way publishing does: a Console that lost it while away stops here.
+  await shared?.lease.assertHeld();
   const migration = await migrateOffMatrix(host, checkoutRoot, onMessage, onLog);
   if (migration) return migration;
 
@@ -508,9 +550,9 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // led the next person's Console to overwrite them, so this failing fails
   // the start rather than being logged past.
   let stamped = false;
-  if (host.sharedState !== null) {
+  if (shared !== null) {
     onMessage('Sharing the server’s settings on the host…');
-    stamped = await publishEnv(host.sharedState, env);
+    stamped = await publishEnv(shared.state, env, shared.lease);
   }
 
   onMessage(
@@ -524,9 +566,9 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // that did not; but an unstamped copy is trusted as before, so the page says
   // what that leaves open.
   let warning: string | null = null;
-  if (host.sharedState !== null && !stamped) {
+  if (shared !== null && !stamped) {
     try {
-      await stampPublishedEnv(host.sharedState);
+      await stampPublishedEnv(shared.state, shared.lease);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       log.error(`managed-switch-server: could not stamp the published settings on ${host.label}`, {
@@ -562,6 +604,10 @@ export type ConnectStackOptions = {
   onMessage: (message: string) => void;
   /** Aborts an in-flight health wait (cancel/quit). */
   signal: AbortSignal;
+  /** The stack's lock, taken before reading it: a stack half-way through
+   * someone else's start would read as stopped. Released here once its
+   * settings are adopted — waiting for it to answer holds nobody up. */
+  lease: ServerLease;
 };
 
 /**
@@ -583,12 +629,12 @@ export type ConnectStackOptions = {
  * switch-core than this build pins — which this Console cannot use as it is,
  * and which the caller brings up to date as a start. */
 export type ConnectStackResult =
-  | ConnectRemoteServerResult
+  | Exclude<ConnectRemoteServerResult, { kind: 'cancelled' }>
   | { kind: 'behind'; deployed: string; expected: string };
 
 export async function connectStack(opts: ConnectStackOptions): Promise<ConnectStackResult> {
-  const { host, ref, serverName, onMessage, signal } = opts;
-  const shared = host.sharedState;
+  const { host, ref, serverName, onMessage, signal, lease } = opts;
+  const shared = sharedUnderLock(host, lease);
   if (shared === null) {
     throw new Error(`The stack on ${host.label} is not shared, so there is nothing to connect to.`);
   }
@@ -599,7 +645,7 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   }
 
   onMessage('Reading the server’s settings on the host…');
-  const stack = await inspectStack(shared);
+  const stack = await inspectStack(shared.state);
   switch (stack.kind) {
     case 'absent':
       return { kind: 'absent' };
@@ -644,7 +690,8 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   }
 
   onMessage('Preparing this account’s copy of the server’s settings…');
-  const settings = await adoptRunningStack(host, stack);
+  const settings = await adoptRunningStack(host, stack, lease);
+  await lease.release();
 
   await host.establishNetworking(settings.ports);
 
@@ -665,8 +712,10 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   };
 }
 
-/** Stop the stack's containers and tear down networking (leaves data + config). */
-export async function stopStack(host: ServerHost): Promise<void> {
+/** Stop the stack's containers and tear down networking (leaves data + config).
+ * `lease` is the shared stack's lock, null for the local one. */
+export async function stopStack(host: ServerHost, lease: ServerLease | null): Promise<void> {
+  await sharedUnderLock(host, lease)?.lease.assertHeld();
   await composeDown(host, false);
   await host.teardownNetworking();
 }
@@ -675,10 +724,12 @@ export async function stopStack(host: ServerHost): Promise<void> {
  * irreversible clean-slate reset. On a shared host the published settings go
  * too, since the credentials in them now open nothing; the record of who did
  * this is kept. */
-export async function resetStack(host: ServerHost): Promise<void> {
+export async function resetStack(host: ServerHost, lease: ServerLease | null): Promise<void> {
+  const shared = sharedUnderLock(host, lease);
+  await shared?.lease.assertHeld();
   await composeDown(host, true);
   await host.teardownNetworking();
-  if (host.sharedState !== null) await withdrawPublishedEnv(host.sharedState);
+  if (shared !== null) await withdrawPublishedEnv(shared.state, shared.lease);
   await clearSecrets(host);
   await clearPorts(host);
   // Nothing is left to resume. The backups stay on disk.

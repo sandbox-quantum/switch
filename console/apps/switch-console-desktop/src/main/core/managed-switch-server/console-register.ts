@@ -13,6 +13,7 @@ import {
   stateVolumeExists,
   writeStateVolume,
 } from './stack-state';
+import { UNDER_STATE_MUTEX } from './state-mutex';
 
 /**
  * Who uses a shared remote stack, and what they last did to it — kept on the
@@ -61,9 +62,13 @@ function recordModeFor(action: StackActivityAction | null): RecordMode {
  * Applies a {@link RecordMode} (`$2`) for the Console `$1`. The entry and the
  * activity line are read from stdin, so no value is spliced into the script
  * and none has to be quoted. The activity file is trimmed once it doubles past
- * what is kept. Exported for the test that runs it against a real directory.
+ * what is kept — under the state mutex, as the whole script is, so two
+ * Consoles recording at once cannot lose each other's lines to a trim or
+ * write the same temp file. Exported for the test that runs it against a real
+ * directory.
  */
 export const RECORD_SCRIPT = [
+  UNDER_STATE_MUTEX,
   'umask 077',
   'mkdir -p /state/consoles',
   'IFS= read -r entry || exit 1',
@@ -101,7 +106,7 @@ const ACTIONS: readonly StackActivityAction[] = [
  * of a connection, so it is asked once rather than on every record. */
 const accounts = new WeakMap<StackStateHost, Promise<string>>();
 
-function hostAccount(host: StackStateHost): Promise<string> {
+export function hostAccount(host: StackStateHost): Promise<string> {
   let account = accounts.get(host);
   if (!account) {
     account = host.ctx

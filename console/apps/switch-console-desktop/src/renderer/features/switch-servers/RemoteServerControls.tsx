@@ -120,6 +120,17 @@ export const RemoteServerControls = observer(function RemoteServerControls({
           <div className="flex items-center gap-2 text-sm text-foreground-muted">
             <Spinner className="size-3.5" />
             <span>{status.message}</span>
+            {/* Only a wait for another Console can be cancelled: nothing has
+                been changed yet (CHOO-2893). */}
+            {status.waitingFor && (
+              <button
+                type="button"
+                onClick={() => void store.cancelWait(sshHost)}
+                className="text-foreground-muted underline underline-offset-2 transition-colors hover:text-foreground"
+              >
+                Stop waiting
+              </button>
+            )}
           </div>
         )}
 

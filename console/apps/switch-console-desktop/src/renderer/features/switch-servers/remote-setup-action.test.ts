@@ -4,14 +4,23 @@ import { remoteSetupAction } from './remote-setup-action';
 describe('remoteSetupAction', () => {
   it('offers nothing until the host has been looked at', () => {
     expect(remoteSetupAction('vm-1', null, false)).toEqual({ kind: 'checking' });
-    expect(remoteSetupAction('vm-1', { kind: 'absent' }, true)).toEqual({ kind: 'checking' });
+    expect(remoteSetupAction('vm-1', { kind: 'absent', busy: null }, true)).toEqual({
+      kind: 'checking',
+    });
   });
 
   it('offers to join a running stack rather than start it again', () => {
     expect(
       remoteSetupAction(
         'vm-1',
-        { kind: 'present', running: true, deployedVersion: '0.27.0', shared: false, drift: null },
+        {
+          kind: 'present',
+          running: true,
+          deployedVersion: '0.27.0',
+          shared: false,
+          drift: null,
+          busy: null,
+        },
         false
       )
     ).toEqual({ kind: 'connect', deployedVersion: '0.27.0', shared: false, updatesTo: null });
@@ -27,6 +36,7 @@ describe('remoteSetupAction', () => {
           deployedVersion: '0.27.0',
           shared: true,
           drift: { deployed: '0.27.0', expected: '0.28.0', direction: 'upgrade' },
+          busy: null,
         },
         false
       )
@@ -42,6 +52,7 @@ describe('remoteSetupAction', () => {
         deployedVersion: '0.29.0',
         shared: true,
         drift: { deployed: '0.29.0', expected: '0.28.0', direction: 'downgrade' },
+        busy: null,
       },
       false
     );
@@ -60,6 +71,7 @@ describe('remoteSetupAction', () => {
           deployedVersion: 'dev-checkout',
           shared: true,
           drift: { deployed: 'dev-checkout', expected: '0.28.0', direction: 'unknown' },
+          busy: null,
         },
         false
       )
@@ -70,14 +82,21 @@ describe('remoteSetupAction', () => {
     expect(
       remoteSetupAction(
         'vm-1',
-        { kind: 'present', running: false, deployedVersion: '0.27.0', shared: true, drift: null },
+        {
+          kind: 'present',
+          running: false,
+          deployedVersion: '0.27.0',
+          shared: true,
+          drift: null,
+          busy: null,
+        },
         false
       )
     ).toEqual({ kind: 'start', existing: true });
   });
 
   it('offers to set one up on an empty host', () => {
-    expect(remoteSetupAction('vm-1', { kind: 'absent' }, false)).toEqual({
+    expect(remoteSetupAction('vm-1', { kind: 'absent', busy: null }, false)).toEqual({
       kind: 'start',
       existing: false,
     });

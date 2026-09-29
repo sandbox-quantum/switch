@@ -98,6 +98,7 @@ function options(checkoutRoot: string | null = null) {
       onUpgrade: vi.fn(),
       signal: new AbortController().signal,
       checkoutRoot,
+      lease: null,
     },
   };
 }

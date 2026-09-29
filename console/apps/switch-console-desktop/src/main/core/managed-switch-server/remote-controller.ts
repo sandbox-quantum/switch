@@ -3,7 +3,7 @@ import type {
   DockerAvailability,
   RemoteStackProbe,
   StackRegister,
-  StartLocalServerResult,
+  StartRemoteServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { RemoteServerStatus } from '@shared/events/remoteSwitchServerEvents';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -20,8 +20,14 @@ export const remoteSwitchServerController = createRPCController({
 
   register: (sshHost: string): Promise<StackRegister> => remoteServerService.register(sshHost),
 
-  start: (params: { sshHost: string; name: string }): Promise<StartLocalServerResult> =>
+  start: (params: { sshHost: string; name: string }): Promise<StartRemoteServerResult> =>
     remoteServerService.start(params.sshHost, params.name),
+
+  /** Stop waiting for another Console's hold on the host's stack. */
+  cancelWait: (sshHost: string): Promise<void> => {
+    remoteServerService.cancelWait(sshHost);
+    return Promise.resolve();
+  },
 
   connect: (params: { sshHost: string; name: string }): Promise<ConnectRemoteServerResult> =>
     remoteServerService.connect(params.sshHost, params.name),

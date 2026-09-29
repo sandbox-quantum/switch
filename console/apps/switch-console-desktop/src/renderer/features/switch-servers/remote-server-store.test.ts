@@ -13,15 +13,23 @@ const rpcRemote = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
   reset: vi.fn(),
+  cancelWait: vi.fn(),
+  getStatuses: vi.fn(),
 }));
 const agentsLoad = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const serversInit = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const forgetRemovedServer = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const isBlocked = vi.hoisted(() => vi.fn(() => false));
 
+const statusListeners = vi.hoisted(() => [] as ((status: unknown) => void)[]);
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: { remoteSwitchServer: rpcRemote },
-  events: { on: () => () => {} },
+  events: {
+    on: (_channel: unknown, listener: (status: unknown) => void) => {
+      statusListeners.push(listener);
+      return () => {};
+    },
+  },
 }));
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
   agentsStore: { load: agentsLoad },
@@ -148,7 +156,7 @@ describe('connect', () => {
       ownerDir: null,
       message: 'set up from another account',
     });
-    rpcRemote.probe.mockResolvedValue({ kind: 'absent' });
+    rpcRemote.probe.mockResolvedValue({ kind: 'absent', busy: null });
     const store = new RemoteServerStore();
 
     await store.connect('vm-1', 'Team server');
@@ -201,7 +209,7 @@ describe('deleting a server for everyone', () => {
 
 describe('disconnect', () => {
   it('lets go of the server and forgets what it knew of the host', async () => {
-    rpcRemote.probe.mockResolvedValue({ kind: 'absent' });
+    rpcRemote.probe.mockResolvedValue({ kind: 'absent', busy: null });
     const store = new RemoteServerStore();
     await store.probe('vm-1');
     await store.loadRegister('vm-1');
@@ -236,5 +244,71 @@ describe('loadRegister', () => {
 
     expect(store.registerErrorFor('vm-1')).toBeTruthy();
     expect(store.error).toBeNull();
+  });
+});
+
+describe('waiting for another Console', () => {
+  const bob = {
+    name: 'bob@desk',
+    hostAccount: 'bob',
+    action: 'starting' as const,
+    heldForSeconds: 40,
+    expiresInSeconds: 80,
+  };
+
+  it('counts as busy while the main process waits on someone else’s lock', async () => {
+    rpcRemote.getStatuses.mockResolvedValue([]);
+    const store = new RemoteServerStore();
+    const first = statusListeners.length;
+    await store.init();
+    // Statuses first, then log lines.
+    const onStatus = statusListeners[first]!;
+
+    onStatus({ ...store.statusFor('vm-1'), phase: 'stopped', waitingFor: bob });
+
+    expect(store.isTransitioning('vm-1')).toBe(true);
+    onStatus({ ...store.statusFor('vm-1'), waitingFor: null });
+    expect(store.isTransitioning('vm-1')).toBe(false);
+  });
+
+  it('asks the main process to stop waiting', async () => {
+    rpcRemote.cancelWait.mockResolvedValue(undefined);
+    const store = new RemoteServerStore();
+
+    await store.cancelWait('vm-1');
+
+    expect(rpcRemote.cancelWait).toHaveBeenCalledWith('vm-1');
+    expect(store.error).toBeNull();
+  });
+
+  it('says so when it could not ask', async () => {
+    rpcRemote.cancelWait.mockRejectedValue(new Error('ipc closed'));
+    const store = new RemoteServerStore();
+
+    await store.cancelWait('vm-1');
+
+    expect(store.error).toBe('Could not stop waiting for the server.');
+  });
+
+  it('treats a start whose wait was cancelled as nothing having happened', async () => {
+    rpcRemote.start.mockResolvedValue({ kind: 'cancelled' });
+    const store = new RemoteServerStore();
+
+    await store.start('vm-1', 'Team server');
+
+    expect(store.error).toBeNull();
+    expect(serversInit).not.toHaveBeenCalled();
+    expect(store.isTransitioning('vm-1')).toBe(false);
+  });
+
+  it('shows what the host has again after a join whose wait was cancelled', async () => {
+    rpcRemote.connect.mockResolvedValue({ kind: 'cancelled' });
+    rpcRemote.probe.mockResolvedValue({ kind: 'absent', busy: bob });
+    const store = new RemoteServerStore();
+
+    await store.connect('vm-1', 'Team server');
+
+    expect(store.error).toBeNull();
+    await vi.waitFor(() => expect(store.probeFor('vm-1')).toEqual({ kind: 'absent', busy: bob }));
   });
 });

@@ -125,6 +125,47 @@ stack's `.env` and took the running server down. Now:
   stopped, restarted on new ports or reset shows as it is. The status carries a
   `notice` for what this Console did not do.
 
+**One Console changes a shared stack at a time.** Two Consoles pressing Start
+on an empty host together would otherwise both find nothing, both make
+credentials, and both publish them and run compose — the second publish wins
+the file, and the database is created with whichever credentials compose read
+first. So whoever changes a stack holds its lock (`stack-lock.ts`), a lease in
+the state volume:
+
+- Everything that reads the host to act on it takes the lock *first*: start,
+  the update at launch, *Update and connect*, restarts from notices, Connect,
+  and the check at launch or recovery. The second of two starts therefore finds
+  the first one's stack and joins it with the same credentials. A Connect or a
+  check holds it only while reading and adopting, not while waiting for the
+  server to answer. The register and the Add Server preview take none; the
+  preview says who holds it.
+- Start, Connect and the check **wait** for a held lock, with the holder and
+  what they are doing on the status (`waitingFor`) and a *Stop waiting* that
+  changes nothing. Stop and reset **refuse** instead (`ServerBusyError`, naming
+  the holder) — stopping a server someone has just started because Stop was
+  clicked while they started it is not what was asked — and a reset takes the
+  lock before it deletes the stack's agents.
+- It is a lease: `ttlSeconds` at a time, renewed while its holder works, with a
+  hard `maxHoldSeconds` above anything a start can take (a backup may run 30
+  minutes). A Console that crashes or loses its network holds it for at most a
+  lease; a restarted Console takes back its own previous run's at once. Expiry
+  is decided by the host's clock inside the script, never a desktop's.
+- Taking and renewing happen under a `flock` on `/state/.mutex`, held for the
+  script's lifetime, so exactly one of two Consoles gets it — including two
+  taking over one lapsed lease. The containers share one volume on one kernel,
+  so the lock holds across them and dies with the script. Every script that
+  writes the volume takes that mutex (`state-mutex.ts`); the register's trim and
+  the published copy's temp files needed it anyway.
+- A Console that lost its lease while away could come back and carry on, so
+  publishing, stamping and withdrawing the settings check the lease's token
+  under the mutex in the same step, and compose runs only after
+  `assertHeld`. The pipeline refuses a shared host without a lease, and a local
+  one with one.
+
+This only binds Consoles that have it, which is every Console that shares
+stacks at all. The lock scripts and the mutex are tested against a real volume
+through Docker (`stack-lock.docker.test.ts`), since macOS has no `flock`.
+
 **Updating a shared stack is an update for everyone.** A Console brings a
 managed stack up to its own switch-core pin when it takes the stack up
 (`managed-upgrade.ts`), and on a shared host that restarts it for everyone

@@ -20,7 +20,10 @@ import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
-import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
+import {
+  lockHolderSentence,
+  othersRecentlySeen,
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -557,9 +560,12 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const status = sshHost ? store.statusFor(sshHost) : null;
   const logs = sshHost ? store.logsFor(sshHost) : [];
-  const action = sshHost
-    ? remoteSetupAction(sshHost, store.probeFor(sshHost), store.isProbing(sshHost))
-    : null;
+  const probe = sshHost ? store.probeFor(sshHost) : null;
+  const action = sshHost ? remoteSetupAction(sshHost, probe, store.isProbing(sshHost)) : null;
+  // Someone else changing the server right now, which Start or Connect will
+  // wait for (CHOO-2893).
+  const busy = probe?.kind === 'absent' || probe?.kind === 'present' ? probe.busy : null;
+  const waiting = status?.waitingFor ?? null;
   const joining = action?.kind === 'connect';
 
   const canAct =
@@ -667,6 +673,13 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
               />
             )}
 
+            {sshHost && busy && !starting && !running && (
+              <Alert>
+                <Info className="size-4" />
+                <AlertTitle>{lockHolderSentence(busy)}</AlertTitle>
+              </Alert>
+            )}
+
             {sshHost && action?.kind === 'start' && !action.existing && !running && (
               <div className="bg-card space-y-2 rounded-lg border border-border p-3">
                 <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
@@ -732,6 +745,12 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
         {!starting ? (
           <Button variant="outline" onClick={onBack}>
             Back
+          </Button>
+        ) : sshHost && waiting ? (
+          // Only a wait for another Console can be cancelled: nothing has
+          // been changed yet.
+          <Button variant="outline" onClick={() => void store.cancelWait(sshHost)}>
+            Stop waiting
           </Button>
         ) : (
           <Button variant="outline" onClick={onClose} disabled>

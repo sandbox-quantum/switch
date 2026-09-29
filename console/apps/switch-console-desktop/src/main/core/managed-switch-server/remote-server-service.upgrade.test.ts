@@ -3,6 +3,7 @@ import type * as AppIdentity from '@shared/app-identity';
 import type { StartLocalServerResult } from '@shared/core/managed-switch-server/managed-switch-server';
 import type * as ManagedUpgrade from './managed-upgrade';
 import type { StartStackOptions } from './pipeline';
+import type * as StackLock from './stack-lock';
 import type { StackOnHost } from './stack-state';
 import type * as StackState from './stack-state';
 
@@ -67,7 +68,41 @@ vi.mock('./stack-state', async (importOriginal) => ({
   inspectStack: m.inspect,
   stateVolumeExists: async () => true,
 }));
-vi.mock('./console-register', () => ({ writeRecord: vi.fn(), readRegister: m.register }));
+vi.mock('./console-register', () => ({
+  writeRecord: vi.fn(),
+  readRegister: m.register,
+  hostAccount: async () => 'me',
+}));
+
+/** The server lock (CHOO-2893): taken and given back in order, or — per test —
+ * held by someone else. The real module's errors and constants are kept. */
+const lockEvents = vi.hoisted(() => [] as string[]);
+const acquireServerLock = vi.hoisted(() =>
+  vi.fn(async (_host: unknown, claim: { action: string }, _opts: unknown) => {
+    lockEvents.push(`take ${claim.action}`);
+    return {
+      token: 'lease-token',
+      lost: false,
+      assertHeld: vi.fn(async () => {}),
+      release: vi.fn(async () => {
+        lockEvents.push(`release ${claim.action}`);
+      }),
+    };
+  })
+);
+const readServerLock = vi.hoisted(() => vi.fn(async () => null));
+vi.mock('./stack-lock', async (importOriginal) => ({
+  ...(await importOriginal<typeof StackLock>()),
+  acquireServerLock,
+  readServerLock,
+}));
+vi.mock('@main/core/switch-servers/console-identity', () => ({
+  getConsoleIdentity: async () => ({
+    id: 'aaaaaaaa-0000-4000-8000-000000000001',
+    name: 'me@laptop',
+  }),
+}));
+
 vi.mock('./paths', () => ({ remoteServerStateDir: (slug: string) => `/user-data/remote/${slug}` }));
 vi.mock('./secrets', () => ({ clearSecrets: vi.fn() }));
 vi.mock('./ports', () => ({ clearPorts: vi.fn() }));

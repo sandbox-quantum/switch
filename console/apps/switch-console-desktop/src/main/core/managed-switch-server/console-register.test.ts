@@ -5,6 +5,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StackStateHost } from './stack-state';
 import type * as StackState from './stack-state';
+import { UNDER_STATE_MUTEX } from './state-mutex';
+import { stateScriptEnv } from './test-helpers/state-script-shell';
 
 const getConsoleIdentity = vi.hoisted(() =>
   vi.fn(() => Promise.resolve({ id: '3f2a9c1e-5b7d-4e8f-a1b2-c3d4e5f6a7b8', name: 'alice@laptop' }))
@@ -160,10 +162,18 @@ describe('the record script, run for real', () => {
     rmSync(state, { recursive: true, force: true });
   });
 
+  const env = stateScriptEnv();
+
   function run(id: string, mode: string, input: string): void {
     const script = RECORD_SCRIPT.replaceAll('/state', state);
-    execFileSync('sh', ['-c', script, 'record', id, mode], { input });
+    execFileSync('sh', ['-c', script, 'record', id, mode], { input, env });
   }
+
+  it('does everything under the state mutex, so two Consoles recording at once lose nothing', () => {
+    // Whether the mutex holds across containers is tested against a real
+    // volume, in stack-lock.docker.test.ts.
+    expect(RECORD_SCRIPT.startsWith(`${UNDER_STATE_MUTEX}\n`)).toBe(true);
+  });
 
   const entry = (name: string) => JSON.stringify({ consoleId: name, lastSeenAt: 'now' });
   const line = (action: string) => JSON.stringify({ action });

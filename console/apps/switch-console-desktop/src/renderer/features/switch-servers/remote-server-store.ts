@@ -42,6 +42,7 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
     error: null,
     notice: null,
     recordWarning: null,
+    waitingFor: null,
   };
 }
 
@@ -135,8 +136,23 @@ export class RemoteServerStore {
   }
 
   isTransitioning(sshHost: string): boolean {
-    const phase = this.phaseFor(sshHost);
-    return this.busyHosts.has(sshHost) || phase === 'starting' || phase === 'stopping';
+    const status = this.statusFor(sshHost);
+    return (
+      this.busyHosts.has(sshHost) ||
+      status.phase === 'starting' ||
+      status.phase === 'stopping' ||
+      status.waitingFor !== null
+    );
+  }
+
+  /** Stop waiting for another Console's hold on the host's stack (CHOO-2893).
+   * Whatever was waiting ends having changed nothing, and says so itself. */
+  async cancelWait(sshHost: string): Promise<void> {
+    try {
+      await rpc.remoteSwitchServer.cancelWait(sshHost);
+    } catch (cause) {
+      this.setError(cause, 'Could not stop waiting for the server.');
+    }
   }
 
   /** Set when the host's switch-core differs from the version this build pins. */
@@ -284,6 +300,7 @@ export class RemoteServerStore {
           this.error = result.message;
         });
       }
+      // A cancelled wait included: the step shows what is there now.
       if (result.kind !== 'connected') void this.probe(sshHost);
       return result;
     } catch (cause) {
@@ -397,6 +414,9 @@ export class RemoteServerStore {
         runInAction(() => {
           this.error = result.message;
         });
+      } else if (result.kind === 'cancelled') {
+        // The user stopped waiting for another Console; nothing was changed,
+        // and the status is back to what it was.
       } else {
         await switchServersStore.init();
         void this.loadRegister(sshHost);

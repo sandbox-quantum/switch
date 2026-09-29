@@ -5,6 +5,7 @@ import type * as EnvFile from './env-file';
 import type { StackEnv } from './env-file';
 import type { ServerHost } from './host/types';
 import type { LocalServerSecrets } from './secret-values';
+import type { ServerLease } from './stack-lock';
 import type * as StackState from './stack-state';
 import type { StackOnHost, StackStateHost } from './stack-state';
 
@@ -98,7 +99,8 @@ vi.mock('./matrix-migration', () => ({
   runBackfill: vi.fn(),
 }));
 
-const { adoptRunningStack, connectStack, resetStack, startStack } = await import('./pipeline');
+const { adoptRunningStack, connectStack, resetStack, startStack, stopStack } =
+  await import('./pipeline');
 
 const hostSecrets: LocalServerSecrets = {
   dbPassword: 'host-owner-pw',
@@ -159,6 +161,20 @@ function sharedHost() {
   };
 }
 
+/** The server lock as the supervisor hands it over: held, until a test says
+ * it was taken over. */
+function heldLease() {
+  const assertHeld = vi.fn(() => Promise.resolve());
+  const release = vi.fn(() => Promise.resolve());
+  return {
+    lease: { token: 'lease-token', lost: false, assertHeld, release } as unknown as ServerLease,
+    assertHeld,
+    release,
+  };
+}
+
+let held = heldLease();
+
 function startOptions(host: ServerHost) {
   return {
     host,
@@ -170,6 +186,7 @@ function startOptions(host: ServerHost) {
     onUpgrade: vi.fn(),
     signal: new AbortController().signal,
     checkoutRoot: null,
+    lease: held.lease,
   };
 }
 
@@ -180,11 +197,13 @@ function connectOptions(host: ServerHost) {
     serverName: 'Team server',
     onMessage: vi.fn(),
     signal: new AbortController().signal,
+    lease: held.lease,
   };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  held = heldLease();
   telemetryConsentMock.mockResolvedValue(false);
   readRegisterMock.mockResolvedValue({ self: 'me', consoles: [], activity: [] });
   publishEnvMock.mockResolvedValue(false);
@@ -305,9 +324,9 @@ describe('starting a shared stack', () => {
 
     await startStack(startOptions(host));
 
-    expect(publishEnvMock).toHaveBeenCalledWith(sharedState, 'BUILT_ENV\n');
+    expect(publishEnvMock).toHaveBeenCalledWith(sharedState, 'BUILT_ENV\n', held.lease);
     // Stamped once compose has created the database volume the copy is for.
-    expect(stampPublishedEnvMock).toHaveBeenCalledWith(sharedState);
+    expect(stampPublishedEnvMock).toHaveBeenCalledWith(sharedState, held.lease);
     expect(order).toEqual(['publish', 'compose up', 'stamp']);
   });
 
@@ -488,7 +507,7 @@ describe('connecting to a shared stack', () => {
     const { host, sharedState, writeFile } = sharedHost();
 
     expect((await connectStack(connectOptions(host))).kind).toBe('connected');
-    expect(publishEnvMock).toHaveBeenCalledWith(sharedState, 'OWN_ENV\n');
+    expect(publishEnvMock).toHaveBeenCalledWith(sharedState, 'OWN_ENV\n', held.lease);
     expect(writeFile).not.toHaveBeenCalledWith('.env', expect.anything(), expect.anything());
   });
 
@@ -624,17 +643,17 @@ describe('resetting a shared stack', () => {
   it('withdraws the published settings along with the data they opened', async () => {
     const { host, sharedState } = sharedHost();
 
-    await resetStack(host);
+    await resetStack(host, held.lease);
 
     expect(composeDownMock).toHaveBeenCalledWith(host, true);
-    expect(withdrawPublishedEnvMock).toHaveBeenCalledWith(sharedState);
+    expect(withdrawPublishedEnvMock).toHaveBeenCalledWith(sharedState, held.lease);
     expect(clearSecretsMock).toHaveBeenCalledWith(host);
   });
 
   it('has nothing to withdraw for a stack nobody shares', async () => {
     const { host } = sharedHost();
 
-    await resetStack({ ...host, sharedState: null } as unknown as ServerHost);
+    await resetStack({ ...host, sharedState: null } as unknown as ServerHost, null);
 
     expect(withdrawPublishedEnvMock).not.toHaveBeenCalled();
   });
@@ -815,7 +834,7 @@ describe('the paths a shared start or join refuses or degrades on', () => {
     const stack = present();
 
     await expect(
-      adoptRunningStack(local, stack as Extract<StackOnHost, { kind: 'present' }>)
+      adoptRunningStack(local, stack as Extract<StackOnHost, { kind: 'present' }>, held.lease)
     ).rejects.toThrow(/not shared/);
   });
 
@@ -842,5 +861,85 @@ describe('the paths a shared start or join refuses or degrades on', () => {
       kind: 'error',
       message: "Could not read the Switch server's settings on vm-1: docker ps timed out",
     });
+  });
+});
+
+describe('the server lock through a start, a join, a stop and a reset', () => {
+  it('refuses to change a shared stack without holding its lock', async () => {
+    await expect(startStack({ ...startOptions(sharedHost().host), lease: null })).rejects.toThrow(
+      /without holding its lock/
+    );
+
+    expect(inspectStackMock).not.toHaveBeenCalled();
+    expect(composeUpMock).not.toHaveBeenCalled();
+  });
+
+  it('checks the lock is still its own before running compose', async () => {
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    const order: string[] = [];
+    held.assertHeld.mockImplementation(async () => void order.push('check'));
+    composeUpMock.mockImplementation(async () => void order.push('compose up'));
+
+    await startStack(startOptions(sharedHost().host));
+
+    expect(order).toEqual(['check', 'compose up']);
+  });
+
+  it('publishes nothing and runs nothing once the lock was taken over while it was away', async () => {
+    inspectStackMock.mockResolvedValue({ kind: 'absent' });
+    held.assertHeld.mockRejectedValueOnce(new Error('lock taken over'));
+
+    await expect(startStack(startOptions(sharedHost().host))).rejects.toThrow('lock taken over');
+
+    expect(publishEnvMock).not.toHaveBeenCalled();
+    expect(composeUpMock).not.toHaveBeenCalled();
+  });
+
+  it('gives the lock back once a join has read the stack, before waiting for it to answer', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const order: string[] = [];
+    held.release.mockImplementation(async () => void order.push('release'));
+    waitForHealthMock.mockImplementation(async () => {
+      order.push('health');
+      return true;
+    });
+
+    expect(await connectStack(connectOptions(sharedHost().host))).toMatchObject({
+      kind: 'connected',
+    });
+    expect(order).toEqual(['release', 'health']);
+  });
+
+  it('stops nothing when the lock was taken over before the stop', async () => {
+    held.assertHeld.mockRejectedValueOnce(new Error('lock taken over'));
+
+    await expect(stopStack(sharedHost().host, held.lease)).rejects.toThrow('lock taken over');
+
+    expect(composeDownMock).not.toHaveBeenCalled();
+  });
+
+  it('resets nothing when the lock was taken over before the reset', async () => {
+    held.assertHeld.mockRejectedValueOnce(new Error('lock taken over'));
+
+    await expect(resetStack(sharedHost().host, held.lease)).rejects.toThrow('lock taken over');
+
+    expect(composeDownMock).not.toHaveBeenCalled();
+    expect(withdrawPublishedEnvMock).not.toHaveBeenCalled();
+    expect(clearSecretsMock).not.toHaveBeenCalled();
+  });
+
+  it('stops a stack nobody shares with no lock at all', async () => {
+    const local = { ...sharedHost().host, sharedState: null } as unknown as ServerHost;
+
+    await stopStack(local, null);
+
+    expect(composeDownMock).toHaveBeenCalledWith(local, false);
+  });
+
+  it('refuses a lock for a stack nobody shares', async () => {
+    const local = { ...sharedHost().host, sharedState: null } as unknown as ServerHost;
+
+    await expect(stopStack(local, held.lease)).rejects.toThrow(/no lock to hold/);
+    expect(composeDownMock).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { STACK_HELPER_IMAGE, STACK_STATE_LABEL } from './constants';
 import { buildEnvFile } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
+import type { ServerLease } from './stack-lock';
 import {
   driftOf,
   inspectStack,
@@ -19,8 +20,12 @@ import {
   stampPublishedEnv,
   withdrawPublishedEnv,
 } from './stack-state';
+import { LOCK_LOST_MESSAGE, WHILE_HOLDING_SERVER_LOCK } from './state-mutex';
+import { stateScriptEnv } from './test-helpers/state-script-shell';
 
 const PROJECT = 'switchdash-remote';
+/** The server lock as the start holding it passes it on. */
+const lease = { token: 'lease-token' } as ServerLease;
 const WORKING_DIR = '/home/bob/.switchdash/switch-server';
 const OTHER_DIR = '/home/alice/.switchdash/switch-server';
 
@@ -254,7 +259,7 @@ describe('the published copy', () => {
     const env = envFor();
     const { host, calls, writeCommandInput } = fakeHost();
 
-    await publishEnv(host, env);
+    await publishEnv(host, env, lease);
 
     expect(calls).toContainEqual([
       'volume',
@@ -279,6 +284,16 @@ describe('the published copy', () => {
     for (const argv of calls) expect(argv.join(' ')).not.toContain(secrets.jwtSecretKey);
   });
 
+  it('is published only while the lock is still this start’s, checked in the same step', async () => {
+    const { host, writeCommandInput } = fakeHost();
+
+    await publishEnv(host, envFor(), lease);
+
+    const [, args] = writeCommandInput.mock.calls[0]!;
+    expect(args.slice(args.indexOf('-c') + 2)).toEqual(['stack-state', lease.token]);
+    expect(args[args.indexOf('-c') + 1]).toContain(WHILE_HOLDING_SERVER_LOCK);
+  });
+
   it('reads the database volume it was written for, when that was recorded', async () => {
     const env = envFor();
     const { host } = fakeHost({
@@ -294,7 +309,7 @@ describe('the published copy', () => {
     const env = envFor();
     const { host, writeCommandInput } = fakeHost({ dataVolumes: [`${PROJECT}_pgdata`] });
 
-    await publishEnv(host, env);
+    await publishEnv(host, env, lease);
 
     const [, , input] = writeCommandInput.mock.calls[0]!;
     expect(input).toBe(`2026-09-01T10:00:00Z\n${env}`);
@@ -303,7 +318,7 @@ describe('the published copy', () => {
   it('is left unstamped, and says so, when a start leaves no database volume to stamp it with', async () => {
     const { host, writeCommandInput } = fakeHost({ stateVolume: true, dataVolumes: [] });
 
-    await stampPublishedEnv(host);
+    await stampPublishedEnv(host, lease);
 
     expect(writeCommandInput).not.toHaveBeenCalled();
   });
@@ -314,7 +329,7 @@ describe('the published copy', () => {
       dataVolumes: [`${PROJECT}_pgdata`, `${PROJECT}_mmdata`],
     });
 
-    await stampPublishedEnv(host);
+    await stampPublishedEnv(host, lease);
 
     const [, args, input] = writeCommandInput.mock.calls[0]!;
     expect(input).toBe('2026-09-01T10:00:00Z\n');
@@ -324,7 +339,7 @@ describe('the published copy', () => {
   it('is withdrawn on reset, and only it: the activity record survives', async () => {
     const { host, writeCommandInput } = fakeHost({ stateVolume: true });
 
-    await withdrawPublishedEnv(host);
+    await withdrawPublishedEnv(host, lease);
 
     const [, args] = writeCommandInput.mock.calls[0]!;
     const script = args[args.indexOf('-c') + 1]!;
@@ -336,7 +351,7 @@ describe('the published copy', () => {
   it('has nothing to withdraw, and creates nothing, when the volume was never made', async () => {
     const { host, writeCommandInput, calls } = fakeHost();
 
-    await withdrawPublishedEnv(host);
+    await withdrawPublishedEnv(host, lease);
 
     expect(writeCommandInput).not.toHaveBeenCalled();
     expect(calls.some((args) => args[1] === 'create')).toBe(false);
@@ -357,9 +372,17 @@ describe('the published copy’s scripts, run for real', () => {
   /** A host whose state volume is `dir`, with every script run by `sh`. */
   function realHost(initial: Partial<HostState> = {}) {
     const fake = fakeHost({ stateVolume: true, ...initial });
+    // Held by the start doing the writing, as the supervisor would have it.
+    writeFileSync(join(dir, 'lock'), `switch-console-lock v1\n${lease.token}\n`);
+    const env = stateScriptEnv();
     const sh = (args: string[], input: string) => {
-      const script = args[args.indexOf('-c') + 1]!.replaceAll('/state', dir);
-      return execFileSync('sh', ['-c', script, 'stack-state'], { input, encoding: 'utf8' });
+      const at = args.indexOf('-c');
+      const script = args[at + 1]!.replaceAll('/state', dir);
+      return execFileSync('sh', ['-c', script, ...args.slice(at + 2)], {
+        input,
+        encoding: 'utf8',
+        env,
+      });
     };
     fake.writeCommandInput.mockImplementation(async (_command, args, input) => {
       sh(args, input);
@@ -375,35 +398,49 @@ describe('the published copy’s scripts, run for real', () => {
     const env = envFor();
     const { host } = realHost({ dataVolumes: [`${PROJECT}_pgdata`] });
 
-    await publishEnv(host, env);
+    await publishEnv(host, env, lease);
 
     expect(await readPublishedCopy(host)).toEqual({ env, stamp: '2026-09-01T10:00:00Z' });
   });
 
   it('drops an earlier stamp when publishing for a database not created yet', async () => {
     const { host, state } = realHost({ dataVolumes: [`${PROJECT}_pgdata`] });
-    await publishEnv(host, envFor({ dbPassword: 'first' }));
+    await publishEnv(host, envFor({ dbPassword: 'first' }), lease);
 
     // Reset: the volume is gone when the next start publishes.
     state.dataVolumes = [];
     const env = envFor({ dbPassword: 'second' });
-    await publishEnv(host, env);
+    await publishEnv(host, env, lease);
 
     expect(await readPublishedCopy(host)).toEqual({ env, stamp: null });
 
     // And compose creates it; the start then stamps the copy with it.
     state.dataVolumes = [`${PROJECT}_pgdata`];
     state.databaseCreatedAt = '2026-09-24T12:00:00Z';
-    await stampPublishedEnv(host);
+    await stampPublishedEnv(host, lease);
 
     expect(await readPublishedCopy(host)).toEqual({ env, stamp: '2026-09-24T12:00:00Z' });
   });
 
+  it('writes nothing once another Console has taken the lock over', async () => {
+    const { host } = realHost({ dataVolumes: [`${PROJECT}_pgdata`] });
+    await publishEnv(host, envFor({ dbPassword: 'theirs' }), lease);
+    const stale = { token: 'token-this-console-lost' } as ServerLease;
+
+    await expect(publishEnv(host, envFor({ dbPassword: 'mine' }), stale)).rejects.toThrow(
+      LOCK_LOST_MESSAGE
+    );
+    await expect(stampPublishedEnv(host, stale)).rejects.toThrow(LOCK_LOST_MESSAGE);
+    await expect(withdrawPublishedEnv(host, stale)).rejects.toThrow(LOCK_LOST_MESSAGE);
+
+    expect(await readPublishedCopy(host)).toMatchObject({ env: envFor({ dbPassword: 'theirs' }) });
+  });
+
   it('withdraws the copy and its stamp together', async () => {
     const { host } = realHost({ dataVolumes: [`${PROJECT}_pgdata`] });
-    await publishEnv(host, envFor());
+    await publishEnv(host, envFor(), lease);
 
-    await withdrawPublishedEnv(host);
+    await withdrawPublishedEnv(host, lease);
 
     expect(await readPublishedCopy(host)).toBeNull();
     expect(() => readFileSync(join(dir, 'stack.db'))).toThrow(/ENOENT/);
@@ -654,14 +691,18 @@ describe('what the setup step is told about a host', () => {
   });
 
   it('reports the version the stack runs, and never a secret', () => {
-    const probe = probeFromStack('vm-1', { ...present, runningVersion: '0.26.0' });
+    const probe = probeFromStack('vm-1', { ...present, runningVersion: '0.26.0' }, null);
 
     expect(probe).toMatchObject({ kind: 'present', deployedVersion: '0.26.0', shared: true });
     expect(JSON.stringify(probe)).not.toContain(secrets.gatewayAdminPassword);
   });
 
   it('says an unshared stack is another account’s even when it cannot say whose', () => {
-    const probe = probeFromStack('vm-1', { kind: 'unshared', ownerDir: null, running: false });
+    const probe = probeFromStack(
+      'vm-1',
+      { kind: 'unshared', ownerDir: null, running: false },
+      null
+    );
 
     expect(probe.kind === 'unshared' && probe.message).toMatch(
       /^The Switch server on vm-1 was set up from another account and its settings have not been shared/
@@ -669,11 +710,15 @@ describe('what the setup step is told about a host', () => {
   });
 
   it('names where another account’s unshared stack was started from', () => {
-    const probe = probeFromStack('vm-1', {
-      kind: 'unshared',
-      ownerDir: OTHER_DIR,
-      running: true,
-    });
+    const probe = probeFromStack(
+      'vm-1',
+      {
+        kind: 'unshared',
+        ownerDir: OTHER_DIR,
+        running: true,
+      },
+      null
+    );
 
     expect(probe).toMatchObject({ kind: 'unshared', running: true, ownerDir: OTHER_DIR });
     expect(probe.kind === 'unshared' && probe.message).toMatch(
@@ -683,18 +728,38 @@ describe('what the setup step is told about a host', () => {
 
   it('passes on what a partial stack is missing, a reason it could not look, and an empty host', () => {
     expect(
-      probeFromStack('vm-1', {
-        kind: 'incomplete',
-        source: 'published',
-        missing: ['JWT_SECRET_KEY'],
-        raw: 'JWT_SECRET_KEY=\n',
-        running: false,
-      })
+      probeFromStack(
+        'vm-1',
+        {
+          kind: 'incomplete',
+          source: 'published',
+          missing: ['JWT_SECRET_KEY'],
+          raw: 'JWT_SECRET_KEY=\n',
+          running: false,
+        },
+        null
+      )
     ).toEqual({ kind: 'incomplete', running: false, missing: ['JWT_SECRET_KEY'] });
-    expect(probeFromStack('vm-1', { kind: 'unreadable', reason: 'ssh dropped' })).toEqual({
+    expect(probeFromStack('vm-1', { kind: 'unreadable', reason: 'ssh dropped' }, null)).toEqual({
       kind: 'unreadable',
       reason: 'ssh dropped',
     });
-    expect(probeFromStack('vm-1', { kind: 'absent' })).toEqual({ kind: 'absent' });
+    expect(probeFromStack('vm-1', { kind: 'absent' }, null)).toEqual({
+      kind: 'absent',
+      busy: null,
+    });
+  });
+
+  it('passes on who is changing the stack right now, for Start or Connect to wait for', () => {
+    const busy = {
+      name: 'bob@desk',
+      hostAccount: 'bob',
+      action: 'starting' as const,
+      heldForSeconds: 30,
+      expiresInSeconds: 90,
+    };
+
+    expect(probeFromStack('vm-1', { kind: 'absent' }, busy)).toEqual({ kind: 'absent', busy });
+    expect(probeFromStack('vm-1', present, busy)).toMatchObject({ kind: 'present', busy });
   });
 });

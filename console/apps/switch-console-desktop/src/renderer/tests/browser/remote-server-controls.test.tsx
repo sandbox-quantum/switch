@@ -25,6 +25,7 @@ function defaultStatus() {
     error: null as string | null,
     notice: null as string | null,
     recordWarning: null as string | null,
+    waitingFor: null as unknown,
   };
 }
 
@@ -41,6 +42,7 @@ const state = vi.hoisted(() => ({
   errorDetail: null as string | null,
   start: vi.fn(),
   stop: vi.fn(),
+  cancelWait: vi.fn(),
 }));
 
 vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
@@ -64,6 +66,7 @@ vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
     },
     start: (...args: unknown[]) => state.start(...args),
     stop: (...args: unknown[]) => state.stop(...args),
+    cancelWait: (...args: unknown[]) => state.cancelWait(...args),
   },
 }));
 
@@ -99,6 +102,7 @@ beforeEach(() => {
   state.errorDetail = null;
   state.start.mockReset();
   state.stop.mockReset();
+  state.cancelWait.mockReset();
 });
 
 afterEach(async () => {
@@ -226,5 +230,42 @@ describe('a stack ahead of this build', () => {
     await render();
 
     expect(button(/^Start$/).disabled).toBe(true);
+  });
+});
+
+describe('waiting for another Console', () => {
+  const bob = {
+    name: 'bob@desk',
+    hostAccount: 'bob',
+    action: 'starting' as const,
+    heldForSeconds: 40,
+    expiresInSeconds: 80,
+  };
+
+  it('says who it is waiting for, and stops waiting when asked', async () => {
+    state.transitioning = true;
+    state.status = {
+      ...defaultStatus(),
+      phase: 'starting',
+      message: 'Waiting for bob@desk (as bob) to finish starting the server…',
+      waitingFor: bob,
+    };
+    await render();
+
+    expect(document.body.textContent).toContain(
+      'Waiting for bob@desk (as bob) to finish starting the server…'
+    );
+    await click(button(/^Stop waiting$/));
+
+    expect(state.cancelWait).toHaveBeenCalledWith('vm-1');
+  });
+
+  it('offers no way to stop a start that is not waiting on anyone', async () => {
+    state.transitioning = true;
+    state.status = { ...defaultStatus(), phase: 'starting', message: 'Starting containers…' };
+    await render();
+
+    expect(document.body.textContent).toContain('Starting containers…');
+    expect(() => button(/^Stop waiting$/)).toThrow();
   });
 });

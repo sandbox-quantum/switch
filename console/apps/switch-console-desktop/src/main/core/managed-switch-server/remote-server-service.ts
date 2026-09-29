@@ -1,5 +1,6 @@
 import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reachability-service';
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
+import { getConsoleIdentity } from '@main/core/switch-servers/console-identity';
 import { deleteAgentsForServer } from '@main/core/switch-servers/delete-server-agents';
 import {
   ensureManagedServer,
@@ -19,20 +20,25 @@ import {
   type ConnectRemoteServerResult,
   type DockerAvailability,
   type RemoteStackProbe,
+  ServerBusyError,
+  type ServerLockAction,
+  type ServerLockHolder,
   type StackActivityAction,
   type StackRegister,
-  type StartLocalServerResult,
+  type StartRemoteServerResult,
   managedServerUpgradeBlockedReason,
   matrixMigrationFailedMessage,
   othersRecentlySeen,
+  stoppedWaitingForLockMessage,
   switchVersionDowngradeMessage,
+  waitingForLockMessage,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   type RemoteServerStatus,
   remoteServerLogChannel,
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
-import { readRegister, writeRecord } from './console-register';
+import { hostAccount, readRegister, writeRecord } from './console-register';
 import { readVersionStatus } from './deployed-version';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
@@ -55,6 +61,15 @@ import {
 } from './pipeline';
 import { clearPorts } from './ports';
 import { clearSecrets } from './secrets';
+import {
+  acquireServerLock,
+  CONSOLE_INSTANCE,
+  type LockClaim,
+  readServerLock,
+  SERVER_LOCK_TIMING,
+  type ServerLease,
+  ServerLockWaitCancelled,
+} from './stack-lock';
 import {
   inspectStack,
   probeFromStack,
@@ -97,6 +112,7 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     error: null,
     notice: null,
     recordWarning: null,
+    waitingFor: null,
   };
 }
 
@@ -182,11 +198,14 @@ export class RemoteServerService {
   private readonly hosts = new Map<string, RemoteServerHost>();
   private readonly busy = new Set<string>();
   private readonly startAborts = new Map<string, AbortController>();
+  /** The wait for another Console's lock in flight per host, which
+   * {@link cancelWait} ends. */
+  private readonly lockWaits = new Map<string, AbortController>();
   private initialization: Promise<void> | null = null;
   /** The reconcile, start or connect in flight per host, which {@link ensureReady} waits out. */
   private readonly operations = new Map<string, Promise<void>>();
   /** The start in flight per host, which an automatic upgrade and a Start click share. */
-  private readonly starting = new Map<string, Promise<StartLocalServerResult>>();
+  private readonly starting = new Map<string, Promise<StartRemoteServerResult>>();
   private readonly upgradeListeners = new Set<(serverId: string) => void>();
   /** Hosts {@link ensureReady} has turned something away for since their last
    * upgrade finished, so that it can be told when they are ready. */
@@ -236,6 +255,52 @@ export class RemoteServerService {
     }
   }
 
+  private async claimFor(host: RemoteServerHost, action: ServerLockAction): Promise<LockClaim> {
+    const identity = await getConsoleIdentity();
+    return {
+      consoleId: identity.id,
+      instance: CONSOLE_INSTANCE,
+      name: identity.name,
+      hostAccount: await hostAccount(host),
+      action,
+    };
+  }
+
+  /**
+   * Take the lock on the stack on `sshHost` for `action`, waiting for whoever
+   * holds it (CHOO-2893). The wait is on the status — who it is for, and a way
+   * to cancel it through {@link cancelWait} — and ends in
+   * {@link ServerLockWaitCancelled} when cancelled.
+   */
+  private async waitForLock(
+    sshHost: string,
+    host: RemoteServerHost,
+    action: ServerLockAction
+  ): Promise<ServerLease> {
+    const abort = new AbortController();
+    this.lockWaits.set(sshHost, abort);
+    try {
+      return await acquireServerLock(host, await this.claimFor(host, action), {
+        mode: 'wait',
+        timing: SERVER_LOCK_TIMING,
+        signal: abort.signal,
+        onWaiting: (holder) =>
+          this.setStatus(sshHost, { waitingFor: holder, message: waitingForLockMessage(holder) }),
+      });
+    } finally {
+      this.lockWaits.delete(sshHost);
+      if (this.getStatus(sshHost).waitingFor !== null) {
+        this.setStatus(sshHost, { waitingFor: null, message: null });
+      }
+    }
+  }
+
+  /** Stop waiting for another Console's lock on `sshHost`. What was waiting —
+   * a start, a join, a check — ends having changed nothing. */
+  cancelWait(sshHost: string): void {
+    this.lockWaits.get(sshHost)?.abort();
+  }
+
   async detectDocker(sshHost: string): Promise<DockerAvailability> {
     hostReachabilityService.requireReachable(sshHost);
     const host = await createRemoteServerHost(sshHost);
@@ -259,9 +324,22 @@ export class RemoteServerService {
       if (!docker.available) {
         return { kind: 'docker-unavailable', reason: docker.reason, detail: docker.detail };
       }
-      return probeFromStack(host.label, await inspectStack(host));
+      const [stack, busy] = await Promise.all([inspectStack(host), this.lockHolder(host)]);
+      return probeFromStack(host.label, stack, busy);
     } finally {
       host.dispose();
+    }
+  }
+
+  /** Who holds the lock on the stack on `host`, for the setup step to say.
+   * Only a hint — whatever it offers takes the lock itself — so a failure to
+   * read it is logged and shown as nobody. */
+  private async lockHolder(host: RemoteServerHost): Promise<ServerLockHolder | null> {
+    try {
+      return await readServerLock(host);
+    } catch (error) {
+      log.warn(`remote-switch-server: could not read the server lock on ${host.label}`, { error });
+      return null;
     }
   }
 
@@ -424,10 +502,14 @@ export class RemoteServerService {
     // the forward on one would strand a server that is still up.
     const live = this.hosts.get(sshHost) ?? null;
     let host: RemoteServerHost | null = null;
+    let lease: ServerLease | null = null;
     let kept = false;
     let upgradeNow = false;
     try {
       host = await createRemoteServerHost(sshHost);
+      // Read only once nobody else is changing the stack: one half-way through
+      // someone's start or update would read as stopped, or as behind.
+      lease = await this.waitForLock(sshHost, host, 'checking');
       const stack = await inspectStack(host);
       if (stack.kind === 'unreadable') {
         this.leaveUnanswered(sshHost, wasRunning, stack.reason);
@@ -476,7 +558,7 @@ export class RemoteServerService {
       if (upgradeNow) {
         // The start replaces this Console's forward, if it holds one.
       } else if (stack.kind === 'present' && stack.running) {
-        const settings = await adoptRunningStack(host, stack);
+        const settings = await adoptRunningStack(host, stack, lease);
         const moved = await this.followPorts(sshHost, server.id, settings.ports);
         if (!live || moved) {
           this.releaseHost(sshHost, live);
@@ -510,6 +592,10 @@ export class RemoteServerService {
         upgrade: owed && (held ? { state: 'held', ...owed } : upgradeState(owed, upgradeNow)),
       });
     } catch (error) {
+      if (error instanceof ServerLockWaitCancelled) {
+        this.setStatus(sshHost, { notice: stoppedWaitingForLockMessage(error.holder) });
+        return;
+      }
       log.warn(`remote-switch-server: reconcile failed for ${sshHost}`, { error });
       this.leaveUnanswered(
         sshHost,
@@ -517,13 +603,15 @@ export class RemoteServerService {
         error instanceof Error ? error.message : String(error)
       );
     } finally {
+      // Before the host goes: giving the lock back runs over its connection.
+      await lease?.release();
       // A host that became the live one owns its forward; any other is throwaway.
       if (!kept) host?.dispose();
       this.busy.delete(sshHost);
     }
     if (!upgradeNow) return;
     try {
-      await this.beginStart(sshHost, server.name, false);
+      await this.beginStart(sshHost, server.name, false, 'updating');
     } catch (error) {
       // Only the reachability check throws rather than reporting a result.
       log.warn(`remote-switch-server: could not upgrade ${sshHost}`, { error });
@@ -585,18 +673,21 @@ export class RemoteServerService {
 
   /** Start (or restart) the host's stack at this build's pin, upgrading it
    * first if it is behind. Joins a start already in flight for the host. */
-  start(sshHost: string, serverName: string): Promise<StartLocalServerResult> {
-    return this.track(sshHost, () => this.beginStart(sshHost, serverName, true));
+  start(sshHost: string, serverName: string): Promise<StartRemoteServerResult> {
+    return this.track(sshHost, () => this.beginStart(sshHost, serverName, true, 'starting'));
   }
 
+  /** `action` is what the others waiting on the lock are told this Console is
+   * doing: an update when it is run to bring the stack up to date. */
   private beginStart(
     sshHost: string,
     serverName: string,
-    activate: boolean
-  ): Promise<StartLocalServerResult> {
+    activate: boolean,
+    action: 'starting' | 'updating'
+  ): Promise<StartRemoteServerResult> {
     const inFlight = this.starting.get(sshHost);
     if (inFlight) return inFlight;
-    const run = this.runStart(sshHost, serverName, activate).finally(() => {
+    const run = this.runStart(sshHost, serverName, activate, action).finally(() => {
       this.starting.delete(sshHost);
     });
     this.starting.set(sshHost, run);
@@ -606,8 +697,9 @@ export class RemoteServerService {
   private async runStart(
     sshHost: string,
     serverName: string,
-    activate: boolean
-  ): Promise<StartLocalServerResult> {
+    activate: boolean,
+    action: 'starting' | 'updating'
+  ): Promise<StartRemoteServerResult> {
     if (this.busy.has(sshHost)) {
       return { kind: 'error', message: `An operation is already in progress for ${sshHost}.` };
     }
@@ -615,9 +707,7 @@ export class RemoteServerService {
     this.busy.add(sshHost);
     const abort = new AbortController();
     this.startAborts.set(sshHost, abort);
-    // Replace any prior live host (and its forward) for this alias.
-    this.hosts.get(sshHost)?.dispose();
-    this.hosts.delete(sshHost);
+    const before = this.getStatus(sshHost);
     let host: RemoteServerHost | null = null;
     try {
       this.setStatus(sshHost, {
@@ -627,18 +717,30 @@ export class RemoteServerService {
         message: `Connecting to ${sshHost}…`,
       });
       host = await createRemoteServerHost(sshHost);
+      const lease = await this.waitForLock(sshHost, host, action);
+      // Replace any prior live host (and its forward) for this alias — only
+      // now that the start goes ahead, so a cancelled wait leaves it as it was.
+      this.hosts.get(sshHost)?.dispose();
+      this.hosts.delete(sshHost);
       this.setStatus(sshHost, { message: 'Checking Docker…' });
-      const result = await startStack({
-        host,
-        ref: { kind: 'remote', sshHost },
-        serverName,
-        activate,
-        onMessage: (message) => this.setStatus(sshHost, { message }),
-        onLog: (line) => events.emit(remoteServerLogChannel, { sshHost, line }),
-        onUpgrade: (owed) => this.setStatus(sshHost, { upgrade: upgradeState(owed, true) }),
-        signal: abort.signal,
-        checkoutRoot: null,
-      });
+      let result: Awaited<ReturnType<typeof startStack>>;
+      try {
+        result = await startStack({
+          host,
+          ref: { kind: 'remote', sshHost },
+          serverName,
+          activate,
+          onMessage: (message) => this.setStatus(sshHost, { message }),
+          onLog: (line) => events.emit(remoteServerLogChannel, { sshHost, line }),
+          onUpgrade: (owed) => this.setStatus(sshHost, { upgrade: upgradeState(owed, true) }),
+          signal: abort.signal,
+          checkoutRoot: null,
+          lease,
+        });
+      } finally {
+        // Before anything below can dispose of the host it runs over.
+        await lease.release();
+      }
       if (result.kind === 'docker-unavailable') {
         this.setStatus(sshHost, { phase: 'error', error: result.detail });
         this.failUpgrade(sshHost, result.detail);
@@ -689,6 +791,15 @@ export class RemoteServerService {
       return result;
     } catch (error) {
       host?.dispose();
+      if (error instanceof ServerLockWaitCancelled) {
+        this.setStatus(sshHost, {
+          phase: before.phase,
+          message: null,
+          error: before.error,
+          notice: before.notice,
+        });
+        return { kind: 'cancelled' };
+      }
       const message = error instanceof Error ? error.message : String(error);
       log.error(`remote-switch-server: start failed for ${sshHost}`, { error });
       this.setStatus(sshHost, { phase: 'error', error: message });
@@ -731,7 +842,10 @@ export class RemoteServerService {
     });
   }
 
-  private async runConnect(sshHost: string, serverName: string): Promise<ConnectStackResult> {
+  private async runConnect(
+    sshHost: string,
+    serverName: string
+  ): Promise<ConnectStackResult | { kind: 'cancelled' }> {
     if (this.busy.has(sshHost)) {
       return { kind: 'error', message: `An operation is already in progress for ${sshHost}.` };
     }
@@ -739,7 +853,7 @@ export class RemoteServerService {
     this.busy.add(sshHost);
     const abort = new AbortController();
     this.startAborts.set(sshHost, abort);
-    this.releaseHost(sshHost, this.hosts.get(sshHost) ?? null);
+    const before = this.getStatus(sshHost);
     let host: RemoteServerHost | null = null;
     try {
       this.setStatus(sshHost, {
@@ -749,13 +863,23 @@ export class RemoteServerService {
         message: `Connecting to ${sshHost}…`,
       });
       host = await createRemoteServerHost(sshHost);
-      const result = await connectStack({
-        host,
-        ref: { kind: 'remote', sshHost },
-        serverName,
-        onMessage: (message) => this.setStatus(sshHost, { message }),
-        signal: abort.signal,
-      });
+      const lease = await this.waitForLock(sshHost, host, 'connecting');
+      this.releaseHost(sshHost, this.hosts.get(sshHost) ?? null);
+      let result: ConnectStackResult;
+      try {
+        result = await connectStack({
+          host,
+          ref: { kind: 'remote', sshHost },
+          serverName,
+          onMessage: (message) => this.setStatus(sshHost, { message }),
+          signal: abort.signal,
+          lease,
+        });
+      } finally {
+        // Joining gives it back as soon as it has read the stack; this is for
+        // every way out before that.
+        await lease.release();
+      }
       if (result.kind === 'connected') {
         this.hosts.set(sshHost, host);
         // Joined only at this build's pin, so nothing is owed any more —
@@ -791,6 +915,15 @@ export class RemoteServerService {
       return result;
     } catch (error) {
       host?.dispose();
+      if (error instanceof ServerLockWaitCancelled) {
+        this.setStatus(sshHost, {
+          phase: before.phase,
+          message: null,
+          error: before.error,
+          notice: before.notice,
+        });
+        return { kind: 'cancelled' };
+      }
       const message = error instanceof Error ? error.message : String(error);
       log.error(`remote-switch-server: connect failed for ${sshHost}`, { error });
       this.setStatus(sshHost, { phase: 'error', message: null, error: message });
@@ -812,7 +945,7 @@ export class RemoteServerService {
     sshHost: string,
     serverName: string
   ): Promise<ConnectRemoteServerResult> {
-    const result = await this.beginStart(sshHost, serverName, true);
+    const result = await this.beginStart(sshHost, serverName, true, 'updating');
     switch (result.kind) {
       case 'started':
         return {
@@ -821,6 +954,7 @@ export class RemoteServerService {
           deployedVersion: COMPATIBLE_SWITCH_VERSION,
         };
       case 'docker-unavailable':
+      case 'cancelled':
       case 'error':
         return result;
       case 'version-downgrade':
@@ -919,11 +1053,19 @@ export class RemoteServerService {
     // therefore sit inside the region that reports, and inside the one that
     // gives the busy flag back.
     let host: RemoteServerHost | null = null;
+    let lease: ServerLease | null = null;
     try {
       hostReachabilityService.requireReachable(sshHost);
       host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
+      // Refused rather than waited for: stopping a server someone has just
+      // started, because Stop was clicked while they were starting it, is not
+      // what was asked.
+      lease = await acquireServerLock(host, await this.claimFor(host, 'stopping'), {
+        mode: 'refuse',
+        timing: SERVER_LOCK_TIMING,
+      });
       this.setStatus(sshHost, { phase: 'stopping', message: 'Stopping containers…' });
-      await stopStack(host);
+      await stopStack(host, lease);
       const upgrade = this.getStatus(sshHost).upgrade;
       this.setStatus(sshHost, {
         phase: 'stopped',
@@ -936,6 +1078,10 @@ export class RemoteServerService {
       await this.record(sshHost, host, 'stopped');
       reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
+      if (error instanceof ServerBusyError) {
+        host = this.keepLiveHost(sshHost, host);
+        throw error;
+      }
       this.setStatus(sshHost, {
         phase: 'error',
         error: error instanceof Error ? error.message : String(error),
@@ -943,6 +1089,8 @@ export class RemoteServerService {
       reportManagedServerOutcome('stop', 'remote', 'failure');
       throw error;
     } finally {
+      // Before the host goes: giving the lock back runs over its connection.
+      await lease?.release();
       this.releaseHost(sshHost, host);
       this.busy.delete(sshHost);
     }
@@ -960,14 +1108,21 @@ export class RemoteServerService {
     // Reaching the host is inside the reported region for the reason `stop`
     // gives.
     let host: RemoteServerHost | null = null;
+    let lease: ServerLease | null = null;
     try {
       hostReachabilityService.requireReachable(sshHost);
       host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
+      // Taken before the agents go, and refused rather than waited for, as for
+      // a stop: a reset turned away must not have deleted anything first.
+      lease = await acquireServerLock(host, await this.claimFor(host, 'resetting'), {
+        mode: 'refuse',
+        timing: SERVER_LOCK_TIMING,
+      });
       this.setStatus(sshHost, { phase: 'stopping', message: 'Removing agents…' });
       const server = await getRemoteManagedServer(sshHost);
       if (server) await deleteAgentsForServer(server.id);
       this.setStatus(sshHost, { phase: 'stopping', message: 'Destroying containers and data…' });
-      await resetStack(host);
+      await resetStack(host, lease);
       this.setStatus(sshHost, {
         phase: 'stopped',
         message: null,
@@ -983,6 +1138,10 @@ export class RemoteServerService {
       await this.record(sshHost, host, 'reset');
       reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
+      if (error instanceof ServerBusyError) {
+        host = this.keepLiveHost(sshHost, host);
+        throw error;
+      }
       this.setStatus(sshHost, {
         phase: 'error',
         error: error instanceof Error ? error.message : String(error),
@@ -990,6 +1149,7 @@ export class RemoteServerService {
       reportManagedServerOutcome('reset', 'remote', 'failure');
       throw error;
     } finally {
+      await lease?.release();
       this.releaseHost(sshHost, host);
       this.busy.delete(sshHost);
     }
@@ -1009,11 +1169,25 @@ export class RemoteServerService {
     this.hosts.delete(sshHost);
   }
 
-  /** Abort in-flight health waits and drop all forwards (app quit). The remote
-   * containers keep running; only the desktop-side tunnels close. */
+  /**
+   * For a stop or reset turned away before it touched anything: the forward
+   * this Console holds stays, so the host it used is dropped only when it was
+   * a throwaway. Returns what the caller's `finally` should still release —
+   * nothing.
+   */
+  private keepLiveHost(sshHost: string, host: RemoteServerHost | null): null {
+    if (host !== null && host !== this.hosts.get(sshHost)) host.dispose();
+    return null;
+  }
+
+  /** Abort in-flight health waits and lock waits and drop all forwards (app
+   * quit). The remote containers keep running; only the desktop-side tunnels
+   * close. */
   dispose(): void {
     for (const abort of this.startAborts.values()) abort.abort();
     this.startAborts.clear();
+    for (const abort of this.lockWaits.values()) abort.abort();
+    this.lockWaits.clear();
     for (const host of this.hosts.values()) host.dispose();
     this.hosts.clear();
   }

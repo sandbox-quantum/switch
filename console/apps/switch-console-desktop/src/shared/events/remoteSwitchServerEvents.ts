@@ -1,4 +1,7 @@
-import type { LocalServerStatus } from '@shared/core/managed-switch-server/managed-switch-server';
+import type {
+  LocalServerStatus,
+  ServerLockHolder,
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import { defineEvent } from '@shared/lib/ipc/events';
 
 /** Status of a remote-managed stack, tagged with the SSH host it runs on (the
@@ -22,6 +25,13 @@ export type RemoteServerStatus = LocalServerStatus & {
    * the next record that succeeds.
    */
   recordWarning: string | null;
+  /**
+   * The other Console this one is waiting on before it can change or read the
+   * stack, or null (CHOO-2893). Whoever changes a shared stack holds its lock,
+   * and a start, a join or a check here waits for them rather than acting on
+   * a stack that is half-way through their start. The wait can be cancelled.
+   */
+  waitingFor: ServerLockHolder | null;
 };
 
 export const remoteServerStatusChannel = defineEvent<RemoteServerStatus>(

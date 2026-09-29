@@ -3,6 +3,7 @@ import type * as AppIdentity from '@shared/app-identity';
 import type { RemoteServerStatus } from '@shared/events/remoteSwitchServerEvents';
 import type * as DeployedVersion from './deployed-version';
 import type * as ManagedUpgrade from './managed-upgrade';
+import type * as StackLock from './stack-lock';
 import type { StackOnHost } from './stack-state';
 import type * as StackState from './stack-state';
 
@@ -94,7 +95,41 @@ vi.mock('./deployed-version', async (importOriginal) => ({
   readVersionStatus,
 }));
 vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry }));
-vi.mock('./console-register', () => ({ writeRecord, readRegister }));
+vi.mock('./console-register', () => ({
+  writeRecord,
+  readRegister,
+  hostAccount: async () => 'me',
+}));
+
+/** The server lock (CHOO-2893): taken and given back in order, or — per test —
+ * held by someone else. The real module's errors and constants are kept. */
+const lockEvents = vi.hoisted(() => [] as string[]);
+const acquireServerLock = vi.hoisted(() =>
+  vi.fn(async (_host: unknown, claim: { action: string }, _opts: unknown) => {
+    lockEvents.push(`take ${claim.action}`);
+    return {
+      token: 'lease-token',
+      lost: false,
+      assertHeld: vi.fn(async () => {}),
+      release: vi.fn(async () => {
+        lockEvents.push(`release ${claim.action}`);
+      }),
+    };
+  })
+);
+const readServerLock = vi.hoisted(() => vi.fn(async () => null));
+vi.mock('./stack-lock', async (importOriginal) => ({
+  ...(await importOriginal<typeof StackLock>()),
+  acquireServerLock,
+  readServerLock,
+}));
+vi.mock('@main/core/switch-servers/console-identity', () => ({
+  getConsoleIdentity: async () => ({
+    id: 'aaaaaaaa-0000-4000-8000-000000000001',
+    name: 'me@laptop',
+  }),
+}));
+
 vi.mock('./managed-upgrade', async (importOriginal) => ({
   ...(await importOriginal<typeof ManagedUpgrade>()),
   readUpgradeJournal,
@@ -161,6 +196,7 @@ async function loadService() {
 beforeEach(() => {
   vi.clearAllMocks();
   emitted.length = 0;
+  lockEvents.length = 0;
   isBlocked.mockReturnValue(false);
   listManagedServers.mockResolvedValue([RECORD]);
   getRemoteManagedServer.mockResolvedValue(RECORD);
@@ -445,7 +481,9 @@ describe('picking a shared stack back up', () => {
 
     await boot(service);
 
-    expect(adoptRunningStack).toHaveBeenCalledWith(host, present(true));
+    expect(adoptRunningStack).toHaveBeenCalledWith(host, present(true), expect.anything());
+    // Read under the lock, and the lock given back once the read is done.
+    expect(lockEvents).toEqual(['take checking', 'release checking']);
     expect(host.establishNetworking).toHaveBeenCalledWith(ports);
     expect(host.dispose).not.toHaveBeenCalled();
     expect(service.getStatus('vm-1')).toMatchObject({ phase: 'running', notice: null });
@@ -766,7 +804,10 @@ describe('probe', () => {
       deployedVersion: '0.11.0',
       shared: true,
       drift: null,
+      busy: null,
     });
+    // A look, which takes no lock.
+    expect(acquireServerLock).not.toHaveBeenCalled();
     expect(JSON.stringify(probe)).not.toContain('admin-pw');
     expect(host.dispose).toHaveBeenCalledOnce();
   });
@@ -826,7 +867,8 @@ describe('stopping and resetting a shared stack', () => {
 
     await service.stop('vm-1');
 
-    expect(stopStack).toHaveBeenCalledWith(host);
+    expect(stopStack).toHaveBeenCalledWith(host, expect.objectContaining({ token: 'lease-token' }));
+    expect(lockEvents).toEqual(['take stopping', 'release stopping']);
     expect(writeRecord).toHaveBeenCalledExactlyOnceWith(host, 'stopped');
     expect(host.dispose).toHaveBeenCalledOnce();
     expect(service.getStatus('vm-1')).toMatchObject({
@@ -1121,5 +1163,271 @@ describe('re-checking while something else is running', () => {
     expect(inspectStack).not.toHaveBeenCalled();
     finish({ kind: 'started', serverId: 'srv-1', telemetryEnabled: false, warning: null });
     await restarting;
+  });
+});
+
+describe('the server lock', () => {
+  const bob = {
+    name: 'bob@desk',
+    hostAccount: 'bob',
+    action: 'starting' as const,
+    heldForSeconds: 40,
+    expiresInSeconds: 80,
+  };
+  const started = { kind: 'started', serverId: 'srv-1', telemetryEnabled: false, warning: null };
+  const connected = { kind: 'connected', serverId: 'srv-1', deployedVersion: '0.11.0' };
+
+  type WaitOptions = { signal: AbortSignal; onWaiting: (holder: typeof bob) => void };
+
+  /** Held by bob until the wait is cancelled. */
+  function heldUntilCancelled() {
+    acquireServerLock.mockImplementationOnce(async (_host, _claim, opts) => {
+      const { signal, onWaiting } = opts as WaitOptions;
+      onWaiting(bob);
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      // The module the service loaded, whose class it checks for.
+      const { ServerLockWaitCancelled } = await import('./stack-lock');
+      throw new ServerLockWaitCancelled(bob);
+    });
+  }
+
+  /** Held by bob until the returned function is called, then taken. */
+  function heldUntilFreed(): () => void {
+    const take = acquireServerLock.getMockImplementation()!;
+    let free = () => {};
+    acquireServerLock.mockImplementationOnce(async (host, claim, opts) => {
+      (opts as WaitOptions).onWaiting(bob);
+      await new Promise<void>((resolve) => (free = resolve));
+      return take(host, claim, opts);
+    });
+    return () => free();
+  }
+
+  async function busyError() {
+    const { ServerBusyError } =
+      await import('@shared/core/managed-switch-server/managed-switch-server');
+    return new ServerBusyError(bob, 'vm-1');
+  }
+
+  it('waits for someone else’s start, saying who for, and only then looks at the host', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    startStack.mockResolvedValue(started);
+    const free = heldUntilFreed();
+    const service = await loadService();
+
+    const starting = service.start('vm-1', 'Team server');
+    await vi.waitFor(() => expect(service.getStatus('vm-1').waitingFor).toEqual(bob));
+
+    expect(service.getStatus('vm-1').message).toBe(
+      'Waiting for bob@desk (as bob) to finish starting the server…'
+    );
+    expect(startStack).not.toHaveBeenCalled();
+
+    free();
+    expect(await starting).toMatchObject({ kind: 'started' });
+    expect(startStack).toHaveBeenCalledWith(
+      expect.objectContaining({ lease: expect.objectContaining({ token: 'lease-token' }) })
+    );
+    expect(service.getStatus('vm-1').waitingFor).toBeNull();
+    expect(lockEvents).toEqual(['take starting', 'release starting']);
+  });
+
+  it('stops waiting when cancelled, leaving the server and its forward as they were', async () => {
+    const live = fakeHost();
+    const restarting = fakeHost();
+    createRemoteServerHost.mockResolvedValueOnce(live).mockResolvedValueOnce(restarting);
+    connectStack.mockResolvedValue(connected);
+    const service = await loadService();
+    await service.connect('vm-1', 'Team server');
+    heldUntilCancelled();
+
+    const start = service.start('vm-1', 'Team server');
+    await vi.waitFor(() => expect(service.getStatus('vm-1').waitingFor).toEqual(bob));
+    service.cancelWait('vm-1');
+
+    expect(await start).toEqual({ kind: 'cancelled' });
+    expect(startStack).not.toHaveBeenCalled();
+    expect(live.dispose).not.toHaveBeenCalled();
+    expect(restarting.dispose).toHaveBeenCalledOnce();
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'running',
+      waitingFor: null,
+      message: null,
+      error: null,
+    });
+  });
+
+  it('gives the lock back before letting the host go when a start fails', async () => {
+    const host = fakeHost();
+    host.dispose.mockImplementation(() => void lockEvents.push('dispose'));
+    createRemoteServerHost.mockResolvedValue(host);
+    startStack.mockResolvedValue({ kind: 'error', message: 'compose up failed' });
+    const service = await loadService();
+
+    await service.start('vm-1', 'Team server');
+
+    expect(lockEvents).toEqual(['take starting', 'release starting', 'dispose']);
+  });
+
+  it('gives the lock back when a start throws', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    startStack.mockRejectedValueOnce(new Error('ssh dropped'));
+    const service = await loadService();
+
+    expect(await service.start('vm-1', 'Team server')).toMatchObject({ kind: 'error' });
+
+    expect(lockEvents).toEqual(['take starting', 'release starting']);
+  });
+
+  it('joins under the lock, and gives it back before letting the host go', async () => {
+    const host = fakeHost();
+    host.dispose.mockImplementation(() => void lockEvents.push('dispose'));
+    createRemoteServerHost.mockResolvedValue(host);
+    connectStack.mockResolvedValue({ kind: 'not-running' });
+    const service = await loadService();
+
+    await service.connect('vm-1', 'Team server');
+
+    expect(connectStack).toHaveBeenCalledWith(
+      expect.objectContaining({ lease: expect.objectContaining({ token: 'lease-token' }) })
+    );
+    expect(lockEvents).toEqual(['take connecting', 'release connecting', 'dispose']);
+  });
+
+  it('tells the others it is updating when joining an older server updates it', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockResolvedValue({ kind: 'behind', deployed: '0.10.0', expected: '0.11.0' });
+    startStack.mockResolvedValue(started);
+    const service = await loadService();
+
+    await service.connect('vm-1', 'Team server');
+
+    expect(lockEvents).toEqual([
+      'take connecting',
+      'release connecting',
+      'take updating',
+      'release updating',
+    ]);
+  });
+
+  it('ends a join that was waiting when cancelled, having changed nothing', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    heldUntilCancelled();
+    const service = await loadService();
+
+    const joining = service.connect('vm-1', 'Team server');
+    await vi.waitFor(() => expect(service.getStatus('vm-1').waitingFor).toEqual(bob));
+    service.cancelWait('vm-1');
+
+    expect(await joining).toEqual({ kind: 'cancelled' });
+    expect(connectStack).not.toHaveBeenCalled();
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'stopped', waitingFor: null });
+  });
+
+  it('refuses a stop while someone else changes the server, touching nothing and keeping the forward', async () => {
+    const live = fakeHost();
+    createRemoteServerHost.mockResolvedValue(live);
+    connectStack.mockResolvedValue(connected);
+    const service = await loadService();
+    await service.connect('vm-1', 'Team server');
+    acquireServerLock.mockRejectedValueOnce(await busyError());
+
+    await expect(service.stop('vm-1')).rejects.toThrow(
+      /^bob@desk \(as bob\) is starting the server on vm-1 right now, so nothing was changed\./
+    );
+
+    expect(stopStack).not.toHaveBeenCalled();
+    expect(live.dispose).not.toHaveBeenCalled();
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'running', error: null });
+    expect(writeRecord).not.toHaveBeenCalledWith(live, 'stopped');
+  });
+
+  it('lets the host go when a refused stop had to open one of its own', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    acquireServerLock.mockRejectedValueOnce(await busyError());
+    const service = await loadService();
+
+    await expect(service.stop('vm-1')).rejects.toThrow(/right now/);
+
+    expect(host.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a reset while someone else changes the server, before deleting any agent', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    acquireServerLock.mockRejectedValueOnce(await busyError());
+    const service = await loadService();
+
+    await expect(service.reset('vm-1')).rejects.toThrow(/right now, so nothing was changed/);
+
+    expect(deleteAgentsForServer).not.toHaveBeenCalled();
+    expect(resetStack).not.toHaveBeenCalled();
+  });
+
+  it('takes the lock for a reset before deleting its agents', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    deleteAgentsForServer.mockImplementationOnce(async () => {
+      lockEvents.push('delete agents');
+      return { failed: [] };
+    });
+    const service = await loadService();
+
+    await service.reset('vm-1');
+
+    expect(resetStack).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ token: 'lease-token' })
+    );
+    expect(lockEvents).toEqual(['take resetting', 'delete agents', 'release resetting']);
+  });
+
+  it('stops waiting to check the server when cancelled, and says it has not checked it', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(true));
+    heldUntilCancelled();
+    const service = await loadService();
+    await service.initialize();
+    await vi.waitFor(() => expect(service.getStatus('vm-1').waitingFor).toEqual(bob));
+
+    service.cancelWait('vm-1');
+    await service.ensureReady('vm-1', 'Team server');
+
+    expect(inspectStack).not.toHaveBeenCalled();
+    expect(service.getStatus('vm-1')).toMatchObject({
+      waitingFor: null,
+      notice:
+        'Stopped waiting for bob@desk (as bob) to finish starting the server, so this Console ' +
+        'has not checked it since.',
+    });
+  });
+
+  it('gives up every wait for the lock when the app quits', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    heldUntilCancelled();
+    const service = await loadService();
+
+    const starting = service.start('vm-1', 'Team server');
+    await vi.waitFor(() => expect(service.getStatus('vm-1').waitingFor).toEqual(bob));
+    service.dispose();
+
+    expect(await starting).toEqual({ kind: 'cancelled' });
+  });
+
+  it('tells the setup step who is changing the server right now', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue({ kind: 'absent' });
+    readServerLock.mockResolvedValueOnce(bob as never);
+    const service = await loadService();
+
+    expect(await service.probe('vm-1')).toEqual({ kind: 'absent', busy: bob });
+  });
+
+  it('shows nobody when who holds the lock cannot be read, since starting takes it anyway', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue({ kind: 'absent' });
+    readServerLock.mockRejectedValueOnce(new Error('docker run failed'));
+    const service = await loadService();
+
+    expect(await service.probe('vm-1')).toEqual({ kind: 'absent', busy: null });
   });
 });
