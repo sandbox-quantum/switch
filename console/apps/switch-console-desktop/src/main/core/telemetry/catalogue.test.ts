@@ -109,6 +109,14 @@ describe('the catalogue as a whole', () => {
     );
   });
 
+  it.each(EVENT_NAMES)('sends %s well under the attribute count the relay drops at', (name) => {
+    // The relay drops any record with more than 128 attributes, and still
+    // answers 200. Held here, over every event, with room to spare.
+    const payload = buildOtlpPayload(name, sampleEvent(name) as never, CONTEXT);
+
+    expect(recordOf(payload).attributes.length).toBeLessThanOrEqual(100);
+  });
+
   it.each(EVENT_NAMES)('refuses to send %s with a property missing', (name) => {
     const properties = sampleEvent(name);
     const declared = TELEMETRY_EVENT_PROPERTIES[name];

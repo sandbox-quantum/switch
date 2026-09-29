@@ -187,6 +187,34 @@ class TestTheWireFormat:
 
         assert attributes["from_template"] == {"boolValue": True}
 
+    async def test_a_false_and_a_zero_are_sent_rather_than_dropped(self) -> None:
+        """Falsy values are where an encoder that tests `if value:` loses them,
+        and a missing property reads downstream exactly like one never sent."""
+        body: dict = {}
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            body.update(json.loads(request.content))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
+        await sink.send(
+            TelemetryRecord(
+                name="switch_core.connector_added",
+                properties={"is_preconfigured": False, "failed_attempts": 0},
+                resource={
+                    "service.name": "switch-core",
+                    "flint.client_id": "deployment-uuid",
+                },
+                timestamp_ns=1_700_000_000_000_000_000,
+            )
+        )
+        await http.aclose()
+        attributes = {a["key"]: a["value"] for a in self._record(body)["attributes"]}
+
+        assert attributes["is_preconfigured"] == {"boolValue": False}
+        assert attributes["failed_attempts"] == {"doubleValue": 0.0}
+
     async def test_the_body_carries_the_name_so_the_log_line_is_not_blank(
         self,
     ) -> None:

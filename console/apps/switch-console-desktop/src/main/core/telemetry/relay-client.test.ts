@@ -164,6 +164,16 @@ describe('the record that gets built', () => {
     expect(rawLogAttributes(payload).connected_to_room).toEqual({ boolValue: false });
   });
 
+  it('carries a yes as a boolean, not as the word', () => {
+    const payload = buildOtlpPayload(
+      'session_started',
+      { ...SESSION_STARTED, has_initial_prompt: true },
+      CONTEXT
+    );
+
+    expect(rawLogAttributes(payload).has_initial_prompt).toEqual({ boolValue: true });
+  });
+
   it('carries a count as a number, so it can be summed at the far end', () => {
     // A count sent as text arrives as a category: it can be grouped by, never
     // summed or averaged.
