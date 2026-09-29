@@ -57,6 +57,34 @@ choices are load-bearing rather than incidental:
 - **A name prefix per product**, because one Amplitude project holds several.
   The Console sends `switch_console.<event>`; the server sends
   `switch_core.<event>`.
+- **Numbers go as `doubleValue`, booleans as `boolValue`.** The relay delivers
+  both typed to Amplitude and Datadog — zero and `false` included — so a count
+  can be summed and a flag filtered on at the far end. A number sent as text
+  arrives as a category instead. The relay's own test suite pins this end to
+  end; the tests beside each encoder pin the half Switch controls.
+- **Non-finite numbers are refused before sending.** JSON has no NaN or
+  infinity, so neither could arrive as a number whatever the relay did with it.
+- **At most 100 attributes per record.** The relay drops any record over 128
+  and still answers 200. The margin is held by a test over every event, on both
+  the server and the Console.
+
+### What the relay's 200 means
+
+The relay answers `200` once it has accepted a payload, before it forwards
+anything: it batches, and at response time it does not yet know whether
+Amplitude will take the events. So a `200` means *received*, never *delivered*,
+and a sender cannot learn from the response that an event was lost. That is
+deliberate. An error status would be either a `400` the sender can do nothing
+about or a `500` that makes it retry the same payload forever.
+
+Loss is made visible at the relay instead. It counts what it receives, what its
+own checks drop, and what Amplitude and Datadog refuse, reports those counts to
+Datadog, and alerts when it fails to deliver or goes quiet. The relay's own
+repository documents the metrics, the alerts, and the gaps that remain.
+
+What that leaves to Switch is not sending anything the relay would drop: the
+event name in both places, finite numbers, the attribute margin, and a valid
+client id.
 
 ## The rule: abstracted counts, never specifics
 
