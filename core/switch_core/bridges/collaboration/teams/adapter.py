@@ -981,7 +981,10 @@ class TeamsAdapter(CollaborationAdapter):
         # team and is not to be trusted — most often it was not read at all,
         # because the wrong team is exactly what Graph refuses. Without this the
         # subscription heals on the new team while the name and layout stay
-        # stuck at whatever the failed read left behind.
+        # stuck at whatever the failed read left behind. Privacy is kept: a
+        # failed read records none, a successful one is the channel's own
+        # property whichever team it was read through, and `create_channel`
+        # records it just before calling this.
         self._team_of_channel[channel_id] = team_id
         self._channel_names.pop(channel_id, None)
         self._channel_layouts.pop(channel_id, None)
@@ -2021,21 +2024,8 @@ class TeamsAdapter(CollaborationAdapter):
         known = self._channel_type.get(channel_id)
         if known is not None:
             return known
-        if self._graph is None:
-            raise RuntimeError("Teams adapter not started")
-        team_id = self._team_of_channel.get(channel_id, self._config.team_id)
-        channel = await self._graph.get_channel(team_id=team_id, channel_id=channel_id)
-        resolved = _channel_type_of(channel)
-        self._channel_type[channel_id] = resolved
-        # The same response carries the name and layout, so record them rather
-        # than reading the channel a second time on the first message.
-        self._channel_names.setdefault(
-            channel_id, str(channel.get("displayName") or "")
-        )
-        self._channel_layouts.setdefault(
-            channel_id, str(channel.get("layoutType") or "")
-        )
-        return resolved
+        channel = await self._fetch_channel(channel_id)
+        return _channel_type_of(channel)
 
     async def read_channel_types(
         self, channel_ids: list[str]
@@ -2460,18 +2450,20 @@ class TeamsAdapter(CollaborationAdapter):
         A chat's type comes with the activity. A channel's privacy comes from
         what is already known, else from Graph — the same read that learns its
         name and layout. When Graph cannot say, the channel is reported private
-        and not recorded: a room created for it is labelled private, the
-        cautious reading, and the next read corrects it."""
+        and not recorded, so the adapter keeps asking. A room created for it in
+        the meantime is saved as private, the cautious reading, and stays so
+        until the bridge's check at its next start corrects it; `_read_channel`
+        warns once per retry window that this is happening."""
         if chat_type is not None:
             return chat_type
         known = self._channel_type.get(channel_id)
-        if known in ("channel_public", "channel_private"):
+        if known is not None:
             return known
         if self._read_recently_failed(channel_id):
             return "channel_private"
         await self._read_channel(channel_id)
         known = self._channel_type.get(channel_id)
-        if known in ("channel_public", "channel_private"):
+        if known is not None:
             return known
         logger.warning(
             "Could not learn whether Teams channel %s is private; reporting it "
@@ -2887,23 +2879,33 @@ class TeamsAdapter(CollaborationAdapter):
         """
         if self._graph is None or not self._is_channel(channel_id):
             return None
-        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
-        if not team_id:
+        if not (self._team_of_channel.get(channel_id) or self._config.team_id):
             return None
         try:
-            channel = await self._graph.get_channel(
-                team_id=team_id, channel_id=channel_id
-            )
+            return await self._fetch_channel(channel_id)
         except Exception:
             logger.warning(
                 "Could not read Teams channel %s; until this succeeds a room "
-                "created for it is named after its id and labelled private, and "
-                "replies there are threaded as if it used the posts layout",
+                "created for it is named after its id and saved as private "
+                "(corrected at the next start), and replies there are threaded "
+                "as if it used the posts layout",
                 channel_id,
                 exc_info=True,
             )
             self._channel_read_failed_at[channel_id] = time.monotonic()
             return None
+
+    async def _fetch_channel(self, channel_id: str) -> dict[str, Any]:
+        """Read a channel from Graph and record what it says; raises on failure.
+
+        The one place a channel's privacy, name and layout are learned from
+        Graph, so `get_channel_type` and `_read_channel` cannot drift apart."""
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        if not team_id:
+            raise RuntimeError(f"No team is known for Teams channel {channel_id}")
+        channel = await self._graph.get_channel(team_id=team_id, channel_id=channel_id)
         self._channel_read_failed_at.pop(channel_id, None)
         self._channel_type[channel_id] = _channel_type_of(channel)
         self._channel_names[channel_id] = str(channel.get("displayName") or "")

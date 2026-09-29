@@ -195,14 +195,33 @@ class RoomStore:
         room.external_channel_id = external_channel_id
         await session.flush()
 
-    async def set_channel_type(
-        self, session: AsyncSession, room_id: str, channel_type: str
-    ) -> None:
-        room = await session.get(Room, room_id)
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
-        room.channel_type = channel_type
-        await session.flush()
+    async def correct_channel_type(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        bridge_id: str,
+        external_channel_id: str,
+        saved_type: str,
+        channel_type: str,
+    ) -> bool:
+        """Set a room's channel type if it is still bound as it was read.
+
+        For corrections worked out from an earlier read of the room: a room
+        deleted, moved to another bridge or channel, or retyped since then is
+        left alone rather than given an answer that was about its old channel.
+        Returns whether the room was changed."""
+        result = await session.execute(
+            update(Room)
+            .where(
+                Room.id == room_id,
+                Room.bridge_id == bridge_id,
+                Room.external_channel_id == external_channel_id,
+                Room.channel_type == saved_type,
+            )
+            .values(channel_type=channel_type)
+        )
+        return bool(result.rowcount)  # type: ignore[attr-defined]
 
     async def clear_bridge(self, session: AsyncSession, room_id: str) -> None:
         room = await session.get(Room, room_id)

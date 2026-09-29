@@ -38,18 +38,36 @@ def _room(
 
 
 class _RoomStore:
-    def __init__(self, rooms: list[SimpleNamespace]) -> None:
+    def __init__(
+        self, rooms: list[SimpleNamespace], *, changed_since: set[str] | None = None
+    ) -> None:
         self._rooms = rooms
+        # Rooms deleted, moved or retyped between the read and the write.
+        self._changed_since = changed_since or set()
         self.written: list[tuple[str, str]] = []
 
     async def get_by_bridge(self, session: Any, bridge_id: str) -> list[Any]:
         assert bridge_id == "bridge-1"
         return self._rooms
 
-    async def set_channel_type(
-        self, session: Any, room_id: str, channel_type: str
-    ) -> None:
+    async def correct_channel_type(
+        self,
+        session: Any,
+        room_id: str,
+        *,
+        bridge_id: str,
+        external_channel_id: str,
+        saved_type: str,
+        channel_type: str,
+    ) -> bool:
+        assert bridge_id == "bridge-1"
+        room = next(r for r in self._rooms if r.id == room_id)
+        assert external_channel_id == room.external_channel_id
+        assert saved_type == room.channel_type
+        if room_id in self._changed_since:
+            return False
         self.written.append((room_id, channel_type))
+        return True
 
 
 class _Adapter:
@@ -94,6 +112,28 @@ async def test_a_public_channel_saved_as_private_is_corrected() -> None:
     await BridgeCore._correct_channel_types(_bridge(store, adapter))
 
     assert store.written == [("room-1", "channel_public")]
+
+
+async def test_a_room_changed_since_the_read_is_not_reported_corrected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = _RoomStore(
+        [
+            _room("room-moved", "19:m@thread.tacv2", "channel_public"),
+            _room("room-1", "19:p@thread.tacv2", "channel_public"),
+        ],
+        changed_since={"room-moved"},
+    )
+    adapter = _Adapter(
+        {"19:m@thread.tacv2": "channel_private", "19:p@thread.tacv2": "channel_private"}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await BridgeCore._correct_channel_types(_bridge(store, adapter))
+
+    assert store.written == [("room-1", "channel_private")]
+    assert "room-moved" not in caplog.text
+    assert "room-1" in caplog.text
 
 
 async def test_rooms_that_match_or_cannot_be_read_are_left_alone() -> None:

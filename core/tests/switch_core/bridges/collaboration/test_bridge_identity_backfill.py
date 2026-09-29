@@ -50,6 +50,7 @@ def _core(provision: Any) -> tuple[BridgeCore, _FakeAdapter]:
     core._load_channel_map = _noop  # type: ignore[assignment]
     core._load_existing_puppets = _noop  # type: ignore[assignment]
     core._ensure_channel_captures = _noop  # type: ignore[assignment]
+    core._correct_channel_types = _noop  # type: ignore[assignment]
     core._handle_channel_migrated = None  # type: ignore[attr-defined]
     core._agent_presentation = None  # type: ignore[attr-defined]
     core._handle_inbound_message = None  # type: ignore[attr-defined]
@@ -132,7 +133,10 @@ async def test_a_failure_is_logged_rather_than_swallowed(
         assert task is not None
         await task
 
-    assert any("stopped unexpectedly" in r.getMessage() for r in caplog.records)
+    assert any(
+        "identity provisioning stopped unexpectedly" in r.getMessage()
+        for r in caplog.records
+    )
     await core.stop()
 
 

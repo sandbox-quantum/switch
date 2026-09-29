@@ -323,3 +323,35 @@ def test_read_channel_types_reports_what_teams_says_and_skips_failures() -> None
         "19:std@thread.tacv2": "channel_public",
         "19:prv@thread.tacv2": "channel_private",
     }
+
+
+def test_a_known_chat_is_not_mistaken_for_a_channel() -> None:
+    # An activity without a recognised conversation type is channel-shaped by
+    # default; a conversation already known to be a group chat stays one.
+    graph = _FakeGraph(membership_type="standard")
+    adapter = _adapter(graph)
+    adapter._channel_type["19:chat@thread.v2"] = "group"
+    captured = _capture_messages(adapter)
+    activity = _message_activity()
+    activity["conversation"] = {"id": "19:chat@thread.v2"}
+    activity["channelData"] = {}
+
+    _run(adapter._dispatch_activity(activity))
+
+    assert [m.channel_type for m in captured] == ["group"]
+    assert graph.channel_reads == 0
+
+
+def test_a_successful_read_lifts_the_retry_wait_for_every_path() -> None:
+    # A failed read makes the adapter wait before trying again for the name and
+    # layout; a later successful privacy read must lift that wait.
+    graph = _FakeGraph(membership_type=None)
+    adapter = _adapter(graph)
+    _run(adapter._read_channel(CHANNEL))
+    assert adapter._read_recently_failed(CHANNEL)
+
+    graph._membership_type = "private"
+    assert _run(adapter.get_channel_type(CHANNEL)) == "channel_private"
+
+    assert not adapter._read_recently_failed(CHANNEL)
+    assert adapter._channel_names[CHANNEL] == "Room"

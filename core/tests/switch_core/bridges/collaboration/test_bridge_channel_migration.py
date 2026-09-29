@@ -106,6 +106,7 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
     bridge._load_channel_map = _noop  # type: ignore[assignment,method-assign]
     bridge._load_existing_puppets = _noop  # type: ignore[assignment,method-assign]
     bridge._ensure_channel_captures = _noop  # type: ignore[assignment,method-assign]
+    bridge._correct_channel_types = _noop  # type: ignore[assignment,method-assign]
     bridge._create_agent_identities = _noop  # type: ignore[assignment,method-assign]
 
     asyncio.run(BridgeCore.start(bridge))

@@ -637,21 +637,32 @@ class BridgeCore:
                 corrections[room_id] = (channel_id, saved_type, reported)
         if not corrections:
             return
+        applied: list[str] = []
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
             for room_id, (channel_id, saved_type, corrected) in corrections.items():
-                await self._room_store.set_channel_type(session, room_id, corrected)
-                logger.warning(
-                    "Room %s was saved as %s but %s reports its channel %s as "
-                    "%s; corrected",
+                if await self._room_store.correct_channel_type(
+                    session,
                     room_id,
-                    saved_type,
-                    self._bridge_type,
-                    channel_id,
-                    corrected,
-                )
+                    bridge_id=self._bridge_id,
+                    external_channel_id=channel_id,
+                    saved_type=saved_type,
+                    channel_type=corrected,
+                ):
+                    applied.append(room_id)
             await session.commit()
+        for room_id in applied:
+            channel_id, saved_type, corrected = corrections[room_id]
+            logger.warning(
+                "Room %s was saved as %s but %s reports its channel %s as %s; "
+                "corrected",
+                room_id,
+                saved_type,
+                self._bridge_type,
+                channel_id,
+                corrected,
+            )
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 
