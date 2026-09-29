@@ -328,6 +328,21 @@ _COMMAND_PREFIXES = ("!", "/")
 _CHANNEL_READ_RETRY_AFTER = 300.0
 
 
+def _channel_type_of(channel: dict[str, Any]) -> ChannelType:
+    """A Graph channel's privacy as Switch records it.
+
+    Only a ``standard`` channel shares the team's membership. Private and shared
+    channels keep their own member list, and any value Graph adds later is
+    unknown, so everything else is private: adding someone to a channel that is
+    wrongly called private fails loudly, while one wrongly called public adds
+    them to the whole team."""
+    return (
+        "channel_public"
+        if channel.get("membershipType") == "standard"
+        else "channel_private"
+    )
+
+
 def _handle_for(user: dict[str, Any]) -> str:
     """The handle Switch knows a Teams person by.
 
@@ -690,7 +705,11 @@ class TeamsAdapter(CollaborationAdapter):
         # Installed by the bridge to persist a newly-learned serviceUrl so it
         # survives a restart. No-op until set.
         self._persist_service_url: Callable[[str], Awaitable[None]] | None = None
-        # channel/chat id -> ChannelType, learned from inbound activities.
+        # channel/chat id -> ChannelType. Holds only what is known: a chat's
+        # kind from its activity, and a channel's privacy from Graph or from
+        # creating it. An activity does not say whether a channel is private,
+        # so a channel is never recorded from one — `add_users_to_channel`
+        # decides team-wide versus channel-only membership from this.
         self._channel_type: dict[str, ChannelType] = {}
         # casefolded username -> AAD object id, for rendering real @mentions.
         self._mention_targets: dict[str, str] = {}
@@ -2006,11 +2025,7 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError("Teams adapter not started")
         team_id = self._team_of_channel.get(channel_id, self._config.team_id)
         channel = await self._graph.get_channel(team_id=team_id, channel_id=channel_id)
-        resolved: ChannelType = (
-            "channel_private"
-            if channel.get("membershipType") == "private"
-            else "channel_public"
-        )
+        resolved = _channel_type_of(channel)
         self._channel_type[channel_id] = resolved
         # The same response carries the name and layout, so record them rather
         # than reading the channel a second time on the first message.
@@ -2091,8 +2106,29 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError("Teams adapter not started")
         team_id = self._team_of_channel.get(channel_id, self._config.team_id)
         # Private channels have their own membership; standard channels inherit
-        # the team's, so a user is added to the team instead.
-        is_private = self._channel_type.get(channel_id) == "channel_private"
+        # the team's, so a user is added to the team instead. Adding to the team
+        # is the permissive choice, so it is made only when the channel is known
+        # to be standard — never as the fallback for not knowing.
+        try:
+            channel_type = await self.get_channel_type(channel_id)
+        except Exception:
+            logger.exception(
+                "Could not tell whether Teams channel %s is private; added none "
+                "of %d user(s) rather than risk adding them to the whole team",
+                channel_id,
+                len(user_external_ids),
+            )
+            return list(user_external_ids)
+        if channel_type not in ("channel_public", "channel_private"):
+            logger.error(
+                "Teams conversation %s is a %s, not a channel; added none of "
+                "%d user(s)",
+                channel_id,
+                channel_type,
+                len(user_external_ids),
+            )
+            return list(user_external_ids)
+        is_private = channel_type == "channel_private"
         failed: list[str] = []
         for user_id in user_external_ids:
             try:
@@ -2350,11 +2386,12 @@ class TeamsAdapter(CollaborationAdapter):
         service_url = str(activity.get("serviceUrl", "")).strip()
         activity_type = activity.get("type")
 
-        channel_id, channel_type = self._channel_from_activity(activity)
+        channel_id, chat_type = self._channel_from_activity(activity)
         if service_url and channel_id:
             self._service_url[channel_id] = service_url
             await self._learn_service_url(service_url)
-            self._channel_type[channel_id] = channel_type
+            if chat_type is not None:
+                self._channel_type[channel_id] = chat_type
 
         team = (activity.get("channelData") or {}).get("team") or {}
         # Graph channel subscriptions key on the team's AAD group GUID, which
@@ -2366,8 +2403,10 @@ class TeamsAdapter(CollaborationAdapter):
             await self._learn_channel_team(channel_id, str(group_id))
 
         if activity_type == "message":
+            channel_type = await self._inbound_channel_type(channel_id, chat_type)
             await self._dispatch_message(activity, channel_id, channel_type)
         elif activity_type == "conversationUpdate":
+            channel_type = await self._inbound_channel_type(channel_id, chat_type)
             await self._dispatch_conversation_update(activity, channel_id, channel_type)
         elif activity_type == "invoke" and activity.get("name") == _INVOKE_CARD_ACTION:
             return await self._dispatch_card_action(activity, channel_id)
@@ -2376,7 +2415,12 @@ class TeamsAdapter(CollaborationAdapter):
     @staticmethod
     def _channel_from_activity(
         activity: dict[str, Any],
-    ) -> tuple[str, ChannelType]:
+    ) -> tuple[str, ChannelType | None]:
+        """The conversation id, and its type when the activity can say.
+
+        A chat's kind is in the activity. A channel's privacy is not — Teams
+        sends the same shape for standard, private and shared channels — so a
+        channel comes back as None, for `_inbound_channel_type` to resolve."""
         conversation = activity.get("conversation") or {}
         conv_id = str(conversation.get("id", ""))
         conv_type = conversation.get("conversationType", "")
@@ -2385,12 +2429,40 @@ class TeamsAdapter(CollaborationAdapter):
 
         if conv_type == "channel" or "@thread.tacv2" in conv_id:
             channel_id = str(channel.get("id") or conv_id.split(";", 1)[0])
-            return channel_id, "channel_public"
+            return channel_id, None
         if conv_type == "personal":
             return conv_id, "direct"
         if conv_type == "groupChat":
             return conv_id, "group"
-        return conv_id.split(";", 1)[0], "channel_public"
+        return conv_id.split(";", 1)[0], None
+
+    async def _inbound_channel_type(
+        self, channel_id: str, chat_type: ChannelType | None
+    ) -> ChannelType:
+        """The type to report for a conversation something arrived from.
+
+        A chat's type comes with the activity. A channel's privacy comes from
+        what is already known, else from Graph — the same read that learns its
+        name and layout. When Graph cannot say, the channel is reported private
+        and not recorded: a room created for it is labelled private, the
+        cautious reading, and the next read corrects it."""
+        if chat_type is not None:
+            return chat_type
+        known = self._channel_type.get(channel_id)
+        if known in ("channel_public", "channel_private"):
+            return known
+        if self._read_recently_failed(channel_id):
+            return "channel_private"
+        await self._read_channel(channel_id)
+        known = self._channel_type.get(channel_id)
+        if known in ("channel_public", "channel_private"):
+            return known
+        logger.warning(
+            "Could not learn whether Teams channel %s is private; reporting it "
+            "as private until Graph can say",
+            channel_id,
+        )
+        return "channel_private"
 
     def _seen_activity(self, activity_id: str) -> bool:
         if not activity_id:
@@ -2782,11 +2854,12 @@ class TeamsAdapter(CollaborationAdapter):
     async def _read_channel(self, channel_id: str) -> dict[str, Any] | None:
         """Read a channel from Graph once and cache what the adapter needs.
 
-        Two things come off this call — the display name, without which a room
-        is titled after a `19:…` id, and the conversation layout, which decides
-        whether an untied reply is steered into a post. They are cached
-        together because they arrive together: asking twice would double the
-        traffic for nothing.
+        Three things come off this call — the display name, without which a room
+        is titled after a `19:…` id; the conversation layout, which decides
+        whether an untied reply is steered into a post; and whether the channel
+        is private, which an activity never says. They are cached together
+        because they arrive together: asking twice would double the traffic for
+        nothing.
 
         Returns None when the read could not be made or failed. A failure is
         remembered so the read is not retried on every message, but only for
@@ -2808,14 +2881,15 @@ class TeamsAdapter(CollaborationAdapter):
         except Exception:
             logger.warning(
                 "Could not read Teams channel %s; until this succeeds a room "
-                "created for it is named after its id, and replies there are "
-                "threaded as if it used the posts layout",
+                "created for it is named after its id and labelled private, and "
+                "replies there are threaded as if it used the posts layout",
                 channel_id,
                 exc_info=True,
             )
             self._channel_read_failed_at[channel_id] = time.monotonic()
             return None
         self._channel_read_failed_at.pop(channel_id, None)
+        self._channel_type[channel_id] = _channel_type_of(channel)
         self._channel_names[channel_id] = str(channel.get("displayName") or "")
         self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
         return channel
@@ -3166,7 +3240,7 @@ class TeamsAdapter(CollaborationAdapter):
 
         await self._deliver(
             channel_id=channel_id,
-            channel_type=self._channel_type.get(channel_id, "channel_public"),
+            channel_type=await self._inbound_channel_type(channel_id, None),
             sender_id=sender_id,
             sender_name=sender_name,
             text=content,
