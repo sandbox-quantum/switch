@@ -16,7 +16,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -67,6 +67,28 @@ def seconds_since_install(installed_at: datetime | None) -> float | None:
     if installed_at.tzinfo is None:
         installed_at = installed_at.replace(tzinfo=UTC)
     return max((datetime.now(UTC) - installed_at).total_seconds(), 0.0)
+
+
+async def prune_claims(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    prefix: str,
+    claimed_before: datetime,
+) -> int:
+    """Delete claims named `prefix...` taken before `claimed_before`.
+
+    Only for claims kept to absorb a repeat, never for a once-ever milestone:
+    pruning one of those reports it again. Returns how many went.
+    """
+    async with session_factory() as session:
+        result = await session.execute(
+            delete(TelemetryMilestone).where(
+                TelemetryMilestone.name.startswith(prefix, autoescape=True),
+                TelemetryMilestone.emitted_at < claimed_before,
+            )
+        )
+        await session.commit()
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def milestone_claimed(

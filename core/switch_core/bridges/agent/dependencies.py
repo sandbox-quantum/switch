@@ -24,6 +24,10 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.room_service import RoomService
 from switch_core.telemetry import TelemetryService
+from switch_core.telemetry.session_start import (
+    SessionStartLimiter,
+    default_session_start_limiter,
+)
 
 if TYPE_CHECKING:
     from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -69,6 +73,7 @@ def init_dependencies(
     _state["session_factory"] = session_factory
     _state["config"] = config
     _state["telemetry"] = telemetry
+    _state["session_start_limiter"] = default_session_start_limiter()
 
     _state["protocol"] = ProtocolService(
         agent_store=agent_store,
@@ -147,6 +152,10 @@ def get_protocol() -> ProtocolService:
 
 def get_telemetry() -> TelemetryService | None:
     return cast(TelemetryService | None, _state.get("telemetry"))
+
+
+def get_session_start_limiter() -> SessionStartLimiter:
+    return cast(SessionStartLimiter, _state["session_start_limiter"])
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:

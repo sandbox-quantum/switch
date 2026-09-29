@@ -16,12 +16,24 @@ from fastapi import FastAPI
 
 from switch_core.bridges.agent.api.activity_routes import router
 from switch_core.bridges.agent.auth import get_agent_from_scope
-from switch_core.bridges.agent.dependencies import get_session_factory, get_telemetry
+from switch_core.bridges.agent.dependencies import (
+    get_session_factory,
+    get_session_start_limiter,
+    get_telemetry,
+)
 from switch_core.db.models import Agent
 from switch_core.telemetry.catalogue import CATALOGUE
 from switch_core.telemetry.service import TelemetryService
-from switch_core.telemetry.session_start import StartSource
+from switch_core.telemetry.session_start import (
+    SessionStartLimiter,
+    StartSource,
+    default_session_start_limiter,
+)
 from switch_core.telemetry.sink import TelemetryRecord
+
+# What every launcher mints: a random v4 from Console, or a v5-shaped hash from
+# the room watcher.
+SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e"
 
 
 class _RecordingSink:
@@ -46,12 +58,19 @@ def _telemetry(sink: _RecordingSink, *, enabled: bool) -> TelemetryService:
     )
 
 
-def _app(session_factory, telemetry: TelemetryService | None, agent: Agent) -> FastAPI:
+def _app(
+    session_factory,
+    telemetry: TelemetryService | None,
+    agent: Agent,
+    limiter: SessionStartLimiter | None = None,
+) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_agent_from_scope] = lambda: agent
     app.dependency_overrides[get_telemetry] = lambda: telemetry
+    chosen = limiter or default_session_start_limiter()
+    app.dependency_overrides[get_session_start_limiter] = lambda: chosen
     return app
 
 
@@ -79,7 +98,7 @@ async def test_a_new_session_is_reported_with_how_it_started(session_factory) ->
     telemetry = _telemetry(sink, enabled=True)
     app = _app(session_factory, telemetry, _agent("claude-code"))
 
-    response = await _post(app, "session-1", {"start_source": "user"})
+    response = await _post(app, SESSION, {"start_source": "user"})
     await telemetry.aclose()
 
     assert (response.status_code, response.json()) == (200, {"reported": True})
@@ -95,8 +114,8 @@ async def test_reporting_the_same_session_again_counts_once(session_factory) -> 
     telemetry = _telemetry(sink, enabled=True)
     app = _app(session_factory, telemetry, _agent())
 
-    first = await _post(app, "session-1", {"start_source": "room"})
-    again = await _post(app, "session-1", {"start_source": "room"})
+    first = await _post(app, SESSION, {"start_source": "room"})
+    again = await _post(app, SESSION, {"start_source": "room"})
     await telemetry.aclose()
 
     assert first.json() == {"reported": True}
@@ -110,12 +129,12 @@ async def test_two_agents_with_the_same_session_id_each_count(session_factory) -
 
     await _post(
         _app(session_factory, telemetry, _agent()),
-        "shared-id",
+        SESSION,
         {"start_source": "user"},
     )
     await _post(
         _app(session_factory, telemetry, _agent()),
-        "shared-id",
+        SESSION,
         {"start_source": "user"},
     )
     await telemetry.aclose()
@@ -135,10 +154,10 @@ async def test_nothing_is_sent_or_claimed_while_telemetry_is_off(
     on = _telemetry(on_sink, enabled=True)
 
     while_off = await _post(
-        _app(session_factory, off, agent), "session-1", {"start_source": "user"}
+        _app(session_factory, off, agent), SESSION, {"start_source": "user"}
     )
     once_on = await _post(
-        _app(session_factory, on, agent), "session-1", {"start_source": "user"}
+        _app(session_factory, on, agent), SESSION, {"start_source": "user"}
     )
     await off.aclose()
     await on.aclose()
@@ -152,7 +171,7 @@ async def test_a_server_with_no_telemetry_service_answers_rather_than_failing(
     session_factory,
 ) -> None:
     response = await _post(
-        _app(session_factory, None, _agent()), "session-1", {"start_source": "user"}
+        _app(session_factory, None, _agent()), SESSION, {"start_source": "user"}
     )
 
     assert (response.status_code, response.json()) == (200, {"reported": False})
@@ -173,9 +192,7 @@ async def test_a_source_outside_the_set_is_refused(session_factory, body) -> Non
     sink = _RecordingSink()
     telemetry = _telemetry(sink, enabled=True)
 
-    response = await _post(
-        _app(session_factory, telemetry, _agent()), "session-1", body
-    )
+    response = await _post(_app(session_factory, telemetry, _agent()), SESSION, body)
     await telemetry.aclose()
 
     assert response.status_code == 422
@@ -194,7 +211,7 @@ async def test_every_source_the_route_accepts_is_sent(
 
     response = await _post(
         _app(session_factory, telemetry, _agent()),
-        "session-1",
+        SESSION,
         {"start_source": start_source},
     )
     await telemetry.aclose()
@@ -208,9 +225,87 @@ def test_the_route_and_the_catalogue_accept_the_same_sources() -> None:
     assert set(get_args(StartSource)) == set(declared.values)  # type: ignore[attr-defined]
 
 
-async def test_a_session_id_past_the_limit_is_refused(session_factory) -> None:
+@pytest.mark.parametrize("session_id", ["session-1", "s" * 201, "not-a-uuid-at-all"])
+async def test_a_session_id_that_is_not_a_uuid_is_refused(
+    session_factory, session_id
+) -> None:
+    """Every launcher mints UUIDs. Anything else is a caller making ids up,
+    and each one would be another claim row."""
+    sink = _RecordingSink()
+    telemetry = _telemetry(sink, enabled=True)
+
     response = await _post(
-        _app(session_factory, None, _agent()), "s" * 201, {"start_source": "user"}
+        _app(session_factory, telemetry, _agent()), session_id, {"start_source": "user"}
     )
+    await telemetry.aclose()
 
     assert response.status_code == 422
+    assert _started(sink) == []
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def test_an_agent_past_its_cap_is_not_counted(session_factory, caplog) -> None:
+    """One agent inventing sessions cannot fill the table or the chart."""
+    sink = _RecordingSink()
+    telemetry = _telemetry(sink, enabled=True)
+    limiter = SessionStartLimiter(max_per_window=2, window_seconds=3600, clock=_Clock())
+    app = _app(session_factory, telemetry, _agent(), limiter)
+
+    answers = [
+        (await _post(app, str(uuid.uuid4()), {"start_source": "user"})).json()
+        for _ in range(3)
+    ]
+    await telemetry.aclose()
+
+    assert answers == [{"reported": True}, {"reported": True}, {"reported": False}]
+    assert len(_started(sink)) == 2
+    assert "more than 2 session starts" in caplog.text
+
+
+async def test_the_cap_is_per_agent(session_factory) -> None:
+    sink = _RecordingSink()
+    telemetry = _telemetry(sink, enabled=True)
+    limiter = SessionStartLimiter(max_per_window=1, window_seconds=3600, clock=_Clock())
+    busy, other = _agent(), _agent()
+
+    await _post(
+        _app(session_factory, telemetry, busy, limiter),
+        str(uuid.uuid4()),
+        {"start_source": "user"},
+    )
+    capped = await _post(
+        _app(session_factory, telemetry, busy, limiter),
+        str(uuid.uuid4()),
+        {"start_source": "user"},
+    )
+    unaffected = await _post(
+        _app(session_factory, telemetry, other, limiter),
+        str(uuid.uuid4()),
+        {"start_source": "user"},
+    )
+    await telemetry.aclose()
+
+    assert capped.json() == {"reported": False}
+    assert unaffected.json() == {"reported": True}
+
+
+async def test_the_cap_lifts_once_the_window_has_passed(session_factory) -> None:
+    sink = _RecordingSink()
+    telemetry = _telemetry(sink, enabled=True)
+    clock = _Clock()
+    limiter = SessionStartLimiter(max_per_window=1, window_seconds=3600, clock=clock)
+    app = _app(session_factory, telemetry, _agent(), limiter)
+
+    await _post(app, str(uuid.uuid4()), {"start_source": "user"})
+    clock.now = 3600.0
+    later = await _post(app, str(uuid.uuid4()), {"start_source": "user"})
+    await telemetry.aclose()
+
+    assert later.json() == {"reported": True}

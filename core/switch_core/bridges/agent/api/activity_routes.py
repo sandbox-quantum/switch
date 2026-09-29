@@ -8,6 +8,7 @@ one the API key belongs to, so a host can only ever write for its own agent.
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,7 +16,11 @@ from pydantic.alias_generators import to_camel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import get_agent_from_scope
-from switch_core.bridges.agent.dependencies import get_session_factory, get_telemetry
+from switch_core.bridges.agent.dependencies import (
+    get_session_factory,
+    get_session_start_limiter,
+    get_telemetry,
+)
 from switch_core.db.models import Agent, ApprovalRequest
 from switch_core.session_activity.service import (
     MAX_DETAIL_CHARS,
@@ -31,12 +36,17 @@ from switch_core.session_activity.service import (
     SessionActivityService,
 )
 from switch_core.telemetry import TelemetryService
-from switch_core.telemetry.session_start import StartSource, report_session_started
+from switch_core.telemetry.session_start import (
+    SessionStartLimiter,
+    StartSource,
+    report_session_started,
+)
 
 router = APIRouter(prefix="/agent-sessions")
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 AuthenticatedAgent = Annotated[Agent, Depends(get_agent_from_scope)]
 Telemetry = Annotated[TelemetryService | None, Depends(get_telemetry)]
+Limiter = Annotated[SessionStartLimiter, Depends(get_session_start_limiter)]
 
 _Id = Annotated[str, Field(min_length=1, max_length=200)]
 
@@ -171,15 +181,20 @@ class ApprovalView(_Response):
 
 @router.post("/{session_id}/started")
 async def report_started(
-    session_id: _Id,
+    session_id: UUID,
     body: SessionStart,
     agent: AuthenticatedAgent,
     factory: Factory,
     telemetry: Telemetry,
+    limiter: Limiter,
 ) -> SessionStartReceipt:
-    """A session host saying, once, that a new session began and how."""
+    """A session host saying, once, that a new session began and how.
+
+    The id must be a UUID, which every launcher mints, so a caller cannot fill
+    the claims with arbitrary strings.
+    """
     reported = await report_session_started(
-        telemetry, factory, agent, session_id, body.start_source
+        telemetry, factory, limiter, agent, str(session_id), body.start_source
     )
     return SessionStartReceipt(reported=reported)
 

@@ -483,6 +483,13 @@ rather than dropped so an unstamped launch path is a visible gap. "Sessions a
 person started" is `start_source = user`. It is the launcher's claim, not proof
 a person clicked, and hosts older than this report nothing.
 
+Guarded against a caller inventing sessions: the id must be a UUID (every
+launcher mints one), and an agent reporting more than 120 starts in an hour is
+not counted until the rate drops, with a warning logged. The claim that makes a
+retried report count once is a row in `telemetry_milestones`, pruned after 7
+days by the daily snapshot pass; a report retried later than that, whose first
+attempt did arrive, counts twice.
+
 **`agent_session_ended`** — `duration_seconds` (number), `reason` (`normal` \|
 `heartbeat_lapsed` \| `replaced` \| `room_claimed` \| `error`). No runtime: the
 connection registry is the only thing that knows a session ended and it holds
@@ -725,8 +732,8 @@ Two things to set up first, or a third of the list cannot fire at all:
   (a few seconds). Reported through a listener on the registry, so every path
   that closes a connection reports, not just the sweep.
 - `session_started` — `POST /agent-sessions/{id}/started` from a session host
-  (`bridges/agent/api/activity_routes.py`). A repeat for the same agent and
-  session emits nothing, across restarts.
+  (`bridges/agent/api/activity_routes.py`), with a UUID id. A repeat for the
+  same agent and session emits nothing, across restarts, for 7 days.
 
 **Connectors** — `bridges/collaboration/lifecycle_service.py`
 

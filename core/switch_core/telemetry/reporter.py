@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import TelemetrySnapshotWatermark
 from switch_core.telemetry.deployment import claim_milestone
 from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.session_start import prune_session_start_claims
 from switch_core.telemetry.snapshot import (
     as_utc,
     collect_usage,
@@ -84,7 +85,21 @@ class SnapshotReporter:
             return False
         await self.run_once(now=now, since=last_sent)
         await self._write_watermark(now)
+        await self._prune(now)
         return True
+
+    async def _prune(self, now: datetime) -> None:
+        """Drop session start claims past their use, once a day with the
+        snapshot. After the watermark, so a failure here can never make the
+        snapshot go again; logged rather than raised, since the pass it rides
+        on has already done its work."""
+        try:
+            pruned = await prune_session_start_claims(self._session_factory, now=now)
+        except Exception:
+            logger.exception("Pruning old session start claims failed")
+            return
+        if pruned:
+            logger.info("Pruned %d session start claim(s) past their use", pruned)
 
     async def run_once(self, *, now: datetime, since: datetime | None) -> None:
         """Collect and report one snapshot, plus any room that just went live."""
