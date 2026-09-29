@@ -58,6 +58,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.room_service import RoomCreateConfig
 from switch_core.tenant_context import tenant_scope
 from tests.integration.conftest import Harness
 from tests.switch_core.bridges.collaboration.test_telegram_adapter import _FakeBot
@@ -390,4 +391,66 @@ async def test_two_organisations_share_the_bot_and_nothing_else(
     assert "misrouted" not in await _bodies(harness, tenant_a)
     assert "misrouted" not in await _bodies(harness, tenant_b)
 
+    await world.client.aclose()
+
+
+async def test_a_room_cannot_be_bound_to_another_organisations_chat(
+    harness: Harness,
+) -> None:
+    """Binding a room to a chat by id decides where its agents' messages are
+    posted, and the shared bot is in every organisation's chats — so the bot
+    being able to see a chat says nothing about whose it is. A room bound to a
+    chat another organisation claimed would post into it as the shared bot."""
+    world, service = await _world(harness)
+    tenant_a, admin_a = await _organisation(harness)
+    tenant_b, admin_b = await _organisation(harness)
+    chat_a, chat_b = _group(-1004444, "Acme"), _group(-1005555, "Globex")
+    await _connect(world, service, tenant_a, admin_a, chat_a)
+    await _connect(world, service, tenant_b, admin_b, chat_b)
+    (bridge_a,) = await _scoped(
+        harness,
+        tenant_a,
+        select(Room.bridge_id).where(Room.external_channel_id == str(chat_a["id"])),
+    )
+    sent_before = len(world.bot.messages)
+
+    with tenant_scope(tenant_a), pytest.raises(ValueError):
+        await harness.room_service.create_room(
+            RoomCreateConfig(
+                name="intruder",
+                description="",
+                bridge_id=bridge_a,
+                external_channel_id=str(chat_b["id"]),
+                created_by=admin_a,
+                owner_id=admin_a,
+            )
+        )
+
+    assert str(chat_b["id"]) not in await _scoped(
+        harness, tenant_a, select(Room.external_channel_id)
+    )
+
+    # Nor moved onto the bridge bound to it, which is the other way a room
+    # takes a chat id from whoever asks.
+    with tenant_scope(tenant_a):
+        internal = await harness.room_service.create_room(
+            RoomCreateConfig(
+                name="internal",
+                description="",
+                internal_only=True,
+                created_by=admin_a,
+                owner_id=admin_a,
+            )
+        )
+        with pytest.raises(ValueError):
+            await harness.room_service.change_bridge(
+                internal.room.id,
+                bridge_id=bridge_a,
+                external_channel_id=str(chat_b["id"]),
+            )
+
+    assert str(chat_b["id"]) not in await _scoped(
+        harness, tenant_a, select(Room.external_channel_id)
+    )
+    assert world.bot.messages[sent_before:] == []
     await world.client.aclose()

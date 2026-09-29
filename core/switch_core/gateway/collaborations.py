@@ -148,6 +148,15 @@ def _places_app_in_teams(
     return adapter is not None and adapter.places_app_in_teams
 
 
+def _channel_ids_refused(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> str | None:
+    """Why the bridge binds no channel by id. None when it is not running,
+    where binding is refused anyway for want of a bridge to bind to."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    return None if adapter is None else adapter.channel_ids_refused()
+
+
 async def _detail(
     bridge: CollaborationBridge,
     *,
@@ -175,6 +184,7 @@ async def _detail(
             bridge.type
         ),
         channel_creation_enabled=bridge.channel_creation_enabled,
+        channel_ids_refused=_channel_ids_refused(bridge.id, collab_lifecycle),
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
         ),

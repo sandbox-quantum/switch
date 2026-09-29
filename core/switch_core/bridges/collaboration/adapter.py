@@ -1316,6 +1316,16 @@ class PlatformAdapter(ABC):
         """
         return None
 
+    def channel_ids_refused(self) -> str | None:
+        """Why this bridge binds no existing channel by id at all, or None.
+
+        For a bridge whose chats reach it only one way, so the dashboard can
+        say so where a room is created rather than offer a choice that fails.
+        Plain text, and the one wording: a bridge that answers here refuses
+        with it too.
+        """
+        return None
+
     @abstractmethod
     async def get_channel_type(self, channel_id: str) -> ChannelType: ...
 

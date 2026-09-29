@@ -145,6 +145,9 @@ export interface BridgeDetail {
   // Whether this operator has allowed this connection to create channels.
   // Only meaningful when channel_creation_supported is true.
   channel_creation_enabled: boolean;
+  // Why no existing channel can be linked by id on this connection, or null
+  // when one can — the Switch Telegram app, whose chats come from connecting.
+  channel_ids_refused?: string | null;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.

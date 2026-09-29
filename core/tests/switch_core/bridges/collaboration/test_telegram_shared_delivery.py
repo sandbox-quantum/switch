@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from telegram.error import RetryAfter
 
 from switch_core.bridges.collaboration.adapter import (
+    ChannelNotBindable,
     RichContentThrottled,
     WebhookDeliveryUnsupported,
 )
@@ -338,3 +339,29 @@ async def test_a_claim_on_a_bridge_that_never_started_fails_loud() -> None:
                 }
             ),
         )
+
+
+# ── A chat joins the shared bot only by being claimed ────────────────────────
+
+
+async def test_the_shared_bot_binds_no_chat_by_id() -> None:
+    """The shared bot is in every organisation's chats, and nothing Telegram
+    says about a chat names its owner — only a claim does. The refusal says
+    how a room does come about, and is the wording the room form shows."""
+    adapter = _shared_adapter()
+
+    with pytest.raises(ChannelNotBindable) as refused:
+        await adapter.require_bindable_channel("-1001")
+
+    assert "Connect a chat" in str(refused.value)
+    assert str(refused.value) == adapter.channel_ids_refused()
+
+
+async def test_an_organisations_own_bot_binds_a_chat_by_id() -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username="own_bot")
+    )
+
+    await adapter.require_bindable_channel("-1001")
+
+    assert adapter.channel_ids_refused() is None

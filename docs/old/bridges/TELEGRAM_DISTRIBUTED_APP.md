@@ -128,6 +128,11 @@ connected to Switch, or only an admin can connect the first chat. It never says
 which organisation holds a chat. A retry Telegram sends of a claim that worked
 is not answered.
 
+A chat's room comes only from connecting it. The room form's **Use existing
+channel** is off for the Telegram app, and a room cannot be moved onto it with
+a chat id either: the bot is in every organisation's chats, so it could reach
+one another organisation connected. A connected chat already has its room.
+
 ## What the bot does in chats nobody connected
 
 The bot can be added to a group without a link — by anyone who finds it. It
