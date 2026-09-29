@@ -71,6 +71,14 @@ describe('the sentences', () => {
     expect(
       sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2), seen('dan@home', 3)])
     ).toMatch(/^Shared with bob@desk, carol@lab and 1 other\./);
+    expect(
+      sharedWithSentence([
+        seen('bob@desk', 1),
+        seen('carol@lab', 2),
+        seen('dan@home', 3),
+        seen('erin@studio', 4),
+      ])
+    ).toMatch(/^Shared with bob@desk, carol@lab and 2 others\./);
   });
 
   it('tells a confirmation who it reaches and when they were last there', () => {

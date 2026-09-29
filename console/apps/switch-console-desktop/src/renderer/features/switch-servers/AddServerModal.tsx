@@ -517,7 +517,8 @@ function DockerStatus({
 // Step 2b — remote-host managed setup (pick an onboarded SSH host → start)
 // ---------------------------------------------------------------------------
 
-const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
+/** Exported for its test; the modal is its only other user. */
+export const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   onBack,
   onDone,
   onClose,

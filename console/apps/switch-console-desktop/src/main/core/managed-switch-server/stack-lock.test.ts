@@ -99,6 +99,30 @@ describe('reading the script’s answer', () => {
     expect(parseLockReply(reply('released', 1000))).toEqual({ status: 'released', holder: null });
   });
 
+  it('makes do with a lock file whose fields it cannot read', () => {
+    const file = [
+      'switch-console-lock v1',
+      'their-token',
+      'soon',
+      'earlier',
+      'bbbbbbbb-0000-4000-8000-000000000002',
+      'run-9',
+      'starting',
+      '',
+      '',
+      '',
+    ].join('\n');
+
+    expect(parseLockReply(reply('held', 1000, file)).holder).toEqual({
+      name: 'unknown',
+      hostAccount: 'unknown',
+      action: 'starting',
+      heldForSeconds: 0,
+      expiresInSeconds: 0,
+      live: false,
+    });
+  });
+
   it('refuses an answer it does not understand rather than take the lock for free', () => {
     expect(() => parseLockReply('sh: flock: not found\n')).toThrow(/Unexpected answer/);
     expect(() => parseLockReply('taken\nnot-a-clock\n')).toThrow(/Unexpected answer/);
@@ -214,6 +238,24 @@ describe('taking the lock', () => {
     expect((error as InstanceType<typeof ServerLockWaitCancelled>).holder).toMatchObject({
       name: 'bob@desk',
     });
+  });
+
+  it('stops waiting when cancelled in the middle of a wait, without asking again', async () => {
+    vi.useFakeTimers();
+    runStateScript.mockResolvedValue(reply('held', 1000, lockFile({ expires: 1090, since: 960 })));
+    const abort = new AbortController();
+
+    const taking = acquireServerLock(host, claim, {
+      mode: 'wait',
+      timing,
+      signal: abort.signal,
+      onWaiting: vi.fn(),
+    }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(timing.pollEveryMs / 2);
+    abort.abort();
+
+    expect(await taking).toBeInstanceOf(ServerLockWaitCancelled);
+    expect(runStateScript).toHaveBeenCalledOnce();
   });
 
   it('does not ask at all when the wait was cancelled before it began', async () => {

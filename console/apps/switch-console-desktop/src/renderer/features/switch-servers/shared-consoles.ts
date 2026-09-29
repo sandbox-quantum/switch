@@ -17,11 +17,11 @@ export function describeConsole(console: Pick<StackConsole, 'name' | 'hostAccoun
   return `${console.name} (as ${console.hostAccount})`;
 }
 
-function names(consoles: StackConsole[]): string {
-  const [first, second, ...rest] = consoles.map((c) => c.name);
-  if (!second) return first ?? '';
-  if (rest.length === 0) return `${first} and ${second}`;
-  return `${first}, ${second} and ${rest.length} other${rest.length === 1 ? '' : 's'}`;
+function names(first: StackConsole, rest: StackConsole[]): string {
+  const [second, ...more] = rest;
+  if (!second) return first.name;
+  if (more.length === 0) return `${first.name} and ${second.name}`;
+  return `${first.name}, ${second.name} and ${more.length} other${more.length === 1 ? '' : 's'}`;
 }
 
 /**
@@ -29,8 +29,9 @@ function names(consoles: StackConsole[]): string {
  * nobody else has used it recently.
  */
 export function sharedWithSentence(others: StackConsole[]): string | null {
-  if (others.length === 0) return null;
-  return `Shared with ${names(others)}. Stopping or restarting it affects them too.`;
+  const [first, ...rest] = others;
+  if (!first) return null;
+  return `Shared with ${names(first, rest)}. Stopping or restarting it affects them too.`;
 }
 
 /**

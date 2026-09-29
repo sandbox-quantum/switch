@@ -95,6 +95,19 @@ function sharedUnderLock(
   );
 }
 
+/** {@link sharedUnderLock} for what only a shared stack has: `what` names it
+ * in the refusal of one nobody shares. */
+function requireSharedUnderLock(
+  host: ServerHost,
+  lease: ServerLease,
+  what: string
+): { state: StackStateHost; lease: ServerLease } {
+  if (host.sharedState === null) {
+    throw new Error(`The stack on ${host.label} is not shared, so there is nothing to ${what}.`);
+  }
+  return { state: host.sharedState, lease };
+}
+
 /**
  * Refuse to point an existing stack at an OLDER switch-core than it already
  * runs. switch-core migrates its database forward at startup and Alembic has no
@@ -325,10 +338,7 @@ export async function adoptRunningStack(
   stack: Extract<StackOnHost, { kind: 'present' }>,
   lease: ServerLease
 ): Promise<StackSettings> {
-  const shared = sharedUnderLock(host, lease);
-  if (shared === null) {
-    throw new Error(`The stack on ${host.label} is not shared, so there is nothing to adopt.`);
-  }
+  const shared = requireSharedUnderLock(host, lease, 'adopt');
   const settings = await adoptSettings(host, stack);
   await bringWorkingDirInStep(host, stack);
   if (!stack.published) await publishEnv(shared.state, stack.raw, shared.lease);
@@ -634,10 +644,7 @@ export type ConnectStackResult =
 
 export async function connectStack(opts: ConnectStackOptions): Promise<ConnectStackResult> {
   const { host, ref, serverName, onMessage, signal, lease } = opts;
-  const shared = sharedUnderLock(host, lease);
-  if (shared === null) {
-    throw new Error(`The stack on ${host.label} is not shared, so there is nothing to connect to.`);
-  }
+  const shared = requireSharedUnderLock(host, lease, 'connect to');
 
   const docker = await host.detectDocker();
   if (!docker.available) {

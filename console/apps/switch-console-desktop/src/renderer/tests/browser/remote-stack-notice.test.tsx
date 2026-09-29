@@ -108,3 +108,51 @@ describe('starting a stack already set up but stopped', () => {
     expect(document.body.textContent).toContain('Starting it keeps its rooms, agents and data');
   });
 });
+
+describe('the rest of what the step can say', () => {
+  it('says it is looking while the host has not answered yet', async () => {
+    await render({
+      sshHost: 'vm-1',
+      action: { kind: 'checking' },
+      affected: null,
+      onCheckAgain: vi.fn(),
+    });
+
+    expect(document.body.textContent).toContain('Looking for a Switch server on vm-1…');
+  });
+
+  it('shares a server set up before sharing existed when connecting, and names no version it cannot read', async () => {
+    await render({
+      sshHost: 'vm-1',
+      action: { kind: 'connect', deployedVersion: null, shared: false, updatesTo: null },
+      affected: null,
+      onCheckAgain: vi.fn(),
+    });
+
+    expect(document.body.textContent).toContain('A Switch server is already running on vm-1');
+    expect(document.body.textContent).not.toContain('(switch-core');
+    expect(document.body.textContent).toContain('connecting shares it');
+  });
+
+  it('says nothing for an empty host, or one whose Docker notice already says why', async () => {
+    await render({
+      sshHost: 'vm-1',
+      action: { kind: 'start', existing: false },
+      affected: null,
+      onCheckAgain: vi.fn(),
+    });
+    expect(container!.textContent).toBe('');
+
+    await act(async () =>
+      root!.render(
+        <RemoteStackNotice
+          sshHost="vm-1"
+          action={{ kind: 'docker' }}
+          affected={null}
+          onCheckAgain={vi.fn()}
+        />
+      )
+    );
+    expect(container!.textContent).toBe('');
+  });
+});

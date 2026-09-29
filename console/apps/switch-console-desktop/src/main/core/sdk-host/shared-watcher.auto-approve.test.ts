@@ -237,6 +237,16 @@ it('keeps a changed setting on the host for a watcher that starts no sessions', 
   expect(mocks.deploy).not.toHaveBeenCalled();
 });
 
+it('keeps auto-approve turned off on the host as asking for approval', async () => {
+  mocks.agent.mockResolvedValue(agent(true));
+  savedSpec('full-access');
+
+  await recordAutoApproveOnHost('agent-1', false);
+
+  expect(readSpec().start.input.runtimeMode).toBe('approval-required');
+  expect(readChoice().runtimeMode).toBe('approval-required');
+});
+
 it('keeps a choice on the host without touching a watcher about to be rewritten', async () => {
   mocks.agent.mockResolvedValue(agent(false));
   savedSpec('approval-required');

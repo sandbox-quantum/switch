@@ -796,6 +796,15 @@ describe('stamping the published settings', () => {
   });
 });
 
+it('says what a stamp that failed with something other than an Error said', async () => {
+  inspectStackMock.mockResolvedValue(present());
+  stampPublishedEnvMock.mockRejectedValueOnce('volume busy');
+
+  const result = await startStack(startOptions(sharedHost().host));
+
+  expect(result.kind === 'started' && result.warning).toMatch(/with its database \(volume busy\)/);
+});
+
 describe('the paths a shared start or join refuses or degrades on', () => {
   it('refuses a partial host .env when this desktop holds no copy to fill it from', async () => {
     inspectStackMock.mockResolvedValue({

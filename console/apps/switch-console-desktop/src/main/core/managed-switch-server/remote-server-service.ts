@@ -151,7 +151,7 @@ function recordWarningFor(
  */
 function noticeForIdleStack(
   hostLabel: string,
-  stack: StackOnHost,
+  stack: Exclude<StackOnHost, { kind: 'unreadable' }>,
   wasRunning: boolean
 ): string | null {
   switch (stack.kind) {
@@ -168,8 +168,6 @@ function noticeForIdleStack(
       return unsharedStackMessage(hostLabel, stack.ownerDir);
     case 'incomplete':
       return `The server's settings on ${hostLabel} are missing ${stack.missing.join(', ')}.`;
-    case 'unreadable':
-      return `Could not read the server's settings on ${hostLabel}: ${stack.reason}`;
   }
 }
 
@@ -1060,10 +1058,7 @@ export class RemoteServerService {
       // Refused rather than waited for: stopping a server someone has just
       // started, because Stop was clicked while they were starting it, is not
       // what was asked.
-      lease = await acquireServerLock(host, await this.claimFor(host, 'stopping'), {
-        mode: 'refuse',
-        timing: SERVER_LOCK_TIMING,
-      });
+      lease = await this.lockOrRefuse(sshHost, host, 'stopping');
       this.setStatus(sshHost, { phase: 'stopping', message: 'Stopping containers…' });
       await stopStack(host, lease);
       const upgrade = this.getStatus(sshHost).upgrade;
@@ -1079,7 +1074,8 @@ export class RemoteServerService {
       reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
       if (error instanceof ServerBusyError) {
-        host = this.keepLiveHost(sshHost, host);
+        // Nothing was touched: see lockOrRefuse.
+        host = null;
         throw error;
       }
       this.setStatus(sshHost, {
@@ -1114,10 +1110,7 @@ export class RemoteServerService {
       host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
       // Taken before the agents go, and refused rather than waited for, as for
       // a stop: a reset turned away must not have deleted anything first.
-      lease = await acquireServerLock(host, await this.claimFor(host, 'resetting'), {
-        mode: 'refuse',
-        timing: SERVER_LOCK_TIMING,
-      });
+      lease = await this.lockOrRefuse(sshHost, host, 'resetting');
       this.setStatus(sshHost, { phase: 'stopping', message: 'Removing agents…' });
       const server = await getRemoteManagedServer(sshHost);
       if (server) await deleteAgentsForServer(server.id);
@@ -1139,7 +1132,7 @@ export class RemoteServerService {
       reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
       if (error instanceof ServerBusyError) {
-        host = this.keepLiveHost(sshHost, host);
+        host = null;
         throw error;
       }
       this.setStatus(sshHost, {
@@ -1170,14 +1163,25 @@ export class RemoteServerService {
   }
 
   /**
-   * For a stop or reset turned away before it touched anything: the forward
-   * this Console holds stays, so the host it used is dropped only when it was
-   * a throwaway. Returns what the caller's `finally` should still release —
-   * nothing.
+   * Take the lock for a stop or reset, which refuse rather than wait. One
+   * turned away has touched nothing, so the forward this Console holds stays:
+   * the host is let go here only when it was opened for this, and the caller
+   * must not release it again.
    */
-  private keepLiveHost(sshHost: string, host: RemoteServerHost | null): null {
-    if (host !== null && host !== this.hosts.get(sshHost)) host.dispose();
-    return null;
+  private async lockOrRefuse(
+    sshHost: string,
+    host: RemoteServerHost,
+    action: 'stopping' | 'resetting'
+  ): Promise<ServerLease> {
+    try {
+      return await acquireServerLock(host, await this.claimFor(host, action), {
+        mode: 'refuse',
+        timing: SERVER_LOCK_TIMING,
+      });
+    } catch (error) {
+      if (error instanceof ServerBusyError && host !== this.hosts.get(sshHost)) host.dispose();
+      throw error;
+    }
   }
 
   /** Abort in-flight health waits and lock waits and drop all forwards (app

@@ -312,3 +312,51 @@ describe('waiting for another Console', () => {
     await vi.waitFor(() => expect(store.probeFor('vm-1')).toEqual({ kind: 'absent', busy: bob }));
   });
 });
+
+describe('the paths the rest leave', () => {
+  it('records Docker being unavailable when joining finds it so', async () => {
+    rpcRemote.connect.mockResolvedValue({
+      kind: 'docker-unavailable',
+      reason: 'daemon-down',
+      detail: 'Docker is not running on vm-1.',
+    });
+    rpcRemote.probe.mockResolvedValue({ kind: 'absent', busy: null });
+    const store = new RemoteServerStore();
+
+    await store.connect('vm-1', 'Team server');
+
+    expect(store.dockerFor('vm-1')).toEqual({
+      available: false,
+      reason: 'daemon-down',
+      detail: 'Docker is not running on vm-1.',
+    });
+    expect(store.error).toBe('Docker is not running on vm-1.');
+  });
+
+  it('reads who uses a server again after starting or stopping it', async () => {
+    rpcRemote.start.mockResolvedValue({
+      kind: 'started',
+      serverId: 'srv-1',
+      telemetryEnabled: false,
+      warning: null,
+    });
+    rpcRemote.stop.mockResolvedValue(undefined);
+    const store = new RemoteServerStore();
+
+    await store.start('vm-1', 'Team server');
+    await store.stop('vm-1');
+
+    expect(rpcRemote.register).toHaveBeenCalledTimes(2);
+    expect(store.registerFor('vm-1')).toEqual(REGISTER);
+  });
+
+  it('asks nothing of a host that is out of reach for who uses it', async () => {
+    isBlocked.mockReturnValue(true);
+    const store = new RemoteServerStore();
+
+    await store.loadRegister('vm-1');
+
+    expect(rpcRemote.register).not.toHaveBeenCalled();
+    expect(store.registerErrorFor('vm-1')).toBeNull();
+  });
+});

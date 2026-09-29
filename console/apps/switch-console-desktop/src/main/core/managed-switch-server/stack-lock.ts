@@ -166,7 +166,7 @@ export function parseLockReply(stdout: string): LockReply {
   if (file.length < 9 || file[1] === '') return { status: status as LockStatus, holder: null };
   const expires = Number(file[2]);
   const since = Number(file[3]);
-  const action = file[6] ?? '';
+  const action = file[6]!;
   const known = (LOCK_ACTIONS as readonly string[]).includes(action);
   if (!known)
     log.warn('stack-lock: the lock names an action this Console does not know', { action });

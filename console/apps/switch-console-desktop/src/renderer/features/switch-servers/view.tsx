@@ -97,7 +97,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const server = store.servers.find((s) => s.id === serverId);
   // A remote server is shared by everyone with access to its host
   // (CHOO-2893), so restarting it from a notice reaches them too.
-  const remoteHost = server?.managementKind === 'remote' ? (server.sshHost ?? null) : null;
+  const remoteHost = server?.managementKind === 'remote' ? server.sshHost : null;
   const confirm = useSharedActionConfirm(remoteHost);
   const showEditServerModal = useShowModal('addServerModal');
   const showRenameServerModal = useShowModal('renameServerModal');

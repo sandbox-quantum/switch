@@ -140,6 +140,15 @@ describe('setAgentAutoApprove', () => {
     );
   });
 
+  it('says why the watcher lags when the push failed with something other than an Error', async () => {
+    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
+    pushRemoteAutoApprove.mockRejectedValueOnce('ssh closed');
+
+    await expect(setAgentAutoApprove({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
+      /could not be updated yet \(ssh closed\)/
+    );
+  });
+
   it('throws when the agent does not exist', async () => {
     agentRow.current = undefined;
 

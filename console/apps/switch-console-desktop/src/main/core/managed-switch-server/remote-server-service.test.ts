@@ -1203,6 +1203,8 @@ describe('the server lock', () => {
     return () => free();
   }
 
+  /** Built from the module the service loaded — so call it after loadService —
+   * since the service checks for that module's class. */
   async function busyError() {
     const { ServerBusyError } =
       await import('@shared/core/managed-switch-server/managed-switch-server');
@@ -1342,26 +1344,45 @@ describe('the server lock', () => {
     expect(writeRecord).not.toHaveBeenCalledWith(live, 'stopped');
   });
 
-  it('lets the host go when a refused stop had to open one of its own', async () => {
+  it('lets the host go when a refused stop had to open one of its own, and stays as it was', async () => {
     const host = fakeHost();
     createRemoteServerHost.mockResolvedValue(host);
-    acquireServerLock.mockRejectedValueOnce(await busyError());
     const service = await loadService();
+    acquireServerLock.mockRejectedValueOnce(await busyError());
 
     await expect(service.stop('vm-1')).rejects.toThrow(/right now/);
 
     expect(host.dispose).toHaveBeenCalledOnce();
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'stopped', error: null });
+  });
+
+  it('reports a lock that could not be asked for as a failed stop, and gives the forward back', async () => {
+    const live = fakeHost();
+    createRemoteServerHost.mockResolvedValue(live);
+    connectStack.mockResolvedValue(connected);
+    const service = await loadService();
+    await service.connect('vm-1', 'Team server');
+    acquireServerLock.mockRejectedValueOnce(new Error('docker run on vm-1 failed: no daemon'));
+
+    await expect(service.stop('vm-1')).rejects.toThrow(/no daemon/);
+
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'error',
+      error: 'docker run on vm-1 failed: no daemon',
+    });
+    expect(live.dispose).toHaveBeenCalledOnce();
   });
 
   it('refuses a reset while someone else changes the server, before deleting any agent', async () => {
     createRemoteServerHost.mockResolvedValue(fakeHost());
-    acquireServerLock.mockRejectedValueOnce(await busyError());
     const service = await loadService();
+    acquireServerLock.mockRejectedValueOnce(await busyError());
 
     await expect(service.reset('vm-1')).rejects.toThrow(/right now, so nothing was changed/);
 
     expect(deleteAgentsForServer).not.toHaveBeenCalled();
     expect(resetStack).not.toHaveBeenCalled();
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'stopped', error: null });
   });
 
   it('takes the lock for a reset before deleting its agents', async () => {
@@ -1431,3 +1452,108 @@ describe('the server lock', () => {
     expect(await service.probe('vm-1')).toEqual({ kind: 'absent', busy: null });
   });
 });
+
+describe('the paths the rest leave', () => {
+  async function running() {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(true));
+    const service = await loadService();
+    await boot(service);
+    return service;
+  }
+
+  it('reports a reset that failed, keeping the agents it had not reached yet', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    resetStack.mockRejectedValueOnce(new Error('compose down -v failed'));
+    const service = await loadService();
+
+    await expect(service.reset('vm-1')).rejects.toThrow(/compose down -v failed/);
+
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'error',
+      error: 'compose down -v failed',
+    });
+    expect(writeRecord).not.toHaveBeenCalled();
+    expect(lockEvents).toEqual(['take resetting', 'release resetting']);
+  });
+
+  it('passes a start’s steps, log lines and update on to the page', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    startStack.mockImplementationOnce(async (opts: StartStackOptionsLike) => {
+      opts.onMessage('Pulling images…');
+      opts.onLog('pulled switch-core');
+      opts.onUpgrade({ from: '0.27.0', to: '0.28.0' });
+      expect(service.getStatus('vm-1')).toMatchObject({
+        message: 'Pulling images…',
+        upgrade: { state: 'updating', from: '0.27.0', to: '0.28.0' },
+      });
+      return { kind: 'started', serverId: 'srv-1', telemetryEnabled: false, warning: null };
+    });
+    const service = await loadService();
+
+    await service.start('vm-1', 'Team server');
+
+    expect(emitted).toContainEqual({ sshHost: 'vm-1', line: 'pulled switch-core' });
+  });
+
+  it('says what a record that failed with something other than an Error said', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    writeRecord.mockRejectedValueOnce('volume is read-only');
+    const service = await loadService();
+
+    await service.stop('vm-1');
+
+    expect(service.getStatus('vm-1').recordWarning).toMatch(/: volume is read-only$/);
+  });
+
+  it('reports a join that failed with something other than an Error', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockRejectedValueOnce('channel closed');
+    const service = await loadService();
+
+    expect(await service.connect('vm-1', 'Team server')).toEqual({
+      kind: 'error',
+      message: 'channel closed',
+    });
+  });
+
+  it('keeps a running stack, saying why, when a re-check fails with something other than an Error', async () => {
+    const service = await running();
+    createRemoteServerHost.mockRejectedValueOnce('ssh gone');
+
+    service.recheck('vm-1');
+
+    await vi.waitFor(() =>
+      expect(service.getStatus('vm-1').notice).toBe('Could not check the server on vm-1: ssh gone')
+    );
+    expect(service.getStatus('vm-1').phase).toBe('running');
+  });
+
+  it('does not re-check a server this Console has since forgotten', async () => {
+    const service = await running();
+    createRemoteServerHost.mockClear();
+    listManagedServers.mockResolvedValue([]);
+
+    service.recheck('vm-1');
+    await vi.waitFor(() => expect(listManagedServers).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(createRemoteServerHost).not.toHaveBeenCalled();
+  });
+
+  it('survives a re-check that cannot even list the servers', async () => {
+    const service = await running();
+    listManagedServers.mockRejectedValueOnce(new Error('database is locked'));
+
+    service.recheck('vm-1');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(service.getStatus('vm-1').phase).toBe('running');
+  });
+});
+
+type StartStackOptionsLike = {
+  onMessage: (message: string) => void;
+  onLog: (line: string) => void;
+  onUpgrade: (owed: { from: string; to: string }) => void;
+};

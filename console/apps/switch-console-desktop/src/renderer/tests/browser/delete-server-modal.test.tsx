@@ -254,3 +254,50 @@ describe('removing an external server', () => {
     expect(onSuccess).toHaveBeenCalled();
   });
 });
+
+describe('the paths the rest leave', () => {
+  it('says a server that has gone is no longer there', async () => {
+    servers.current = [];
+    await render('srv-gone');
+
+    expect(document.body.textContent).toContain('This server is no longer available.');
+  });
+
+  it('says it could not remove the server when the store gives no reason', async () => {
+    servers.current = [REMOTE_SERVER];
+    remote.disconnect.mockResolvedValue(false);
+    remote.errorText = null;
+    await render(REMOTE_SERVER.id);
+
+    await click(confirmButton());
+
+    expect(document.body.textContent).toContain('Could not remove the server.');
+  });
+
+  it('offers to delete a server on this computer outright, which nobody else uses', async () => {
+    servers.current = [{ ...REMOTE_SERVER, managementKind: 'local', sshHost: null }];
+    await render(REMOTE_SERVER.id);
+
+    expect(document.body.textContent).toContain('Delete “Team Server”?');
+    expect(document.querySelectorAll('[role="radiogroup"]')).toHaveLength(0);
+    expect(confirmButton().textContent).toContain('Delete server');
+  });
+
+  it('shows why a server someone else runs could not be let go of', async () => {
+    servers.current = [EXTERNAL_SERVER];
+    servers.deleteServer.mockResolvedValue(false);
+    servers.errorText = 'The server record is locked by another window.';
+    await render(EXTERNAL_SERVER.id);
+
+    await click(confirmButton());
+
+    expect(document.body.textContent).toContain('The server record is locked by another window.');
+  });
+
+  it('asks whether to disconnect from a server someone else runs', async () => {
+    servers.current = [EXTERNAL_SERVER];
+    await render(EXTERNAL_SERVER.id);
+
+    expect(document.body.textContent).toContain('Disconnect from “External Server”?');
+  });
+});

@@ -1,8 +1,10 @@
-import { createServer, type Server } from 'node:net';
+import { connect, createServer, type Server } from 'node:net';
+import { Duplex } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 
-vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), info: vi.fn() } }));
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, info: vi.fn() } }));
 
 const { PortForwarder } = await import('./port-forward');
 
@@ -53,6 +55,74 @@ describe('PortForwarder', () => {
     await new Promise<void>((resolve, reject) => {
       again.once('error', reject);
       again.listen(free, '127.0.0.1', () => resolve());
+    });
+    opened.push(again);
+  });
+
+  it('carries a connection through to the same port on the host', async () => {
+    const { server: probe, port } = await occupy();
+    await new Promise((r) => probe.close(() => r(null)));
+    // The host's end of the channel: echoes what it is sent, upper-cased.
+    const channel = new Duplex({
+      read() {},
+      write(chunk: Buffer, _encoding, done) {
+        this.push(chunk.toString().toUpperCase());
+        done();
+      },
+    });
+    const forwardOut = vi.fn(async () => channel);
+    const forwarder = new PortForwarder({ forwardOut } as unknown as SshClientProxy, 'vm-1');
+    await forwarder.start([port]);
+
+    const reply = await new Promise<string>((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => socket.write('hello'));
+      socket.once('data', (data) => {
+        resolve(data.toString());
+        socket.destroy();
+      });
+      socket.once('error', reject);
+    });
+    forwarder.stop();
+
+    expect(forwardOut).toHaveBeenCalledWith(port);
+    expect(reply).toBe('HELLO');
+  });
+
+  it('closes the connection, and says why, when the host will not open a channel', async () => {
+    const { server: probe, port } = await occupy();
+    await new Promise((r) => probe.close(() => r(null)));
+    const forwardOut = vi.fn(async () => {
+      throw new Error('administratively prohibited');
+    });
+    const forwarder = new PortForwarder({ forwardOut } as unknown as SshClientProxy, 'vm-1');
+    await forwarder.start([port]);
+
+    await new Promise<void>((resolve) => {
+      const socket = connect(port, '127.0.0.1');
+      socket.on('error', () => {});
+      socket.once('close', () => resolve());
+    });
+    forwarder.stop();
+
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(new RegExp(`could not open channel to remote :${port} \\(vm-1\\)`)),
+      expect.objectContaining({ err: expect.any(Error) })
+    );
+  });
+
+  it('stops listening when stopped, and can be stopped twice', async () => {
+    const { server: probe, port } = await occupy();
+    await new Promise((r) => probe.close(() => r(null)));
+    const forwarder = new PortForwarder({} as SshClientProxy, 'vm-1');
+    await forwarder.start([port]);
+
+    forwarder.stop();
+    forwarder.stop();
+
+    const again = createServer();
+    await new Promise<void>((resolve, reject) => {
+      again.once('error', reject);
+      again.listen(port, '127.0.0.1', () => resolve());
     });
     opened.push(again);
   });

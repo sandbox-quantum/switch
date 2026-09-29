@@ -619,6 +619,30 @@ describe('inspectStack', () => {
     });
   });
 
+  it('says what failed when the failure is not even an Error', async () => {
+    const { host, exec } = fakeHost();
+    exec.mockRejectedValue('connection reset by peer');
+
+    expect(await inspectStack(host)).toMatchObject({
+      kind: 'unreadable',
+      reason: expect.stringContaining('connection reset by peer'),
+    });
+  });
+
+  it('trusts a stamped copy as before when the database volume names no creation time', async () => {
+    const env = envFor();
+    const { host } = fakeHost({
+      containers: [`switch\trunning\t${WORKING_DIR}\tghcr.io/x/switch-core:0.11.0`],
+      dataVolumes: [`${PROJECT}_pgdata`],
+      stateVolume: true,
+      published: env,
+      publishedStamp: '2026-09-01T10:00:00Z',
+      databaseCreatedAt: '',
+    });
+
+    expect(await inspectStack(host)).toMatchObject({ kind: 'present', source: 'published' });
+  });
+
   it('reports a daemon it cannot ask as unreadable, never as absent', async () => {
     const { host } = fakeHost({ failing: /^ps/ });
 
