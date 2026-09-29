@@ -1,4 +1,3 @@
-import MoreVertOutlined from "@mui/icons-material/MoreVertOutlined";
 import {
   Alert,
   Box,
@@ -6,9 +5,6 @@ import {
   Chip,
   CircularProgress,
   Divider,
-  IconButton,
-  Menu,
-  MenuItem,
   Paper,
   Stack,
   Tooltip,
@@ -31,7 +27,6 @@ import {
   titleCase,
 } from "../../theme/hootFormat";
 import ClaimChatDialog from "./ClaimChatDialog";
-import DisconnectAllChatsDialog from "./DisconnectAllChatsDialog";
 import DisconnectAppDialog, { installNoun } from "./DisconnectAppDialog";
 
 /**
@@ -50,15 +45,15 @@ import DisconnectAppDialog, { installNoun } from "./DisconnectAppDialog";
  * nobody here can use is worse than no section.
  *
  * One card per platform, each carrying its own actions, so the page does not
- * grow a row of buttons with every app, and turning a platform off sits in a
- * menu rather than beside the button that adds to it. Installs are listed by
- * name; ended ones, which are history rather than state, are folded away.
+ * grow a row of buttons with every app. Installs are listed by name; ended
+ * ones, which are history rather than state, are folded away.
  *
  * A claim-based platform (Telegram) is installed a chat at a time, and a chat
  * is a room rather than a connection. So its buttons are offered to whoever
  * the server says may use them — an admin to connect the first chat, anyone
  * after that — and any member may disconnect one of its chats, where every
- * OAuth action here stays the operator's.
+ * OAuth action here stays the operator's. Its connection outlives its chats,
+ * and is turned off by deleting it with the other connections.
  */
 
 const ENDED_COLOR: Record<string, "warning" | "default"> = {
@@ -87,7 +82,6 @@ export default function InstalledAppsSection({
     platform: string;
     claim: ChatClaim;
   } | null>(null);
-  const [disconnectAll, setDisconnectAll] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<InstalledApp | null>(
     null,
@@ -147,7 +141,6 @@ export default function InstalledAppsSection({
 
   const handleDisconnected = useCallback(() => {
     setDisconnectTarget(null);
-    setDisconnectAll(null);
     refetch();
     refetchOffered();
     onConnectionsChanged();
@@ -163,9 +156,9 @@ export default function InstalledAppsSection({
         Installed apps
       </Typography>
       <Typography variant="body2" color="text.secondary" mb={2}>
-        This deployment&apos;s own apps. They use credentials only the
-        deployment holds, so remove one with Disconnect rather than by deleting
-        its connection.
+        This deployment&apos;s own apps, using credentials only the deployment
+        holds. Disconnect what an app is installed in here: a connection above
+        cannot be deleted while an app is still installed through it.
       </Typography>
 
       {error && (
@@ -193,7 +186,6 @@ export default function InstalledAppsSection({
                   claimed ? handleClaim(platform) : handleInstall(platform)
                 }
                 onDisconnect={setDisconnectTarget}
-                onDisconnectAll={() => setDisconnectAll(platform)}
               />
             );
           })}
@@ -203,11 +195,6 @@ export default function InstalledAppsSection({
       <DisconnectAppDialog
         install={disconnectTarget}
         onClose={() => setDisconnectTarget(null)}
-        onDisconnected={handleDisconnected}
-      />
-      <DisconnectAllChatsDialog
-        platform={disconnectAll}
-        onClose={() => setDisconnectAll(null)}
         onDisconnected={handleDisconnected}
       />
       <ClaimChatDialog
@@ -229,7 +216,6 @@ interface CardProps {
   starting: string | null;
   onAdd: () => void;
   onDisconnect: (install: InstalledApp) => void;
-  onDisconnectAll: () => void;
 }
 
 function PlatformCard({
@@ -241,10 +227,8 @@ function PlatformCard({
   starting,
   onAdd,
   onDisconnect,
-  onDisconnectAll,
 }: CardProps) {
   const [showEnded, setShowEnded] = useState(false);
-  const [menu, setMenu] = useState<HTMLElement | null>(null);
   const name = platformLabel(platform);
   const noun = installNoun(platform);
   const active = installs.filter((row) => row.status === "active");
@@ -269,7 +253,9 @@ function PlatformCard({
           <Typography variant="body2" color="text.secondary">
             {active.length > 0
               ? `${pluralize(active.length, noun)} connected`
-              : "Not connected"}
+              : claimable?.connected
+                ? `No ${noun}s connected. The connection stays until an admin deletes it above.`
+                : "Not connected"}
           </Typography>
         </Box>
         {addLabel && (
@@ -283,31 +269,6 @@ function PlatformCard({
           >
             {addLabel}
           </Button>
-        )}
-        {claimable?.can_disconnect_all && (
-          <>
-            <IconButton
-              aria-label={`More ${name} actions`}
-              onClick={(e) => setMenu(e.currentTarget)}
-            >
-              <MoreVertOutlined />
-            </IconButton>
-            <Menu
-              anchorEl={menu}
-              open={menu !== null}
-              onClose={() => setMenu(null)}
-            >
-              <MenuItem
-                sx={{ color: "error.main" }}
-                onClick={() => {
-                  setMenu(null);
-                  onDisconnectAll();
-                }}
-              >
-                Disconnect {name}
-              </MenuItem>
-            </Menu>
-          </>
         )}
       </Stack>
 

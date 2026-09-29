@@ -68,6 +68,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import MESSAGING_EVENTS_IGNORED
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.tenant_context import tenant_scope
 from tests.conftest import RLSHarness
 from tests.switch_core.bridges.collaboration.test_install_webhook import (
     _RecordingAdapter,
@@ -474,6 +475,31 @@ class TestOneBridgePerTenant:
         assert b.tenant_id == fixture.tenant_b
         assert b.bridge_id != a.bridge_id
 
+    async def test_a_self_registered_bridge_is_not_the_shared_one(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """An organisation may also register its own bot, which polls for
+        itself; a claim must not land its chat on that bridge."""
+        fixture = await _fixture(rls_harness)
+        with tenant_scope(fixture.tenant_a):
+            own = await fixture.lifecycle.register(
+                bridge_type=_PLATFORM,
+                display_name="Our own bot",
+                connection_config={"event_delivery": "own_connection"},
+                channel_creation_enabled=False,
+            )
+
+        install = await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+
+        assert install.bridge_id != own.id
+        assert len(fixture.lifecycle.registered) == 2
+
     async def test_two_first_claims_at_once_make_one_bridge(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -560,6 +586,57 @@ class TestWhoMayClaim:
 
         assert added.bridge_id == first.bridge_id
         assert added.installed_by_user_id == fixture.member_a
+
+    async def test_a_member_can_add_a_chat_when_none_is_left(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The connection outlives its chats, so it is still on."""
+        fixture = await _fixture(rls_harness)
+        first = await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=first.id
+        )
+
+        added = await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.member_a
+            ),
+            "-1002",
+        )
+
+        assert added.bridge_id == first.bridge_id
+        assert len(fixture.lifecycle.registered) == 1
+
+    async def test_a_member_cannot_turn_it_back_on_once_deleted(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        first = await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=first.id
+        )
+        assert first.bridge_id is not None
+        with tenant_scope(fixture.tenant_a):
+            await fixture.lifecycle.remove(first.bridge_id)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.member_a
+        )
+
+        with pytest.raises(InstallClaimNotPermitted):
+            await _claim(fixture, token, "-1002")
 
 
 class TestWhatAClaimWillNotDo:
@@ -750,8 +827,9 @@ class TestTheSharedConnection:
 
 
 class TestEndingOneChat:
-    """Every chat a tenant claimed shares its one bridge, so a chat leaving
-    must take only its own room with it — and the last one the bridge."""
+    """Every chat a tenant claimed shares its one bridge, which is the
+    tenant's connection rather than any chat's: a chat leaving takes only its
+    own room with it, even the last one, however it left."""
 
     async def _two_chats(
         self, harness: RLSHarness
@@ -784,7 +862,7 @@ class TestEndingOneChat:
         (left,) = await _active_installs(rls_harness)
         assert left.id == second.id and left.bridge_id == first.bridge_id
 
-    async def test_disconnecting_the_last_chat_removes_the_bridge(
+    async def test_disconnecting_the_last_chat_keeps_the_bridge(
         self, rls_harness: RLSHarness
     ) -> None:
         fixture, first, second = await self._two_chats(rls_harness)
@@ -796,79 +874,33 @@ class TestEndingOneChat:
             tenant_id=fixture.tenant_a, install_id=second.id
         )
 
-        assert fixture.lifecycle.removed == [first.bridge_id]
+        assert fixture.rooms.detached == [
+            (first.bridge_id, "-1001"),
+            (first.bridge_id, "-1002"),
+        ]
+        assert fixture.lifecycle.removed == []
         assert await _active_installs(rls_harness) == []
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            assert await fixture.service.platform_connected(session, platform=_PLATFORM)
 
     async def test_the_platform_removing_the_bot_ends_one_chat_the_same_way(
         self, rls_harness: RLSHarness
     ) -> None:
-        fixture, first, _ = await self._two_chats(rls_harness)
+        fixture, first, second = await self._two_chats(rls_harness)
 
         await fixture.service.revoked(
             platform=_PLATFORM, workspace_id="-1001", reason="kicked"
         )
+        await fixture.service.revoked(
+            platform=_PLATFORM, workspace_id="-1002", reason="kicked"
+        )
 
         assert fixture.installer.released == []
-        assert fixture.rooms.detached == [(first.bridge_id, "-1001")]
-        assert fixture.lifecycle.removed == []
-
-    async def test_two_chats_leaving_together_still_remove_the_bridge(
-        self, rls_harness: RLSHarness
-    ) -> None:
-        """Without the lock each sees the other still there, and the bridge is
-        left behind with no installs and nothing that would ever remove it.
-
-        Deterministic rather than a race left to chance: each ending waits for
-        the other before counting what is left, and again after, holding its
-        transaction open until both have counted. With the lock the second
-        cannot get that far until the first has committed, so the first stops
-        waiting and goes on alone; without it both count while the other's
-        ending is uncommitted, and each sees the other still there.
-        """
-        fixture, first, second = await self._two_chats(rls_harness)
-        store = fixture.service._store
-        counted = store.list_for_bridge
-        before, after = asyncio.Barrier(2), asyncio.Barrier(2)
-
-        async def meet(barrier: asyncio.Barrier) -> None:
-            try:
-                await asyncio.wait_for(barrier.wait(), timeout=0.5)
-            except TimeoutError:
-                pass
-
-        async def list_together(session: Any, *, bridge_id: str) -> Any:
-            await meet(before)
-            rows = await counted(session, bridge_id=bridge_id)
-            await meet(after)
-            return rows
-
-        store.list_for_bridge = list_together  # type: ignore[method-assign]
-
-        await asyncio.gather(
-            fixture.service.disconnect(tenant_id=fixture.tenant_a, install_id=first.id),
-            fixture.service.disconnect(
-                tenant_id=fixture.tenant_a, install_id=second.id
-            ),
-        )
-
-        assert fixture.lifecycle.removed == [first.bridge_id]
-
-    async def test_disconnecting_every_chat_leaves_each_and_removes_the_bridge(
-        self, rls_harness: RLSHarness
-    ) -> None:
-        fixture, first, _ = await self._two_chats(rls_harness)
-
-        ended = await fixture.service.disconnect_platform(
-            tenant_id=fixture.tenant_a, platform=_PLATFORM
-        )
-
-        assert sorted(install.external_workspace_id for install in ended) == [
-            "-1001",
-            "-1002",
+        assert fixture.rooms.detached == [
+            (first.bridge_id, "-1001"),
+            (second.bridge_id, "-1002"),
         ]
-        assert sorted(fixture.installer.released) == ["-1001", "-1002"]
-        assert fixture.lifecycle.removed == [first.bridge_id]
-        assert await _active_installs(rls_harness) == []
+        assert fixture.lifecycle.removed == []
 
     async def test_a_bot_that_could_not_leave_keeps_the_chat_connected(
         self, rls_harness: RLSHarness

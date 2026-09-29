@@ -25,7 +25,7 @@ STATE_TTL = timedelta(minutes=10)
 #: covers, so it is also the answer to "who holds this workspace".
 INSTALL_ACTIVE = "active"
 
-#: Ended here, by someone who decided to. The bridge is gone with it.
+#: Ended here, by someone who decided to.
 INSTALL_DISCONNECTED = "disconnected"
 
 #: Ended there: the platform told us the app was removed or its token killed.
@@ -300,31 +300,33 @@ class MessagingInstallStore:
     async def bridge_for_platform(
         self, session: AsyncSession, *, platform: str
     ) -> str | None:
-        """The bridge the bound tenant's live installs of `platform` share.
+        """The bridge the bound tenant's claimed chats of `platform` share.
 
         Only meaningful for a platform whose installs share one bridge per
-        tenant — one claimed by event rather than by OAuth. `None` means the
-        tenant has no live install of it, so the next claim creates the bridge.
+        tenant — one claimed by event rather than by OAuth. Read from the
+        bridge rather than from its installs, because it outlives its chats:
+        it is the tenant's connection, and stays until an admin deletes it.
+        `None` means there is none, so the next claim creates it.
+
+        A self-registered bridge of the same platform polls its own bot and
+        says so in its config, so `event_delivery` is what tells the two apart.
 
         Two distinct bridges is a broken invariant rather than a choice to make
         here: routing a new chat to either would split one tenant's identities
         across two bridges without anyone having decided to.
         """
         result = await session.execute(
-            select(MessagingInstall.bridge_id)
-            .where(
-                MessagingInstall.platform == platform,
-                MessagingInstall.status == INSTALL_ACTIVE,
-                MessagingInstall.bridge_id.is_not(None),
+            select(CollaborationBridge.id).where(
+                CollaborationBridge.type == platform,
+                CollaborationBridge.connection_config["event_delivery"].astext
+                == "shared",
             )
-            .distinct()
         )
-        bridge_ids = [bridge_id for bridge_id in result.scalars() if bridge_id]
+        bridge_ids = list(result.scalars())
         if len(bridge_ids) > 1:
             raise RuntimeError(
-                f"this organisation's {platform} installs are served by "
-                f"{len(bridge_ids)} bridges ({', '.join(sorted(bridge_ids))}); "
-                "they must share one"
+                f"this organisation has {len(bridge_ids)} shared {platform} "
+                f"bridges ({', '.join(sorted(bridge_ids))}); it must have one"
             )
         return bridge_ids[0] if bridge_ids else None
 
@@ -484,9 +486,9 @@ class MessagingInstallStore:
         # the dump. Keeping the row is the record; keeping the secret is not
         # part of it.
         install.encrypted_bot_token = None
-        # And the pointer goes with it, because the bridge is about to. The
-        # foreign key has no `ON DELETE`, so a row still naming the bridge is
-        # what would refuse its deletion.
+        # And the pointer goes with it: an ended install no longer uses the
+        # bridge, and the foreign key has no `ON DELETE`, so a row still naming
+        # it is what would refuse the bridge's deletion.
         install.bridge_id = None
         await session.flush()
         return install

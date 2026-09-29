@@ -287,7 +287,8 @@ class MessagingAppInstaller(ABC):
     #: an OAuth round trip. A claim-based platform shares one bridge per tenant
     #: across every chat claimed, so one chat is a room rather than a
     #: connection: after an admin connects the first, members may connect and
-    #: disconnect chats, and only removing all of them is an admin's.
+    #: disconnect chats. The bridge outlives its chats, and only an admin
+    #: removes it, by deleting it.
     installs_by_claim: ClassVar[bool] = False
 
     #: Whether events from workspaces nobody has installed are routine here.

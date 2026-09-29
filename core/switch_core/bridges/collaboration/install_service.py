@@ -361,8 +361,9 @@ class MessagingInstallService:
     async def platform_connected(self, session: AsyncSession, *, platform: str) -> bool:
         """Whether the bound tenant already has a bridge for a claim-based platform.
 
-        The line between an admin's action and a member's: connecting the
-        first chat creates the tenant's connection; every later one is a room.
+        The line between an admin's action and a member's: connecting a chat
+        while there is none creates the tenant's connection; every other chat
+        is a room.
         """
         return (
             await self._store.bridge_for_platform(session, platform=platform)
@@ -372,25 +373,6 @@ class MessagingInstallService:
     async def install_platform(self, session: AsyncSession, *, install_id: str) -> str:
         """Which platform one of the bound tenant's installs belongs to, or raise."""
         return (await self._store.get(session, install_id=install_id)).platform
-
-    async def disconnect_platform(
-        self, *, tenant_id: str, platform: str
-    ) -> list[MessagingInstall]:
-        """Disconnect every live install of a platform, which removes its bridge.
-
-        One at a time through `disconnect`, so each leaves its chat before its
-        row ends and the last takes the bridge. A failure stops here with the
-        rest still connected, to be retried, rather than half-reporting success.
-        """
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            install_ids = [
-                install.id
-                for install in await self._store.list_active(session, platform=platform)
-            ]
-        return [
-            await self.disconnect(tenant_id=tenant_id, install_id=install_id)
-            for install_id in install_ids
-        ]
 
     async def complete(
         self, *, platform: str, code: str, state_token: str
@@ -845,10 +827,7 @@ class MessagingInstallService:
     ) -> None:
         """Serialise the changes to which installs share a tenant's bridge.
 
-        Held by a first claim across looking up and registering the bridge,
-        and by an ending across ending the install and counting what is left
-        on its bridge — so two chats leaving together cannot each see the other
-        still there and leave the bridge behind with no installs.
+        Held by a first claim across looking up and registering the bridge.
         """
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
@@ -856,16 +835,16 @@ class MessagingInstallService:
         )
 
     async def _release_bridge(
-        self, *, bridge_id: str, workspace_id: str, installs_left: int
+        self, *, platform: str, bridge_id: str, workspace_id: str
     ) -> None:
-        """Remove a bridge its last install has left, or detach one chat's room.
+        """Remove the bridge an install built, or detach one chat's room.
 
         A bridge built for one install goes with it, which is every OAuth
-        install. A claim-based platform's bridge serves every chat its tenant
-        claimed, so an ending that leaves others behind detaches only the room
-        of the chat that went.
+        install. A claim-based platform's bridge is the tenant's connection
+        rather than any chat's, and outlives the last of them until an admin
+        deletes it: a chat ending detaches only its own room, whoever ended it.
         """
-        if installs_left:
+        if self._installers.get(platform).installs_by_claim:
             await self._rooms.unlink_bridge_channel(bridge_id, workspace_id)
             return
         await self._lifecycle.remove(bridge_id)
@@ -975,8 +954,8 @@ class MessagingInstallService:
         `app_uninstalled` ended a second earlier, and that is not an error to
         show them.
 
-        **Removing the bridge detaches every room that used it**, which become
-        internal-only. That is the honest consequence of disconnecting a
+        **Removing an OAuth install's bridge detaches every room that used
+        it**, which become internal-only; a claimed chat detaches only its own. That is the honest consequence of disconnecting a
         messaging app and it is not softened here — but it is the reason this
         is an explicit action with a confirmation in front of it rather than
         something inferred.
@@ -1016,22 +995,14 @@ class MessagingInstallService:
                 await installer.release(external_workspace_id=workspace_id)
 
             async with tenant_session(self._session_factory, tenant_id) as session:
-                await self._lock_platform(session, tenant_id, platform)
                 ended = await self._store.end(
                     session, install_id=install_id, status=INSTALL_DISCONNECTED
-                )
-                left = (
-                    await self._store.list_for_bridge(session, bridge_id=bridge_id)
-                    if bridge_id is not None
-                    else []
                 )
                 await session.commit()
 
             if bridge_id is not None:
                 await self._release_bridge(
-                    bridge_id=bridge_id,
-                    workspace_id=workspace_id,
-                    installs_left=len(left),
+                    platform=platform, bridge_id=bridge_id, workspace_id=workspace_id
                 )
 
         logger.info(
@@ -1090,22 +1061,14 @@ class MessagingInstallService:
                 bridge_id = install.bridge_id
 
             async with tenant_session(self._session_factory, tenant_id) as session:
-                await self._lock_platform(session, tenant_id, platform)
                 await self._store.end(
                     session, install_id=install_id, status=INSTALL_REVOKED
-                )
-                left = (
-                    await self._store.list_for_bridge(session, bridge_id=bridge_id)
-                    if bridge_id is not None
-                    else []
                 )
                 await session.commit()
 
             if bridge_id is not None:
                 await self._release_bridge(
-                    bridge_id=bridge_id,
-                    workspace_id=workspace_id,
-                    installs_left=len(left),
+                    platform=platform, bridge_id=bridge_id, workspace_id=workspace_id
                 )
 
         logger.warning(
