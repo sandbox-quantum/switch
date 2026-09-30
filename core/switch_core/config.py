@@ -2,6 +2,7 @@ import re
 import ssl
 import uuid
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
@@ -140,6 +141,23 @@ class SwitchConfig(BaseSettings):
     # against this deployment knows what to do with it. See
     # docs/old/multi-tenancy-phase2-tenants.md, §4.
     gateway_tenant_choice_enabled: bool = False
+
+    # What a person signing in through the IdP for the first time gets.
+    #
+    # "default_tenant": joined to the deployment's one pre-existing workspace,
+    #   tenant zero. Right for a single-organisation deployment, and what every
+    #   deployment did before sign-up existed.
+    # "invite_only": an account and no workspace. They get in by accepting an
+    #   invitation; only an operator may create a workspace.
+    # "open": an account and no workspace, and they may create their own, up to
+    #   gateway_max_workspaces_per_user.
+    #
+    # Who may sign in at all is the IdP's decision, not this one: this only
+    # decides where a new account lands. Accounts an administrator creates
+    # (`POST /users`) always join that administrator's workspace.
+    gateway_signup_mode: Literal["default_tenant", "invite_only", "open"] = (
+        "default_tenant"
+    )
 
     # How many workspaces one person may own here. 0 turns `POST /tenants` into
     # a 403 outright, so this single value is both the cap and the gate.

@@ -220,6 +220,23 @@ switchCore:
     requireEmailVerified: true
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
+  # Where someone signing in through the IdP for the first time lands. Who may
+  # sign in at all is the IdP's decision; this decides what they get.
+  #   default_tenant — joined to the deployment's one pre-existing workspace
+  #   invite_only    — no workspace until they accept an invitation; only an
+  #                    operator may create one
+  #   open           — no workspace, and they may create their own, up to
+  #                    maxWorkspacesPerUser
+  signup:
+    mode: default_tenant
+    # Most workspaces one person may ever create (operators are exempt); 0
+    # turns self-service creation off. Applies in every mode but invite_only,
+    # which allows none.
+    maxWorkspacesPerUser: 3
+  # Answer a person with several workspaces and none selected with a 409 that
+  # lists them, rather than a 403. The gateway UI does not need it; turn it on
+  # once every API client authenticating against this deployment handles it.
+  tenantChoiceEnabled: false
   # The distributed Slack app: the one a customer installs into their workspace
   # by clicking a button, as opposed to an app an operator registers themselves
   # and pastes a bot token for. Off unless you have registered such an app and

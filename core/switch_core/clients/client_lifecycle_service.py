@@ -140,7 +140,16 @@ class ClientLifecycleService:
         async with tenant_session(self._session_factory, tenant.id) as session:
             await self._tenant_store.create(session, tenant)
             await session.commit()
-        await self.ensure_system_client("admin")
+        try:
+            await self.ensure_system_client("admin")
+        except Exception:
+            logger.error(
+                "Tenant %s (slug %s) was created but provisioning admin clients "
+                "failed; the next boot's ensure_system_client fills the gap.",
+                tenant.id,
+                slug,
+            )
+            raise
         return tenant
 
     async def start_all(self) -> None:

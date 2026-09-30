@@ -610,6 +610,16 @@ Include with `nindent 12`.
   value: "false"
 {{- end }}
 {{- end }}
+{{- $signupMode := .Values.switchCore.signup.mode }}
+{{- if not (has $signupMode (list "default_tenant" "invite_only" "open")) }}
+{{- fail (printf "switchCore.signup.mode must be one of default_tenant, invite_only, open. Got %q." $signupMode) }}
+{{- end }}
+- name: GATEWAY_SIGNUP_MODE
+  value: {{ $signupMode | quote }}
+- name: GATEWAY_MAX_WORKSPACES_PER_USER
+  value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
+- name: GATEWAY_TENANT_CHOICE_ENABLED
+  value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
 - name: GATEWAY_COOKIE_SECURE
   value: {{ .Values.switchCore.cookieSecure | quote }}
 - name: SWITCH_LOG_LEVEL
