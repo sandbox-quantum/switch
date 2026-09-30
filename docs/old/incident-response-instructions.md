@@ -196,7 +196,7 @@ here. Read other rooms with `read_context(room_id=…)`.
 yourself:
 
 1. **Reply in the alert's thread.** A reply stops the escalation clock. An
-   emoji reaction does not: the responder cannot count it as a response.
+   emoji reaction does not: reactions never reach the responder.
 2. **Triage it.** Triage means three things: the blast radius (who or what is
    affected), whether it is new or a repeat, and whether it is already known
    (an open incident, or a deploy in flight). Anything less is acknowledgement.
@@ -1719,6 +1719,10 @@ Record each answer in the bindings or in the On-call SOP document.
       whether the hours follow daylight saving.
 - [ ] **The triage rule's thresholds:** the novelty lookback, and whether
       non-production alerts ever need on-call.
+- [ ] **The name map covers everyone on both rotations.** The response check
+      recognises the on-caller's reply by matching PagerDuty's on-call to the
+      reply's sender. A name it cannot match counts as not the on-caller, and
+      errs towards paging.
 - [ ] **Which on-call engineers are invited to a war room.**
 - [ ] **The Sev0 escalation rule.** The process states only Sev1's.
 - [ ] **When the Sev1 clock stops.** The process gives "until mitigated" for
