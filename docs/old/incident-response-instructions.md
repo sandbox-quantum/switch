@@ -624,9 +624,9 @@ and on every pass of your recurring poll while any alert is waiting. **Never
 wait with a sleep inside your turn**: a session that is sleeping cannot hear
 the room.
 
-**The deadline** is the response window after the latest of: your ping, or a
-person's hand-off to on-call in the thread. A hand-off after your ping moves the
-deadline.
+**The deadline** is the response window after the latest of: the alert, your
+ping, or a person's hand-off to on-call in the thread. A hand-off after your
+ping moves the deadline.
 
 **At the check, read the alert's thread, then:**
 
