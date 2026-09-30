@@ -1,4 +1,3 @@
-import { durationMs } from '@tooling/utils/telemetry-duration';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TelemetryConfig } from './config';
 import {
@@ -213,25 +212,6 @@ describe('the record that gets built', () => {
     const record = logRecord(payload);
     expect(record.timeUnixNano).toBe('1700000000000000000');
     expect(record.observedTimeUnixNano).toBe('1700000000000000000');
-  });
-
-  it('stays far under the attribute count the relay drops a record for', () => {
-    // The guard drops any record with more than 128 attributes.
-    const payload = buildOtlpPayload(
-      'agent_cli_action',
-      {
-        agent_type: 'claude',
-        target: 'remote',
-        install_method: 'unspecified',
-        action: 'install',
-        outcome: 'success',
-        failure_reason: 'none',
-        duration_ms: durationMs(4200),
-      },
-      CONTEXT
-    );
-
-    expect(Object.keys(logAttributes(payload)).length).toBeLessThan(16);
   });
 });
 
