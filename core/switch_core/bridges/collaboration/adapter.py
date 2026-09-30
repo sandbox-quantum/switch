@@ -1150,8 +1150,10 @@ class PlatformAdapter(ABC):
         than showing an empty picker that looks broken.
         """
         raise NotImplementedError(
-            f"{self.platform_name} has no searchable user directory — on this "
-            "platform someone must send a message before Switch knows them"
+            f"{self.platform_name} has no searchable user directory, so this "
+            "lists only people who have written in a chat connected to Switch. "
+            "If you are not listed, send a message in a connected group, then "
+            "search again"
         )
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:

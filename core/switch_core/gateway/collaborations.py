@@ -574,10 +574,7 @@ async def _require_directory_account(
     except NotImplementedError as e:
         raise HTTPException(
             status_code=501,
-            detail=(
-                f"{e} — so this account cannot be linked before it has been "
-                "seen. Send one message in the workspace, then link it."
-            ),
+            detail=f"{e}. This account cannot be linked until Switch has seen it.",
         ) from e
     except DirectorySearchBusy as e:
         raise _search_busy(e) from e
