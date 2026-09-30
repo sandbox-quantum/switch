@@ -353,7 +353,7 @@ async def test_the_shared_bot_binds_no_chat_by_id() -> None:
     with pytest.raises(ChannelNotBindable) as refused:
         await adapter.require_bindable_channel("-1001")
 
-    assert "Connect a chat" in str(refused.value)
+    assert "Add to Telegram" in str(refused.value)
     assert str(refused.value) == adapter.channel_ids_refused()
 
 

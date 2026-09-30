@@ -93,7 +93,7 @@ left set on shutdown, so Telegram holds and retries updates across a restart.
 
 ## How a chat is connected
 
-In the dashboard, **Installed apps** → the Telegram card → **Connect a chat** shows a link
+In the dashboard, **Installed apps** → the Telegram card → **Add to Telegram** shows a link
 and a code. Both work once, for ten minutes.
 
 - **A group:** the link opens Telegram's chat picker. Adding the bot through it

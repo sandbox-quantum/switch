@@ -26,6 +26,9 @@ import {
   platformLabel,
   titleCase,
 } from "../../theme/hootFormat";
+import discordIcon from "../../assets/bridges/discord.svg";
+import slackIcon from "../../assets/bridges/slack.svg";
+import telegramIcon from "../../assets/bridges/telegram.svg";
 import ClaimChatDialog from "./ClaimChatDialog";
 import DisconnectAppDialog, { installNoun } from "./DisconnectAppDialog";
 
@@ -55,6 +58,13 @@ import DisconnectAppDialog, { installNoun } from "./DisconnectAppDialog";
  * OAuth action here is a tenant admin's. Its connection outlives its chats,
  * and is turned off by deleting it with the other connections.
  */
+
+// The platform's own logo on its Add button, as Switch Console shows it.
+const PLATFORM_ICON: Record<string, string> = {
+  discord: discordIcon,
+  slack: slackIcon,
+  telegram: telegramIcon,
+};
 
 const ENDED_COLOR: Record<string, "warning" | "default"> = {
   // Ended at the platform rather than here — somebody removed the app, or its
@@ -233,10 +243,8 @@ function PlatformCard({
   const noun = installNoun(platform);
   const active = installs.filter((row) => row.status === "active");
   const ended = installs.filter((row) => row.status !== "active");
-  // What one click adds, rather than the platform the card already names:
-  // each connects one more workspace, server or chat.
   const canAdd = claimable ? claimable.can_add_chat : canInstall;
-  const addLabel = canAdd ? `Connect a ${noun}` : null;
+  const icon = PLATFORM_ICON[platform];
 
   return (
     <Paper variant="outlined" sx={{ borderRadius: 2 }}>
@@ -258,16 +266,25 @@ function PlatformCard({
                 : "Not connected"}
           </Typography>
         </Box>
-        {addLabel && (
+        {canAdd && (
           <Button
             variant="contained"
             disabled={starting !== null}
             startIcon={
-              starting === platform ? <CircularProgress size={16} /> : undefined
+              starting === platform ? (
+                <CircularProgress size={16} />
+              ) : icon ? (
+                <Box
+                  component="img"
+                  src={icon}
+                  alt=""
+                  sx={{ width: 16, height: 16 }}
+                />
+              ) : undefined
             }
             onClick={onAdd}
           >
-            {addLabel}
+            Add to {name}
           </Button>
         )}
       </Stack>
