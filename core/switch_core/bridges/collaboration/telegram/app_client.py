@@ -115,6 +115,15 @@ class TelegramAppClient:
         assert self._username is not None
         return self._username
 
+    @property
+    def is_live(self) -> bool:
+        """Whether `start` has succeeded, which is what a bridge needs of it.
+
+        Set as the last step of `start`, with no await between it and the
+        walk `on_connected` makes over the running bridges.
+        """
+        return self._username is not None
+
     def require_ready(self) -> None:
         if self._username is None:
             raise TelegramAppNotReady(

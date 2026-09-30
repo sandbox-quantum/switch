@@ -892,10 +892,11 @@ class MessagingInstallService:
                 f"bridge {install.bridge_id}, which serves {platform} workspace "
                 f"{workspace_id}, is not running"
             )
-        # A bridge registered since boot has not been handed the platform's
-        # shared connection yet, and this event is the first chance to. Here
-        # rather than at dispatch so a connection that is not ready is refused
-        # while the platform can still be told to retry.
+        # Normally attached already, as it started. This covers one that
+        # started before the platform's shared connection was up and that the
+        # walk on connect did not reach. Here rather than at dispatch so a
+        # connection that is not ready is refused while the platform can still
+        # be told to retry.
         connection = self._installers.get(platform).shared_connection()
         if connection is not None and isinstance(adapter, SupportsSharedConnection):
             adapter.attach_shared_connection(connection)

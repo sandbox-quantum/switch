@@ -1021,8 +1021,9 @@ class TelegramAdapter(PlatformAdapter):
     def attach_shared_connection(self, connection: Any) -> None:
         """Hand a shared bridge the deployment's bot, once.
 
-        Called at boot for bridges that already exist and on the first update
-        delivered to one registered since. Everything the self-registered
+        Called as a bridge starts once the bot is up, when the bot comes up
+        for bridges started before it, and on each update delivered to a
+        bridge, as a backstop. Everything the self-registered
         bridge learns from its own `getMe` is read from the shared client
         instead, and the rate-limit cooldown is the client's rather than this
         bridge's, because Telegram meters the bot and not the tenant.

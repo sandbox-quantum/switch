@@ -113,6 +113,38 @@ async def _installer(bot: _Bot | None = None) -> tuple[TelegramAppInstaller, _Bo
     return TelegramAppInstaller(client=client, webhook_secret=_SECRET), bot
 
 
+class TestBeingUp:
+    """A bridge starting once the bot is up is attached as it starts; one
+    starting before is left for the walk `on_connected` makes, which must see
+    the bot as up so a bridge starting during it is caught by one or the other."""
+
+    async def test_not_before_start(self) -> None:
+        client = TelegramAppClient(
+            bot=_Bot(),  # type: ignore[arg-type]
+            webhook_url="https://switch.example/messaging/telegram/events",
+            webhook_secret=_SECRET,
+            on_connected=_nothing,
+        )
+
+        assert not client.is_live
+
+    async def test_up_by_the_time_the_running_bridges_are_walked(self) -> None:
+        seen: list[bool] = []
+
+        async def on_connected(client: TelegramAppClient) -> None:
+            seen.append(client.is_live)
+
+        client = TelegramAppClient(
+            bot=_Bot(),  # type: ignore[arg-type]
+            webhook_url="https://switch.example/messaging/telegram/events",
+            webhook_secret=_SECRET,
+            on_connected=on_connected,
+        )
+        await client.start_with_retry()
+
+        assert seen == [True]
+
+
 class TestLeaving:
     async def test_disconnecting_makes_the_bot_leave(self) -> None:
         installer, bot = await _installer()
