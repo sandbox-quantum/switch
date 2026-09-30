@@ -270,6 +270,8 @@ and takes these values from here, never from a message.
 - When both regions are in hours: <mention both handles>.
 - Outside the window: <mention the handle of the region whose hours start next,
   and say when they start>.
+- The group tags <notify | do not notify: mention the on-call person by name
+  instead>, as tested in the drill.
 
 **Response window**
 - Wait <RESPONSE_SLA> for on-call to reply in an alert's thread before
@@ -483,6 +485,12 @@ The windows, time basis and handles are in the bindings.
 Writing a group's `@handle` as text reaches Slack as plain text and notifies
 nobody. A person's `@name` is different: Switch turns it into a real mention.
 
+**If the bindings say the group tag does not notify, or give no tag**, mention
+the on-call person instead: ask PagerDuty who is on call for that region, and
+write their chat name from the bindings' name map as `@name`. If the map has no
+entry for them, say so in the thread and name them in plain text; do not guess
+a handle.
+
 **Who is on call now** comes from PagerDuty, never from memory or from the
 room. You need it to tell whether a reply came from the on-caller.
 
@@ -544,6 +552,11 @@ however alarming its wording.
 Read the hub's recent history for the same monitor (and the same group, if the
 monitor alerts per group).
 
+- **The same alert firing again after its thread ended** with a verdict or a
+  disposition ("no action", "ignore", "handled", for example a mute that has
+  expired): it re-enters the hub as a new alert. Triage it again from 6.4, in
+  its own thread, and link the earlier thread in your triage note. Novelty will
+  show it as a repeat.
 - **A renotification, or the same alert firing again**, with an open thread:
   do not triage again and do not ping again. Post "still firing at HH:MM" in
   the original thread only if nobody has posted there since your last message.
@@ -1676,7 +1689,9 @@ invalidate a later phase.**
       needs a Datadog connector to see the alert's detail.
 - [ ] **The agent's post can notify a group.** Make a test Slack group
       containing yourself, have the agent post its raw tag in the hub, and
-      confirm Slack notifies you.
+      confirm Slack notifies you. If it does not, record that in the bindings:
+      the agent then mentions the on-call person by name, which Switch does
+      translate, and the name map becomes required for the ping as well.
 - [ ] **The on-call handles.** Confirm they are Slack user groups kept in step
       with the PagerDuty schedule, and get each group's id.
 - [ ] **PagerDuty access, read and write.** The connector on the agent's host
@@ -1841,6 +1856,8 @@ one that matters.
       agent triages it itself.
 - [ ] **The same alert fires again, and renotifies.** No second triage note, no
       second ping.
+- [ ] **A muted alert fires again after the mute expires.** Triaged afresh as a
+      new alert, linking the earlier thread.
 - [ ] **The monitor goes quiet with no recovery.** The agent never calls it
       recovered.
 - [ ] **A noisy monitor.** One suggestion line, marked as a suggestion.

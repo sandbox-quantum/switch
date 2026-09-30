@@ -96,7 +96,12 @@ for agents that explains it. Compressed:
    - **No reply, outside the window:** nobody is on call. The alert waits.
      Escalating would page two people for a condition the process says to wait
      on.
-5. **The on-caller's verdict:** incident, ignore, or handled (muted, say).
+5. **The on-caller's verdict:** incident, ignore, or handled (muted, say). An
+   earlier version of the diagram, the one still pictured on the manual's page,
+   sends a muted alert that is still firing when its mute expires back into
+   the hub as a new alert; the current source drops that loop as not worth
+   modelling. The procedure keeps it: an alert whose thread has ended is
+   triaged afresh when it fires again.
    **Incident** means a person declares, and the agent runs the declaration.
    Declaring is the only bridge into PagerDuty, which then pages both regions'
    on-callers and manages the incident to closure.
@@ -211,6 +216,11 @@ as committed in its infrastructure repository.
 - **"Manage alerts, e.g. mute" versus "never mute".** The page's objectives list
   muting; its agent role forbids it. The design takes the stricter reading:
   suggest, never change.
+- **The diagram pictured on the manual's page is an older render than its
+  source.** It has no on-call window, pages one on-caller rather than both, and
+  still shows a mute-expiry loop. The page for agents and the diagram's source
+  describe the newer version, and so does this design. The team should upload
+  the current render, since the page calls the picture the source of truth.
 - **The page for agents has a few sentences with words missing.** None changes
   the process as the diagram shows it, but the team should fix them before an
   agent reads the page as a source.
@@ -536,7 +546,13 @@ writes `<!subteam^S…>` with the group's id notifies the group. The ids go in
 the bindings, and the procedure says to use the tag, never the handle.
 
 **That works by omission, not by contract.** The same hole lets any agent write
-`<!channel>` and notify a whole channel. [Gaps](#gaps) G29.
+`<!channel>` and notify a whole channel. [Gaps](#gaps) G29. The team has already
+hit the visible half of this: a comment on its incident process says an agent
+"can't ping a group", which is true of `@handle` and not of the raw tag. The
+drill settles it. If the tag does not notify in practice, the fallback is the
+one path Switch does translate: the agent mentions the on-call *person* by
+name, taken from PagerDuty through the name map. That makes G1 a dependency of
+the ping as well as of the response check.
 
 **The handles are the rotation.** The team runs a sync service that mirrors the
 PagerDuty schedule into one Slack group per region, overrides included. So the
