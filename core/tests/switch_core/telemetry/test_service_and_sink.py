@@ -201,7 +201,7 @@ class TestTheWireFormat:
         await sink.send(
             TelemetryRecord(
                 name="switch_core.connector_added",
-                properties={"is_preconfigured": False, "failed_attempts": 0},
+                properties={"is_preconfigured": False, "failed_attempts_before_success": 0},
                 resource={
                     "service.name": "switch-core",
                     "flint.client_id": "deployment-uuid",
@@ -213,7 +213,7 @@ class TestTheWireFormat:
         attributes = {a["key"]: a["value"] for a in self._record(body)["attributes"]}
 
         assert attributes["is_preconfigured"] == {"boolValue": False}
-        assert attributes["failed_attempts"] == {"doubleValue": 0.0}
+        assert attributes["failed_attempts_before_success"] == {"doubleValue": 0.0}
 
     async def test_the_body_carries_the_name_so_the_log_line_is_not_blank(
         self,

@@ -77,10 +77,10 @@ and a sender cannot learn from the response that an event was lost. That is
 deliberate. An error status would be either a `400` the sender can do nothing
 about or a `500` that makes it retry the same payload forever.
 
-Loss is made visible at the relay instead. It counts what it receives, what its
-own checks drop, and what Amplitude and Datadog refuse, reports those counts to
-Datadog, and alerts when it fails to deliver or goes quiet. The relay's own
-repository documents the metrics, the alerts, and the gaps that remain.
+Making loss visible is therefore the relay's job, not the sender's: counting
+what it receives, what its own checks drop, and what Amplitude and Datadog
+refuse, and alerting on those counts. The relay's own repository documents the
+metrics, the alerts and how they are switched on, and the gaps that remain.
 
 What that leaves to Switch is not sending anything the relay would drop: the
 event name in both places, finite numbers, the attribute margin, and a valid
