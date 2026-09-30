@@ -53,7 +53,7 @@ def _core(provision: Any) -> tuple[BridgeCore, _FakeAdapter]:
     core._load_channel_map = _noop  # type: ignore[assignment]
     core._load_existing_puppets = _noop  # type: ignore[assignment]
     core._ensure_channel_captures = _noop  # type: ignore[assignment]
-    core._correct_channel_types = _noop  # type: ignore[assignment]
+    core._refresh_channel_types = _noop  # type: ignore[assignment]
     core._handle_channel_migrated = None  # type: ignore[attr-defined]
     core._agent_presentation = None  # type: ignore[attr-defined]
     core._handle_inbound_message = None  # type: ignore[attr-defined]

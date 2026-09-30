@@ -240,7 +240,7 @@ class BridgeCore:
         self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
-        self._channel_type_task: asyncio.Task[None] | None = None
+        self._channel_type_refresh_task: asyncio.Task[None] | None = None
         # Turns and request cards from the tables the host reports to, pushed
         # as they change. Only where the platform draws session activity.
         self._connections = connections
@@ -419,8 +419,8 @@ class BridgeCore:
         self._identity_task = asyncio.create_task(self._run_agent_identities())
         # Not awaited for the same reason: one platform read per channel,
         # and nothing waits on the answer.
-        self._channel_type_task = asyncio.create_task(
-            self._run_channel_type_correction()
+        self._channel_type_refresh_task = asyncio.create_task(
+            self._run_channel_type_refresh()
         )
 
     async def stop(self) -> None:
@@ -429,9 +429,12 @@ class BridgeCore:
         if self._identity_task and not self._identity_task.done():
             self._identity_task.cancel()
         self._identity_task = None
-        if self._channel_type_task and not self._channel_type_task.done():
-            self._channel_type_task.cancel()
-        self._channel_type_task = None
+        if (
+            self._channel_type_refresh_task
+            and not self._channel_type_refresh_task.done()
+        ):
+            self._channel_type_refresh_task.cancel()
+        self._channel_type_refresh_task = None
         await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
@@ -588,24 +591,24 @@ class BridgeCore:
         if channels:
             await self._adapter.ensure_channel_subscriptions(channels)
 
-    async def _run_channel_type_correction(self) -> None:
-        """Wrapper for the background channel-type check; see
+    async def _run_channel_type_refresh(self) -> None:
+        """Wrapper for the background channel-type refresh; see
         `_run_agent_identities` for why it exists and unbinds the tenant."""
         with no_tenant():
             try:
-                await self._correct_channel_types()
+                await self._refresh_channel_types()
             except asyncio.CancelledError:
                 logger.info(
-                    "%s channel type check cancelled before finishing",
+                    "%s channel type refresh cancelled before finishing",
                     self._bridge_type,
                 )
                 raise
             except Exception:
                 logger.exception(
-                    "%s channel type check stopped unexpectedly", self._bridge_type
+                    "%s channel type refresh stopped unexpectedly", self._bridge_type
                 )
 
-    async def _correct_channel_types(self) -> None:
+    async def _refresh_channel_types(self) -> None:
         """Have the adapter re-read every channel this bridge's rooms are bound
         to, so each answer reaches `_record_channel_type` even for a channel
         nothing happens in. Archived rooms are left until they are used again."""

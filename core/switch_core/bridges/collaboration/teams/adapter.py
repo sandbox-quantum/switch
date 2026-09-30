@@ -2908,8 +2908,9 @@ class TeamsAdapter(CollaborationAdapter):
     ) -> None:
         """Hand a channel's type, as Graph gave it, to the bridge, which
         corrects any room saved with the other one. A failure to do so is not
-        the read's failure: the adapter still knows the type, and the room is
-        corrected by the next read that reports it."""
+        the read's failure: the adapter still knows the type and acts on it.
+        The type is cached, though, so nothing reads the channel again until
+        the bridge's refresh at its next start, which corrects the room then."""
         if self._on_channel_type_learned is None:
             return
         try:

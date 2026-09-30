@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -157,7 +158,7 @@ async def test_startup_rereads_every_live_channel_room() -> None:
     )
     adapter = _Adapter()
 
-    await BridgeCore._correct_channel_types(_bridge(store, adapter))
+    await BridgeCore._refresh_channel_types(_bridge(store, adapter))
 
     assert adapter.refreshed == [["19:a@thread.tacv2", "19:b@thread.tacv2"]]
 
@@ -166,7 +167,7 @@ async def test_startup_asks_nothing_without_channel_rooms() -> None:
     store = _RoomStore([_room("a:dm", "direct")])
     adapter = _Adapter()
 
-    await BridgeCore._correct_channel_types(_bridge(store, adapter))
+    await BridgeCore._refresh_channel_types(_bridge(store, adapter))
 
     assert adapter.refreshed == []
 
@@ -177,3 +178,112 @@ async def test_adapters_have_nothing_to_refresh_by_default() -> None:
         ["C1"],
     )
     assert result is None
+
+
+# ── Wiring in start() and stop() ─────────────────────────────────────────────
+
+
+class _StartableAdapter:
+    def __init__(self) -> None:
+        self.channel_type_handler: Any = None
+        self.handler_set_before_start = False
+
+    def set_channel_migration_handler(self, handler: Any) -> None:
+        return None
+
+    def set_channel_type_handler(self, handler: Any) -> None:
+        self.channel_type_handler = handler
+
+    def set_agent_presentation_resolver(self, resolver: Any) -> None:
+        return None
+
+    def set_activity_resolver(self, resolver: Any) -> None:
+        return None
+
+    async def start(self, **kwargs: Any) -> None:
+        self.handler_set_before_start = self.channel_type_handler is not None
+
+    async def stop(self) -> None:
+        return None
+
+
+def _startable_core(refresh: Any) -> tuple[BridgeCore, _StartableAdapter]:
+    core = object.__new__(BridgeCore)
+    adapter = _StartableAdapter()
+    core._bridge_type = "teams"  # type: ignore[attr-defined]
+    core._adapter = adapter  # type: ignore[attr-defined]
+    core._identity_task = None  # type: ignore[attr-defined]
+    core._channel_type_refresh_task = None  # type: ignore[attr-defined]
+
+    async def _noop() -> None:
+        return None
+
+    core._load_channel_map = _noop  # type: ignore[method-assign]
+    core._load_existing_puppets = _noop  # type: ignore[method-assign]
+    core._ensure_channel_captures = _noop  # type: ignore[method-assign]
+    core._create_agent_identities = _noop  # type: ignore[method-assign]
+    core._refresh_channel_types = refresh  # type: ignore[method-assign]
+    core._handle_channel_migrated = None  # type: ignore[assignment]
+    core._agent_presentation = None  # type: ignore[assignment]
+    core._handle_inbound_message = None  # type: ignore[assignment]
+    core._handle_inbound_command = None  # type: ignore[assignment]
+    core._handle_agent_joined_channel = None  # type: ignore[assignment]
+    core._handle_user_joined_channel = None  # type: ignore[assignment]
+    core._handle_app_joined_channel = None  # type: ignore[assignment]
+    return core, adapter
+
+
+async def test_start_hands_the_adapter_the_room_correction_before_starting_it() -> None:
+    # Without this, a type learned at runtime corrects nothing, and a room
+    # saved with the wrong privacy is only fixed at the next start.
+    async def _noop() -> None:
+        return None
+
+    core, adapter = _startable_core(_noop)
+
+    await core.start()
+    await core.stop()
+
+    assert adapter.channel_type_handler == core._record_channel_type
+    assert adapter.handler_set_before_start
+
+
+async def test_a_failed_refresh_is_logged_rather_than_swallowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def _explode() -> None:
+        raise RuntimeError("refresh blew up")
+
+    core, _ = _startable_core(_explode)
+
+    with caplog.at_level(logging.ERROR):
+        await core.start()
+        task = core._channel_type_refresh_task
+        assert task is not None
+        await task
+
+    assert any(
+        "channel type refresh stopped unexpectedly" in r.getMessage()
+        for r in caplog.records
+    )
+    await core.stop()
+
+
+async def test_stop_cancels_a_refresh_in_flight() -> None:
+    started = asyncio.Event()
+
+    async def _slow() -> None:
+        started.set()
+        await asyncio.sleep(30)
+
+    core, _ = _startable_core(_slow)
+
+    await core.start()
+    task = core._channel_type_refresh_task
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await core.stop()
+    await asyncio.sleep(0)
+
+    assert task is not None
+    assert task.cancelled() or task.done()
+    assert core._channel_type_refresh_task is None
