@@ -201,7 +201,10 @@ class TestTheWireFormat:
         await sink.send(
             TelemetryRecord(
                 name="switch_core.connector_added",
-                properties={"is_preconfigured": False, "failed_attempts_before_success": 0},
+                properties={
+                    "is_preconfigured": False,
+                    "failed_attempts_before_success": 0,
+                },
                 resource={
                     "service.name": "switch-core",
                     "flint.client_id": "deployment-uuid",
