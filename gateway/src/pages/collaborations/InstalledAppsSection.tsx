@@ -52,7 +52,7 @@ import DisconnectAppDialog, { installNoun } from "./DisconnectAppDialog";
  * is a room rather than a connection. So its buttons are offered to whoever
  * the server says may use them — an admin to connect the first chat, anyone
  * after that — and any member may disconnect one of its chats, where every
- * OAuth action here stays the operator's. Its connection outlives its chats,
+ * OAuth action here is a tenant admin's. Its connection outlives its chats,
  * and is turned off by deleting it with the other connections.
  */
 

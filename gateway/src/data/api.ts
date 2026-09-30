@@ -1032,9 +1032,9 @@ export interface InstalledApp {
 
 // A platform installed by claiming a chat (Telegram) rather than by OAuth, and
 // what the signed-in person may do with it. Worked out by the server because
-// the split — an admin connects the first chat, members the rest — is the
-// organisation's, and this dashboard knows only the operator bit. `connected`
-// outlives the chats: the connection stays until an admin deletes it.
+// the split — an admin connects the first chat, members the rest — depends on
+// whether the organisation has a connection yet. `connected` outlives the
+// chats: the connection stays until an admin deletes it.
 export interface ClaimablePlatform {
   platform: string;
   connected: boolean;
@@ -1042,7 +1042,7 @@ export interface ClaimablePlatform {
 }
 
 export interface InstallablePlatforms {
-  // OAuth platforms, offered to the operator only.
+  // OAuth platforms, offered to a tenant admin only.
   platforms: string[];
   claimable: ClaimablePlatform[];
 }
