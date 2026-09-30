@@ -1,35 +1,31 @@
-"""Postgres implementation of `MessageTransport`.
+"""Postgres implementation of `MessageTransport`, and Switch's message bus.
 
-The homeserver's remaining job is to carry an event from the client that sent
-it to the clients that should see it, and to remember it in between. A table
-does all three, and Switch already writes that table: every send is recorded
-into `messages` today, beside the send, so the rows exist and have been
-verified against the bus.
-
-This turns that parallel record into the thing itself. **The write is the
-send.** There is no second store to agree with, which is why the reconciler
-this stack built has no work left once the flip happens — it exists to compare
-two records of the same event, and there is only one.
+A transport carries an event from the client that sent it to the clients that
+should see it, and remembers it in between. Here the `messages` table does all
+of that. **The write is the send.** A send is an INSERT, numbered per room
+under an advisory lock (`MessageStore.create`); the `messages_notify` trigger
+announces it on commit (`db/notify_ddl.py`); one `MessageListener` wakes the
+transports watching that room (`messages/notify.py`); and each transport reads
+the rows after its own cursor, `_DELIVERY_PAGE` at a time. There is no second
+store to agree with. Switch used to run on a Matrix homeserver; the
+`matrix_*` column names are what is left of it, kept as stable ids.
 
 Three consequences worth stating up front:
 
-- **A send now fails when the database does.** The recorder deliberately could
-  not fail a send, because a row was a nice-to-have next to a delivered
-  message. Here the row *is* the delivery, so there is nothing left to protect:
-  a write that fails is a message that was not sent, and the caller must hear
-  about it.
-- **Every durable event gets a row, not only the conversation.** The bus
-  carried commands and task events too, and they have to reach their handlers.
-  `recorded_types` therefore stops meaning "what is written" and starts meaning
-  "what a reader is shown" — a projection applied on the way out. The one
+- **A send fails when the database does.** The row *is* the delivery: a write
+  that fails is a message that was not sent, and the caller must hear about
+  it.
+- **Every durable event gets a row, not only the conversation.** Commands and
+  task events travel the same way, and they have to reach their handlers.
+  `recorded_types` therefore means "what a reader is shown", not "what is
+  written": a projection applied on the way out. The one
   category with no row is the genuinely ephemeral: presence-like state whose
   next value replaces it, which is announced and never stored.
 - **Ids are opaque, and these are not `$event` ids.** Nothing in Switch parses
   one; the columns holding them are already named `transport_event_id`.
 
 History is the one method left unimplemented, and deliberately: the read path
-already queries these rows directly, and the only callers left are the walkers
-that exist to compare a bus against them.
+queries these rows directly.
 """
 
 from __future__ import annotations
@@ -147,8 +143,8 @@ def new_event_id() -> str:
 class PostgresTransport:
     """Carries a room's events in the `messages` table.
 
-    One instance per client, as with the Matrix transport: it sends as that
-    client and, once receiving lands, delivers to that client's handlers.
+    One instance per client: it sends as that client and, once it is
+    receiving, delivers to that client's handlers.
     """
 
     def __init__(
@@ -903,9 +899,8 @@ def to_inbound(
 ) -> InboundEvent:
     """One stored row as the event a handler expects.
 
-    Which of the four inbound shapes a row becomes is read off the row itself,
-    the same way the Matrix transport reads it off the event class: an
-    arrival, a file, a `com.switch.*` payload, or a message. The row keeps the
+    Which of the four inbound shapes a row becomes is read off the row itself:
+    an arrival, a file, a `com.switch.*` payload, or a message. The row keeps the
     whole content dict, so nothing is reconstructed here that was not sent.
     """
     content = dict(row.content)

@@ -538,8 +538,8 @@ class ClientBase[ConfigT: ClientConfig]:
         set the event is related into that thread (mirrors send_message).
 
         `group` marks this event as one part of a multi-attachment message —
-        `{"id": ..., "index": i, "total": n}`. Matrix has no native
-        multi-attachment event (MSC4274 / MSC2881 are unmerged), so a message
+        `{"id": ..., "index": i, "total": n}`. A media event carries
+        exactly one file, so a message
         carrying several files is sent as n events sharing a group id, which
         receivers coalesce back into one logical message. Absent the field, an
         event is simply a group of one.

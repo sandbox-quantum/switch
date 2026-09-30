@@ -232,7 +232,7 @@ class BridgeCore:
         # never completes cannot leak.
         self._outbound_groups: dict[str, _PendingOutboundGroup] = {}
         self._outbound_group_timers: dict[str, asyncio.TimerHandle] = {}
-        # Matrix-event -> external-post anchors written synchronously right after
+        # Room-event -> external-post anchors written synchronously right after
         # room_send, before the durable _record_message_map commit, so a fast
         # command reply relayed during that DB await still resolves the command's
         # thread root instead of dropping to the channel root. Popped on commit.
@@ -712,8 +712,8 @@ class BridgeCore:
         )
         if await self._is_registered_agent(msg.sender_name):
             # A bridged Switch agent's own message echoed back from the platform.
-            # The agent posts natively on Matrix (that is where agents see each
-            # other), so re-importing the echo would double-post it and spawn a
+            # The agent posts natively in the Switch room (that is where agents
+            # see each other), so re-importing the echo would double-post it and spawn a
             # duplicate "user" identity for the agent. Drop it. Note
             # this is by *name*, so genuine third-party bots and humans still
             # bridge in normally.
@@ -782,7 +782,7 @@ class BridgeCore:
         )
 
         # Bridge threads inbound: if the external post replied into a thread,
-        # resolve that external root to the Matrix event we bridged for it.
+        # resolve that external root to the room event we bridged for it.
         thread_root_id: str | None = None
         if msg.root_id is not None:
             thread_root_id = await self._matrix_event_for_external_post(msg.root_id)
@@ -836,7 +836,7 @@ class BridgeCore:
         total = len(msg.attachments)
         # A platform post hands us all its files at once, so the group is known
         # up front — no waiting on the receiving side to learn how many to
-        # expect. Matrix carries them as `total` events sharing this id.
+        # expect. The room carries them as `total` events sharing this id.
         group_id = str(uuid.uuid4()) if total > 1 else None
         for index, attachment in enumerate(msg.attachments):
             mxc = await puppet.upload_media(
@@ -923,7 +923,7 @@ class BridgeCore:
             "user_name": cmd.sender_name,
         }
         # If the thread root is already bridged, relate the command event to it
-        # so the result threads onto the existing Matrix root (which resolves
+        # so the result threads onto the existing room root (which resolves
         # back to a valid Mattermost root post). Otherwise the command event
         # itself anchors the thread (mapping recorded below).
         if existing_matrix_root is not None:
@@ -945,7 +945,7 @@ class BridgeCore:
             )
             return
 
-        # No bridged Matrix event for the thread root yet: map the command event
+        # No bridged room event for the thread root yet: map the command event
         # to it so a result threaded under the command resolves back to a valid
         # Mattermost root post (the command post for a top-level command, or the
         # thread root for an in-thread command whose root we hadn't recorded).
@@ -1186,7 +1186,7 @@ class BridgeCore:
         if not agent_ids:
             # create_room invited the bridge client before returning, so posting
             # now cannot predate its join. admin_message goes straight to the
-            # channel via the platform API (not through Matrix), so it surfaces
+            # channel via the platform API (not through the room), so it surfaces
             # regardless — but the ordering keeps the room consistent.
             logger.warning(
                 "Auto-created room %s for channel %s has no agents", room.id, channel_id
@@ -1282,7 +1282,7 @@ class BridgeCore:
         user_names: list[str],
     ) -> None:
         """For each resolvable name in `user_names`, ensure a running puppet
-        client exists and is joined to the Matrix room.
+        client exists and is joined to the room.
 
         Resolution goes through `resolve_external_user_id_map`, the same
         answer the channel-invite path uses, so a person the platform
@@ -1340,10 +1340,10 @@ class BridgeCore:
             )
             return None
 
-        # ensure_client_in_room only *invites*; the puppet joins asynchronously
-        # from its own sync loop. Sending before that join lands gets rejected by
-        # the homeserver, so the message that triggered the provisioning would be
-        # lost. Block until the join is observed.
+        # ensure_client_in_room only *invites*; the puppet joins asynchronously,
+        # when its own client handles the invitation. A message sent before that
+        # join lands predates the join, so the message that triggered the
+        # provisioning would be lost. Block until the join is observed.
         if not await puppet.wait_joined(matrix_room_id, PUPPET_JOIN_TIMEOUT):
             logger.error(
                 "Puppet %s (external user %s) did not join room %s within %ss — "
@@ -1524,7 +1524,7 @@ class BridgeCore:
         channel (e.g. someone adds louisa to a Mattermost channel via the
         Mattermost UI). Auto-creates the Switch room if the channel isn't
         mapped yet (same as the lazy inbound-message path), then ensures
-        the puppet exists and is joined to the Matrix room."""
+        the puppet exists and is joined to the room."""
         if await self._is_registered_agent(join.external_username):
             # The account that joined is actually a bridged Switch agent (its
             # bot account), not an external user. Route it through the agent-join
@@ -1570,7 +1570,7 @@ class BridgeCore:
 
         Switch files someone under the name it first saw, and a platform that
         supplied none left its own id there — which then reads as that person's
-        name in the room title, on their Matrix account and in every agent
+        name in the room title, on their client and in every agent
         reply that addresses them. Repairing on the way past needs no migration
         for the rows already written.
 
@@ -1616,8 +1616,8 @@ class BridgeCore:
             )
             await session.commit()
             client_id = existing.client_id
-        # The Matrix account keeps its localpart — that is an address, and
-        # changing it would orphan the history — but its display name is what
+        # The client keeps its localpart, since that is an address and
+        # changing it would orphan the history, but its display name is what
         # people read.
         puppet = self._client_lifecycle.get(client_id)
         if puppet is not None:
@@ -1667,7 +1667,7 @@ class BridgeCore:
     async def _create_puppet(
         self, external_user_id: str, external_username: str
     ) -> str:
-        """Mint the Matrix identity that stands in for a person on the platform.
+        """Mint the client identity that stands in for a person on the platform.
 
         Bound to the **bridge's** tenant, not to whatever room the message
         that triggered it arrived in. A puppet is per-bridge and outlives that
@@ -1707,7 +1707,7 @@ class BridgeCore:
 
         sanitized = re.sub(r"[^a-z0-9_-]", "-", external_username.lower()).strip("-")
         # Scope to the bridge: the same username on two bridges of the same
-        # type (e.g. two Slack workspaces) must map to distinct Matrix users,
+        # type (e.g. two Slack workspaces) must map to distinct clients,
         # since matrix_user_id is globally unique but usernames are not.
         localpart = f"switch-{self._bridge_type}-{self._bridge_id}-{sanitized}"
 
@@ -1785,7 +1785,7 @@ class BridgeCore:
         platform_marker = event_content.get(PLATFORM_MARKER)
         sender_name = event.sender_name
         # An admin/system or platform message renders natively per bridge
-        # (admin_message) rather than on behalf of its Matrix sender, so it
+        # (admin_message) rather than on behalf of its room sender, so it
         # needs no sender_name.
         is_system = admin_marker is not None or platform_marker is not None
         if sender_name is None and not is_system:
@@ -1851,7 +1851,7 @@ class BridgeCore:
     async def _outbound_thread_root_ref(
         self, event_content: dict[str, object], channel_id: str
     ) -> str | None:
-        """Bridge threads outbound: if this Matrix message is a threaded reply,
+        """Bridge threads outbound: if this room message is a threaded reply,
         resolve its thread root to the external post that anchors the thread."""
         relates = event_content.get("m.relates_to") or {}
         if not isinstance(relates, dict) or relates.get("rel_type") != "m.thread":
@@ -1875,7 +1875,7 @@ class BridgeCore:
         event: TransportMedia,
         client: ClientBase[Any],
     ) -> None:
-        """Relay a Matrix media event (an agent-sent image/file) out to the
+        """Relay a room media event (an agent-sent image/file) out to the
         external channel.
 
         Mirrors handle_outbound_message: puppet media is skipped (it originated
@@ -1885,9 +1885,9 @@ class BridgeCore:
         via the adapter; a file whose bytes can't be fetched or that exceeds the
         relay cap gets a disclosed text notice rather than a silent drop.
 
-        A message carrying several files arrives as several Matrix events
+        A message carrying several files arrives as several media events
         sharing a group marker; they are buffered here and relayed as ONE
-        platform post. `client` is the bridge's Matrix client, used to fetch the
+        platform post. `client` is the bridge's own client, used to fetch the
         media bytes.
         """
         logger.debug(
@@ -2150,7 +2150,7 @@ class BridgeCore:
     def _prerecord_message_map(
         self, matrix_event_id: str, external_post_id: str
     ) -> None:
-        """Anchor a Matrix-event → external-post mapping in memory, synchronously,
+        """Anchor a room-event → external-post mapping in memory, synchronously,
         so it resolves before the durable _record_message_map write commits.
 
         _record_message_map awaits a DB round-trip that yields the event loop; a
@@ -2169,7 +2169,7 @@ class BridgeCore:
         transport_event_id: str,
         external_post_id: str,
     ) -> None:
-        """Persist a Matrix-event ↔ external-post correlation (idempotent)."""
+        """Persist a room-event ↔ external-post correlation (idempotent)."""
         async with self._session_factory() as session:
             existing = await self._bridge_message_map_store.get_by_transport_event_id(
                 session, self._bridge_id, transport_event_id

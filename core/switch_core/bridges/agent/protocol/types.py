@@ -198,7 +198,8 @@ EventType = Literal[
 class AttachmentRef(BaseModel):
     """A pointer to a media attachment on a message event.
 
-    Carries metadata plus the Matrix `mxc://` URI only — never the bytes. The
+    Carries metadata plus the media URI (the `mxc` field, an opaque key) only,
+    never the bytes. The
     actual file is fetched on demand via the media-download endpoint.
     """
 
@@ -239,7 +240,7 @@ class CommandPayload(BaseModel):
 
 
 class RoomJoinPayload(BaseModel):
-    # The joiner's matrix user id (the member event's state_key) and display
+    # The joiner's participant id (the member event's state_key) and display
     # name. room_id / bridge_id / channel_type live on the enclosing AgentEvent.
     member: str
     member_name: str

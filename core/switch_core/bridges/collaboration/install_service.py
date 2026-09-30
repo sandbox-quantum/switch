@@ -418,7 +418,7 @@ class MessagingInstallService:
     #
     # The split is what lets the route acknowledge in time. Slack gives three
     # seconds and retries what it does not get an answer to, so a handler that
-    # posts to Matrix before replying turns one slow room into duplicate
+    # posts to the room before replying turns one slow room into duplicate
     # messages. Everything up to and including `resolve` is fast enough to
     # answer inside, and `deliver` runs after the response has gone.
 

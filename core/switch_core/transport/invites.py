@@ -19,11 +19,10 @@ leaves it reading a room it is no longer in. A removal must therefore be rung
 as well as written.
 
 **It is in-process, and that is a real limitation.** A client running in
-another replica of switch-core would not hear it. That is the same constraint
-Matrix sync sessions imposed and the reason switch-core is single-replica
-today; lifting it is its own step, and until then this is no worse than what it
-replaces. When nobody is listening for a client the caller writes the
-membership itself, so the room is still joined the next time that client
+another replica of switch-core would not hear it. It is one of the reasons
+switch-core is single-replica today (the Helm chart refuses anything else);
+lifting it is its own step. When nobody is listening for a client the caller
+writes the membership itself, so the room is still joined the next time that client
 starts — the invitation is a wake-up, never the record.
 
 **Keyed by client id, which is a primary key.** It used to be keyed by

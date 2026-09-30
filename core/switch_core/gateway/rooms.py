@@ -862,7 +862,7 @@ async def archive_room(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     """: hide it from the default active list. Reversible and
-    metadata-only — the Matrix room, members, and bridge channel are intact."""
+    metadata-only: the room, members, and bridge channel are intact."""
     return await _set_archived(
         room_id,
         True,

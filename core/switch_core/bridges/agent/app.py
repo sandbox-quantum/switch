@@ -64,7 +64,7 @@ def create_agent_bridge_app(
 ) -> tuple[FastAPI, ProtocolService]:
     # One registry for the whole process: the live connection set is the source
     # of truth for reachability, so every service must see the same one. The
-    # caller may supply it — main.py does, because the Matrix agent clients are
+    # caller may supply it, and main.py does, because the agent clients are
     # wired before this app is built and read presence from the same registry.
     if connections is None:
         connections = ConnectionRegistry()

@@ -475,14 +475,16 @@ async def send_message(
 async def download_media(
     agent_id: str,
     room_id: str,
-    mxc: Annotated[str, Query(description="The mxc:// URI of the attachment")],
+    mxc: Annotated[
+        str, Query(description="The media URI of the attachment (its `mxc` field)")
+    ],
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> Response:
-    """Stream an attachment's bytes from the Matrix media repo.
+    """Stream an attachment's bytes from Switch's media store.
 
     The local channel uses this to materialise inbound images to disk (it holds
-    only the bridge API token, not Matrix credentials).
+    only the bridge API token, no other credentials).
     """
     try:
         data, content_type, filename = await protocol.download_media(
@@ -518,7 +520,7 @@ async def upload_media(
 
     The inverse of the GET media endpoint: the local channel (or any connector
     holding the bridge API token) sends the files' bytes here; they are
-    uploaded to the Matrix media repo and posted to the room as
+    stored in Switch's media store and posted to the room as
     m.image / m.file events, with optional caption and threading.
 
     Accepts either a single `file` part or repeated `files` parts. Several

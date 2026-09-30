@@ -513,9 +513,9 @@ postgresql:
   # transaction without executing anything for longer than this (e.g. "15s"),
   # so a leaked checkout becomes a loud, attributable error instead of a slot
   # that never comes back. Empty (the default) leaves it off, and it must stay
-  # off until switch-core stops holding transactions across Matrix round trips
-  # on the room-membership paths — until then this trades request latency for
-  # membership drift: agents invited on Matrix with no row recording it. Set it
+  # off until switch-core stops holding transactions open across the invite and
+  # kick calls on the room-membership paths. Until then this trades request
+  # latency for membership drift: agents invited with no row recording it. Set it
   # in staging first. Migrations are unaffected; Alembic does not read it.
   idleInTransactionSessionTimeout: ""
 

@@ -306,8 +306,9 @@ class AdminClient(ClientBase[ClientConfig]):
 
         Prefers the bridge-provided `sender_name` (the external username, which
         the collaboration bridge rewrites into a real @mention on Slack /
-        Mattermost); falls back to the mxid localpart for a native Matrix user
-        (paired with `mentions=[event.sender]` so Matrix renders a pill).
+        Mattermost); falls back to the participant id's localpart for a client with no
+        bridge-provided name (paired with `mentions=[event.sender]` so the
+        mention renders as a pill).
         """
         content = event.content
         name = content.get("sender_name")

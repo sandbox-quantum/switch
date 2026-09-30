@@ -156,9 +156,11 @@ example), leave `tls.enabled` false and annotate.
 
 ## Constraints you cannot configure away
 
-**switch-core runs exactly one replica.** It holds live Matrix sync sessions and
-bridge connections in memory; a second replica would duplicate every client and
-split session state. `switchCore.replicaCount` other than 1 fails the render,
+**switch-core runs exactly one replica.** Four things live in the process
+rather than the database: the per-agent event buffer, the invite bus, the
+presence bus, and the message listener's subscriber registry. A second replica
+would hold its own copy of each, so a signal raised in one would never reach a
+client attached to the other. Bridge connections live in memory too. `switchCore.replicaCount` other than 1 fails the render,
 and the deployment strategy is `Recreate`, so upgrades have a brief outage
 rather than two pods fighting.
 

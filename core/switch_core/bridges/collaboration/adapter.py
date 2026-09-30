@@ -477,7 +477,7 @@ class CollaborationAdapter(ABC):
         invalidate whatever the last one signed or encrypted.
 
         Async because generating key material is CPU-bound and this runs on
-        the event loop that carries every live Matrix session.
+        the event loop that carries every live client in switch-core.
         """
         return connection_config
 
@@ -623,7 +623,7 @@ class CollaborationAdapter(ABC):
 
         Switch files a person under the name it first sees, and some platforms
         do not always supply one — Teams omits it from a 1:1 chat activity. The
-        id then becomes that person's name everywhere: their Matrix account,
+        id then becomes that person's name everywhere: their client,
         the title of any room auto-created for them, and every agent reply that
         addresses them. Fixing the resolution stops it happening to the next
         person and does nothing for the ones already recorded, so an adapter

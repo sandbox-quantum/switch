@@ -493,7 +493,7 @@ async def _require_directory_account(
     """Raise unless the platform's directory really lists this account.
 
     This is an existence check, not an ownership one — anyone may claim any
-    real account, deliberately. What it prevents is provisioning a Matrix
+    real account, deliberately. What it prevents is provisioning a
     puppet for an id that came from nowhere: the claim body is user-supplied,
     and the row it creates is permanent.
 
@@ -578,7 +578,7 @@ async def claim_bridge_identity(
         # Nobody has seen this person speak yet, which is the normal case right
         # after connecting a workspace. Provision the identity now rather than
         # making them post something first — but only once the platform agrees
-        # the account exists. Provisioning mints a Matrix puppet, so taking the
+        # the account exists. Provisioning mints a puppet client, so taking the
         # request's word for it would let any signed-in user conjure accounts
         # for people who do not exist.
         await _require_directory_account(

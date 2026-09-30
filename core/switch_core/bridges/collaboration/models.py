@@ -42,8 +42,8 @@ class WebhookDeliveryUnsupported(RuntimeError):
 class Attachment(BaseModel):
     """An inbound file attachment of any type, with its raw bytes.
 
-    `data` holds the downloaded file content; the bridge uploads it to the
-    Matrix media repository and discards the bytes afterwards.
+    `data` holds the downloaded file content; the bridge stores it in
+    Switch's media store and discards the bytes afterwards.
     """
 
     filename: str
@@ -124,7 +124,7 @@ class InboundCommand(BaseModel):
     command: str
     args: str
     # External platform's id for the command post (Mattermost post_id), so the
-    # command's bridged Matrix event can be mapped back to it and the result
+    # command's bridged room event can be mapped back to it and the result
     # can be threaded under the originating command message. None when the
     # platform gives us no post id.
     message_ref: str | None = None

@@ -239,7 +239,7 @@ def _failure_reason(exc: BaseException) -> str:
         return "network"
 
     # These four are each a platform's own SDK saying it was reached and it
-    # refused — never Switch's homeserver or database, which speak neither
+    # refused, never Switch's own database, which speaks neither
     # vendor's exception language, so the label stays accurate even though the
     # check is broad.
     if isinstance(exc, BridgeOperationError):
@@ -265,19 +265,13 @@ def _failure_reason(exc: BaseException) -> str:
 
 
 def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
-    """The Matrix localpart for a messaging app's own client.
+    """The localpart for a messaging app's own client.
 
     The random tail is what makes disconnecting and reconnecting work. The
     readable part is derived from the app's type and name, which an operator is
-    free to reuse — and the homeserver has no API for removing an account, so
-    the old one is still there when they do. Reusing the name meant either
-    colliding with it, or adopting an account whose password Switch no longer
-    holds: shared-secret registration reports an existing user as success
-    without applying the new one, so the second reads as a working connection
-    that can never log in.
-
-    A fresh name each time costs an abandoned account on the homeserver, which
-    is already the case and is logged on removal.
+    free to reuse, and ids are stable handles that existing history points at.
+    A fresh name each time keeps a reconnection from colliding with an id the
+    last connection already issued.
     """
     safe_name = re.sub(r"[^a-z0-9._=-]", "-", display_name.lower())[:16]
     return f"switch-bridge-{bridge_type}-{safe_name}-{uuid4().hex[:8]}"
@@ -382,7 +376,8 @@ class CollaborationBridgeLifecycleService:
         #
         # A process-wide lock is sufficient *because* switch-core is a
         # singleton: the chart fails the render for replicaCount != 1, since
-        # it holds live Matrix sessions in memory. If that ever changes, this
+        # it keeps delivery state (event buffers, the invite and presence
+        # buses, the message listener) in memory. If that ever changes, this
         # has to become a database constraint — the way the single-default
         # bridge invariant already is — because a lock in one process would
         # then be guarding nothing.
@@ -682,7 +677,7 @@ class CollaborationBridgeLifecycleService:
         # whose failures are logged and swallowed, so credentials that are wrong
         # would otherwise be stored, reported as success, and only surface later
         # as an unrelated-looking error. Failing here also avoids leaving an
-        # orphan Matrix identity behind for a bridge that was never viable.
+        # orphan client identity behind for a bridge that was never viable.
         await adapter_cls.verify_credentials(connection_config)
 
         bridge_client_record = await self._client_lifecycle.create_client(
@@ -934,7 +929,7 @@ class CollaborationBridgeLifecycleService:
         """Make the bridge's rooms its recorded memberships before it starts.
 
         A bridge belongs in every room it carries, and that was expressed by
-        inviting its client and letting the homeserver hold the membership —
+        inviting its client and letting the message bus hold the membership,
         so nothing wrote it down. Once `client_rooms` became what a client
         reads its rooms from, a bridge that had never been re-invited was in
         none of them: it still received from the platform, because inbound
@@ -1209,9 +1204,9 @@ class CollaborationBridgeLifecycleService:
         """Disconnect a messaging app and take its identities with it.
 
         Everything Switch created to talk to this platform goes: the bridge's
-        own Matrix client, and the puppet client behind every person Switch saw
-        on it. Leaving those behind is not a tidiness problem — the bridge
-        client's Matrix name is derived from the app's type and display name,
+        own client, and the puppet client behind every person Switch saw
+        on it. Leaving those behind is not a tidiness problem: the bridge
+        client's name is derived from the app's type and display name,
         so an operator who disconnects an app and reconnects one named the same
         collided with the row left by the last one.
 
@@ -1256,14 +1251,8 @@ class CollaborationBridgeLifecycleService:
                 await self._client_lifecycle.delete_record(session, client_id)
             await session.commit()
 
-        # The Matrix accounts themselves outlive this: the homeserver offers no
-        # deprovisioning call Switch can make. Said out loud because it is the
-        # reason a reconnection cannot reuse the old name — see
-        # `_bridge_client_localpart`.
         logger.info(
-            "Removed collaboration bridge %s and %d client identities; their "
-            "Matrix accounts remain on the homeserver, which has no API to "
-            "remove them",
+            "Removed collaboration bridge %s and %d client identities",
             bridge_id,
             len(removed),
         )

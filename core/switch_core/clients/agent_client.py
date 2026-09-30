@@ -203,7 +203,7 @@ _ADDRESSING_UNCLAIMED_MESSAGE = ADDRESSING_UNCLAIMED_MESSAGE
 class _GateOutcome(NamedTuple):
     """Whether a message that tags this agent really addresses it, plus the
     refusal to post when it does not. The refusal is returned rather than sent
-    so the caller can close its database session before talking to Matrix."""
+    so the caller can close its database session before posting."""
 
     addressed: bool
     refusal: str | None
@@ -429,7 +429,7 @@ class AgentClient(ClientBase[ClientConfig]):
             reply_thread_root = thread_id if thread_id is not None else event.event_id
 
         # Every database read this message needs happens in one session, and
-        # nothing is posted to Matrix while it is open. A busy room fans one
+        # nothing is posted to the room while it is open. A busy room fans one
         # inbound event out to every agent client in it at once, so a client
         # that took a slot per question would multiply a single message into
         # dozens of concurrent checkouts.
@@ -551,8 +551,8 @@ class AgentClient(ClientBase[ClientConfig]):
         # Mirror on_message: surface the thread this media belongs to (if any).
         thread_id = event.thread_root_id
 
-        # Several files posted as one message arrive as separate Matrix events
-        # sharing a group marker (Matrix has no multi-attachment event). Hold
+        # Several files posted as one message arrive as separate media events
+        # sharing a group marker (a media event carries one file). Hold
         # them until the group is complete, then emit ONE payload carrying all
         # of them, so the agent sees one message with N attachments.
         group = parse_attachment_group(content)
@@ -1384,8 +1384,9 @@ class AgentClient(ClientBase[ClientConfig]):
 
         Prefers the bridge-provided `sender_name` (the external username, which
         the collaboration bridge rewrites into a real @mention on Slack /
-        Mattermost); falls back to the mxid localpart for a native Matrix user
-        (paired with `mentions=[event.sender]` so Matrix renders a pill).
+        Mattermost); falls back to the participant id's localpart for a client with no
+        bridge-provided name (paired with `mentions=[event.sender]` so the
+        mention renders as a pill).
         """
         content = event.content
         person = platform_on_behalf_of(content)

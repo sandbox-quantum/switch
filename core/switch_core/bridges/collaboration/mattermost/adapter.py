@@ -1956,8 +1956,8 @@ class MattermostAdapter(CollaborationAdapter):
 
     async def get_external_user_id(self, username: str) -> str | None:
         """Resolve a platform username to its current user id, or None if the
-        user does not exist. Used by the homeserver cutover to rebind a puppet's
-        ``external_user_id`` when Mattermost has been rebuilt and ids changed."""
+        user does not exist. Used to rebind a puppet's ``external_user_id`` when
+        Mattermost has been rebuilt and ids changed."""
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError("Mattermost client not connected")
         try:

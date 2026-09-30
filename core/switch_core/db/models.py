@@ -426,7 +426,7 @@ class Agent(TenantScoped, Base):
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Human-readable name shown to people ("Switch Dev") next to the machine
     # identifier `name` carries ("switchdev"). NULL means none was chosen and
-    # the display layer falls back to `name`. Never the Matrix client display
+    # the display layer falls back to `name`. Never the client display
     # name: that stays the identifier, because it is what bridges match on to
     # recognise an agent's own echo.
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -720,7 +720,7 @@ class Room(TenantScoped, Base):
     )
     # When set, the room is archived: hidden from the default active room lists
     # (gateway + agent MCP tools) but otherwise fully intact and retrievable —
-    # members, Matrix room, and bridge channel are untouched. NULL = active.
+    # members, room, and bridge channel are untouched. NULL = active.
     # Archiving is metadata-only and reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True

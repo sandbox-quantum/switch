@@ -768,7 +768,7 @@ class DiscordAdapter(CollaborationAdapter):
         """Post `content` as however many messages Discord's 2,000-char cap needs.
 
         Returns the ref of the FIRST message. That is the one the bridge maps
-        the Matrix event to, so a reply threads under the start of what was
+        the room event to, so a reply threads under the start of what was
         said rather than its tail, and a thread created from it opens where the
         message begins.
 

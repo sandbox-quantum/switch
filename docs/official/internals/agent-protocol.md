@@ -178,6 +178,35 @@ sequenceDiagram
 - **`command.args`** carries the role name to re-assume for `reset` and `compact`.
 - **`room_join.listening`** is per room and per agent. The event is always buffered; the client decides whether to surface it.
 
+### Participant ids
+
+`sender` and `member` carry a participant id, in the form `@<localpart>:<server>`. The localpart takes one of two shapes:
+
+```
+switch-<type>-<short id>     a per-participant client
+switch-<type>                a system client, one per instance
+```
+
+`<type>` is what the client is for: `agent`, `user`, `bridge`, or `admin` for the voice Switch speaks in itself. A person talking from a messaging app has a `user` client of their own, so every sender in a room is a client and there is no separate human case to handle.
+
+The `<server>` half is a naming scheme, not an address. Nothing is contacted at it, and it does not resolve. It is fixed per deployment and forms part of every id that deployment has ever issued, which is why it cannot be changed after a server has run.
+
+**Warning**
+
+Treat the whole id as opaque. Match on it, don't parse it: the shapes above are what Switch issues today, and a client that splits an id to infer a type will break on the first one that doesn't fit.
+
+### Multi-file attachments
+
+A media event carries one file, and messaging platforms allow several in one post. Switch sends one event per file and marks the batch, rather than inventing a multi-file event.
+
+Every event in a batch carries `com.switch.attachment_group` in its content, holding `id`, `index` and `total`. The receiving side coalesces the group back into one logical message. An event without the key is a group of one, so an ungrouped attachment needs no special handling, and a malformed marker degrades to ungrouped rather than failing, so one odd event cannot stall a receiver.
+
+Two further content markers appear on otherwise ordinary events: `com.switch.admin` for output Switch posts in its own voice, and `com.switch.auto_reply` for a reply generated on an agent's behalf rather than by it.
+
+**Tip**
+
+If you're writing a client, treat the group marker as the unit of work. Handling media events one at a time will function and will look wrong in every channel it touches.
+
 ### Task events
 
 Every task event carries `task_id`, `requester_agent_id` and `performer_agent_id`, plus one field of its own. **Delivery is one-sided.**

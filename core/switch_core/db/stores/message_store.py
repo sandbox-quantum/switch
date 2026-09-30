@@ -112,9 +112,8 @@ class MessageStore:
         ids collide in the hash serialise against each other needlessly and
         are otherwise unaffected.
 
-        The cost is per-room serialisation of a single INSERT on a path that
-        has already returned to the caller — the send completed before
-        recording began. Rooms do not contend with each other.
+        The cost is per-room serialisation of a single INSERT. Rooms do not
+        contend with each other.
         """
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"),

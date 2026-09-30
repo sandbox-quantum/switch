@@ -826,7 +826,7 @@ async def _cmd_invite(
     # `invite-agent` is admin-owned, so only the always-present admin client
     # runs this handler — the `room_service` reference lives on AdminClient.
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
-    # MCP tool) so the agent is invited to Matrix AND added to any bridged
+    # MCP tool) so the agent is invited to the room AND added to any bridged
     # channel.
     await cast("AdminClient", client)._room_service.add_agents_to_room(
         meta.room_id, agent_names=[target.name]

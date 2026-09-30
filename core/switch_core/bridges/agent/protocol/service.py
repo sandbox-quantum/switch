@@ -620,7 +620,7 @@ class ProtocolService:
         )
         await self.api_key_store.create(session, api_key_record)
 
-        # The Matrix client's display name is the agent's identifier, never its
+        # The client's display name is the agent's identifier, never its
         # human display name: it is stamped on every event as `sender_name`, and
         # the collaboration bridges match on it to recognise an agent's own echo
         # coming back from a platform. A human name here would make an agent
@@ -1137,7 +1137,7 @@ class ProtocolService:
     async def _post_agent_notice(
         self, client: Any, matrix_room_id: str, body: str
     ) -> None:
-        """Best-effort post of an activity notice from the agent's own Matrix
+        """Best-effort post of an activity notice from the agent's own client
         identity. Used to announce resource-manager-driven side effects (e.g.
         room-document mutations) in a way that flows through collaboration
         bridges — the resource manager isn't a bridge participant, so its own
@@ -1152,7 +1152,7 @@ class ProtocolService:
     async def _post_role_change_notice(
         self, agent_id: str, matrix_room_id: str, action: str
     ) -> None:
-        """Announce a role assume/release from the acting agent's own Matrix
+        """Announce a role assume/release from the acting agent's own client
         identity, so the notice reaches collaboration bridges (Slack/Mattermost)."""
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
@@ -1164,14 +1164,14 @@ class ProtocolService:
     ) -> str:
         """Resolve a caller-supplied thread_id to the actual thread root.
 
-        Matrix threads are flat: every reply relates to a single root. Agents
+        Threads are flat: every reply relates to a single root. Agents
         may pass any message id in a thread (including a mid-thread reply), so
         we look the event up and, if it is itself an m.thread reply, return its
         root. If the event does not exist in the room we fail loud rather than
         post into a non-existent thread.
         """
         if client.transport is None:
-            raise ValueError("Agent client not connected to Matrix")
+            raise ValueError("Agent client not connected")
         event = await client.transport.get_event(matrix_room_id, thread_id)
         if event is None:
             raise ValueError(f"thread_id not found in room: {thread_id}")
@@ -1234,7 +1234,7 @@ class ProtocolService:
         caption: str | None = None,
         thread_id: str | None = None,
     ) -> dict[str, object]:
-        """Upload one or more files to the Matrix media repository and post them
+        """Store one or more files in Switch's media store and post them
         to a room as m.image / m.file events. `files` is a list of
         (data, filename, mimetype). Returns
         {"event_id": <first>, "mxc": <first>, "attachments": [{event_id, mxc,
@@ -1250,8 +1250,8 @@ class ProtocolService:
         (normalised to its root).
 
         With more than one file the events share an attachment-group marker so
-        receivers can coalesce them into one logical message — Matrix itself has
-        no multi-attachment event.
+        receivers can coalesce them into one logical message, since a media
+        event carries one file.
         """
         if not files:
             raise ValueError("no attachments provided")
@@ -1984,7 +1984,7 @@ class ProtocolService:
     async def download_media(
         self, agent_id: str, room_id: str, mxc: str
     ) -> tuple[bytes, str, str | None]:
-        """Download an attachment's bytes from the Matrix media repository.
+        """Read an attachment's bytes from Switch's media store.
 
         Membership in `room_id` is required as authorization. Returns
         (bytes, content_type, filename).
@@ -1994,7 +1994,7 @@ class ProtocolService:
         if client is None:
             raise ValueError("Agent client not running")
         if client.transport is None:
-            raise ValueError("Agent client not connected to Matrix")
+            raise ValueError("Agent client not connected")
 
         try:
             resp = await client.transport.download_media(mxc)
@@ -2100,7 +2100,7 @@ class ProtocolService:
         if client is None:
             raise ValueError("Agent client not running")
         if client.transport is None:
-            raise ValueError("Agent client not connected to Matrix")
+            raise ValueError("Agent client not connected")
 
         for event in events:
             if isinstance(event, ToolCallReport):
@@ -2617,7 +2617,7 @@ class ProtocolService:
         """Add human users to a bridged room. Requires room membership (or owner/admin).
 
         The room must already be bridged; each name is resolved against the
-        room's bridge, added to its external channel, and joined to the Matrix
+        room's bridge, added to its external channel, and joined to the
         room. Returns the names that could not be resolved on the bridge (these
         were skipped); an empty list means every requested user was added.
         """
@@ -3698,7 +3698,7 @@ class ProtocolService:
     ) -> RoomDetailDescriptor:
         """Archive or unarchive a room on the calling agent's behalf.
 
-        Metadata-only and reversible — the Matrix room, members, and bridge
+        Metadata-only and reversible: the room, members, and bridge
         channel are untouched; the room just leaves (or rejoins) the default
         active lists. Requires the agent to be a member of the room and to
         have write access to it.

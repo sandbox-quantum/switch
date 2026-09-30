@@ -1,10 +1,10 @@
 """Room lifecycle: provisioning, membership, and bridge binding.
 
-Matrix calls here run with no database session open, so a slow invite or kick
-cannot hold a connection-pool slot while it waits. That splits atomicity, and
-the split has a deliberate direction: **Matrix membership must never exceed
+Invite and kick calls write on their own database session, separate from the
+caller's, and the two commit independently. That splits atomicity, and the
+split has a deliberate direction: **transport membership must never exceed
 what the database records.** Write the membership row before inviting; revoke
-the Matrix membership before dropping the row. A crash in the window then
+the transport membership before dropping the row. A crash in the window then
 leaves an agent Switch believes is a member but which cannot see the room —
 under-privileged, visible, and repairable — rather than one silently reading a
 room Switch has no record of it being in.
@@ -250,7 +250,7 @@ class RoomService:
 
     async def _validate_attachments(self, config: RoomCreateConfig) -> None:
         """Resolve existence + access for refs/packages/linked-rooms before
-        touching Matrix. Race-time failures during attach are caught later
+        provisioning anything. Race-time failures during attach are caught later
         and surfaced via failed_attachments; this catches the common cases
         (bad ids, no access) cheaply.
         """
@@ -459,7 +459,7 @@ class RoomService:
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         await self._validate_attachments(config)
         # Validate the group up front so a bad id fails before we provision a
-        # Matrix room / external channel.
+        # room / external channel.
         if config.group_id is not None:
             async with self._session_factory() as session:
                 if await session.get(RoomGroup, config.group_id) is None:
@@ -585,7 +585,7 @@ class RoomService:
                 bridge_core.end_provisioning(external_channel_id)
 
         # The room row is durably committed above. Everything from here down —
-        # channel capture, Matrix invites, adding agents/users on the external
+        # channel capture, invites, adding agents/users on the external
         # platform — is best-effort against another system and can still fail
         # (and, on failure, still propagate out of this call, same as before).
         # Reported here rather than at the end of the function so a failure in
@@ -1191,7 +1191,7 @@ class RoomService:
         """Move a room onto a different collaboration bridge.
 
         Provisions a fresh external channel on the target bridge and re-adds
-        the room's current agents to it, then joins the target bridge's Matrix
+        the room's current agents to it, then joins the target bridge's
         client so events route to the new channel.
 
         Pass ``external_channel_id`` to bind to an **existing** channel on the
@@ -1207,7 +1207,7 @@ class RoomService:
         re-invited to the new channel manually. A warning is logged saying so.
 
         The old bridge is then detached: its in-memory room mapping is removed
-        (so it stops syncing) and its Matrix client is kicked from the room.
+        (so it stops syncing) and its client is kicked from the room.
         The old external channel itself is **left in place** on its platform —
         the adapter has no teardown primitive — so it lingers as an orphan that
         is no longer synced. A warning is logged disclosing this; archive or
@@ -1348,12 +1348,12 @@ class RoomService:
     async def _invite_clients(
         self, matrix_room_id: str, client_ids: dict[str, str]
     ) -> None:
-        """Invites all clients to the Matrix room; each client auto-accepts."""
+        """Invites all clients to the room; each client auto-accepts."""
         for matrix_user_id in client_ids.values():
             await self._matrix_admin.invite_to_room(matrix_room_id, matrix_user_id)
 
     async def reconcile_room_clients(self) -> None:
-        """Ensure every room's clients are actually in it, on Matrix.
+        """Ensure every room's clients are actually in it.
 
         Two sources of drift. Rooms created before a system-client type existed
         (e.g. the admin client) have no membership for it. And a membership

@@ -52,7 +52,7 @@ class RoomStore:
     async def get_by_matrix_room_id(
         self, session: AsyncSession, matrix_room_id: str
     ) -> Room | None:
-        """Resolve a room by its Matrix room id within the bound tenant.
+        """Resolve a room by its transport room id (`matrix_room_id`) within the bound tenant.
 
         Scoped explicitly rather than left to row-level security:
         `matrix_room_id` is unique per tenant

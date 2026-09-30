@@ -1,9 +1,8 @@
 """Shared constants for multi-attachment messages.
 
-Matrix has no native way to put several files on one message: an
-`m.room.message` media event carries exactly one `url`. The proposals that
-would change that (MSC4274 inline media galleries, MSC2881 message
-attachments) are unmerged, so Switch groups at the edges instead — a message
+An `m.room.message` media event carries exactly one `url`, a shape kept from
+when Switch ran on Matrix, while messaging platforms put several files on one
+post. So Switch groups at the edges: a message
 with n files is sent as n media events that share a group id, and the
 receiving side coalesces them back into a single logical message.
 

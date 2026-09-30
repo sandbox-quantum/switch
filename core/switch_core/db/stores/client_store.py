@@ -15,7 +15,7 @@ class ClientStore:
     async def get_by_matrix_user_id(
         self, session: AsyncSession, matrix_user_id: str
     ) -> Client | None:
-        """Resolve a client by its Matrix user id within the bound tenant.
+        """Resolve a client by its participant id (`matrix_user_id`) within the bound tenant.
 
         Scoped explicitly rather than left to row-level security:
         `matrix_user_id` is unique per tenant

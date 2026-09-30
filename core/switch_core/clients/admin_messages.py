@@ -24,7 +24,8 @@ AUTO_REPLY_FLAG = "com.switch.auto_reply"
 #      (including the admin client itself) never react to it with warnings or
 #      auto-replies.
 # The marker rides as a field on a plain m.room.message whose body is the
-# human-readable default text, so a vanilla Matrix client still renders it.
+# human-readable default text, so a reader that ignores the marker still
+# renders it.
 ADMIN_MARKER = "com.switch.admin"
 
 # Marker for a message the Switch platform posts. Unlike ADMIN_MARKER it IS

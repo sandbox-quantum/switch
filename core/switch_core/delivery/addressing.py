@@ -80,7 +80,7 @@ ADDRESSING_UNCLAIMED_MESSAGE = (
 class IncomingMessage:
     """What addressing needs to know about a message, and nothing else.
 
-    `formatted_body` is where a Matrix client puts a rendered mention pill,
+    `formatted_body` is where a rendered mention pill goes,
     which is the one addressing signal that has no plain-text equivalent. It is
     absent on media events and on anything read back from the log that never
     had one, so it is never the only thing consulted.

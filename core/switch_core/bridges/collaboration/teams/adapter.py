@@ -624,8 +624,8 @@ class TeamsAdapter(CollaborationAdapter):
         )
         if any(prepared.get(k) for k in keys):
             return prepared
-        # RSA keygen is CPU-bound and switch-core runs every live Matrix
-        # session on this loop, so it does not run on it.
+        # RSA keygen is CPU-bound and switch-core runs every live client on
+        # this loop, so it does not run on it.
         cert_pem, key_pem = await asyncio.to_thread(generate_encryption_keypair)
         prepared["encryption_certificate_id"] = f"switch-teams-{secrets.token_hex(8)}"
         prepared["encryption_public_certificate"] = cert_pem
@@ -1149,7 +1149,7 @@ class TeamsAdapter(CollaborationAdapter):
 
         A caller that named a thread knows better than we do and wins. What
         this covers is the caller that named none, which is any agent whose
-        reply was not itself threaded in Matrix: answer in the post the bridge
+        reply was not itself threaded in the room: answer in the post the bridge
         last saw this channel speak in, rather than opening a new one.
 
         The limitation, stated because it is real: "last" is per channel, so
@@ -2236,7 +2236,7 @@ class TeamsAdapter(CollaborationAdapter):
 
         Teams omits the sender's name from some activities — 1:1 chats above
         all — and the fallback was the raw id, so `29:1AbCdEf…` became a
-        person's name: in the room title, on their Matrix account, and in the
+        person's name: in the room title, on their client, and in the
         text of every agent reply that addressed them. An id is never a name,
         so look one up instead, and only give up when Graph cannot say either.
 

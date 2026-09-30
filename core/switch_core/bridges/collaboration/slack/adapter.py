@@ -1609,7 +1609,7 @@ class SlackAdapter(CollaborationAdapter):
         their name in the comment. The upload's shared-message ts is pulled
         from the response when Slack provides it (v2 completes the share
         asynchronously, so it may be absent — then no ref is returned and
-        replies to the file won't thread back to Matrix).
+        replies to the file won't thread back to the room).
         """
         if not self._web_client:
             logger.error("Cannot send attachment: Slack client not connected")
