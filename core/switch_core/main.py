@@ -51,6 +51,7 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -802,8 +803,8 @@ async def run(config: SwitchConfig) -> None:
     teams_app = _distributed_teams_app(config, installers, collab_lifecycle)
 
     async def _attach_shared_telegram_bridges(client: TelegramAppClient) -> None:
-        # Bridges registered after this run attach on their first update
-        # instead (see `MessagingInstallService.resolve_by_workspace`).
+        # The bridges that started before the bot was up; each one starting
+        # after is attached as it starts, by `_attach_to_telegram_if_live`.
         for adapter in collab_lifecycle.iter_adapters():
             if isinstance(adapter, TelegramAdapter):
                 adapter.attach_shared_connection(client)
@@ -823,6 +824,16 @@ async def run(config: SwitchConfig) -> None:
         collab_lifecycle.reserve_resource(
             bot_resource(telegram_app.bot_id), "Telegram app bot"
         )
+        shared_bot = telegram_app
+
+        def _attach_to_telegram_if_live(adapter: PlatformAdapter) -> None:
+            # Not before the bot is up, for the reason the Discord client
+            # gives: the bridge would start against a bot it cannot use, and
+            # the attach on connect would then be a no-op.
+            if shared_bot.is_live and isinstance(adapter, TelegramAdapter):
+                adapter.attach_shared_connection(shared_bot)
+
+        collab_lifecycle.add_bridge_starting_listener(_attach_to_telegram_if_live)
         installers.register(
             TelegramAppInstaller(
                 client=telegram_app,
