@@ -2172,7 +2172,7 @@ class TelegramAdapter(PlatformAdapter):
             return None
         return (
             "Rooms on the Switch Telegram app come from connecting a chat: use "
-            "Connect a chat on the Telegram card under Installed apps, and the "
+            "Add to Telegram on the Telegram card under Installed apps, and the "
             "chat gets its room. A chat cannot be linked to a room by its id."
         )
 

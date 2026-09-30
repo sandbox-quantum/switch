@@ -52,7 +52,7 @@ export default function ClaimChatDialog({ platform, claim, onClose }: Props) {
 
   return (
     <Dialog open={!!claim} onClose={close} maxWidth="sm" fullWidth>
-      <DialogTitle>Connect a {name} chat</DialogTitle>
+      <DialogTitle>Add to {name}</DialogTitle>
       <DialogContent>
         <Stack spacing={2.5} sx={{ mt: 0.5 }}>
           <Stack spacing={1} alignItems="flex-start">
