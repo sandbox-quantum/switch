@@ -1195,15 +1195,9 @@ class CollaborationAdapter(ABC):
         return None
 
     async def refresh_channel_types(self, channel_ids: list[str]) -> None:
-        """Ask the platform for each channel's type, reporting every answer
-        through the channel-type handler.
-
-        Called on bridge startup, so a room saved with the wrong type is
-        corrected even if nothing happens in its channel. A channel that cannot
-        be read is logged and skipped rather than failing the rest. Default is
-        a no-op: only an adapter that may have saved a type it could not verify
-        has anything to refresh (Teams, whose inbound events cannot say whether
-        a channel is private)."""
+        """Re-read each channel's type from the platform and report it through
+        the channel-type handler. Called at bridge startup. Default is a no-op;
+        only Teams saves types it could not verify."""
         return None
 
     def set_service_url_persister(
@@ -1260,13 +1254,7 @@ class CollaborationAdapter(ABC):
         self, handler: Callable[[str, ChannelType], Awaitable[None]]
     ) -> None:
         """Install the callback an adapter calls when it learns a channel's
-        type from the platform, so rooms saved with a different one follow.
-
-        Stored for every adapter and used by those that may have saved a type
-        they could not verify: Teams, where a room created from an inbound
-        event could not know whether its channel was private. A room wrongly
-        saved as public is shown as public, and moving it to another bridge
-        keeps the saved type — opening a public channel there."""
+        type from the platform, so rooms saved with a different one follow."""
         self._on_channel_type_learned = handler
 
     def set_interaction_handler(

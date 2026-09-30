@@ -203,12 +203,8 @@ class RoomStore:
         external_channel_id: str,
         channel_type: str,
     ) -> list[str]:
-        """Record a channel's type, as its platform reports it, on the rooms
-        bound to it; returns the ids of the rooms that changed.
-
-        Only a room saved as a channel of the other privacy changes. One bound
-        to another channel or bridge, or saved as a chat or with no type, is
-        not about this channel and is left alone."""
+        """Set `channel_type` on this bridge's rooms bound to the channel and
+        saved as a channel of the other privacy; returns the ids that changed."""
         result = await session.execute(
             update(Room)
             .where(

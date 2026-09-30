@@ -417,8 +417,7 @@ class BridgeCore:
         # restarts one. Messages do not depend on it: an agent is addressable
         # by name whether or not its platform identity exists yet.
         self._identity_task = asyncio.create_task(self._run_agent_identities())
-        # Not awaited for the same reason: one platform read per channel,
-        # and nothing waits on the answer.
+        # Not awaited either: one platform read per channel, and nothing waits on it.
         self._channel_type_refresh_task = asyncio.create_task(
             self._run_channel_type_refresh()
         )
@@ -609,9 +608,8 @@ class BridgeCore:
                 )
 
     async def _refresh_channel_types(self) -> None:
-        """Have the adapter re-read every channel this bridge's rooms are bound
-        to, so each answer reaches `_record_channel_type` even for a channel
-        nothing happens in. Archived rooms are left until they are used again."""
+        """Have the adapter re-read the type of every channel this bridge's
+        live rooms are bound to, so quiet channels are corrected too."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -631,15 +629,10 @@ class BridgeCore:
     async def _record_channel_type(
         self, channel_id: str, channel_type: ChannelType
     ) -> None:
-        """Correct the rooms bound to a channel whose saved type the platform
-        contradicts.
-
-        Installed on the adapter, which calls it whenever it learns a channel's
-        type from the platform. A room created from an inbound event is saved
-        with the type the event implied, and a Teams event cannot say whether a
-        channel is private. A private channel's room saved as public is shown
-        as public, and moving it to another bridge opens a public channel
-        there, since a move keeps the room's saved type."""
+        """Correct rooms bound to a channel whose saved privacy the platform
+        contradicts. It matters beyond the label: moving a room to another
+        bridge keeps its saved type, so a private room saved as public would
+        get a public channel there."""
         if channel_type not in ("channel_public", "channel_private"):
             return
         async with tenant_session(

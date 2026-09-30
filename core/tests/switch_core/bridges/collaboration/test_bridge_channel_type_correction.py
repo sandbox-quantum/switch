@@ -1,3 +1,6 @@
+"""The bridge corrects rooms whose saved channel type the platform contradicts,
+whenever the adapter learns one and, on startup, for every live channel room."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,50 +13,23 @@ import pytest
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 
-# The adapter reports each channel type it learns from the platform, and the
-# bridge corrects rooms saved with the other one. A private channel's room
-# saved as public is the case that matters: moving that room to another bridge
-# keeps the saved type, and so opens a public channel there. On startup the
-# bridge has the adapter re-read every channel, so the correction reaches rooms
-# whose channel is quiet.
-
 
 class _FakeSession:
-    def __init__(self) -> None:
-        self.commits = 0
-
     async def __aenter__(self) -> _FakeSession:
         return self
 
-    async def __aexit__(self, *exc: Any) -> bool:
-        return False
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
 
     async def commit(self) -> None:
-        self.commits += 1
-
-
-def _room(
-    external_channel_id: str | None,
-    channel_type: str | None,
-    *,
-    archived: bool = False,
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        external_channel_id=external_channel_id,
-        channel_type=channel_type,
-        archived_at="2026-01-01T00:00:00Z" if archived else None,
-    )
+        return None
 
 
 class _RoomStore:
-    def __init__(
-        self,
-        rooms: list[SimpleNamespace] | None = None,
-        corrected: list[str] | None = None,
-    ) -> None:
-        self._rooms = rooms or []
-        self._corrected = corrected or []
-        self.corrections: list[dict[str, str]] = []
+    def __init__(self, rooms: list[SimpleNamespace], corrected: list[str]) -> None:
+        self._rooms = rooms
+        self._corrected = corrected
+        self.corrections: list[tuple[str, str, str]] = []
 
     async def get_by_bridge(self, session: Any, bridge_id: str) -> list[Any]:
         assert bridge_id == "bridge-1"
@@ -67,14 +43,18 @@ class _RoomStore:
         external_channel_id: str,
         channel_type: str,
     ) -> list[str]:
-        self.corrections.append(
-            {
-                "bridge_id": bridge_id,
-                "external_channel_id": external_channel_id,
-                "channel_type": channel_type,
-            }
-        )
+        self.corrections.append((bridge_id, external_channel_id, channel_type))
         return self._corrected
+
+
+def _room(
+    external_channel_id: str | None, channel_type: str | None, archived: bool
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        external_channel_id=external_channel_id,
+        channel_type=channel_type,
+        archived_at="2026-01-01T00:00:00Z" if archived else None,
+    )
 
 
 class _Adapter:
@@ -85,11 +65,11 @@ class _Adapter:
         self.refreshed.append(channel_ids)
 
 
-def _bridge(store: _RoomStore, adapter: _Adapter | None = None) -> SimpleNamespace:
+def _bridge(store: _RoomStore, adapter: _Adapter) -> SimpleNamespace:
     return SimpleNamespace(
         _session_factory=_FakeSession,
         _room_store=store,
-        _adapter=adapter or _Adapter(),
+        _adapter=adapter,
         _bridge_id="bridge-1",
         _bridge_tenant_id="tenant-1",
         _bridge_type="teams",
@@ -99,85 +79,75 @@ def _bridge(store: _RoomStore, adapter: _Adapter | None = None) -> SimpleNamespa
 # ── Recording what the adapter learned ───────────────────────────────────────
 
 
-async def test_a_learned_type_is_recorded_on_this_bridges_rooms(
+@pytest.mark.parametrize(
+    ("channel_type", "corrected", "asked"),
+    [
+        ("channel_private", ["room-1"], True),
+        ("channel_private", [], True),
+        ("direct", ["room-1"], False),
+    ],
+    ids=["corrected", "already-right", "chat-type-ignored"],
+)
+async def test_a_learned_type_corrects_this_bridges_rooms(
+    channel_type: str,
+    corrected: list[str],
+    asked: bool,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    store = _RoomStore(corrected=["room-1"])
+    store = _RoomStore([], corrected)
 
     with caplog.at_level(logging.WARNING):
         await BridgeCore._record_channel_type(
-            _bridge(store), "19:p@thread.tacv2", "channel_private"
+            _bridge(store, _Adapter()),  # type: ignore[arg-type]
+            "19:p@thread.tacv2",
+            channel_type,  # type: ignore[arg-type]
         )
 
-    assert store.corrections == [
-        {
-            "bridge_id": "bridge-1",
-            "external_channel_id": "19:p@thread.tacv2",
-            "channel_type": "channel_private",
-        }
-    ]
-    assert "room-1" in caplog.text
-
-
-async def test_nothing_is_logged_when_no_room_needed_correcting(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    store = _RoomStore(corrected=[])
-
-    with caplog.at_level(logging.WARNING):
-        await BridgeCore._record_channel_type(
-            _bridge(store), "19:p@thread.tacv2", "channel_private"
-        )
-
-    assert caplog.text == ""
-
-
-async def test_a_chat_type_is_not_recorded() -> None:
-    store = _RoomStore(corrected=["room-1"])
-
-    await BridgeCore._record_channel_type(_bridge(store), "a:dm", "direct")
-
-    assert store.corrections == []
+    expected = [("bridge-1", "19:p@thread.tacv2", channel_type)]
+    assert store.corrections == (expected if asked else [])
+    # One warning per room actually changed, naming it.
+    assert len(caplog.records) == (len(corrected) if asked else 0)
+    assert all("room-1" in r.getMessage() for r in caplog.records)
 
 
 # ── The startup pass ─────────────────────────────────────────────────────────
 
 
-async def test_startup_rereads_every_live_channel_room() -> None:
-    store = _RoomStore(
-        [
-            _room("19:b@thread.tacv2", "channel_private"),
-            _room("19:a@thread.tacv2", "channel_public"),
-            _room("19:a@thread.tacv2", "channel_public"),  # two rooms, one read
-            _room("19:old@thread.tacv2", "channel_public", archived=True),
-            _room("a:dm", "direct"),
-            _room("19:g@thread.v2", "group"),
-            _room(None, "channel_public"),
-            _room("19:c@thread.tacv2", None),
-        ]
-    )
+@pytest.mark.parametrize(
+    ("rooms", "refreshed"),
+    [
+        (
+            [
+                _room("19:b@thread.tacv2", "channel_private", False),
+                _room("19:a@thread.tacv2", "channel_public", False),
+                _room("19:a@thread.tacv2", "channel_public", False),
+                _room("19:old@thread.tacv2", "channel_public", True),
+                _room("a:dm", "direct", False),
+                _room("19:g@thread.v2", "group", False),
+                _room(None, "channel_public", False),
+                _room("19:c@thread.tacv2", None, False),
+            ],
+            [["19:a@thread.tacv2", "19:b@thread.tacv2"]],
+        ),
+        ([_room("a:dm", "direct", False)], []),
+    ],
+    ids=["live-channel-rooms-once-each", "no-channel-rooms"],
+)
+async def test_startup_rereads_every_live_channel_room(
+    rooms: list[SimpleNamespace], refreshed: list[list[str]]
+) -> None:
     adapter = _Adapter()
 
-    await BridgeCore._refresh_channel_types(_bridge(store, adapter))
+    await BridgeCore._refresh_channel_types(_bridge(_RoomStore(rooms, []), adapter))  # type: ignore[arg-type]
 
-    assert adapter.refreshed == [["19:a@thread.tacv2", "19:b@thread.tacv2"]]
-
-
-async def test_startup_asks_nothing_without_channel_rooms() -> None:
-    store = _RoomStore([_room("a:dm", "direct")])
-    adapter = _Adapter()
-
-    await BridgeCore._refresh_channel_types(_bridge(store, adapter))
-
-    assert adapter.refreshed == []
+    assert adapter.refreshed == refreshed
 
 
 async def test_adapters_have_nothing_to_refresh_by_default() -> None:
-    result = await CollaborationAdapter.refresh_channel_types(
-        SimpleNamespace(),  # type: ignore[arg-type]
-        ["C1"],
-    )
-    assert result is None
+    assert (
+        await CollaborationAdapter.refresh_channel_types(SimpleNamespace(), ["C1"])
+        is None
+    )  # type: ignore[arg-type,func-returns-value]
 
 
 # ── Wiring in start() and stop() ─────────────────────────────────────────────
@@ -188,16 +158,13 @@ class _StartableAdapter:
         self.channel_type_handler: Any = None
         self.handler_set_before_start = False
 
-    def set_channel_migration_handler(self, handler: Any) -> None:
-        return None
-
     def set_channel_type_handler(self, handler: Any) -> None:
         self.channel_type_handler = handler
 
-    def set_agent_presentation_resolver(self, resolver: Any) -> None:
+    def set_channel_migration_handler(self, handler: Any) -> None:
         return None
 
-    def set_activity_resolver(self, resolver: Any) -> None:
+    def set_agent_presentation_resolver(self, resolver: Any) -> None:
         return None
 
     async def start(self, **kwargs: Any) -> None:
@@ -210,42 +177,56 @@ class _StartableAdapter:
 def _startable_core(refresh: Any) -> tuple[BridgeCore, _StartableAdapter]:
     core = object.__new__(BridgeCore)
     adapter = _StartableAdapter()
-    core._bridge_type = "teams"  # type: ignore[attr-defined]
-    core._adapter = adapter  # type: ignore[attr-defined]
-    core._identity_task = None  # type: ignore[attr-defined]
-    core._channel_type_refresh_task = None  # type: ignore[attr-defined]
 
     async def _noop() -> None:
         return None
 
-    core._load_channel_map = _noop  # type: ignore[method-assign]
-    core._load_existing_puppets = _noop  # type: ignore[method-assign]
-    core._ensure_channel_captures = _noop  # type: ignore[method-assign]
-    core._create_agent_identities = _noop  # type: ignore[method-assign]
-    core._refresh_channel_types = refresh  # type: ignore[method-assign]
-    core._handle_channel_migrated = None  # type: ignore[assignment]
-    core._agent_presentation = None  # type: ignore[assignment]
-    core._handle_inbound_message = None  # type: ignore[assignment]
-    core._handle_inbound_command = None  # type: ignore[assignment]
-    core._handle_agent_joined_channel = None  # type: ignore[assignment]
-    core._handle_user_joined_channel = None  # type: ignore[assignment]
-    core._handle_app_joined_channel = None  # type: ignore[assignment]
+    for name, value in {
+        "_bridge_type": "teams",
+        "_adapter": adapter,
+        "_identity_task": None,
+        "_channel_type_refresh_task": None,
+        "_load_channel_map": _noop,
+        "_load_existing_puppets": _noop,
+        "_ensure_channel_captures": _noop,
+        "_create_agent_identities": _noop,
+        "_refresh_channel_types": refresh,
+    }.items():
+        setattr(core, name, value)
+    for name in (
+        "_handle_channel_migrated",
+        "_agent_presentation",
+        "_handle_inbound_message",
+        "_handle_inbound_command",
+        "_handle_agent_joined_channel",
+        "_handle_user_joined_channel",
+        "_handle_app_joined_channel",
+    ):
+        setattr(core, name, None)
     return core, adapter
 
 
-async def test_start_hands_the_adapter_the_room_correction_before_starting_it() -> None:
-    # Without this, a type learned at runtime corrects nothing, and a room
-    # saved with the wrong privacy is only fixed at the next start.
-    async def _noop() -> None:
-        return None
+async def test_start_installs_the_correction_and_stop_cancels_the_refresh() -> None:
+    # Without the handler, a type learned at runtime corrects nothing until the
+    # next start.
+    running = asyncio.Event()
 
-    core, adapter = _startable_core(_noop)
+    async def _slow() -> None:
+        running.set()
+        await asyncio.sleep(30)
+
+    core, adapter = _startable_core(_slow)
 
     await core.start()
+    task = core._channel_type_refresh_task
+    await asyncio.wait_for(running.wait(), timeout=1)
     await core.stop()
+    await asyncio.sleep(0)
 
     assert adapter.channel_type_handler == core._record_channel_type
     assert adapter.handler_set_before_start
+    assert task is not None and task.cancelled()
+    assert core._channel_type_refresh_task is None
 
 
 async def test_a_failed_refresh_is_logged_rather_than_swallowed(
@@ -258,32 +239,8 @@ async def test_a_failed_refresh_is_logged_rather_than_swallowed(
 
     with caplog.at_level(logging.ERROR):
         await core.start()
-        task = core._channel_type_refresh_task
-        assert task is not None
-        await task
-
-    assert any(
-        "channel type refresh stopped unexpectedly" in r.getMessage()
-        for r in caplog.records
-    )
+        assert core._channel_type_refresh_task is not None
+        await core._channel_type_refresh_task
     await core.stop()
 
-
-async def test_stop_cancels_a_refresh_in_flight() -> None:
-    started = asyncio.Event()
-
-    async def _slow() -> None:
-        started.set()
-        await asyncio.sleep(30)
-
-    core, _ = _startable_core(_slow)
-
-    await core.start()
-    task = core._channel_type_refresh_task
-    await asyncio.wait_for(started.wait(), timeout=1)
-    await core.stop()
-    await asyncio.sleep(0)
-
-    assert task is not None
-    assert task.cancelled() or task.done()
-    assert core._channel_type_refresh_task is None
+    assert "channel type refresh stopped unexpectedly" in caplog.text

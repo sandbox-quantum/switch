@@ -329,13 +329,9 @@ _CHANNEL_READ_RETRY_AFTER = 300.0
 
 
 def _channel_type_of(channel: dict[str, Any]) -> ChannelType:
-    """A Graph channel's privacy as Switch records it.
-
-    Only a ``standard`` channel shares the team's membership. Private and shared
-    channels keep their own member list, and any value Graph adds later is
-    unknown, so everything else is private: adding someone to a channel that is
-    wrongly called private fails loudly, while one wrongly called public adds
-    them to the whole team."""
+    """Only a ``standard`` channel shares the team's membership. Anything else,
+    including values Graph adds later, is private: wrongly private fails
+    loudly, wrongly public adds people to the whole team."""
     return (
         "channel_public"
         if channel.get("membershipType") == "standard"
@@ -705,11 +701,8 @@ class TeamsAdapter(CollaborationAdapter):
         # Installed by the bridge to persist a newly-learned serviceUrl so it
         # survives a restart. No-op until set.
         self._persist_service_url: Callable[[str], Awaitable[None]] | None = None
-        # channel/chat id -> ChannelType. Holds only what is known: a chat's
-        # kind from its activity, and a channel's privacy from Graph or from
-        # creating it. An activity does not say whether a channel is private,
-        # so a channel is never recorded from one — `add_users_to_channel`
-        # decides team-wide versus channel-only membership from this.
+        # channel/chat id -> ChannelType. A channel's privacy comes only from
+        # Graph or from creating it; an activity cannot say whether it is private.
         self._channel_type: dict[str, ChannelType] = {}
         # casefolded username -> AAD object id, for rendering real @mentions.
         self._mention_targets: dict[str, str] = {}
@@ -981,10 +974,8 @@ class TeamsAdapter(CollaborationAdapter):
         # team and is not to be trusted — most often it was not read at all,
         # because the wrong team is exactly what Graph refuses. Without this the
         # subscription heals on the new team while the name and layout stay
-        # stuck at whatever the failed read left behind. Privacy is kept: a
-        # failed read records none, a successful one is the channel's own
-        # property whichever team it was read through, and `create_channel`
-        # records it just before calling this.
+        # stuck at whatever the failed read left behind. Privacy is kept: it
+        # belongs to the channel, whichever team it was read through.
         self._team_of_channel[channel_id] = team_id
         self._channel_names.pop(channel_id, None)
         self._channel_layouts.pop(channel_id, None)
@@ -2108,9 +2099,8 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError("Teams adapter not started")
         team_id = self._team_of_channel.get(channel_id, self._config.team_id)
         # Private channels have their own membership; standard channels inherit
-        # the team's, so a user is added to the team instead. Adding to the team
-        # is the permissive choice, so it is made only when the channel is known
-        # to be standard — never as the fallback for not knowing.
+        # the team's, so a user is added to the team instead — only ever when
+        # the channel is known to be standard, never as a fallback.
         try:
             channel_type = await self.get_channel_type(channel_id)
         except Exception:
@@ -2417,11 +2407,8 @@ class TeamsAdapter(CollaborationAdapter):
     def _channel_from_activity(
         activity: dict[str, Any],
     ) -> tuple[str, ChannelType | None]:
-        """The conversation id, and its type when the activity can say.
-
-        A chat's kind is in the activity. A channel's privacy is not — Teams
-        sends the same shape for standard, private and shared channels — so a
-        channel comes back as None, for `_inbound_channel_type` to resolve."""
+        """The conversation id and, for a chat, its type. A channel's type is
+        None: Teams sends the same shape for standard, private and shared."""
         conversation = activity.get("conversation") or {}
         conv_id = str(conversation.get("id", ""))
         conv_type = conversation.get("conversationType", "")
@@ -2440,15 +2427,9 @@ class TeamsAdapter(CollaborationAdapter):
     async def _inbound_channel_type(
         self, channel_id: str, chat_type: ChannelType | None
     ) -> ChannelType:
-        """The type to report for a conversation something arrived from.
-
-        A chat's type comes with the activity. A channel's privacy comes from
-        what is already known, else from Graph — the same read that learns its
-        name and layout. When Graph cannot say, the channel is reported private
-        and not recorded, so the adapter keeps asking. A room created for it in
-        the meantime is saved as private, the cautious reading, until a read
-        succeeds and corrects it; `_read_channel` warns once per retry window
-        that this is happening."""
+        """The type to report for an inbound conversation. A channel Graph
+        cannot describe is reported private but not cached, so it is re-read
+        once the retry window passes."""
         if chat_type is not None:
             return chat_type
         known = self._channel_type.get(channel_id)
@@ -2777,8 +2758,7 @@ class TeamsAdapter(CollaborationAdapter):
     ) -> None:
         members_added = activity.get("membersAdded") or []
         if not members_added:
-            # Deletions, renames and departures carry nothing that needs the
-            # conversation's type, so a channel's is not looked up for them.
+            # Deletions, renames and departures don't need the type; skip the read.
             return
         channel_type = await self._inbound_channel_type(channel_id, chat_type)
         recipient = activity.get("recipient") or {}
@@ -2885,10 +2865,8 @@ class TeamsAdapter(CollaborationAdapter):
             return None
 
     async def _fetch_channel(self, channel_id: str) -> dict[str, Any]:
-        """Read a channel from Graph and record what it says; raises on failure.
-
-        The one place a channel's privacy, name and layout are learned from
-        Graph, so `get_channel_type` and `_read_channel` cannot drift apart."""
+        """Read a channel from Graph and cache its privacy, name and layout;
+        raises on failure."""
         if self._graph is None:
             raise RuntimeError("Teams adapter not started")
         team_id = self._team_of_channel.get(channel_id) or self._config.team_id
@@ -2906,11 +2884,9 @@ class TeamsAdapter(CollaborationAdapter):
     async def _report_channel_type(
         self, channel_id: str, channel_type: ChannelType
     ) -> None:
-        """Hand a channel's type, as Graph gave it, to the bridge, which
-        corrects any room saved with the other one. A failure to do so is not
-        the read's failure: the adapter still knows the type and acts on it.
-        The type is cached, though, so nothing reads the channel again until
-        the bridge's refresh at its next start, which corrects the room then."""
+        """Pass a channel's type to the bridge to correct its saved rooms. A
+        failure is logged, not raised: the adapter still acts on the type, and
+        the room is corrected at the next startup refresh."""
         if self._on_channel_type_learned is None:
             return
         try:
