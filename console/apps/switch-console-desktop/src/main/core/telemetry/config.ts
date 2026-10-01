@@ -41,6 +41,26 @@ export type TelemetryResolution =
   | { enabled: true; config: TelemetryConfig }
   | { enabled: false; reason: TelemetryDisabledReason };
 
+/**
+ * The Amplitude project an event belongs in, sent as the `flint_env` resource
+ * attribute. The relay keeps one project per environment and files each event
+ * under the one this names, so a developer's app and a pre-release never land
+ * in production's numbers. `build` stays on every event besides, for slicing
+ * within a project.
+ */
+export type TelemetryFlintEnv = 'prod' | 'staging' | 'local';
+
+export function flintEnvFor(build: TelemetryBuildChannel): TelemetryFlintEnv {
+  switch (build) {
+    case 'stable':
+      return 'prod';
+    case 'canary':
+      return 'staging';
+    case 'dev':
+      return 'local';
+  }
+}
+
 export function telemetryBuildChannel(): TelemetryBuildChannel {
   if (viteEnv?.DEV === true) return 'dev';
   return IS_CANARY ? 'canary' : 'stable';

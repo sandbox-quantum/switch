@@ -74,6 +74,7 @@ describe('the record that gets built', () => {
       'service.name': 'switch-console',
       'service.version': '1.2.3',
       'flint.client_id': CONTEXT.clientId,
+      flint_env: 'prod',
       'os.type': 'darwin',
       'os.version': '24.3.0',
     });
@@ -161,6 +162,18 @@ describe('the record that gets built', () => {
 
     expect(rawLogAttributes(payload).has_initial_prompt).toEqual({ boolValue: false });
     expect(rawLogAttributes(payload).connected_to_room).toEqual({ boolValue: false });
+  });
+
+  it.each([
+    ['stable', 'prod'],
+    ['canary', 'staging'],
+    ['dev', 'local'],
+  ] as const)('says a %s build belongs in the %s Amplitude project', (build, environment) => {
+    // The relay picks the project from this, beside the client id it already
+    // requires on the resource.
+    const payload = buildOtlpPayload('app_launched', {}, { ...CONTEXT, build });
+
+    expect(resourceAttributes(payload).flint_env).toBe(environment);
   });
 
   it('carries a yes as a boolean, not as the word', () => {

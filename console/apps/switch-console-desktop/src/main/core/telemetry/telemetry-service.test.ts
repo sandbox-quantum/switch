@@ -273,6 +273,7 @@ describe('the payload', () => {
 
     expect(Object.keys(sentResource()).sort()).toEqual([
       'flint.client_id',
+      'flint_env',
       'os.type',
       'os.version',
       'service.name',

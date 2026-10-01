@@ -36,6 +36,7 @@ abbreviated:
     "service.name": "switch-console",
     "service.version": "0.9.14",
     "flint.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
+    "flint_env": "prod",
     "os.type": "darwin",
     "os.version": "23.6.0"
   },
@@ -72,6 +73,7 @@ machine, in what repository, or what the prompt said.
 | `service.name` | constant | `switch-console` |
 | `service.version` | app version | `0.9.14`, `1.0.2` |
 | `build` | release channel | `dev`, `canary`, `stable` |
+| `flint_env` | which analytics project the event is filed under, from the release channel | `prod` (stable), `staging` (canary), `local` (dev) |
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
 | `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |

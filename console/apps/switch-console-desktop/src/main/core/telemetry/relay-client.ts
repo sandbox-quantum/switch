@@ -1,4 +1,4 @@
-import type { TelemetryConfig } from './config';
+import { flintEnvFor, type TelemetryConfig } from './config';
 import {
   TELEMETRY_EVENT_PROPERTIES,
   type TelemetryEventMap,
@@ -163,6 +163,7 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
             'service.name': SERVICE_NAME,
             'service.version': context.appVersion,
             'flint.client_id': context.clientId,
+            flint_env: flintEnvFor(context.build),
             'os.type': context.osType,
             'os.version': context.osVersion,
           }),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  flintEnvFor,
   resolveTelemetryEnvironment,
   TELEMETRY_RELAY_ENDPOINT,
   type TelemetryBuildChannel,
@@ -66,5 +67,17 @@ describe.each(['stable', 'canary'] as const)('a %s build', (build) => {
     const resolution = resolve(build, { SWITCHDASH_TELEMETRY_DEV: '1' });
 
     expect(resolution.enabled && resolution.config.build).toBe(build);
+  });
+});
+
+describe('the Amplitude project a build reports to', () => {
+  // The relay files each event under the project its flint_env names, so only a
+  // stable build's events are production's.
+  it.each([
+    ['stable', 'prod'],
+    ['canary', 'staging'],
+    ['dev', 'local'],
+  ] as const)('is %s → %s', (build, environment) => {
+    expect(flintEnvFor(build)).toBe(environment);
   });
 });
