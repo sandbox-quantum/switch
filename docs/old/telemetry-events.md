@@ -72,6 +72,28 @@ choices are load-bearing rather than incidental:
   200 and counts the drop. A test over every event, at its largest possible
   values, holds the margin on both clients; the largest today is about 3 KiB.
 
+### Which Amplitude project
+
+The relay keeps one Amplitude project per environment and files each event
+under the one its `flint_env` resource attribute names: `prod`, `staging`,
+`dev` or `local`. An event naming none goes to production, and one naming
+anything else is dropped and counted. So every event says where it belongs,
+even `prod`:
+
+- **The server** sends `TELEMETRY_ENVIRONMENT`, which defaults to `prod`
+  because every customer's deployment is production. Flint's own development
+  deployment sets `dev`; `.env.example`, which `just init-env` copies for a
+  developer's machine, sets `local`. Any other value stops the server at
+  startup. It is set by the Helm chart's `switchCore.telemetry.environment`,
+  and forwarded by the standalone compose file.
+- **Switch Console** sends one per build: `prod` from a stable build, `staging`
+  from a canary, `local` from a development build. A server Console runs for
+  the user is given Console's.
+
+`flint_env` rides on the resource, beside the client id. It describes where
+the reporting process runs, not anything inside the deployment, so it is not
+an identifier in the sense of the rule above.
+
 ### What the relay's 200 means
 
 The relay answers `200` once it has accepted a payload, before it forwards

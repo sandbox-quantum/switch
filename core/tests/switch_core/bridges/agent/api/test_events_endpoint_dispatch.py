@@ -379,6 +379,7 @@ class TestOpeningAStreamReportsASession:
             service_name="switch-core",
             version="1.0.0",
             environment=None,
+            telemetry_environment="prod",
         )
         protocol = _Protocol()
         protocol.sessions = SessionReporter(service, protocol.connections)

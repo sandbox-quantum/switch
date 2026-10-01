@@ -55,6 +55,7 @@ def _telemetry(sink: _RecordingSink, *, enabled: bool) -> TelemetryService:
         service_name="switch-core",
         version=None,
         environment=None,
+        telemetry_environment="prod",
     )
 
 

@@ -141,6 +141,7 @@ class TestASessionIsTheAgentNotTheConnection:
             service_name="switch-core",
             version="1.0.0",
             environment=None,
+            telemetry_environment="prod",
         )
         reporter = SessionReporter(service, registry)
         registry.set_close_listener(reporter.on_close)

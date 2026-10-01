@@ -67,6 +67,7 @@ def _reporter(
         service_name="switch-core",
         version="1.0.0",
         environment=None,
+        telemetry_environment="prod",
         session_factory=session_factory,
         installed_at=INSTALLED,
     )
