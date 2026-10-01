@@ -2,36 +2,43 @@ import { describe, expect, it } from 'vitest';
 import { disconnectMessagingAppParagraphs } from './disconnect-messaging-app-copy';
 
 describe('disconnectMessagingAppParagraphs', () => {
-  it('warns an ordinary bridge takes its rooms with it', () => {
-    const paragraphs = disconnectMessagingAppParagraphs({
-      bridgeDisplayName: 'Acme Slack',
-      teamPlacementSupported: false,
-    });
-
-    expect(paragraphs[0]).toMatch(/deletes every Switch room/);
-    expect(paragraphs[0]).toMatch(/can.t be undone/);
-    expect(paragraphs[1]).toContain('Acme Slack');
-    expect(paragraphs[1]).toMatch(/are not deleted/);
+  it('warns that a bridge registered with credentials takes its rooms with it', () => {
+    const text = disconnectMessagingAppParagraphs({
+      bridgeDisplayName: 'Acme',
+      bridgeType: 'slack',
+      installState: 'not-installed',
+    }).join(' ');
+    expect(text).toContain('deletes every Switch room');
   });
 
-  it('does not claim a distributed Teams disconnect deletes any room', () => {
-    const paragraphs = disconnectMessagingAppParagraphs({
-      bridgeDisplayName: 'Contoso Teams',
-      teamPlacementSupported: true,
-    });
-
-    for (const p of paragraphs) expect(p).not.toMatch(/deletes every Switch room/);
-    expect(paragraphs.join(' ')).toMatch(/internal-only/);
-    expect(paragraphs[0]).toContain('Contoso Teams');
+  it('says an installed app keeps its rooms as internal-only', () => {
+    const text = disconnectMessagingAppParagraphs({
+      bridgeDisplayName: 'Acme',
+      bridgeType: 'slack',
+      installState: 'installed',
+    }).join(' ');
+    expect(text).toContain('not deleted');
+    expect(text).not.toContain('deletes every Switch room');
   });
 
-  it('says removing the app from the organisation is a Microsoft admin’s job', () => {
-    const paragraphs = disconnectMessagingAppParagraphs({
-      bridgeDisplayName: 'Contoso Teams',
-      teamPlacementSupported: true,
-    });
+  it('says what disconnecting the distributed Teams app does and does not remove', () => {
+    const text = disconnectMessagingAppParagraphs({
+      bridgeDisplayName: 'Contoso',
+      bridgeType: 'teams',
+      installState: 'installed',
+    }).join(' ');
+    expect(text).toContain('leaves every team');
+    expect(text).toContain('Microsoft Entra admin center');
+  });
 
-    expect(paragraphs.join(' ')).toMatch(/Teams admin center/);
-    expect(paragraphs.join(' ')).toMatch(/Microsoft Entra admin center/);
+  it('shows the strongest warning until it is known which it is', () => {
+    for (const installState of [null, 'unknown'] as const) {
+      const text = disconnectMessagingAppParagraphs({
+        bridgeDisplayName: 'Acme',
+        bridgeType: 'teams',
+        installState,
+      }).join(' ');
+      expect(text).toContain('deletes every Switch room');
+    }
   });
 });

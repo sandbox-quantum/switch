@@ -802,6 +802,13 @@ export type RemoteRoomRole = {
   heldBy: string[];
 };
 
+/**
+ * Whether a bridge is backed by a live messaging-app install, which decides
+ * what disconnecting it does to its rooms. `unknown` when the server could
+ * not be asked (an older server answers `not-installed`).
+ */
+export type BridgeInstallState = 'installed' | 'not-installed' | 'unknown';
+
 // ── Microsoft Teams team placement ──────────────────────────────────────────
 
 /**
@@ -811,8 +818,9 @@ export type RemoteRoomRole = {
 export type TeamsTeam = {
   teamId: string;
   name: string;
-  /** Whether Switch's app is already added to this team. */
-  hasSwitch: boolean;
+  /** Whether Switch's app is already added to this team; null when the
+   * team's apps could not be read (archived, being deleted, restricted). */
+  hasSwitch: boolean | null;
   /** Whether this is the bridge's default team — the one a channel lands in
    * when a room is created without naming one. At most one team is default,
    * and only a team with `hasSwitch` can be. */

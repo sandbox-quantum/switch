@@ -207,7 +207,8 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
                   {catalogProblem ??
                     "Switch is not in your organisation's Teams app list yet."}{" "}
                   A Teams admin uploads it by hand in the Teams admin center, under
-                  Teams apps, Manage apps, Upload new app.
+                  Teams apps, Manage apps, Upload new app. Once it is in any one team,
+                  added from Teams, Switch can add it to the rest from here.
                 </Alert>
               )}
               {downloadError && <Alert severity="error">{downloadError}</Alert>}
@@ -251,6 +252,11 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
 
                         <Stack sx={{ flex: 1 }}>
                           <Typography variant="body2">{team.name}</Typography>
+                          {team.has_switch === null && (
+                            <Typography variant="caption" color="text.secondary">
+                              Switch could not read this team&apos;s apps.
+                            </Typography>
+                          )}
                           {rowError?.teamId === team.team_id && (
                             <Typography variant="caption" color="error">
                               {rowError.message}
@@ -264,7 +270,9 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
 
                         <Tooltip
                           title={
-                            !team.has_switch && !inCatalog
+                            team.has_switch === null
+                              ? "Switch could not read this team's apps"
+                              : !team.has_switch && !inCatalog
                               ? "Switch is not in your organisation's Teams app list yet"
                               : team.has_switch
                                 ? "Remove Switch from this team"
@@ -274,8 +282,9 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
                           <span>
                             <Switch
                               size="small"
-                              checked={team.has_switch}
+                              checked={team.has_switch === true}
                               disabled={
+                                team.has_switch === null ||
                                 togglingTeamId === team.team_id ||
                                 (!team.has_switch && !inCatalog)
                               }

@@ -18,7 +18,7 @@ vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 
-const { disconnectBridgeOnServer } = await import('./disconnect-bridge');
+const { bridgeInstallState, disconnectBridgeOnServer } = await import('./disconnect-bridge');
 
 const SERVER = {
   id: 'srv-1',
@@ -169,5 +169,62 @@ describe('disconnectBridgeOnServer', () => {
     });
 
     await expect(disconnectBridgeOnServer(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('maps an expired session while looking up the install onto unauthenticated', async () => {
+    fetchMock.mockImplementation(async () => response(401, { detail: 'expired' }));
+    refreshSession.mockResolvedValue(null);
+
+    await expect(disconnectBridgeOnServer(SERVER, 'b1')).resolves.toEqual({
+      kind: 'unauthenticated',
+    });
+  });
+
+  it('maps a non-admin looking up the install onto forbidden', async () => {
+    fetchMock.mockImplementation(async () => response(403, { detail: 'admins only' }));
+
+    await expect(disconnectBridgeOnServer(SERVER, 'b1')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports the platform refusing to let go, in its own words', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/messaging-apps/installs')) {
+        return response(200, { installs: [INSTALL] });
+      }
+      return response(502, { detail: 'Slack refused to revoke the token' });
+    });
+
+    await expect(disconnectBridgeOnServer(SERVER, 'b1')).resolves.toMatchObject({
+      kind: 'error',
+    });
+  });
+});
+
+describe('bridgeInstallState', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(validJwt());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('says a bridge backed by a live install is installed', async () => {
+    fetchMock.mockImplementation(async () => response(200, { installs: [INSTALL] }));
+    await expect(bridgeInstallState(SERVER, 'b1')).resolves.toBe('installed');
+  });
+
+  it('says a bridge no live install names is not installed', async () => {
+    fetchMock.mockImplementation(async () =>
+      response(200, { installs: [{ ...INSTALL, ended_at: '2026-02-01T00:00:00Z' }] })
+    );
+    await expect(bridgeInstallState(SERVER, 'b1')).resolves.toBe('not-installed');
+  });
+
+  it('says it does not know when it could not ask', async () => {
+    fetchMock.mockImplementation(async () => response(403, { detail: 'admins only' }));
+    await expect(bridgeInstallState(SERVER, 'b1')).resolves.toBe('unknown');
   });
 });

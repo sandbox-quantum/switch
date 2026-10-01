@@ -905,7 +905,8 @@ export async function updateBridge(
 export interface TeamPlacement {
   team_id: string;
   name: string;
-  has_switch: boolean;
+  /** Null when the team's apps could not be read (archived, restricted). */
+  has_switch: boolean | null;
   is_default: boolean;
 }
 

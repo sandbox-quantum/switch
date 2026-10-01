@@ -311,7 +311,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                   workspaceId,
                   bridgeId: bridge.id,
                   bridgeDisplayName: bridge.displayName,
-                  teamPlacementSupported: bridge.teamPlacementSupported,
+                  bridgeType: bridge.type,
                   onSuccess: () => {
                     void queryClient.invalidateQueries({
                       queryKey: ['remote-bridges', workspaceId],

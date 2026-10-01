@@ -2,7 +2,10 @@ import { backfillAgentIcons } from '@main/core/switch-servers/backfill-agent-ico
 import { withResolvedHomeUrls } from '@main/core/switch-servers/bridge-home-url';
 import { createBridgeOnServer } from '@main/core/switch-servers/create-bridge';
 import { createRoomOnServer } from '@main/core/switch-servers/create-room';
-import { disconnectBridgeOnServer } from '@main/core/switch-servers/disconnect-bridge';
+import {
+  bridgeInstallState,
+  disconnectBridgeOnServer,
+} from '@main/core/switch-servers/disconnect-bridge';
 import {
   addBridgeTeam,
   addRoomAgents,
@@ -67,6 +70,7 @@ import type {
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type {
+  BridgeInstallState,
   AddressingPolicy,
   AddTeamsTeamResult,
   AgentIconBackfill,
@@ -356,6 +360,16 @@ export const workspacesController = createRPCController({
       });
       return result;
     }),
+
+  /** Whether a bridge is backed by a live install, which decides what the
+   * disconnect dialog says happens to its rooms. Admin-only. */
+  bridgeInstallState: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<BridgeInstallState> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      bridgeInstallState(server, params.bridgeId)
+    ),
 
   /** A distributed Teams bridge's team placement — which teams Switch can see,
    * which it is already in, and its chosen default. Admin-only. */

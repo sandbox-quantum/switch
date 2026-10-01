@@ -1284,7 +1284,7 @@ export async function deleteBridge(
 type TeamsTeamJson = {
   team_id: string;
   name: string;
-  has_switch: boolean;
+  has_switch: boolean | null;
   is_default: boolean;
 };
 

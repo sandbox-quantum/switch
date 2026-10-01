@@ -19,7 +19,12 @@ const bridge: BridgeDetail = {
 
 function placements(
   overrides: Partial<{
-    teams: { team_id: string; name: string; has_switch: boolean; is_default: boolean }[];
+    teams: {
+      team_id: string;
+      name: string;
+      has_switch: boolean | null;
+      is_default: boolean;
+    }[];
     default_team_id: string | null;
     in_catalog: boolean;
     catalog_problem: string | null;
@@ -61,6 +66,27 @@ describe("TeamsPlacementDialog", () => {
 
     expect(await screen.findByText("Engineering")).toBeTruthy();
     expect(screen.getByText("Sales")).toBeTruthy();
+  });
+
+  it("shows a team whose apps could not be read as unknown, and offers no switch", async () => {
+    mockFetch(() =>
+      jsonResponse(
+        200,
+        placements({
+          teams: [
+            { team_id: "t9", name: "Archive", has_switch: null, is_default: false },
+          ],
+          default_team_id: null,
+        }),
+      ),
+    );
+    render(
+      <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
+    );
+
+    expect(await screen.findByText("Switch could not read this team's apps.")).toBeTruthy();
+    const [toggle] = screen.getAllByRole("switch") as HTMLInputElement[];
+    expect(toggle.disabled).toBe(true);
   });
 
   it("adds Switch to a team the switch is flipped on for", async () => {

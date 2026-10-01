@@ -272,7 +272,11 @@ function TeamsPlacementBody({
                 {team.isDefault && <Badge variant="secondary">Default</Badge>}
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {team.hasSwitch ? (
+                {team.hasSwitch === null ? (
+                  <span className="text-xs text-foreground-muted">
+                    Switch could not read this team’s apps
+                  </span>
+                ) : team.hasSwitch ? (
                   <>
                     {!team.isDefault && (
                       <Button
