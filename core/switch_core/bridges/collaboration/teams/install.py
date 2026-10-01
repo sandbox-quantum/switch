@@ -102,6 +102,12 @@ class TeamsAppInstaller(MessagingAppInstaller):
         self._app = app
         self._package = package
 
+    @property
+    def package(self) -> DistributedAppPackage:
+        """The app package, for an admin to upload by hand where Switch could
+        not put it in the organisation's catalogue itself."""
+        return self._package
+
     # ── Installing ───────────────────────────────────────────────────────────
 
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:

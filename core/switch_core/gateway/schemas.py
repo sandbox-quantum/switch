@@ -490,6 +490,10 @@ class BridgeDetail(BaseModel):
     # plain words for a banner on the connection. None while nothing is known
     # to be wrong, or the bridge is not running.
     attention: str | None = None
+    # Whether the workspace chooses, here, which of the platform's teams the
+    # connection's app is in (the distributed Teams app); see
+    # `/collaborations/{id}/teams`. False while the bridge is not running.
+    team_placement_supported: bool = False
     # Whether the platform can create a channel from Switch at all, and whether
     # an operator permits this connection to. The two are separate so a UI can
     # tell "your organisation turned this off" (changeable here) from "Telegram

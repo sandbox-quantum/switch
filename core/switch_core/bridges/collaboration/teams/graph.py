@@ -298,6 +298,37 @@ class GraphClient:
 
     # ── The app's own installation in a team ─────────────────────────────────
 
+    async def list_teams(self) -> list[dict[str, Any]]:
+        """Every team in the organisation, by id and name, across Graph's pages."""
+        teams: list[dict[str, Any]] = []
+        url: str | None = f"{GRAPH_BASE}/teams"
+        params: dict[str, str] | None = {"$select": "id,displayName"}
+        while url is not None:
+            resp = await self._send("GET", url, params=params)
+            if resp.status_code >= 300:
+                raise _graph_error("list the organisation's teams", resp)
+            page = resp.json()
+            teams.extend(page.get("value", []) or [])
+            # The next link already carries the query.
+            url = page.get("@odata.nextLink")
+            params = None
+        return teams
+
+    async def install_app(self, *, team_id: str, catalog_app_id: str) -> None:
+        """Add the app, by its id in the organisation's catalogue, to a team."""
+        resp = await self._send(
+            "POST",
+            f"{GRAPH_BASE}/teams/{team_id}/installedApps",
+            json={
+                "teamsApp@odata.bind": (
+                    f"{GRAPH_BASE}/appCatalogs/teamsApps/{catalog_app_id}"
+                )
+            },
+        )
+        # 409: it is there already, which is what was asked for.
+        if resp.status_code >= 300 and resp.status_code != 409:
+            raise _graph_error(f"add the app to team {team_id}", resp)
+
     async def find_app_installations(
         self, *, team_id: str, external_id: str
     ) -> list[str]:

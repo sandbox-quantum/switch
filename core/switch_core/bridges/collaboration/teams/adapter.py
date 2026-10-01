@@ -245,6 +245,15 @@ def _read_publication_ref(ref: str) -> tuple[str, str, str] | None:
 
 
 @dataclass(frozen=True)
+class TeamPlacement:
+    """One team in the organisation, and whether Switch is in it."""
+
+    team_id: str
+    name: str
+    has_switch: bool
+
+
+@dataclass(frozen=True)
 class _Publication:
     """Where a publication is, and whether that is known or reconstructed.
 
@@ -460,6 +469,10 @@ _RENEW_WHEN_WITHIN = timedelta(minutes=20)
 # attention note after it was last seen. Nothing tells Switch when it is lifted,
 # so it fades rather than staying forever.
 _BOT_DISABLED_NOTICE_SECONDS = 60 * 60
+# How many teams' installed apps are read at once when listing where Switch
+# is: enough to answer a large organisation in seconds, few enough that one
+# request does not spend the organisation's Graph budget on its own.
+_TEAM_READS_AT_ONCE = 8
 # How soon, and how rarely, to re-attempt a channel that has no live
 # subscription. The floor is short because the common failure clears in about a
 # minute (a load balancer registering a newly-started pod); the ceiling keeps a
@@ -996,6 +1009,15 @@ class TeamsAdapter(CollaborationAdapter):
     @property
     def serves_shared_app(self) -> bool:
         return self._config.event_delivery == "shared"
+
+    @property
+    def places_app_in_teams(self) -> bool:
+        return self.serves_shared_app
+
+    @property
+    def default_team_id(self) -> str | None:
+        """The team new channels are created in, if one has been chosen."""
+        return self._config.team_id
 
     def attach_shared_app(self, app: TeamsSharedApp) -> None:
         """Be handed the deployment's Teams app, before starting.
@@ -3016,6 +3038,61 @@ class TeamsAdapter(CollaborationAdapter):
                 channel_id,
                 exc_info=True,
             )
+
+    # ── Which teams Switch is in (the distributed app) ──────────────────────
+
+    def _require_shared(self) -> GraphClient:
+        if not self._me.shared:
+            raise BridgeOperationError(
+                "Only a connection on the distributed Teams app places itself "
+                "in teams from Switch; a bring-your-own app is added in Teams."
+            )
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        return self._graph
+
+    async def list_team_placements(self) -> list[TeamPlacement]:
+        """Every team in the organisation, and whether Switch is in each.
+
+        One read per team for the second half, a handful at a time: Graph has
+        no call that answers it for the whole organisation at once.
+        """
+        graph = self._require_shared()
+        app_id = self._me.app_id
+        teams = await graph.list_teams()
+        gate = asyncio.Semaphore(_TEAM_READS_AT_ONCE)
+
+        async def placed(team: dict[str, Any]) -> TeamPlacement:
+            team_id = str(team.get("id") or "")
+            async with gate:
+                installations = await graph.find_app_installations(
+                    team_id=team_id, external_id=app_id
+                )
+            return TeamPlacement(
+                team_id=team_id,
+                name=str(team.get("displayName") or team_id),
+                has_switch=bool(installations),
+            )
+
+        placements = await asyncio.gather(
+            *(placed(team) for team in teams if team.get("id"))
+        )
+        return sorted(placements, key=lambda p: p.name.casefold())
+
+    async def add_to_team(self, team_id: str, *, catalog_app_id: str) -> None:
+        """Add Switch to a team; its own join then makes the rooms, as today."""
+        await self._require_shared().install_app(
+            team_id=team_id, catalog_app_id=catalog_app_id
+        )
+
+    async def remove_from_team(self, team_id: str) -> None:
+        graph = self._require_shared()
+        for installation in await graph.find_app_installations(
+            team_id=team_id, external_id=self._me.app_id
+        ):
+            await graph.uninstall_app(team_id=team_id, installation_id=installation)
+        for channel_id in [c for c, t in self._team_of_channel.items() if t == team_id]:
+            await self._stop_capture(channel_id)
 
     async def require_bindable_channel(self, channel_id: str) -> None:
         """On the distributed app, bind only a channel in this organisation.

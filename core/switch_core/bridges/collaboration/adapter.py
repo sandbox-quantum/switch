@@ -1195,6 +1195,17 @@ class CollaborationAdapter(ABC):
         of that platform."""
         return []
 
+    @property
+    def places_app_in_teams(self) -> bool:
+        """Whether Switch chooses which of the platform's teams its app is in.
+
+        True only for a bridge on an app the deployment owns and can add to,
+        and remove from, the organisation's teams itself (the distributed
+        Teams app). Everywhere else the app is added on the platform by
+        whoever owns it, and the dashboard offers nothing to choose.
+        """
+        return False
+
     async def attention(self) -> str | None:
         """What a workspace admin has to do for this bridge to keep working.
 

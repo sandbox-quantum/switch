@@ -748,3 +748,89 @@ async def test_an_envelope_it_does_not_know_is_refused() -> None:
     adapter = _shared_adapter()
     with pytest.raises(ValueError):
         await adapter.dispatch_event(envelope_type="mystery", payload={})
+
+
+# ── Which teams Switch is in ─────────────────────────────────────────────────
+
+
+class _PlacementGraph:
+    def __init__(self) -> None:
+        self.installed: dict[str, list[str]] = {"team-b": ["INST-B"]}
+        self.added: list[tuple[str, str]] = []
+        self.uninstalled: list[tuple[str, str]] = []
+        self.deleted: list[str] = []
+
+    async def list_teams(self) -> list[dict[str, Any]]:
+        return [
+            {"id": "team-b", "displayName": "beta"},
+            {"id": "team-a", "displayName": "Alpha"},
+        ]
+
+    async def find_app_installations(
+        self, *, team_id: str, external_id: str
+    ) -> list[str]:
+        assert external_id == "switch-app"
+        return self.installed.get(team_id, [])
+
+    async def install_app(self, *, team_id: str, catalog_app_id: str) -> None:
+        self.added.append((team_id, catalog_app_id))
+
+    async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
+        self.uninstalled.append((team_id, installation_id))
+
+    async def delete_subscription(self, *, subscription_id: str) -> None:
+        self.deleted.append(subscription_id)
+
+
+async def test_the_organisations_teams_are_listed_with_where_switch_is() -> None:
+    adapter = _shared_adapter()
+    adapter._graph = _PlacementGraph()  # type: ignore[assignment]
+
+    placements = await adapter.list_team_placements()
+
+    assert [(p.name, p.has_switch) for p in placements] == [
+        ("Alpha", False),
+        ("beta", True),
+    ]
+    assert adapter.places_app_in_teams
+
+
+async def test_switch_is_added_to_a_team_by_its_id_in_the_catalogue() -> None:
+    adapter = _shared_adapter()
+    graph = _PlacementGraph()
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter.add_to_team("team-a", catalog_app_id="catalog-1")
+
+    assert graph.added == [("team-a", "catalog-1")]
+
+
+async def test_leaving_a_team_stops_capture_in_its_channels() -> None:
+    adapter = _shared_adapter()
+    graph = _PlacementGraph()
+    adapter._graph = graph  # type: ignore[assignment]
+    adapter._team_of_channel = {CHANNEL: "team-b"}
+    adapter._subscriptions = {CHANNEL: "SUB-B"}
+
+    await adapter.remove_from_team("team-b")
+
+    assert graph.uninstalled == [("team-b", "INST-B")]
+    assert graph.deleted == ["SUB-B"]
+
+
+async def test_a_bring_your_own_bridge_does_not_place_itself() -> None:
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="a",
+            app_password="p",
+            tenant_id="t",
+            team_id="team",
+            public_base_url="https://x.example",
+            client_state="s",
+        )
+    )
+    adapter._graph = _PlacementGraph()  # type: ignore[assignment]
+
+    assert not adapter.places_app_in_teams
+    with pytest.raises(BridgeOperationError):
+        await adapter.list_team_placements()

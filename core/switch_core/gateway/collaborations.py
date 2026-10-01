@@ -129,6 +129,13 @@ async def _attention(
         return None
 
 
+def _places_app_in_teams(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> bool:
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    return adapter is not None and adapter.places_app_in_teams
+
+
 async def _detail(
     bridge: CollaborationBridge,
     *,
@@ -160,6 +167,7 @@ async def _detail(
             bridge.type
         ),
         attention=await _attention(bridge.id, collab_lifecycle),
+        team_placement_supported=_places_app_in_teams(bridge.id, collab_lifecycle),
     )
 
 
