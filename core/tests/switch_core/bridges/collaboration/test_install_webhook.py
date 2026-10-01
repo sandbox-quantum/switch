@@ -165,6 +165,9 @@ class _FakeLifecycle:
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         return self.adapters.get(bridge_id)
 
+    def is_connected(self, bridge_id: str) -> bool:
+        return bridge_id in self.adapters
+
     async def remove(self, bridge_id: str) -> None:
         """Delete the row, on an unscoped session like the real one.
 

@@ -258,7 +258,27 @@ class MessagingInstallStore:
                 "it afresh instead"
             )
         install.scopes = scopes
-        install.platform_data = dict(platform_data)
+        # Merged over what is kept rather than replacing it: a repeated
+        # approval that could not re-learn something (an id it failed to read
+        # this time) must not erase what an earlier one learned.
+        install.platform_data = {**install.platform_data, **platform_data}
+        await session.flush()
+        return install
+
+    async def remember(
+        self,
+        session: AsyncSession,
+        *,
+        install_id: str,
+        platform_data: Mapping[str, object],
+    ) -> MessagingInstall:
+        """Add to what a live install keeps about its platform.
+
+        For a fact learned after the install, from the platform itself —
+        never from a person's input.
+        """
+        install = await self.get(session, install_id=install_id)
+        install.platform_data = {**install.platform_data, **platform_data}
         await session.flush()
         return install
 

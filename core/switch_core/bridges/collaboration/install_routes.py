@@ -304,7 +304,7 @@ def create_messaging_install_router(
             logger.info("Answered a %s URL verification", platform)
             return PlainTextResponse(handshake)
 
-        unavailable = False
+        unavailable = 0
         for event in events:
             if event.delivery_attempt > 0:
                 # The only signal this deployment gets that its own
@@ -346,13 +346,8 @@ def create_messaging_install_router(
                 logger.warning("Dropped a %s event: %s", platform, failure)
                 continue
             except WebhookBridgeUnavailable as failure:
-                # Deliberately a 503: the platform retrying is the right
-                # behaviour while a bridge restarts, and a 200 here would drop a
-                # real message on the floor and report that it had been handled.
-                # The rest of a batch is still delivered; receipts make the
-                # platform's retry of the whole of it harmless.
                 logger.error("Could not deliver a %s event: %s", platform, failure)
-                unavailable = True
+                unavailable += 1
                 continue
 
             if event.answers_inline:
@@ -366,7 +361,15 @@ def create_messaging_install_router(
             # room from becoming a retried, duplicated one.
             background.add_task(_deliver, target, event)
 
-        return Response(status_code=503 if unavailable else 200)
+        # A 503 asks the platform to send the request again, which is right
+        # while a bridge restarts — a 200 would drop a real message and report
+        # it handled. But only when nothing in it was delivered: a batch on an
+        # endpoint every workspace shares is otherwise one workspace's restart
+        # failing, and the platform backing off from, everyone else's delivery.
+        # What was undeliverable in a partly delivered batch is logged above.
+        if unavailable and unavailable == len(events):
+            return Response(status_code=503)
+        return Response(status_code=200)
 
     @router.post("/{platform}/events")
     async def events(

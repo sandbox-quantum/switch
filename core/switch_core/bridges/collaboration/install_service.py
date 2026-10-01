@@ -444,10 +444,14 @@ class MessagingInstallService:
                 return await self._store.get(session, install_id=install_id)
 
         with tenant_scope(tenant_id):
+            installer = self._installers.get(platform)
             if token is not None:
-                await self._installers.get(platform).revoke(
-                    bot_token=decrypt_token(token, self._secret)
-                )
+                await installer.revoke(bot_token=decrypt_token(token, self._secret))
+            elif bridge_id is None or self._lifecycle.get_adapter(bridge_id) is None:
+                # A tokenless install has nothing to revoke, and a running
+                # bridge lets go of the platform itself as it is removed. One
+                # that is not running cannot, so the installer does it.
+                await installer.release(external_workspace_id=workspace_id)
 
             async with tenant_session(self._session_factory, tenant_id) as session:
                 ended = await self._store.end(
@@ -671,7 +675,7 @@ class MessagingInstallService:
             )
 
         adapter = self._lifecycle.get_adapter(install.bridge_id)
-        if adapter is None:
+        if adapter is None or not self._lifecycle.is_connected(install.bridge_id):
             raise WebhookBridgeUnavailable(
                 f"bridge {install.bridge_id}, which serves {platform} workspace "
                 f"{workspace_id}, is not running"

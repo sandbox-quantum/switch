@@ -418,6 +418,17 @@ class CollaborationBridgeLifecycleService:
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
 
+    def is_connected(self, bridge_id: str) -> bool:
+        """Whether a bridge's adapter has finished starting and is serving.
+
+        A bridge is registered as running the moment it is started, well
+        before its adapter has loaded what it needs to handle traffic; an event
+        handed to it in that window is acknowledged and lost. Whoever delivers
+        platform traffic asks this, and tells the platform to try again until
+        it is true.
+        """
+        return bridge_id in self._connected
+
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
 
@@ -801,7 +812,19 @@ class CollaborationBridgeLifecycleService:
             },
         )
 
-        await self.start(bridge.id)
+        try:
+            await self.start(bridge.id)
+        except Exception:
+            # Stored and not startable is a half state: a row that fails every
+            # boot, and for an install a second bridge on the next attempt. The
+            # registration either produces a bridge that starts, or nothing.
+            logger.exception(
+                "Collaboration bridge %s (%s) could not start; removing it",
+                bridge.id,
+                bridge_type,
+            )
+            await self.remove(bridge.id)
+            raise
 
         logger.info(
             "Registered collaboration bridge %s (%s): %s",
@@ -1331,6 +1354,12 @@ class CollaborationBridgeLifecycleService:
                     bridge_id,
                     exc_info=True,
                 )
+        else:
+            logger.warning(
+                "Collaboration bridge %s is not running, so it cannot let go of "
+                "what it holds on its platform itself; removing it anyway",
+                bridge_id,
+            )
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)

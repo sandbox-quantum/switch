@@ -399,6 +399,18 @@ class MessagingAppInstaller(ABC):
         """
         return None
 
+    async def release(self, *, external_workspace_id: str) -> None:
+        """Take the app out of a workspace whose install is being disconnected.
+
+        The counterpart of `revoke` for a platform with no per-install token,
+        called only when the install's bridge is not running to do it itself
+        (`CollaborationAdapter.withdraw`). A no-op where there is nothing on
+        the platform to undo. Best effort: raise `MessagingInstallError` to
+        say what was left behind, and the disconnect is refused so it can be
+        tried again.
+        """
+        return None
+
     def describe_callback_error(self, *, error: str, description: str | None) -> str:
         """What to tell the person whose install the platform refused, in plain words.
 

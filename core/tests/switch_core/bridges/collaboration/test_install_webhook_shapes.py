@@ -165,9 +165,13 @@ class _Adapter(CollaborationAdapter):
 class _Lifecycle:
     def __init__(self) -> None:
         self.adapters: dict[str, CollaborationAdapter] = {}
+        self.starting: set[str] = set()
 
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         return self.adapters.get(bridge_id)
+
+    def is_connected(self, bridge_id: str) -> bool:
+        return bridge_id in self.adapters and bridge_id not in self.starting
 
 
 class _Fixture:
@@ -340,16 +344,14 @@ async def test_an_unknown_organisation_does_not_hold_back_the_rest(
     assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-a"]
 
 
-async def test_a_bridge_that_is_down_asks_for_the_batch_again(
+async def test_a_bridge_that_is_down_asks_for_its_events_again(
     rls_harness: RLSHarness,
 ) -> None:
-    """The rest is delivered now; the retry of the whole batch is made
-    harmless by the receipts."""
+    """A request whose every event was undeliverable is retried; receipts make
+    the retry harmless once the bridge is back."""
     fixture = await _fixture(rls_harness)
     del fixture.lifecycle.adapters[fixture.bridges["b"]]
-    body = _batch(
-        {"workspace": "org-a", "id": "n-a"}, {"workspace": "org-b", "id": "n-b"}
-    )
+    body = _batch({"workspace": "org-b", "id": "n-b"})
 
     first = await fixture.client.post(
         f"/messaging/{_PLATFORM}/notifications", content=body, headers=_SIGNED
@@ -361,8 +363,45 @@ async def test_a_bridge_that_is_down_asks_for_the_batch_again(
 
     assert first.status_code == 503
     assert retry.status_code == 200
-    assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-a"]
     assert [p["id"] for p in _adapter(fixture, "b").dispatched] == ["n-b"]
+
+
+async def test_a_bridge_still_starting_is_not_handed_events(
+    rls_harness: RLSHarness,
+) -> None:
+    """Running is not serving: an event handed over before the adapter has
+    finished starting is acknowledged and lost, so it is asked for again."""
+    fixture = await _fixture(rls_harness)
+    fixture.lifecycle.starting.add(fixture.bridges["a"])
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch({"workspace": "org-a", "id": "n-a"}),
+        headers=_SIGNED,
+    )
+
+    assert response.status_code == 503
+    assert _adapter(fixture, "a").dispatched == []
+
+
+async def test_one_workspace_down_does_not_fail_another_workspaces_delivery(
+    rls_harness: RLSHarness,
+) -> None:
+    """On an endpoint every workspace shares, a 503 for a mixed batch would
+    have the platform back off from everyone's delivery for one restart."""
+    fixture = await _fixture(rls_harness)
+    del fixture.lifecycle.adapters[fixture.bridges["b"]]
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch(
+            {"workspace": "org-a", "id": "n-a"}, {"workspace": "org-b", "id": "n-b"}
+        ),
+        headers=_SIGNED,
+    )
+
+    assert response.status_code == 200
+    assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-a"]
 
 
 async def test_an_event_the_platform_waits_on_is_answered_in_the_response(
