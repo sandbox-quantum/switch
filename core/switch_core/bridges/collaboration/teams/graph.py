@@ -7,7 +7,8 @@ from urllib.parse import quote
 import httpx
 
 from switch_core.bridges.collaboration.models import BridgeOperationError
-from switch_core.bridges.collaboration.teams.auth import GRAPH_SCOPE, TeamsTokenProvider
+from switch_core.bridges.collaboration.teams.auth import GRAPH_SCOPE
+from switch_core.bridges.collaboration.teams.identity import TeamsTokens
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,16 @@ _TOKEN_RETRY_AGE = 30.0
 
 
 class GraphError(BridgeOperationError):
-    """A Microsoft Graph REST call returned a non-success status."""
+    """A Microsoft Graph REST call returned a non-success status.
+
+    `status` is kept because some refusals mean something specific to the
+    caller — a 404 on a subscription is a subscription that no longer exists,
+    which is answered by making a new one rather than by retrying.
+    """
+
+    def __init__(self, message: str, *, status: int) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _graph_error(operation: str, resp: httpx.Response) -> GraphError:
@@ -41,7 +51,9 @@ def _graph_error(operation: str, resp: httpx.Response) -> GraphError:
         detail = f"{code}: {message}" if code else message
     except (ValueError, KeyError, TypeError):
         pass
-    return GraphError(f"{operation} failed ({resp.status_code}): {detail}")
+    return GraphError(
+        f"{operation} failed ({resp.status_code}): {detail}", status=resp.status_code
+    )
 
 
 class GraphClient:
@@ -49,7 +61,7 @@ class GraphClient:
     change-notification subscriptions, channel and membership provisioning, and
     directory lookups. Every call carries an app-only Graph token."""
 
-    def __init__(self, *, tokens: TeamsTokenProvider, http: httpx.AsyncClient) -> None:
+    def __init__(self, *, tokens: TeamsTokens, http: httpx.AsyncClient) -> None:
         self._tokens = tokens
         self._http = http
 

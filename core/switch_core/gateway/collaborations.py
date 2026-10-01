@@ -112,6 +112,23 @@ async def _install_note(
         return None
 
 
+async def _attention(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> str | None:
+    """What a workspace admin must do for the bridge to keep working, from the
+    live adapter. None when the bridge is not running or nothing is wrong."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    if adapter is None:
+        return None
+    try:
+        return await adapter.attention()
+    except Exception:
+        logger.warning(
+            "Failed to read the attention note for bridge %s", bridge_id, exc_info=True
+        )
+        return None
+
+
 async def _detail(
     bridge: CollaborationBridge,
     *,
@@ -142,6 +159,7 @@ async def _detail(
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
         ),
+        attention=await _attention(bridge.id, collab_lifecycle),
     )
 
 
@@ -318,6 +336,24 @@ async def update_bridge(
                 status_code=422,
                 detail="event_delivery cannot be changed on an existing connection.",
             )
+        # A connection on an app the deployment owns may hold settings that
+        # decide where the deployment's credential is pointed; only the ones
+        # its adapter names are anyone's to change.
+        editable = collab_lifecycle.editable_config_keys(bridge.type, current)
+        if editable is not None:
+            locked = sorted(
+                key
+                for key, value in payload.connection_config.items()
+                if key not in editable and current.get(key) != value
+            )
+            if locked:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{', '.join(locked)} cannot be changed on this "
+                        "connection: Switch manages it for the installed app."
+                    ),
+                )
         try:
             collab_lifecycle.validate_connection_config(bridge.type, merged)
             # Asked now rather than at the restart below, so an edit that would

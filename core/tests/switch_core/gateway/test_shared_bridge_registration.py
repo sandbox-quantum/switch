@@ -29,10 +29,28 @@ _BRIDGE_STORE = CollaborationBridgeStore()
 class _Lifecycle:
     """Records what reached it; refuses any start when told to."""
 
-    def __init__(self, *, refuse: bool = False) -> None:
+    def __init__(
+        self, *, refuse: bool = False, editable: frozenset[str] | None = None
+    ) -> None:
         self.refuse = refuse
+        self.editable = editable
         self.registered: list[dict[str, object]] = []
         self.checked: list[dict[str, Any]] = []
+        self.restarted: list[str] = []
+
+    def editable_config_keys(
+        self, bridge_type: str, connection_config: dict[str, object]
+    ) -> frozenset[str] | None:
+        return self.editable
+
+    async def restart(self, bridge_id: str) -> None:
+        self.restarted.append(bridge_id)
+
+    def get_adapter(self, bridge_id: str) -> None:
+        return None
+
+    def supports_directory_search(self, bridge_type: str) -> bool:
+        return False
 
     async def register(self, **kwargs: object) -> None:
         self.registered.append(kwargs)
@@ -54,7 +72,12 @@ def _admin() -> User:
     return User(id="admin", name="admin", email="admin@example.test", role="admin")
 
 
-async def _shared_bridge(session: AsyncSession) -> str:
+async def _shared_bridge(
+    session: AsyncSession,
+    *,
+    bridge_type: str = "discord",
+    connection_config: dict[str, object] | None = None,
+) -> str:
     client = Client(
         matrix_user_id=f"@bridge-{uuid.uuid4().hex[:12]}:test",
         display_name="bridge client",
@@ -63,11 +86,12 @@ async def _shared_bridge(session: AsyncSession) -> str:
     session.add(client)
     await session.flush()
     bridge = CollaborationBridge(
-        type="discord",
+        type=bridge_type,
         display_name="Acme",
         client_id=client.id,
         status="active",
-        connection_config={"guild_id": "111", "event_delivery": "shared"},
+        connection_config=connection_config
+        or {"guild_id": "111", "event_delivery": "shared"},
     )
     session.add(bridge)
     await session.flush()
@@ -158,3 +182,66 @@ async def test_how_a_bridge_receives_events_cannot_be_changed(
     assert (await _stored_config(session_factory, bridge_id))[
         "event_delivery"
     ] == "shared"
+
+
+_TEAMS_SHARED = {
+    "event_delivery": "shared",
+    "tenant_id": "org-1",
+    "service_url": "https://smba.trafficmanager.net/amer/",
+}
+
+
+async def test_settings_switch_manages_cannot_be_edited(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A shared Teams bridge's learned service URL decides where the
+    deployment's Bot Connector token is sent; edited, it would send it to
+    whoever the editor chose."""
+    async with session_factory() as session:
+        bridge_id = await _shared_bridge(
+            session, bridge_type="teams", connection_config=dict(_TEAMS_SHARED)
+        )
+        await session.commit()
+    lifecycle = _Lifecycle(editable=frozenset({"team_id"}))
+
+    refused = await _update(
+        session_factory,
+        bridge_id,
+        lifecycle,
+        {"service_url": "https://attacker.example/"},
+    )
+
+    assert refused.status_code == 422
+    assert "service_url" in str(refused.detail)
+    assert (await _stored_config(session_factory, bridge_id))["service_url"] == (
+        _TEAMS_SHARED["service_url"]
+    )
+
+
+async def test_an_editable_setting_and_unchanged_ones_go_through(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Sending back a setting unchanged, as a form that posts the whole config
+    does, is not an edit to it."""
+    async with session_factory() as session:
+        bridge_id = await _shared_bridge(
+            session, bridge_type="teams", connection_config=dict(_TEAMS_SHARED)
+        )
+        await session.commit()
+    lifecycle = _Lifecycle(editable=frozenset({"team_id"}))
+
+    async with session_factory() as session:
+        await update_bridge(
+            bridge_id=bridge_id,
+            payload=BridgeUpdateRequest(
+                connection_config={"team_id": "team-9", "tenant_id": "org-1"}
+            ),
+            session=session,
+            bridge_store=_BRIDGE_STORE,
+            room_store=RoomStore(),
+            collab_lifecycle=lifecycle,  # type: ignore[arg-type]
+            _user=_admin(),
+        )
+
+    assert (await _stored_config(session_factory, bridge_id))["team_id"] == "team-9"
+    assert lifecycle.restarted == [bridge_id]

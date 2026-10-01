@@ -75,6 +75,7 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
 )
+from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
@@ -808,6 +809,14 @@ async def run(config: SwitchConfig) -> None:
         collab_lifecycle.add_bridge_start_guard(
             install_service.refuse_uninstalled_bridge
         )
+    # The one distributed Teams app. Unlike Discord's Gateway client there is
+    # nothing to connect: its bridges are handed it as each one starts, so it
+    # is in place before any of them runs. Built from config validated at
+    # startup, so a half-configured app never gets this far.
+    teams_app: TeamsSharedApp | None = None
+    if config.teams_app_client_id:
+        teams_app = TeamsSharedApp.from_config(config)
+        collab_lifecycle.add_bridge_starting_listener(teams_app.attach_if_teams)
     await collab_lifecycle.start_all()
 
     # The one shared Discord Gateway connection. Started after the bridges so it
@@ -882,6 +891,7 @@ async def run(config: SwitchConfig) -> None:
                     matrix_admin,
                     discord_gateway,
                     discord_gateway_task,
+                    teams_app,
                 )
             ),
         )
@@ -1331,6 +1341,7 @@ async def _shutdown(
     matrix_admin: Provisioning,
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
+    teams_app: TeamsSharedApp | None,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True
@@ -1346,6 +1357,9 @@ async def _shutdown(
             pass
     if discord_gateway is not None:
         await discord_gateway.stop()
+    # After the bridges, which borrow its HTTP client until they stop.
+    if teams_app is not None:
+        await teams_app.aclose()
     await client_lifecycle.stop_all()
     await matrix_admin.close()
 

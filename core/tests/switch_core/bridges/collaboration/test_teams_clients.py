@@ -99,8 +99,18 @@ def _graph(recorder: _Recorder, tokens: _FakeTokens | None = None) -> GraphClien
     return GraphClient(tokens=tokens or _FakeTokens(), http=_client(recorder))  # type: ignore[arg-type]
 
 
-def _connector(recorder: _Recorder) -> BotConnectorClient:
-    return BotConnectorClient(tokens=_FakeTokens(), http=_client(recorder))  # type: ignore[arg-type]
+def _connector(
+    recorder: _Recorder,
+    *,
+    allowed_hosts: frozenset[str] | None = None,
+    on_bot_disabled: Any = None,
+) -> BotConnectorClient:
+    return BotConnectorClient(
+        tokens=_FakeTokens(),  # type: ignore[arg-type]
+        http=_client(recorder),
+        allowed_hosts=allowed_hosts,
+        on_bot_disabled=on_bot_disabled or (lambda: None),
+    )
 
 
 # ── GraphClient ───────────────────────────────────────────────────────────────
@@ -237,6 +247,7 @@ def test_create_channel_thread_builds_body_and_parses_ids() -> None:
         connector.create_channel_thread(
             service_url="https://smba.example/amer/",
             channel_id="19:c@thread.tacv2",
+            tenant_id="tenant-1",
             activity={"type": "message", "text": "hi"},
         )
     )
@@ -248,6 +259,9 @@ def test_create_channel_thread_builds_body_and_parses_ids() -> None:
     body = rec.last_json()
     assert body["isGroup"] is True
     assert body["channelData"]["channel"]["id"] == "19:c@thread.tacv2"
+    # Microsoft asks a proactive message to name the organisation, and with one
+    # app serving many the channel id alone does not.
+    assert body["channelData"]["tenant"]["id"] == "tenant-1"
 
 
 def test_create_channel_thread_refuses_to_invent_an_activity_id() -> None:
@@ -263,6 +277,7 @@ def test_create_channel_thread_refuses_to_invent_an_activity_id() -> None:
             connector.create_channel_thread(
                 service_url="https://smba.example/amer/",
                 channel_id="19:c@thread.tacv2",
+                tenant_id="tenant-1",
                 activity={"type": "message"},
             )
         )
@@ -279,6 +294,7 @@ def test_create_channel_thread_error_raises() -> None:
             connector.create_channel_thread(
                 service_url="https://smba.example/amer/",
                 channel_id="19:c@thread.tacv2",
+                tenant_id="tenant-1",
                 activity={"type": "message"},
             )
         )
@@ -468,6 +484,8 @@ def test_a_429_is_throttling_and_carries_the_wait_teams_asked_for() -> None:
     connector = BotConnectorClient(
         tokens=_FakeTokens(),  # type: ignore[arg-type]
         http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        allowed_hosts=None,
+        on_bot_disabled=lambda: None,
     )
 
     with pytest.raises(BotConnectorThrottled) as raised:
@@ -489,6 +507,8 @@ def test_an_unreadable_retry_after_leaves_the_wait_unstated() -> None:
     connector = BotConnectorClient(
         tokens=_FakeTokens(),  # type: ignore[arg-type]
         http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        allowed_hosts=None,
+        on_bot_disabled=lambda: None,
     )
 
     with pytest.raises(BotConnectorThrottled) as raised:
@@ -543,6 +563,8 @@ def test_a_transport_failure_never_escapes_as_httpx() -> None:
     connector = BotConnectorClient(
         tokens=_FakeTokens(),  # type: ignore[arg-type]
         http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        allowed_hosts=None,
+        on_bot_disabled=lambda: None,
     )
 
     with pytest.raises(BotConnectorUnavailable) as raised:
@@ -625,3 +647,68 @@ def test_what_the_guard_measured_is_what_goes_on_the_wire() -> None:
 
     assert rec.last_json()["text"] == "héllo 😀"
     assert rec.last.headers["Content-Type"] == "application/json"
+
+
+def test_the_token_is_never_sent_to_a_host_outside_the_allowlist() -> None:
+    """Under the distributed app the token posts into every organisation's
+    Teams, so a learned or stored address that is not Microsoft's is refused
+    before the token is attached."""
+    rec = _Recorder(201, {"id": "msg-1"})
+    connector = _connector(rec, allowed_hosts=frozenset({"smba.trafficmanager.net"}))
+
+    with pytest.raises(BotConnectorRefused, match="not a Bot Connector host"):
+        _run(
+            connector.send_to_conversation(
+                service_url="https://attacker.example/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity={"type": "message"},
+            )
+        )
+
+    assert rec.requests == []
+
+
+def test_an_allowed_host_over_plain_http_is_still_refused() -> None:
+    rec = _Recorder(201, {"id": "msg-1"})
+    connector = _connector(rec, allowed_hosts=frozenset({"smba.trafficmanager.net"}))
+
+    with pytest.raises(BotConnectorRefused):
+        _run(
+            connector.send_to_conversation(
+                service_url="http://smba.trafficmanager.net/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity={"type": "message"},
+            )
+        )
+
+
+def test_an_allowed_host_is_called() -> None:
+    rec = _Recorder(201, {"id": "msg-1"})
+    connector = _connector(rec, allowed_hosts=frozenset({"smba.trafficmanager.net"}))
+
+    _run(
+        connector.send_to_conversation(
+            service_url="https://smba.trafficmanager.net/amer/",
+            conversation_id="19:c@thread.tacv2",
+            activity={"type": "message"},
+        )
+    )
+
+    assert len(rec.requests) == 1
+
+
+def test_a_blocked_app_is_reported() -> None:
+    told: list[bool] = []
+    rec = _Recorder(403, {"error": {"code": "BotDisabledByAdmin"}})
+    connector = _connector(rec, on_bot_disabled=lambda: told.append(True))
+
+    with pytest.raises(BotConnectorRefused):
+        _run(
+            connector.send_to_conversation(
+                service_url="https://smba.example/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity={"type": "message"},
+            )
+        )
+
+    assert told == [True]

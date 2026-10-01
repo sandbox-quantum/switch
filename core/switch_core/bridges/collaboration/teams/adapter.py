@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import html
 import json
 import logging
@@ -9,21 +8,22 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
-from urllib.parse import quote, unquote
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 from aiohttp import web
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
+    ChannelNotBindable,
     CollaborationAdapter,
     RemovalFailed,
     RequestCard,
@@ -35,6 +35,7 @@ from switch_core.bridges.collaboration.adapter import (
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
     ChannelType,
     DirectoryUser,
     InboundAgentJoin,
@@ -57,8 +58,12 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     turn_status,
 )
 from switch_core.bridges.collaboration.teams.auth import (
-    InboundActivityValidator,
+    BOTFRAMEWORK_OPENID,
+    BotFrameworkAuthenticator,
+    ClientSecret,
+    SigningKeys,
     TeamsTokenProvider,
+    TokenRequestRefused,
 )
 from switch_core.bridges.collaboration.teams.cards import (
     activity_detail,
@@ -76,12 +81,21 @@ from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorThrottled,
 )
 from switch_core.bridges.collaboration.teams.crypto import (
-    decrypt_resource_data,
     generate_encryption_keypair,
     load_certificate_der_b64,
+    load_private_key,
 )
-from switch_core.bridges.collaboration.teams.graph import GraphClient
+from switch_core.bridges.collaboration.teams.graph import GraphClient, GraphError
+from switch_core.bridges.collaboration.teams.identity import (
+    NotificationKey,
+    NotificationKeyring,
+    TeamsIdentity,
+    TeamsTokens,
+)
 from switch_core.sessions.contract import TURN_ENDED
+
+if TYPE_CHECKING:
+    from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
 
 logger = logging.getLogger(__name__)
 
@@ -434,10 +448,18 @@ def _aad_failure_message(exc: Exception) -> str:
     return f"Microsoft rejected these credentials — {text}"
 
 
-# Channel-message subscriptions with resource data live at most 60 minutes; we
-# request 55 and proactively renew well before expiry.
+# Channel-message subscriptions with resource data live at most 60 minutes
+# without a lifecycle URL; we request 55 and renew well before expiry.
 _SUBSCRIPTION_TTL = timedelta(minutes=55)
-_RENEWAL_INTERVAL_SECONDS = 40 * 60
+# How often the renewal loop wakes, and how close to running out a
+# subscription must be for it to be renewed then. Four chances before a
+# subscription lapses, so one failed renewal is retried rather than fatal.
+_RENEWAL_CHECK_SECONDS = 5 * 60
+_RENEW_WHEN_WITHIN = timedelta(minutes=20)
+# How long a "the app is blocked" answer from Teams stays on the connection's
+# attention note after it was last seen. Nothing tells Switch when it is lifted,
+# so it fades rather than staying forever.
+_BOT_DISABLED_NOTICE_SECONDS = 60 * 60
 # How soon, and how rarely, to re-attempt a channel that has no live
 # subscription. The floor is short because the common failure clears in about a
 # minute (a load balancer registering a newly-started pod); the ceiling keeps a
@@ -446,29 +468,101 @@ _REPAIR_MIN_INTERVAL_SECONDS = 30
 _REPAIR_MAX_INTERVAL_SECONDS = 5 * 60
 
 
-class TeamsConnectionConfig(BridgeConnectionConfig):
-    """Per-bridge Microsoft Teams credentials and endpoints.
+def _activity_tenant(activity: dict[str, Any]) -> str | None:
+    """The organisation an activity says it is from, or None if it does not
+    say one thing.
 
-    Teams integration uses an Azure AD app registration that backs both a Bot
-    Framework bot (outbound messaging, proactive messages) and Microsoft Graph
-    access (channel-message capture, provisioning). Secrets live per-bridge in
-    the ``connection_config`` JSONB column, like every other collaboration
-    bridge — nothing here belongs in global config.
+    Teams carries the directory in two places. Both are inside the signed
+    activity; if they disagree there is no telling which to believe, so the
+    answer is neither.
+    """
+    named = {
+        str(value)
+        for value in (
+            (activity.get("conversation") or {}).get("tenantId"),
+            ((activity.get("channelData") or {}).get("tenant") or {}).get("id"),
+        )
+        if value
+    }
+    return named.pop() if len(named) == 1 else None
+
+
+def _is_channel_id(channel_id: str) -> bool:
+    """Whether an id is a Teams channel's, as opposed to a chat's.
+
+    Channels are `19:…@thread.tacv2` (or the older `@thread.skype`); group
+    chats are `@thread.v2` and one-to-one chats have other shapes entirely.
+    """
+    return channel_id.startswith("19:") and channel_id.endswith(
+        ("@thread.tacv2", "@thread.skype")
+    )
+
+
+def _parse_graph_time(value: object) -> datetime | None:
+    """A Graph timestamp (`2026-10-01T12:00:00Z`, sometimes with fractional
+    seconds and a numeric offset) as an aware datetime, or None if unreadable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+#: What the bring-your-own registration form must ask for. Declared rather
+#: than read off the field types, because the same model also describes a
+#: bridge on the distributed app, which holds none of the app's credentials —
+#: so they are optional to the model and required of the person filling the
+#: form, and the form is built from the schema.
+_FORM_REQUIRED = ["app_id", "app_password", "tenant_id", "team_id", "public_base_url"]
+
+
+def _require_on_form(schema: dict[str, Any]) -> None:
+    schema["required"] = list(_FORM_REQUIRED)
+
+
+class TeamsConnectionConfig(BridgeConnectionConfig):
+    """Per-bridge Microsoft Teams settings.
+
+    Two shapes, decided by which app the bridge belongs to (`event_delivery`):
+
+    - **own_listener** — the bring-your-own app. An Azure AD app registration
+      the operator created backs both a Bot Framework bot and Microsoft Graph
+      access, and its secrets live per-bridge here, like every other
+      collaboration bridge. The bridge runs its own inbound listener.
+    - **shared** — the distributed app. The app and its credentials are the
+      deployment's; this bridge names only the organisation (`tenant_id`) that
+      approved it and, once chosen, the team new channels go in. Its traffic
+      reaches it through the deployment's public messaging routes.
     """
 
-    # Azure AD app registration (bot client id + secret + tenant).
-    app_id: str
-    app_password: str
+    model_config = ConfigDict(json_schema_extra=_require_on_form)
+
+    # Hidden from the form for the same reason Discord's is: reaching the form
+    # means the bring-your-own app, and `shared` is written by the install flow.
+    event_delivery: SkipJsonSchema[Literal["own_listener", "shared"]] = "own_listener"
+
+    # Azure AD app registration (bot client id + secret). The bring-your-own
+    # app's; a shared bridge carries none.
+    app_id: str | None = None
+    app_password: str | None = None
+    # The organisation's directory. Under the bring-your-own app it is where
+    # the operator's app lives; under the distributed app it is the customer
+    # organisation that approved ours.
     tenant_id: str
 
     # AAD team (group) id that outbound-created channels are provisioned into.
-    team_id: str
+    # Required of a bring-your-own bridge; chosen after install on a shared one,
+    # and channel creation refuses until it is.
+    team_id: str | None = None
 
     # Public HTTPS base URL where this adapter's inbound listener is reachable.
-    # Teams and Graph are HTTP-push, so the adapter hosts its own listener:
-    # Bot Framework activities at ``/api/messages`` and Graph change
-    # notifications at ``/api/teams/notifications``, both under this base.
-    public_base_url: str
+    # Teams and Graph are HTTP-push, so the bring-your-own adapter hosts its
+    # own listener: Bot Framework activities at ``/api/messages`` and Graph
+    # change notifications at ``/api/teams/notifications``, both under this
+    # base.
+    public_base_url: str | None = None
 
     # Local bind for the inbound listener. This is a Switch-internal deployment
     # detail, not an admin concern, so it is hidden from the gateway config form
@@ -491,18 +585,21 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
     encryption_private_key: SkipJsonSchema[str | None] = None
 
     # Shared secret echoed back in every change notification and validated on
-    # receipt. The ONLY control that authenticates a notification's origin: Graph
-    # resource-data encryption proves integrity but NOT origin (the wrapping key
-    # is the public certificate, which anyone can encrypt to), so without
-    # clientState the notification endpoint is spoofable.
+    # receipt. The ONLY control that authenticates a bring-your-own bridge's
+    # notifications: Graph resource-data encryption proves integrity but NOT
+    # origin (the wrapping key is the public certificate, which anyone can
+    # encrypt to), so without clientState the notification endpoint is
+    # spoofable.
     #
     # Generated, not asked for: it is a secret with no external meaning, so
     # prompting an operator to invent one only invites a weak or reused value.
-    # Required rather than defaulted, and minted in prepare_config at
-    # registration — a default here would mint a fresh secret every time a stored
-    # config was validated, and every live subscription would start failing its
-    # origin check with nothing to point at.
-    client_state: SkipJsonSchema[str]
+    # Required of a bring-your-own bridge rather than defaulted, and minted in
+    # prepare_config at registration — a default here would mint a fresh secret
+    # every time a stored config was validated, and every live subscription
+    # would start failing its origin check with nothing to point at. A shared
+    # bridge's is derived for its organisation by the deployment and never
+    # stored.
+    client_state: SkipJsonSchema[str | None] = None
 
     # Bot Connector serviceUrl (the per-tenant outbound endpoint). It is learned
     # from inbound Bot Framework activities and persisted here so outbound
@@ -524,6 +621,59 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
     # until someone thought to mention the bot; see `_learn_channel_team`.
     # Learned at runtime, never an admin input, so it is hidden from the form.
     channel_teams: SkipJsonSchema[dict[str, str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _fields_match_delivery(self) -> TeamsConnectionConfig:
+        """Refuse the half-states that look configured and cannot work.
+
+        A bring-your-own bridge missing any of its app's settings has nothing
+        to authenticate with or nowhere to be reached. A shared bridge carrying
+        any of them is the opposite mistake — credentials, keys or a listener
+        for an app this bridge does not own, read as evidence that it does.
+        """
+        if self.event_delivery == "own_listener":
+            missing = [
+                name
+                for name in (
+                    "app_id",
+                    "app_password",
+                    "team_id",
+                    "public_base_url",
+                    "client_state",
+                )
+                if not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(
+                    f"{', '.join(missing)} must be set for a Teams bridge on its "
+                    "own app."
+                )
+            return self
+        # Compared with each field's default rather than read off which were
+        # supplied, so a config that has been dumped and read back — defaults
+        # and all — is still the same config.
+        foreign = sorted(
+            name
+            for name in (
+                "app_id",
+                "app_password",
+                "public_base_url",
+                "client_state",
+                "encryption_certificate_id",
+                "encryption_public_certificate",
+                "encryption_private_key",
+                "listen_host",
+                "listen_port",
+            )
+            if getattr(self, name) != type(self).model_fields[name].default
+        )
+        if foreign:
+            raise ValueError(
+                f"{', '.join(foreign)} must not be set on a bridge on the "
+                "distributed Teams app; its credentials, keys and listener are "
+                "the deployment's, not this connection's."
+            )
+        return self
 
     @model_validator(mode="after")
     def _encryption_material_is_all_or_nothing(self) -> TeamsConnectionConfig:
@@ -613,7 +763,11 @@ class TeamsAdapter(CollaborationAdapter):
         restart, while Graph carried on encrypting to the old certificate and
         echoing the old secret. Capture would fail its origin check and its
         decryption, with nothing in the logs pointing at why.
+
+        A bridge on the distributed app gets neither: both are the deployment's.
         """
+        if connection_config.get("event_delivery") == "shared":
+            return connection_config
         prepared = dict(connection_config)
         if not prepared.get("client_state"):
             prepared["client_state"] = secrets.token_urlsafe(32)
@@ -636,13 +790,33 @@ class TeamsAdapter(CollaborationAdapter):
     def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
         """The inbound listener's TCP port, which one process can hold once.
 
-        Teams is push-based, so each bridge runs an HTTP server; two on the same
-        port means the second never binds. Declaring it here turns that into a
-        refusal at registration naming the port, rather than a bind error in a
-        background task that leaves the bridge silently dropped.
+        Teams is push-based, so each bring-your-own bridge runs an HTTP server;
+        two on the same port means the second never binds. Declaring it here
+        turns that into a refusal at registration naming the port, rather than
+        a bind error in a background task that leaves the bridge silently
+        dropped. A bridge on the distributed app listens on nothing of its own,
+        so any number of them coexist.
         """
         config = TeamsConnectionConfig.model_validate(connection_config)
+        if config.event_delivery == "shared":
+            return None
         return f"tcp/{config.listen_port}"
+
+    @classmethod
+    def editable_config_keys(
+        cls, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Only the default team is anyone's to edit on a shared bridge.
+
+        Everything else in it either names the organisation — which decides
+        whose Graph data the deployment's credential reads — or was learned
+        from Microsoft and decides where the deployment's Bot Connector token
+        is sent. Either, edited, would point one customer's connection at
+        another's organisation or at somebody else's server.
+        """
+        if connection_config.get("event_delivery") == "shared":
+            return frozenset({"team_id"})
+        return None
 
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
@@ -652,13 +826,19 @@ class TeamsAdapter(CollaborationAdapter):
         error names the mistake precisely — including the classic case of the
         secret's ID being pasted instead of its value. Getting that to the
         operator at save time is the whole point.
+
+        A bridge on the distributed app has no credentials of its own to try;
+        whether its organisation approved the app is proved when it installs.
         """
         config = TeamsConnectionConfig.model_validate(connection_config)
+        if config.event_delivery == "shared":
+            return
+        assert config.app_id is not None and config.app_password is not None
         async with httpx.AsyncClient(timeout=30) as http:
             tokens = TeamsTokenProvider(
                 tenant_id=config.tenant_id,
                 app_id=config.app_id,
-                app_password=config.app_password,
+                credential=ClientSecret(config.app_password),
                 http=http,
             )
             try:
@@ -675,12 +855,30 @@ class TeamsAdapter(CollaborationAdapter):
         super().__init__()
         self._config = config
 
+        # Who this bridge speaks as. A bring-your-own bridge's is in its own
+        # config; a shared bridge's arrives from the deployment's app before it
+        # starts (`attach_shared_app`), and start refuses without it.
+        self._shared_app: TeamsSharedApp | None = None
+        self._identity: TeamsIdentity | None = (
+            None if config.event_delivery == "shared" else self._own_identity(config)
+        )
+
         self._http: httpx.AsyncClient | None = None
-        self._tokens: TeamsTokenProvider | None = None
+        # A shared bridge borrows the deployment app's client and must not
+        # close it when it stops.
+        self._owns_http = False
+        self._tokens: TeamsTokens | None = None
         self._connector: BotConnectorClient | None = None
         self._graph: GraphClient | None = None
-        self._validator: InboundActivityValidator | None = None
+        self._authenticator: BotFrameworkAuthenticator | None = None
         self._runner: web.AppRunner | None = None
+
+        # What an admin has to act on for this bridge to keep working, as last
+        # found: the organisation's approval narrowed or withdrawn. None while
+        # nothing is known to be wrong. See `attention`.
+        self._approval_problem: str | None = None
+        # When Teams last answered that an admin blocked the app (monotonic).
+        self._bot_disabled_at: float | None = None
 
         # Per-tenant Bot Connector endpoint, captured from inbound activities and
         # seeded from persisted config so outbound works right after a restart,
@@ -724,6 +922,11 @@ class TeamsAdapter(CollaborationAdapter):
 
         # channel id -> Graph subscription id, for channels we capture.
         self._subscriptions: dict[str, str] = {}
+        # channel id -> when its subscription runs out, as Graph last said. The
+        # renewal loop works from this rather than a fixed cadence, so a
+        # subscription adopted after a restart with minutes left is renewed in
+        # minutes rather than after a full interval it does not have.
+        self._subscription_expiry: dict[str, datetime] = {}
         # Channels that should be captured, whether or not they currently are.
         # Kept apart from `_subscriptions` so a failed attempt is remembered as
         # work still owed rather than forgotten the moment it fails.
@@ -742,6 +945,85 @@ class TeamsAdapter(CollaborationAdapter):
         self._renewal_task: asyncio.Task[None] | None = None
         self._repair_task: asyncio.Task[None] | None = None
 
+    @staticmethod
+    def _own_identity(config: TeamsConnectionConfig) -> TeamsIdentity:
+        """A bring-your-own bridge's identity, read from its own config.
+
+        Malformed encryption material is logged and treated as absent rather
+        than failing the bridge: everything but channel capture still works
+        without it, and capture says why it is not running for as long as it
+        is not.
+        """
+        assert config.app_id is not None
+        assert config.client_state is not None
+        assert config.public_base_url is not None
+        keyring: NotificationKeyring | None = None
+        if (
+            config.encryption_certificate_id
+            and config.encryption_public_certificate
+            and config.encryption_private_key
+        ):
+            try:
+                keyring = NotificationKeyring(
+                    current=NotificationKey(
+                        certificate_id=config.encryption_certificate_id,
+                        private_key=load_private_key(config.encryption_private_key),
+                    ),
+                    certificate_der_b64=load_certificate_der_b64(
+                        config.encryption_public_certificate
+                    ),
+                    retired=(),
+                )
+            except (ValueError, TypeError) as error:
+                logger.error(
+                    "The Teams bridge's Graph encryption material cannot be read "
+                    "(%s); channel capture stays off until it is replaced",
+                    error,
+                )
+        return TeamsIdentity(
+            app_id=config.app_id,
+            org_tenant_id=config.tenant_id,
+            shared=False,
+            notification_url=(
+                f"{config.public_base_url.rstrip('/')}/api/teams/notifications"
+            ),
+            client_state=config.client_state,
+            keyring=keyring,
+            allowed_service_hosts=None,
+            required_graph_roles=frozenset(),
+        )
+
+    @property
+    def serves_shared_app(self) -> bool:
+        return self._config.event_delivery == "shared"
+
+    def attach_shared_app(self, app: TeamsSharedApp) -> None:
+        """Be handed the deployment's Teams app, before starting.
+
+        Only a bridge on the distributed app takes one. Its identity is built
+        for the organisation its config names, which the start guard has
+        already checked this tenant holds the install for — so this is the one
+        place the deployment's credential is pointed at an organisation, and it
+        is pointed at that one.
+        """
+        if not self.serves_shared_app:
+            raise ValueError(
+                "a bring-your-own Teams bridge carries its own app and cannot "
+                "be attached to the deployment's"
+            )
+        self._shared_app = app
+        self._identity = app.identity_for(self._config.tenant_id)
+
+    @property
+    def _me(self) -> TeamsIdentity:
+        if self._identity is None:
+            raise RuntimeError(
+                "This Teams bridge belongs to the distributed Teams app, which "
+                "is not configured on this deployment, so it has no app to "
+                "speak as. Set the TEAMS_APP_* settings or remove the connection."
+            )
+        return self._identity
+
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(
@@ -758,17 +1040,46 @@ class TeamsAdapter(CollaborationAdapter):
         self._on_user_joined = on_user_joined
         self._on_app_joined = on_app_joined
 
-        self._http = httpx.AsyncClient(timeout=30)
-        self._tokens = TeamsTokenProvider(
-            tenant_id=self._config.tenant_id,
-            app_id=self._config.app_id,
-            app_password=self._config.app_password,
+        identity = self._me
+        if self._shared_app is not None:
+            # The deployment's app: its client, our own directory's Bot
+            # Connector tokens, and Graph tokens issued in this organisation.
+            # No listener — this bridge's traffic reaches it through the
+            # deployment's public messaging routes.
+            self._http = self._shared_app.http
+            self._owns_http = False
+            self._tokens = self._shared_app.tokens_for(self._config.tenant_id)
+        else:
+            assert self._config.app_id is not None
+            assert self._config.app_password is not None
+            self._http = httpx.AsyncClient(timeout=30)
+            self._owns_http = True
+            self._tokens = TeamsTokenProvider(
+                tenant_id=self._config.tenant_id,
+                app_id=self._config.app_id,
+                credential=ClientSecret(self._config.app_password),
+                http=self._http,
+            )
+            self._authenticator = BotFrameworkAuthenticator(
+                app_id=self._config.app_id,
+                keys=SigningKeys(metadata_url=BOTFRAMEWORK_OPENID, http=self._http),
+            )
+            await self._open_listener()
+        self._connector = BotConnectorClient(
+            tokens=self._tokens,
             http=self._http,
+            allowed_hosts=identity.allowed_service_hosts,
+            on_bot_disabled=self._note_bot_disabled,
         )
-        self._connector = BotConnectorClient(tokens=self._tokens, http=self._http)
         self._graph = GraphClient(tokens=self._tokens, http=self._http)
-        self._validator = InboundActivityValidator(app_id=self._config.app_id)
+        await self._check_approval()
+        await self._adopt_existing_subscriptions()
+        await self._renew_due_subscriptions()
+        self._renewal_task = asyncio.create_task(self._renewal_loop())
+        self._repair_task = asyncio.create_task(self._repair_loop())
 
+    async def _open_listener(self) -> None:
+        """The bring-your-own bridge's own inbound HTTP listener."""
         app = web.Application()
         app.router.add_post("/api/messages", self._handle_http_messages)
         app.router.add_post("/api/teams/notifications", self._handle_http_notifications)
@@ -785,14 +1096,6 @@ class TeamsAdapter(CollaborationAdapter):
             self._config.listen_port,
             self._config.app_id,
         )
-        await self._adopt_existing_subscriptions()
-        self._renewal_task = asyncio.create_task(self._renewal_loop())
-        self._repair_task = asyncio.create_task(self._repair_loop())
-
-    @property
-    def _notification_url(self) -> str:
-        base = self._config.public_base_url.rstrip("/")
-        return f"{base}/api/teams/notifications"
 
     async def _adopt_existing_subscriptions(self) -> None:
         """Re-attach to subscriptions this bridge already owns after a restart,
@@ -803,7 +1106,10 @@ class TeamsAdapter(CollaborationAdapter):
         duplicates. Subscriptions for our channels that point at a *different*
         URL (e.g. a rotated tunnel) can never deliver here, so we delete them;
         ``ensure_channel_subscriptions`` then recreates them against the current
-        URL."""
+        URL.
+
+        This is also why one Entra app must never serve two environments: each
+        would read the other's subscriptions as stale and delete them."""
         if self._graph is None:
             return
         try:
@@ -811,13 +1117,18 @@ class TeamsAdapter(CollaborationAdapter):
         except Exception:
             logger.warning("Could not list existing Graph subscriptions on start")
             return
+        notification_url = self._me.notification_url
         for sub in existing:
             resource = str(sub.get("resource", ""))
             channel_id = self._channel_from_resource(resource)
             if not channel_id:
                 continue
-            if sub.get("notificationUrl") == self._notification_url:
+            if sub.get("notificationUrl") == notification_url:
                 self._subscriptions[channel_id] = str(sub.get("id", ""))
+                self._capture_wanted.add(channel_id)
+                expiry = _parse_graph_time(sub.get("expirationDateTime"))
+                if expiry is not None:
+                    self._subscription_expiry[channel_id] = expiry
                 continue
             stale_id = str(sub.get("id", ""))
             if not stale_id:
@@ -854,30 +1165,167 @@ class TeamsAdapter(CollaborationAdapter):
                 await self._ensure_channel_subscription(channel_id)
 
     async def _renewal_loop(self) -> None:
-        """Proactively renew channel-message subscriptions before they expire.
+        """Keep subscriptions alive and the organisation's approval checked.
 
-        Complements the reactive ``reauthorizationRequired`` lifecycle handler:
-        even if a lifecycle notification is missed, subscriptions are refreshed
-        on this cadence so capture never silently lapses."""
+        Wakes often and renews only what is close to running out, rather than
+        renewing everything on a long fixed cadence: a renewal that fails is
+        tried again minutes later instead of after a full interval, by which
+        time a 55-minute subscription has already lapsed. Complements the
+        reactive ``reauthorizationRequired`` lifecycle handler, so capture never
+        silently lapses even if a lifecycle notification is missed."""
         while True:
-            await asyncio.sleep(_RENEWAL_INTERVAL_SECONDS)
-            await self._renew_all_subscriptions()
+            await asyncio.sleep(_RENEWAL_CHECK_SECONDS)
+            await self._check_approval()
+            await self._renew_due_subscriptions()
 
-    async def _renew_all_subscriptions(self) -> None:
+    async def _renew_due_subscriptions(self) -> None:
         if self._graph is None:
             return
+        due_by = datetime.now(UTC) + _RENEW_WHEN_WITHIN
         for channel_id, subscription_id in list(self._subscriptions.items()):
-            try:
-                await self._graph.renew_subscription(
-                    subscription_id=subscription_id,
-                    expiration_iso=self._expiration_iso(),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to renew subscription %s for channel %s",
+            expiry = self._subscription_expiry.get(channel_id)
+            if expiry is not None and expiry > due_by:
+                continue
+            await self._renew_subscription(channel_id, subscription_id)
+
+    async def _renew_subscription(
+        self, channel_id: str | None, subscription_id: str
+    ) -> None:
+        """Renew one subscription, recording when it now runs out.
+
+        `channel_id` is None for a subscription this bridge is not tracking —
+        one Graph asked to have renewed that was not adopted at start. Renewed
+        all the same, since the request passed its origin check; there is just
+        no channel to hand back to the repair loop if it has gone.
+        """
+        if self._graph is None:
+            return
+        requested = self._expiration_iso()
+        try:
+            await self._graph.renew_subscription(
+                subscription_id=subscription_id, expiration_iso=requested
+            )
+        except GraphError as error:
+            if error.status == 404 and channel_id is not None:
+                # The subscription is gone — expired, or removed on Graph's
+                # side. Renewing it again can never work; dropping it hands the
+                # channel to the repair loop, which makes a new one.
+                logger.warning(
+                    "Teams subscription %s for channel %s no longer exists; "
+                    "making a new one",
                     subscription_id,
                     channel_id,
                 )
+                self._forget_subscription(channel_id)
+                self._capture_wanted.add(channel_id)
+                return
+            logger.exception(
+                "Failed to renew subscription %s for channel %s; retrying shortly",
+                subscription_id,
+                channel_id,
+            )
+            return
+        except Exception:
+            logger.exception(
+                "Failed to renew subscription %s for channel %s; retrying shortly",
+                subscription_id,
+                channel_id,
+            )
+            return
+        logger.info("Renewed Teams subscription %s", subscription_id)
+        parsed = _parse_graph_time(requested)
+        if parsed is not None and channel_id is not None:
+            self._subscription_expiry[channel_id] = parsed
+
+    def _forget_subscription(self, channel_id: str) -> None:
+        self._subscriptions.pop(channel_id, None)
+        self._subscription_expiry.pop(channel_id, None)
+
+    async def _check_approval(self) -> None:
+        """Find out whether the organisation's approval of the app still stands.
+
+        Only a bridge on the distributed app has an approval to lose, and
+        Microsoft sends no word when it goes. A withdrawn approval shows up as
+        a directory that no longer issues tokens to the app; a narrowed one as
+        a token missing some of the permissions it was granted. Either becomes
+        something the workspace is told (`attention`), and neither ends the
+        install: a blip in Microsoft's directory must not disconnect a customer
+        and free their organisation for anyone else to claim.
+
+        Rides the renewal loop, which mints this organisation's token anyway,
+        so it costs no extra work.
+        """
+        identity = self._me
+        if not identity.required_graph_roles or self._tokens is None:
+            return
+        try:
+            granted = await self._tokens.graph_roles()
+        except TokenRequestRefused as error:
+            if error.app_not_approved:
+                self._approval_problem = (
+                    "Microsoft says Switch is no longer approved in this "
+                    "organisation. A Microsoft admin there needs to approve it "
+                    "again before Switch can read or post in Teams."
+                )
+                logger.error(
+                    "Teams organisation %s no longer approves the app: %s",
+                    identity.org_tenant_id,
+                    error,
+                )
+            else:
+                logger.warning(
+                    "Could not check the Teams app's approval in organisation %s: %s",
+                    identity.org_tenant_id,
+                    error,
+                )
+            return
+        except httpx.HTTPError as error:
+            logger.warning(
+                "Could not reach Microsoft to check the Teams app's approval in "
+                "organisation %s: %s",
+                identity.org_tenant_id,
+                error,
+            )
+            return
+        missing = sorted(identity.required_graph_roles - granted)
+        if missing:
+            self._approval_problem = (
+                "Switch's approval in this organisation no longer includes "
+                f"{', '.join(missing)}. A Microsoft admin there needs to approve "
+                "Switch again for it to work fully."
+            )
+            logger.error(
+                "Teams organisation %s withdrew permissions from the app: %s",
+                identity.org_tenant_id,
+                ", ".join(missing),
+            )
+            return
+        if self._approval_problem is not None:
+            logger.info(
+                "Teams organisation %s approves the app again", identity.org_tenant_id
+            )
+        self._approval_problem = None
+
+    def _note_bot_disabled(self) -> None:
+        self._bot_disabled_at = time.monotonic()
+        logger.error(
+            "Teams says an admin in organisation %s has blocked the app",
+            self._me.org_tenant_id,
+        )
+
+    async def attention(self) -> str | None:
+        notes: list[str] = []
+        if self._approval_problem is not None:
+            notes.append(self._approval_problem)
+        if (
+            self._bot_disabled_at is not None
+            and time.monotonic() - self._bot_disabled_at < _BOT_DISABLED_NOTICE_SECONDS
+        ):
+            notes.append(
+                "A Teams admin in this organisation has blocked the Switch app, "
+                "so Switch cannot post there until they allow it again."
+            )
+        return " ".join(notes) or None
 
     @staticmethod
     async def _cancel(task: asyncio.Task[None] | None) -> None:
@@ -897,12 +1345,9 @@ class TeamsAdapter(CollaborationAdapter):
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
-        if self._validator is not None:
-            self._validator.close()
-            self._validator = None
-        if self._http is not None:
+        if self._http is not None and self._owns_http:
             await self._http.aclose()
-            self._http = None
+        self._http = None
         logger.info("Teams adapter stopped")
 
     # ── Outbound helpers ─────────────────────────────────────────────────────
@@ -1219,7 +1664,10 @@ class TeamsAdapter(CollaborationAdapter):
         conversation_id = self._reply_conversation(channel_id, thread_root_id)
         if conversation_id is None:
             conversation_id, msg_id = await connector.create_channel_thread(
-                service_url=service_url, channel_id=channel_id, activity=activity
+                service_url=service_url,
+                channel_id=channel_id,
+                tenant_id=self._me.org_tenant_id,
+                activity=activity,
             )
             # A message that opened its own post is that post.
             remembered = msg_id
@@ -1790,6 +2238,7 @@ class TeamsAdapter(CollaborationAdapter):
                     conversation_id, ref = await self._connector.create_channel_thread(
                         service_url=service_url,
                         channel_id=channel_id,
+                        tenant_id=self._me.org_tenant_id,
                         activity=activity,
                     )
                 else:
@@ -1979,9 +2428,16 @@ class TeamsAdapter(CollaborationAdapter):
                 "from the messaging platform"
             )
 
+        team_id = self._config.team_id
+        if not team_id:
+            raise BridgeOperationError(
+                "No default team is set for this Teams connection, so Switch "
+                "does not know which team to create the channel in. Choose one "
+                "in the connection's Microsoft Teams settings."
+            )
         membership_type = "private" if channel_type == "channel_private" else "standard"
         channel = await self._graph.create_channel(
-            team_id=self._config.team_id,
+            team_id=team_id,
             display_name=self._sanitize_channel_name(name),
             description=topic,
             membership_type=membership_type,
@@ -1991,7 +2447,7 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError(f"Teams channel creation returned no id for '{name}'")
 
         self._channel_type[channel_id] = channel_type
-        await self._learn_channel_team(channel_id, self._config.team_id)
+        await self._learn_channel_team(channel_id, team_id)
         self._channel_names[channel_id] = str(channel.get("displayName") or "")
         self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
         # Capture the new channel's messages right away.
@@ -2004,7 +2460,13 @@ class TeamsAdapter(CollaborationAdapter):
             return known
         if self._graph is None:
             raise RuntimeError("Teams adapter not started")
-        team_id = self._team_of_channel.get(channel_id, self._config.team_id)
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        if not team_id:
+            raise BridgeOperationError(
+                f"Switch does not know which team Teams channel {channel_id} is "
+                "in. Add the Switch app to that team, or message the channel, so "
+                "Switch can learn it."
+            )
         channel = await self._graph.get_channel(team_id=team_id, channel_id=channel_id)
         resolved: ChannelType = (
             "channel_private"
@@ -2055,7 +2517,9 @@ class TeamsAdapter(CollaborationAdapter):
         Teams client. Built from the channel id, its team, and the tenant."""
         if not external_channel_id:
             return None
-        team_id = self._team_of_channel.get(external_channel_id, self._config.team_id)
+        team_id = self._team_of_channel.get(external_channel_id) or self._config.team_id
+        if not team_id:
+            return None
         encoded = quote(external_channel_id, safe="")
         return (
             f"https://teams.microsoft.com/l/channel/{encoded}/channel"
@@ -2089,7 +2553,14 @@ class TeamsAdapter(CollaborationAdapter):
     ) -> list[str]:
         if self._graph is None:
             raise RuntimeError("Teams adapter not started")
-        team_id = self._team_of_channel.get(channel_id, self._config.team_id)
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        if not team_id:
+            logger.error(
+                "Cannot add people to Teams channel %s: Switch does not know "
+                "which team it is in",
+                channel_id,
+            )
+            return list(user_external_ids)
         # Private channels have their own membership; standard channels inherit
         # the team's, so a user is added to the team instead.
         is_private = self._channel_type.get(channel_id) == "channel_private"
@@ -2319,23 +2790,32 @@ class TeamsAdapter(CollaborationAdapter):
     # ── Inbound listener ─────────────────────────────────────────────────────
 
     async def _handle_http_messages(self, request: web.Request) -> web.Response:
-        auth_header = request.headers.get("Authorization")
-        if self._validator is not None:
-            try:
-                await asyncio.get_running_loop().run_in_executor(
-                    None, self._validator.validate, auth_header
-                )
-            except Exception as e:
-                logger.warning("Rejected inbound Teams activity: %s", e)
-                return web.Response(status=401, text="unauthorized")
+        """The bring-your-own listener's Bot Framework endpoint.
 
+        Read before it is checked because the check needs the body — the token
+        has to name the same `serviceUrl` and be endorsed for the same channel
+        as the activity — but nothing in it is acted on until it passes.
+        """
         try:
             activity = await request.json()
         except Exception:
             return web.Response(status=400, text="invalid json")
+        if not isinstance(activity, dict):
+            return web.Response(status=400, text="invalid activity")
+
+        if self._authenticator is not None:
+            try:
+                await self._authenticator.verify(
+                    request.headers.get("Authorization"),
+                    service_url=str(activity.get("serviceUrl", "")).strip(),
+                    channel_id=str(activity.get("channelId", "")),
+                )
+            except PermissionError as e:
+                logger.warning("Rejected inbound Teams activity: %s", e)
+                return web.Response(status=401, text="unauthorized")
 
         try:
-            answer = await self._dispatch_activity(activity)
+            answer = await self.receive_activity(activity)
         except Exception:
             logger.exception("Failed to handle inbound Teams activity")
             return web.Response(status=200)
@@ -2343,6 +2823,46 @@ class TeamsAdapter(CollaborationAdapter):
         if answer is None:
             return web.Response(status=200)
         return web.json_response(answer)
+
+    async def receive_activity(self, activity: dict[str, Any]) -> dict[str, Any] | None:
+        """Handle one authenticated Bot Framework activity; return an invoke's answer.
+
+        The one entry point for activities, whichever way they arrived — the
+        bring-your-own listener above, or the deployment's public route for the
+        distributed app. Whoever calls it has already checked the activity's
+        token.
+
+        On the distributed app the token proves the activity came from the Bot
+        Framework, not which organisation it is for: one app serves them all.
+        So an activity from any other organisation is refused here, and a
+        service URL that is not Microsoft's is refused before it is learned,
+        since this bridge then sends the deployment's token to it.
+        """
+        identity = self._me
+        tenant = _activity_tenant(activity)
+        if not identity.serves(tenant):
+            logger.warning(
+                "Refused a Teams activity from organisation %s on the bridge for %s",
+                tenant,
+                identity.org_tenant_id,
+            )
+            if activity.get("type") == "invoke":
+                return _invoke_error(
+                    403, "Forbidden", "This card belongs to another organisation."
+                )
+            return None
+        service_url = str(activity.get("serviceUrl", "")).strip()
+        hosts = identity.allowed_service_hosts
+        if service_url and hosts is not None:
+            parts = urlsplit(service_url)
+            if parts.scheme != "https" or parts.hostname not in hosts:
+                logger.warning(
+                    "Refused a Teams activity naming service URL host %r, which "
+                    "is not a Bot Connector host",
+                    parts.hostname,
+                )
+                return None
+        return await self._dispatch_activity(activity)
 
     async def _dispatch_activity(
         self, activity: dict[str, Any]
@@ -2369,9 +2889,96 @@ class TeamsAdapter(CollaborationAdapter):
             await self._dispatch_message(activity, channel_id, channel_type)
         elif activity_type == "conversationUpdate":
             await self._dispatch_conversation_update(activity, channel_id, channel_type)
+        elif activity_type == "installationUpdate":
+            await self._dispatch_installation_update(activity)
         elif activity_type == "invoke" and activity.get("name") == _INVOKE_CARD_ACTION:
             return await self._dispatch_card_action(activity, channel_id)
         return None
+
+    async def _dispatch_installation_update(self, activity: dict[str, Any]) -> None:
+        """The app was added to or removed from a team.
+
+        Only removal needs anything here: added, the bot's own join arrives as
+        a `conversationUpdate` and is handled there. Removed, Graph keeps
+        delivering that team's channels to a bot that can no longer answer in
+        them, so their subscriptions are deleted and their capture is no longer
+        wanted. An upgrade arrives as `remove-upgrade` followed by
+        `add-upgrade` and is not a removal.
+        """
+        if activity.get("action") != "remove":
+            return
+        team = (activity.get("channelData") or {}).get("team") or {}
+        team_id = str(team.get("aadGroupId") or "")
+        if not team_id:
+            logger.warning(
+                "The Teams app was removed from a team that the activity does "
+                "not name; nothing to stop capturing"
+            )
+            return
+        channels = [c for c, t in self._team_of_channel.items() if t == team_id]
+        logger.info(
+            "The Teams app was removed from team %s; stopping capture in its %d "
+            "known channels",
+            team_id,
+            len(channels),
+        )
+        for channel_id in channels:
+            await self._stop_capture(channel_id)
+
+    async def _stop_capture(self, channel_id: str) -> None:
+        self._capture_wanted.discard(channel_id)
+        self._capture_failures.pop(channel_id, None)
+        subscription_id = self._subscriptions.get(channel_id)
+        self._forget_subscription(channel_id)
+        if subscription_id is None or self._graph is None:
+            return
+        try:
+            await self._graph.delete_subscription(subscription_id=subscription_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete the Teams subscription for channel %s; it runs "
+                "out on its own within the hour",
+                channel_id,
+                exc_info=True,
+            )
+
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        """On the distributed app, bind only a channel in this organisation.
+
+        The deployment's Bot Connector token posts into every approving
+        organisation's channels, so a room bound to another organisation's
+        channel id would post there. Reading the channel with a Graph token
+        issued in this organisation is what proves it is this organisation's:
+        Graph answers only for its own directory. Chats cannot be checked that
+        way, and become rooms only from activity Microsoft delivered to this
+        bridge, so they cannot be bound by id at all.
+
+        A bring-your-own bridge's own credential reaches only its own
+        organisation, so there is nothing to refuse.
+        """
+        if not self._me.shared:
+            return
+        if not _is_channel_id(channel_id):
+            raise ChannelNotBindable(
+                f"{channel_id!r} is not a Teams channel id. Only a channel can be "
+                "bound by id; a chat becomes a room when someone messages Switch "
+                "in it."
+            )
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        if not team_id:
+            raise ChannelNotBindable(
+                "Switch does not know which team this channel is in. Add the "
+                "Switch app to its team first."
+            )
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        try:
+            await self._graph.get_channel(team_id=team_id, channel_id=channel_id)
+        except GraphError as error:
+            raise ChannelNotBindable(
+                f"Teams channel {channel_id} is not one Switch can reach in this "
+                f"organisation ({error})."
+            ) from error
 
     @staticmethod
     def _channel_from_activity(
@@ -2908,14 +3515,16 @@ class TeamsAdapter(CollaborationAdapter):
         Requires the encryption certificate + private key (Graph encrypts the
         message body) and the channel's team id. A missing prerequisite is a
         loud log, not a crash: the bot still joins, capture is simply degraded.
+
+        Wanted before it is checked for, so a channel whose subscription was
+        adopted at start, and later lost, is still one the repair loop owes.
         """
+        self._capture_wanted.add(channel_id)
         if channel_id in self._subscriptions or self._graph is None:
             return
-        self._capture_wanted.add(channel_id)
-        if not (
-            self._config.encryption_public_certificate
-            and self._config.encryption_certificate_id
-        ):
+        identity = self._me
+        keyring = identity.keyring
+        if keyring is None:
             self._note_capture_failure(
                 channel_id,
                 "encryption certificate not configured on the Teams bridge",
@@ -2930,22 +3539,22 @@ class TeamsAdapter(CollaborationAdapter):
             if channel_id in self._subscriptions:
                 return
             try:
-                cert_der = load_certificate_der_b64(
-                    self._config.encryption_public_certificate
-                )
                 sub = await self._graph.create_subscription(
                     resource=f"teams/{team_id}/channels/{channel_id}/messages",
-                    notification_url=self._notification_url,
-                    lifecycle_notification_url=self._notification_url,
-                    client_state=self._config.client_state,
+                    notification_url=identity.notification_url,
+                    lifecycle_notification_url=identity.notification_url,
+                    client_state=identity.client_state,
                     expiration_iso=self._expiration_iso(),
-                    encryption_certificate=cert_der,
-                    encryption_certificate_id=self._config.encryption_certificate_id,
+                    encryption_certificate=keyring.certificate_der_b64,
+                    encryption_certificate_id=keyring.certificate_id,
                 )
             except Exception as exc:
                 self._note_capture_failure(channel_id, f"{type(exc).__name__}: {exc}")
                 return
             self._subscriptions[channel_id] = str(sub.get("id", ""))
+            expiry = _parse_graph_time(sub.get("expirationDateTime"))
+            if expiry is not None:
+                self._subscription_expiry[channel_id] = expiry
             recovered = self._capture_failures.pop(channel_id, None) is not None
             logger.info(
                 "%s Teams channel %s messages (subscription %s)",
@@ -3032,25 +3641,39 @@ class TeamsAdapter(CollaborationAdapter):
 
         for item in payload.get("value", []):
             try:
-                await self._dispatch_graph_notification(item)
+                await self.receive_notification(item)
             except Exception:
                 logger.exception("Failed to handle Graph change notification")
 
         return web.Response(status=202)
 
-    async def _dispatch_graph_notification(self, item: dict[str, Any]) -> None:
+    async def receive_notification(self, item: dict[str, Any]) -> None:
+        """Handle one Graph change notification addressed to this bridge.
+
+        The one entry point for notifications, whichever way they arrived. On
+        the distributed app the deployment's route has already checked Graph's
+        validation tokens and routed the item by the organisation they vouch
+        for; what is checked here holds either way — the organisation's own
+        `clientState`, and that the subscription is one this bridge made.
+        """
         # Authenticate origin BEFORE acting on anything — data notifications and
-        # lifecycle events alike. clientState is the only origin control (the
-        # encryption proves integrity, not origin), so an unverified lifecycle
-        # event (e.g. a forged reauthorizationRequired) must not be honoured.
-        # Compared in constant time: this is an authentication check, and a
-        # `!=` on a secret leaks its prefix through timing. 256 bits makes that
-        # impractical to exploit rather than impossible to attempt, and the
-        # cheap version is the same one line.
-        if not hmac.compare_digest(
-            str(item.get("clientState") or ""), self._config.client_state
-        ):
+        # lifecycle events alike. clientState is the bring-your-own bridge's only
+        # origin control (the encryption proves integrity, not origin), so an
+        # unverified lifecycle event (e.g. a forged reauthorizationRequired)
+        # must not be honoured.
+        identity = self._me
+        if not identity.accepts_client_state(item.get("clientState")):
             logger.warning("Rejected Graph notification: clientState mismatch")
+            return
+        if identity.shared and not self._owns_subscription(
+            str(item.get("subscriptionId", ""))
+        ):
+            logger.warning(
+                "Rejected a Graph notification for subscription %s, which the "
+                "bridge for organisation %s did not make",
+                item.get("subscriptionId"),
+                identity.org_tenant_id,
+            )
             return
 
         if item.get("lifecycleEvent"):
@@ -3060,32 +3683,26 @@ class TeamsAdapter(CollaborationAdapter):
         encrypted = item.get("encryptedContent")
         if not encrypted:
             return
-        if not self._config.encryption_private_key:
+        if identity.keyring is None:
             logger.error(
                 "Received encrypted Graph notification but no private key is "
                 "configured to decrypt it"
             )
             return
 
-        chat_message = decrypt_resource_data(
-            encrypted, self._config.encryption_private_key
-        )
+        chat_message = identity.keyring.decrypt(encrypted)
         await self._deliver_graph_message(chat_message)
+
+    def _owns_subscription(self, subscription_id: str) -> bool:
+        return bool(subscription_id) and subscription_id in self._subscriptions.values()
 
     async def _handle_lifecycle_event(self, item: dict[str, Any]) -> None:
         event = item.get("lifecycleEvent")
         subscription_id = str(item.get("subscriptionId", ""))
-        if event == "reauthorizationRequired" and self._graph is not None:
-            try:
-                await self._graph.renew_subscription(
-                    subscription_id=subscription_id,
-                    expiration_iso=self._expiration_iso(),
-                )
-                logger.info("Renewed Teams subscription %s", subscription_id)
-            except Exception:
-                logger.exception(
-                    "Failed to renew Teams subscription %s", subscription_id
-                )
+        if event == "reauthorizationRequired":
+            await self._renew_subscription(
+                self._channel_of_subscription(subscription_id), subscription_id
+            )
         elif event == "subscriptionRemoved":
             # Graph dropped the subscription (e.g. a transient permission/quota
             # issue). Recreate it rather than only logging — otherwise channel
@@ -3098,11 +3715,14 @@ class TeamsAdapter(CollaborationAdapter):
                 event,
             )
 
-    async def _recreate_removed_subscription(self, subscription_id: str) -> None:
-        channel_id = next(
+    def _channel_of_subscription(self, subscription_id: str) -> str | None:
+        return next(
             (c for c, s in self._subscriptions.items() if s == subscription_id),
             None,
         )
+
+    async def _recreate_removed_subscription(self, subscription_id: str) -> None:
+        channel_id = self._channel_of_subscription(subscription_id)
         if channel_id is None:
             logger.info(
                 "Teams subscriptionRemoved for unknown subscription %s; ignoring",
@@ -3115,7 +3735,7 @@ class TeamsAdapter(CollaborationAdapter):
             channel_id,
         )
         # Drop the dead mapping so _ensure_channel_subscription rebuilds it.
-        self._subscriptions.pop(channel_id, None)
+        self._forget_subscription(channel_id)
         await self._ensure_channel_subscription(channel_id)
 
     async def _deliver_graph_message(self, chat_message: dict[str, Any]) -> None:
@@ -3130,7 +3750,7 @@ class TeamsAdapter(CollaborationAdapter):
         application = sender.get("application") or {}
         if application:
             # Drop our own bot's posts (they are captured too) to avoid a loop.
-            if str(application.get("id", "")) == self._config.app_id:
+            if str(application.get("id", "")) == self._me.app_id:
                 return
             sender_id = str(application.get("id", ""))
             sender_name = str(application.get("displayName") or sender_id)
@@ -3184,11 +3804,12 @@ class TeamsAdapter(CollaborationAdapter):
         one whose ``mentioned.application.id`` matches our app id. Mirrors the
         Bot Framework path's ``_self_mention_token`` so both capture paths flag a
         bot mention identically."""
+        app_id = self._me.app_id
         for mention in chat_message.get("mentions") or []:
             mentioned = mention.get("mentioned") or {}
             application = mentioned.get("application") or {}
-            if str(application.get("id", "")) == self._config.app_id:
-                return self._config.app_id
+            if str(application.get("id", "")) == app_id:
+                return app_id
         return None
 
     @staticmethod

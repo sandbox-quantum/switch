@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
@@ -318,7 +318,9 @@ class SupportsSharedConnection(Protocol):
     Structural on purpose: the lifecycle, the gateway and boot narrow to this
     with `isinstance` and stay ignorant of the concrete adapter, and an adapter
     with no shared connection (Slack, Mattermost, Teams, Telegram) never matches
-    and is left alone.
+    and is left alone. A bridge on the distributed Teams app shares the
+    deployment's app too, but has nothing to wait for: it is handed the app
+    before it starts, by its own bridge-starting listener, and never matches.
     """
 
     def attach_shared_connection(self, connection: Any) -> None: ...
@@ -545,6 +547,20 @@ class CollaborationAdapter(ABC):
         underlying resource does when contended, which for a TCP port is a bind
         error inside a background task, minutes later and nowhere near the
         operator who caused it.
+        """
+        return None
+
+    @classmethod
+    def editable_config_keys(
+        cls, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Which connection settings a workspace admin may change, or None for all.
+
+        None — the default — leaves every setting editable, which is right for a
+        bridge on the organisation's own app: its settings are theirs. A bridge
+        on an app the deployment owns may hold settings that decide where the
+        deployment's credential is pointed, and an adapter names here the few
+        that are safe to change; an edit to any other is refused.
         """
         return None
 
@@ -1156,6 +1172,16 @@ class CollaborationAdapter(ABC):
         platform accepts a URL that selects the chat and works on every client
         of that platform."""
         return []
+
+    async def attention(self) -> str | None:
+        """What a workspace admin has to do for this bridge to keep working.
+
+        Something only the platform's side can fix — an approval withdrawn, an
+        app blocked by the organisation's admin — found while the bridge runs,
+        in plain words fit to show on the connection. None while nothing is
+        known to be wrong, which is the default.
+        """
+        return None
 
     async def install_note(self) -> str | None:
         """What the links do not cover, in the platform's own terms.

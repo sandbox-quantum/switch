@@ -485,6 +485,11 @@ class BridgeDetail(BaseModel):
     # What those links do not cover, in the platform's own terms — the kinds of
     # chat that have to be joined by hand. None when there is nothing to add.
     install_note: str | None = None
+    # Something only the platform's side can fix, found while the bridge runs
+    # — an approval withdrawn, the app blocked by the organisation's admin — in
+    # plain words for a banner on the connection. None while nothing is known
+    # to be wrong, or the bridge is not running.
+    attention: str | None = None
     # Whether the platform can create a channel from Switch at all, and whether
     # an operator permits this connection to. The two are separate so a UI can
     # tell "your organisation turned this off" (changeable here) from "Telegram

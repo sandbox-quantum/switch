@@ -36,10 +36,10 @@ _CHANNEL = "19:abc@thread.tacv2"
 
 
 @functools.lru_cache(maxsize=1)
-def _cert_pem() -> str:
-    """A real self-signed certificate — the subscription path loads it before
-    it calls Graph, so a placeholder would fail these tests for the wrong
-    reason. Generated once for the module."""
+def _keypair() -> tuple[str, str]:
+    """A real self-signed certificate and its key — the bridge reads both when
+    it is built, so a placeholder would fail these tests for the wrong reason.
+    Generated once for the module."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "switch-teams-test")])
     now = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
@@ -53,7 +53,12 @@ def _cert_pem() -> str:
         .not_valid_after(now + datetime.timedelta(days=365))
         .sign(key, hashes.SHA256())
     )
-    return cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    return cert.public_bytes(serialization.Encoding.PEM).decode(), key_pem
 
 
 def _config() -> TeamsConnectionConfig:
@@ -64,8 +69,8 @@ def _config() -> TeamsConnectionConfig:
         team_id="team-1",
         public_base_url="https://switch.example",
         encryption_certificate_id="cert-1",
-        encryption_public_certificate=_cert_pem(),
-        encryption_private_key="unused — nothing here decrypts a notification",
+        encryption_public_certificate=_keypair()[0],
+        encryption_private_key=_keypair()[1],
         client_state="s3cr3t",
     )
 

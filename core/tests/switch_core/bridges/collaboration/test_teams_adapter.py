@@ -50,7 +50,12 @@ class _FakeConnector:
         self._raise_on_send = raise_on_send
 
     async def create_channel_thread(
-        self, *, service_url: str, channel_id: str, activity: dict[str, Any]
+        self,
+        *,
+        service_url: str,
+        channel_id: str,
+        tenant_id: str,
+        activity: dict[str, Any],
     ) -> tuple[str, str]:
         self.threads.append(
             {"service_url": service_url, "channel_id": channel_id, "activity": activity}
@@ -254,19 +259,23 @@ class _FakeHttpRequest:
         return self._body
 
 
-class _RaisingValidator:
-    def validate(self, auth_header: str | None) -> None:
+class _RaisingAuthenticator:
+    async def verify(
+        self, authorization: str | None, *, service_url: str, channel_id: str
+    ) -> None:
         raise PermissionError("forged")
 
 
-class _PassValidator:
-    def validate(self, auth_header: str | None) -> None:
+class _PassAuthenticator:
+    async def verify(
+        self, authorization: str | None, *, service_url: str, channel_id: str
+    ) -> None:
         return None
 
 
 def test_http_messages_rejects_unauthenticated_activity() -> None:
     adapter = _adapter()
-    adapter._validator = _RaisingValidator()  # type: ignore[assignment]
+    adapter._authenticator = _RaisingAuthenticator()  # type: ignore[assignment]
 
     resp = _run(
         adapter._handle_http_messages(
@@ -282,7 +291,7 @@ def test_http_messages_rejects_unauthenticated_activity() -> None:
 
 def test_http_messages_rejects_invalid_json() -> None:
     adapter = _adapter()
-    adapter._validator = _PassValidator()  # type: ignore[assignment]
+    adapter._authenticator = _PassAuthenticator()  # type: ignore[assignment]
 
     resp = _run(
         adapter._handle_http_messages(
@@ -297,7 +306,7 @@ def test_http_messages_rejects_invalid_json() -> None:
 
 def test_http_messages_dispatches_authenticated_activity() -> None:
     adapter = _adapter()
-    adapter._validator = _PassValidator()  # type: ignore[assignment]
+    adapter._authenticator = _PassAuthenticator()  # type: ignore[assignment]
     captured = _capture_messages(adapter)
 
     activity = {

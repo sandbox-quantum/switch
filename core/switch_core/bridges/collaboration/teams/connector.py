@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
-from switch_core.bridges.collaboration.teams.auth import TeamsTokenProvider
+from switch_core.bridges.collaboration.teams.identity import TeamsTokens
 
 logger = logging.getLogger(__name__)
 
@@ -139,14 +141,47 @@ class BotConnectorClient:
     call is authorised with an app-only Bot Connector token from the shared
     token provider.
 
+    `allowed_hosts` bounds where that token may go. Under the distributed app
+    the token posts into every approving organisation's Teams, and a service
+    URL is learned from traffic and kept in config, so an address that is not
+    Microsoft's is refused here, on every call, before the token is attached.
+    None leaves a bring-your-own bridge's own token unrestricted, as before.
+
+    `on_bot_disabled` is told when Teams answers that an admin has blocked the
+    app, which no individual call can do anything about and which somebody has
+    to be told.
+
     Every failure leaves here as a `BotConnectorError` saying which kind it was,
     including a transport failure: an `httpx` exception escaping raw would reach
     callers that have no way to tell it from a refusal.
     """
 
-    def __init__(self, *, tokens: TeamsTokenProvider, http: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        *,
+        tokens: TeamsTokens,
+        http: httpx.AsyncClient,
+        allowed_hosts: frozenset[str] | None,
+        on_bot_disabled: Callable[[], None],
+    ) -> None:
         self._tokens = tokens
         self._http = http
+        self._allowed_hosts = allowed_hosts
+        self._on_bot_disabled = on_bot_disabled
+
+    def _refuse_foreign_host(self, operation: str, url: str) -> None:
+        if self._allowed_hosts is None:
+            return
+        parts = urlsplit(url)
+        if parts.scheme == "https" and parts.hostname in self._allowed_hosts:
+            return
+        raise BotConnectorRefused(
+            f"{operation} was not attempted: {parts.hostname!r} is not a Bot "
+            "Connector host, and this app's token is only ever sent to "
+            "Microsoft.",
+            status=None,
+            retry_after=None,
+        )
 
     async def _headers(self) -> dict[str, str]:
         token = await self._tokens.bot_token()
@@ -164,6 +199,7 @@ class BotConnectorClient:
         url: str,
         body: dict[str, Any] | None,
     ) -> httpx.Response:
+        self._refuse_foreign_host(operation, url)
         headers = await self._headers()
         content: bytes | None = None
         if body is not None:
@@ -182,6 +218,8 @@ class BotConnectorClient:
                 retry_after=None,
             ) from error
         if resp.status_code >= 300:
+            if resp.status_code == 403 and "BotDisabledByAdmin" in resp.text:
+                self._on_bot_disabled()
             raise _failure(operation, resp)
         return resp
 
@@ -212,9 +250,18 @@ class BotConnectorClient:
         return value
 
     async def create_channel_thread(
-        self, *, service_url: str, channel_id: str, activity: dict[str, Any]
+        self,
+        *,
+        service_url: str,
+        channel_id: str,
+        tenant_id: str,
+        activity: dict[str, Any],
     ) -> tuple[str, str]:
         """Start a new thread in a Teams channel with ``activity``.
+
+        Names the organisation the channel belongs to, as Microsoft asks of a
+        proactive message: with one app serving many organisations, the
+        channel id alone is not what decides where the thread is opened.
 
         Returns ``(conversation_id, activity_id)`` — the new thread's
         conversation id and the posted message's id (its thread root).
@@ -226,7 +273,10 @@ class BotConnectorClient:
             url=f"{self._base(service_url)}v3/conversations",
             body={
                 "isGroup": True,
-                "channelData": {"channel": {"id": channel_id}},
+                "channelData": {
+                    "channel": {"id": channel_id},
+                    "tenant": {"id": tenant_id},
+                },
                 "activity": activity,
             },
         )

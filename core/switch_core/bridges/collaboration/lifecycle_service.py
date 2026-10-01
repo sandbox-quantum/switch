@@ -493,6 +493,20 @@ class CollaborationBridgeLifecycleService:
             return True
         return adapter_cls.supports_channel_creation
 
+    def editable_config_keys(
+        self, bridge_type: str, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Which of a bridge's connection settings may be edited, or None for all.
+
+        The adapter class decides — see `CollaborationAdapter.editable_config_keys`.
+        An unknown type has no adapter to ask and leaves everything to the
+        validation that rejects it by name.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return None
+        return adapter_cls.editable_config_keys(connection_config)
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Whether this platform has a user directory Switch can search.
 
