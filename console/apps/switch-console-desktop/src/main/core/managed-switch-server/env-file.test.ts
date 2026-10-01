@@ -172,6 +172,8 @@ describe('buildEnvFile', () => {
 
     expect(fromDevBuild).toContain('TELEMETRY_ENVIRONMENT=local');
     expect(vars.TELEMETRY_ENVIRONMENT).toBe('prod');
+    // Written but never forwarded would reach no container.
+    expect(composeYaml).toMatch(/^\s+TELEMETRY_ENVIRONMENT:\s*$/m);
   });
 
   it('is the only thing the compose file needs to forward the gate', () => {
