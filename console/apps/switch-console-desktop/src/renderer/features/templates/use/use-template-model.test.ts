@@ -3,9 +3,10 @@ import type { ParamSpec } from '@main/core/room-templates/controller';
 import {
   agentCreateSteps,
   bridgeCandidates,
+  unsaidMessage,
   paramLabel,
   resolveChain,
-  sectionOf,
+  roomOnlyParams,
   serverInputs,
   valueProblem,
 } from './use-template-model';
@@ -93,25 +94,26 @@ describe('serverInputs', () => {
   });
 });
 
-describe('sectionOf', () => {
-  const agents = [['{name}', '{provider}'], ['{other}']];
-  const room = 'name: "Ask {agent}"\nbridge: "{bridge}"\n';
-  it('puts a param with the agent that reads it, and the rest with the room', () => {
-    expect(sectionOf(param({ name: 'provider' }), agents, room)).toEqual({
-      section: 'agent',
-      index: 0,
-    });
-    expect(sectionOf(param({ name: 'other' }), agents, room)).toEqual({
-      section: 'agent',
-      index: 1,
-    });
-    expect(sectionOf(param({ name: 'bridge' }), agents, room)).toEqual({ section: 'room' });
+describe('roomOnlyParams', () => {
+  const room = 'name: "Ask {agent}"\nbridge: "{bridge}"\nusers: ["{repo}"]\n';
+  it('keeps the params the room reads and no agent entry does', () => {
+    const agents = [{ placeholders: ['name'] }];
+    const params = [param({ name: 'name' }), param({ name: 'bridge' }), param({ name: 'repo' })];
+    expect([...roomOnlyParams(params, agents, room)]).toEqual(['bridge', 'repo']);
   });
 
-  it('keeps a room param with the room even when an agent joins it', () => {
-    expect(sectionOf(param({ name: 'where', type: 'room' }), [['{where}']], room)).toEqual({
-      section: 'room',
-    });
+  it("reads an agent entry whole, so a param used only in its instructions is the agent's too", () => {
+    const agents = [{ placeholders: ['repo'] }, { placeholders: [] }];
+    const params = [param({ name: 'bridge' }), param({ name: 'repo' })];
+    expect([...roomOnlyParams(params, agents, room)]).toEqual(['bridge']);
+  });
+});
+
+describe('unsaidMessage', () => {
+  it('names the agent and the setting the template leaves out', () => {
+    expect(unsaidMessage({ index: 0, label: '{team}-fixer', field: 'provider' })).toBe(
+      'The template never says which coding agent runs {team}-fixer. Give it a `provider:` or declare a `provider` param.'
+    );
   });
 });
 

@@ -353,6 +353,48 @@ async def test_save_is_owned_by_the_owner_and_marked_with_the_agent(tools):
 
 
 @pytest.mark.asyncio
+async def test_save_refuses_a_template_with_warnings_unless_bypassed(tools, caplog):
+    """An agent saving a template that never says what runs its agent is told
+    so before anything is stored, and may save it anyway once it has seen it."""
+    with pytest.raises(AgentRefused, match="which coding agent runs jq-expert") as e:
+        await _as(
+            tools["agent_id"],
+            save_template,
+            name="jq",
+            description="jq expert",
+            yaml=AGENT_TEMPLATE,
+        )
+    assert "bypass_warnings=true" in str(e.value)
+    assert _refusals(caplog) == [("save_template", "has_warnings")]
+    rows = await _as(tools["agent_id"], list_templates)
+    assert [r["name"] for r in rows] == [], "nothing is stored when refused"
+
+    saved = await _as(
+        tools["agent_id"],
+        save_template,
+        name="jq",
+        description="jq expert",
+        yaml=AGENT_TEMPLATE,
+        bypass_warnings=True,
+    )
+    async with tools["session_factory"]() as session:
+        assert await session.get(Template, saved["id"]) is not None
+    assert any("which coding agent runs jq-expert" in w for w in saved["warnings"])
+
+    with pytest.raises(AgentRefused, match="which coding agent runs jq-expert"):
+        await _as(
+            tools["agent_id"],
+            update_template,
+            template_id=saved["id"],
+            yaml=AGENT_TEMPLATE,
+        )
+    updated = await _as(
+        tools["agent_id"], update_template, template_id=saved["id"], description="x"
+    )
+    assert updated["warnings"] == [], "no document was passed, so none was checked"
+
+
+@pytest.mark.asyncio
 async def test_save_refuses_a_template_anyone_could_change(tools, caplog):
     with pytest.raises(AgentRefused, match="not one an agent can set"):
         await _as(
@@ -578,6 +620,7 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
                 description="changed",
                 content=None,
                 visibility=None,
+                bypass_warnings=False,
             )
 
 

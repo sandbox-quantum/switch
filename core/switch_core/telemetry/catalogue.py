@@ -401,6 +401,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
             "visibility_not_allowed",
             "invalid",
             "too_large",
+            "has_warnings",
             "missing_agents",
             "agent_creation_console_only",
             "busy",

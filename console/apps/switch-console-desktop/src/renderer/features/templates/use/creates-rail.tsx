@@ -2,10 +2,8 @@ import { Check, ChevronRight, DoorOpen, Loader2, TriangleAlert } from 'lucide-re
 import { useState } from 'react';
 import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
 import type { TemplateRoom } from '@main/core/room-templates/controller';
-import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import { AgentField, type EntityLists } from '@renderer/features/room-templates/entity-fields';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
-import { Input } from '@renderer/lib/ui/input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
@@ -15,19 +13,15 @@ export type SlotStatus = 'idle' | 'creating' | 'created' | 'failed';
 
 /**
  * One agent entry of the template and the choices made for it on the Use
- * page: create it or use an existing agent, its working directory, whether
- * to clone its repository, and its creation status.
+ * page: create it or, when the template allows it, use an existing agent;
+ * whether to clone its repository; and how far creation got.
  */
 export type AgentSlot = {
   entry: ParsedAgentEntry;
-
+  /** `existing` only for an entry whose template sets `allow_existing: true`. */
   mode: 'new' | 'existing';
   /** The existing agent's name, when `mode` is `existing`. */
   existingName: string;
-  /** The working directory for a new agent: a local path, or a path on the host. */
-  dir: string;
-  /** Whether the deployer chose the directory; a chosen path stays put when the name changes. */
-  dirPicked: boolean;
   cloneRepo: boolean;
   status: SlotStatus;
   error: string | null;
@@ -48,8 +42,6 @@ export function newSlot(entry: ParsedAgentEntry): AgentSlot {
     entry,
     mode: 'new',
     existingName: '',
-    dir: '',
-    dirPicked: false,
     cloneRepo: true,
     status: 'idle',
     error: null,
@@ -155,77 +147,53 @@ export function RoomCard({
   );
 }
 
-/** Where a new agent works: its directory, and whether the template's repository is cloned into it. */
-export function SlotDirectoryField({
-  slot,
-  onChange,
-  sshHost,
-  busy,
-}: {
-  slot: AgentSlot;
-  onChange: (next: AgentSlot) => void;
-  sshHost: string | null;
-  busy: boolean;
-}) {
+/** What runs a new agent, where, and in which folder, as the inputs resolve them. */
+export type SlotRuntime = {
+  provider: string | null;
+  location: string | null;
+  directory: string | null;
+};
+
+function RuntimeRow({ label, value }: { label: string; value: string | null }) {
   return (
-    <>
-      <div className="flex flex-col gap-1">
-        <span className="text-[11px] text-foreground-passive">Directory</span>
-        {sshHost ? (
-          <Input
-            value={slot.dir}
-            disabled={busy}
-            placeholder="/home/agent/repo"
-            className="font-mono text-xs"
-            onChange={(e) => onChange({ ...slot, dir: e.target.value, dirPicked: true })}
-          />
-        ) : (
-          <LocalDirectorySelector
-            title="Choose the agent's working directory"
-            message="The agent runs from here. A suggested folder is created when the agent is."
-            path={slot.dir}
-            onPathChange={(dir) => onChange({ ...slot, dir, dirPicked: true })}
-          />
+    <div className="flex items-baseline gap-3 text-xs">
+      <span className="w-[72px] shrink-0 text-foreground-passive">{label}</span>
+      <span
+        className={cn(
+          'min-w-0 flex-1 truncate font-mono',
+          value === null ? 'text-amber-600 dark:text-amber-400' : 'text-foreground-muted'
         )}
-      </div>
-      {slot.entry.repoUrl && (
-        <label className="flex w-max cursor-pointer items-center gap-2 text-xs text-foreground-muted">
-          <Switch
-            size="sm"
-            checked={slot.cloneRepo}
-            onCheckedChange={(cloneRepo) => onChange({ ...slot, cloneRepo })}
-          />
-          Clone {slot.entry.repoUrl.replace(/^https?:\/\//, '')} into it
-        </label>
-      )}
-    </>
+      >
+        {value ?? 'Not set by the template'}
+      </span>
+    </div>
   );
 }
 
 export function AgentSlotCard({
   slot,
   wantedName,
+  runtime,
   onChange,
   lists,
-  locationLabel,
-  choice = true,
+  busy,
+  children,
 }: {
   slot: AgentSlot;
   /** The name the agent is created under, as far as the inputs resolve it. */
   wantedName: string;
+  /** What a new agent runs with. Null for an existing agent. */
+  runtime: SlotRuntime | null;
   onChange: (next: AgentSlot) => void;
   lists: EntityLists;
-  /** The run location's display name, shown under the existing-agent picker. */
-  locationLabel: string;
-  /** Whether the deployer may point the slot at an existing agent. An agent
-   * template always makes a new one, so its card offers no choice. */
-  choice?: boolean;
+  busy: boolean;
+  /** Notices about the machine it runs on. */
+  children?: React.ReactNode;
 }) {
+  const existing = slot.mode === 'existing';
+  const existingName = slot.existingName;
   const unresolved = hasPlaceholder(wantedName) || wantedName === '';
-  const shownName =
-    slot.mode === 'existing'
-      ? slot.existingName || 'Pick an agent'
-      : (slot.createdName ?? wantedName);
+  const shownName = existing ? existingName || 'Pick an agent' : (slot.createdName ?? wantedName);
   return (
     <Card className={cn(slot.status === 'failed' && 'border-destructive/50')}>
       <div className="flex items-center gap-3">
@@ -234,7 +202,9 @@ export function AgentSlotCard({
           <div
             className={cn(
               'truncate font-mono text-[13px] font-medium',
-              unresolved && slot.mode === 'new' ? 'text-foreground-passive' : 'text-foreground'
+              (existing ? existingName === '' : unresolved)
+                ? 'text-foreground-passive'
+                : 'text-foreground'
             )}
           >
             {shownName || 'Named by an input'}
@@ -243,14 +213,16 @@ export function AgentSlotCard({
             {slot.entry.description || 'An agent with its own instructions'}
           </div>
         </div>
-        <span className="shrink-0 text-[11px] text-foreground-passive">Agent</span>
+        <span className="shrink-0 text-[11px] text-foreground-passive">
+          {existing ? 'Existing agent' : 'Agent'}
+        </span>
       </div>
 
-      {/* An agent that exists can no longer change how it is made, even when a
-          later step for it failed. */}
-      {(slot.status === 'idle' || slot.status === 'failed') &&
-        slot.createdName === null &&
-        choice && (
+      {/* Offered only when the template allows it. An agent that exists can no
+          longer change how it is made, even when a later step for it failed. */}
+      {slot.entry.allowExisting &&
+        (slot.status === 'idle' || slot.status === 'failed') &&
+        slot.createdName === null && (
           <div className="mt-3 flex flex-col gap-2.5 border-t border-border pt-3">
             <SegmentedControl
               value={slot.mode}
@@ -262,22 +234,35 @@ export function AgentSlotCard({
               ariaLabel={`How to fill ${wantedName || 'this agent'}`}
               className="w-max"
             />
-            {slot.mode === 'existing' ? (
-              <div className="flex flex-col gap-1.5">
-                <AgentField
-                  value={slot.existingName}
-                  onChange={(name) => onChange({ ...slot, existingName: name })}
-                  lists={lists}
-                />
-                <p className="text-[11px] text-foreground-passive">
-                  {lists.agents.length === 0
-                    ? `No agent of yours runs on ${locationLabel} yet.`
-                    : `Agents of yours that run on ${locationLabel}.`}
-                </p>
-              </div>
-            ) : null}
+            {existing && (
+              <AgentField
+                value={slot.existingName}
+                onChange={(name) => onChange({ ...slot, existingName: name })}
+                lists={lists}
+              />
+            )}
           </div>
         )}
+
+      {runtime && (
+        <div className="mt-3 flex flex-col gap-1.5 border-t border-border pt-3">
+          <RuntimeRow label="Provider" value={runtime.provider} />
+          <RuntimeRow label="Runs on" value={runtime.location} />
+          <RuntimeRow label="Directory" value={runtime.directory} />
+          {slot.entry.repoUrl && slot.createdName === null && (
+            <label className="mt-1 flex w-max cursor-pointer items-center gap-2 text-xs text-foreground-muted">
+              <Switch
+                size="sm"
+                checked={slot.cloneRepo}
+                disabled={busy}
+                onCheckedChange={(cloneRepo) => onChange({ ...slot, cloneRepo })}
+              />
+              Clone {slot.entry.repoUrl.replace(/^https?:\/\//, '')} into it
+            </label>
+          )}
+          {children}
+        </div>
+      )}
       {slot.status !== 'idle' && (
         <div className="mt-2 flex flex-col gap-1">
           <StatusLine slot={slot} />

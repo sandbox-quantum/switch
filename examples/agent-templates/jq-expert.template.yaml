@@ -5,8 +5,27 @@
 # server or pasted into the Console. Save it to a workspace with kind
 # `agent`, or paste it into the Console's import page.
 version: 1
+params:
+  provider:
+    type: provider
+    description: The coding agent that runs it. The first one installed is chosen.
+    default: [claude, codex, opencode]
+    input: advanced
+  location:
+    type: location
+    description: The machine it runs on.
+    default: local
+    input: advanced
+  directory:
+    type: directory
+    description: Its working directory. The jq repository is cloned inside it.
+    default: "{$agents_dir}/{agent}"
+    input: advanced
 agent:
   name: jq-expert
+  provider: "{provider}"
+  location: "{location}"
+  directory: "{directory}"
   description: >-
     Answers questions about jq, the command-line JSON processor, and writes
     and debugs jq filters. Reads the jq source and manual rather than

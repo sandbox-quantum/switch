@@ -32,6 +32,7 @@ RefusalReason = Literal[
     "visibility_not_allowed",
     "invalid",
     "too_large",
+    "has_warnings",
     "missing_agents",
     "agent_creation_console_only",
     # Rooms an agent creates (see `agent_runs`)

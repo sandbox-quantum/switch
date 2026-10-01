@@ -1,3 +1,4 @@
+import type { ParsedAgentEntry, UnsaidRuntime } from '@main/core/agent-templates/template-document';
 import type { ParamSpec } from '@main/core/room-templates/controller';
 import {
   FIRST,
@@ -166,23 +167,32 @@ export function resolveChain(
   return null;
 }
 
-/** Which section of the page a param belongs to: the agent it is written
- * into, or the room part. A `room` param always sits with the room, since
- * it says where the agent works; a param used by both sits with the agent. */
-export function sectionOf(
-  param: ParamSpec,
-  agentTexts: string[][],
+/** What a document is missing for one of its agents, in one sentence. */
+export function unsaidMessage(unsaid: UnsaidRuntime): string {
+  const what =
+    unsaid.field === 'provider'
+      ? `which coding agent runs ${unsaid.label}`
+      : unsaid.field === 'location'
+        ? `which machine ${unsaid.label} runs on`
+        : `which directory ${unsaid.label} works in`;
+  return `The template never says ${what}. Give it a \`${unsaid.field}:\` or declare a \`${unsaid.field}\` param.`;
+}
+
+/**
+ * The params only the room part reads: written into the room document and
+ * into no agent entry. They do nothing when the room is not created.
+ */
+export function roomOnlyParams(
+  params: ParamSpec[],
+  agents: Pick<ParsedAgentEntry, 'placeholders'>[],
   roomText: string
-): { section: 'agent'; index: number } | { section: 'room' } {
-  if (param.type !== 'room') {
-    const index = agentTexts.findIndex((texts) =>
-      texts.some((t) => placeholdersIn(t).includes(param.name))
-    );
-    if (index >= 0) return { section: 'agent', index };
-  }
-  if (param.type === 'room' || placeholdersIn(roomText).includes(param.name))
-    return { section: 'room' };
-  return { section: 'agent', index: 0 };
+): Set<string> {
+  const inRoom = new Set(placeholdersIn(roomText));
+  return new Set(
+    params
+      .filter((p) => inRoom.has(p.name) && !agents.some((a) => a.placeholders.includes(p.name)))
+      .map((p) => p.name)
+  );
 }
 
 export type CreateStepStatus = 'waiting' | 'running' | 'done' | 'failed';

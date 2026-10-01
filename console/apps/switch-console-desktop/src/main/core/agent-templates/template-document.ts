@@ -42,7 +42,7 @@ export type ParsedAgentEntry = {
   /**
    * Which coding agent runs it. Either a provider id (`claude`, `codex`,
    * `opencode`) or a `{param}` whose value is one. Null when the template
-   * has no `provider` field; the Use page asks for one.
+   * has no `provider` field.
    */
   provider: string | null;
   /** Where it runs: `local`, an ssh host, or a `{param}`. Null when the template has no `location` field. */
@@ -51,6 +51,27 @@ export type ParsedAgentEntry = {
   directory: string | null;
   /** Rooms the agent is added to once it exists, by name or `{param}`. */
   join: string[];
+  /** Every `{name}` written anywhere in the entry, its instructions included. */
+  placeholders: string[];
+  /**
+   * Whether the deployer may fill this entry with an agent the server already
+   * has instead of creating it. From `allow_existing:`, false unless the
+   * template says so.
+   */
+  allowExisting: boolean;
+};
+
+/** What runs an agent, where, and in which folder: what a template must say for every agent it creates. */
+export type RuntimeField = 'provider' | 'location' | 'directory';
+export const RUNTIME_FIELDS: readonly RuntimeField[] = ['provider', 'location', 'directory'];
+
+/** A runtime setting the document never gives one of its agents. */
+export type UnsaidRuntime = {
+  /** The index of the agent entry. */
+  index: number;
+  /** How the entry is named in the document, for a message. */
+  label: string;
+  field: RuntimeField;
 };
 
 export type TemplateAgents = {
@@ -62,6 +83,12 @@ export type TemplateAgents = {
    */
   singular: boolean;
   warnings: string[];
+  /**
+   * The runtime settings the document leaves unsaid. The Console supplies
+   * none of its own, so the editor warns about each and the Use page refuses
+   * to create until the document says it.
+   */
+  unsaid: UnsaidRuntime[];
 };
 
 const ADDRESSING_VALUES: ReadonlySet<string> = new Set(['owner', 'owner-agents', 'anyone']);
@@ -170,9 +197,41 @@ export function parseTemplateAgents(
       join: Array.isArray(agent.join)
         ? agent.join.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
         : [],
+      placeholders: [...placeholdersIn(agent)],
+      allowExisting: agent.allow_existing === true,
     };
   });
-  return { agents, singular: !Array.isArray(doc.agents) && agents.length === 1, warnings };
+  return {
+    agents,
+    singular: !Array.isArray(doc.agents) && agents.length === 1,
+    warnings,
+    unsaid: unsaidRuntime(doc, agents),
+  };
+}
+
+/**
+ * The provider, location and directory each agent entry leaves unsaid.
+ *
+ * An entry says one by its own field (a literal or a `{param}`), or the
+ * document says it for every agent with a param of that type that no entry's
+ * field reads.
+ */
+function unsaidRuntime(doc: Record<string, unknown>, agents: ParsedAgentEntry[]): UnsaidRuntime[] {
+  const params = asRecord(doc.params) ?? {};
+  const fieldTexts = agents.flatMap((a) => [a.provider ?? '', a.location ?? '', a.directory ?? '']);
+  const appliesToAll = (field: RuntimeField) =>
+    Object.entries(params).some(
+      ([name, spec]) =>
+        asRecord(spec)?.type === field && !fieldTexts.some((t) => t.includes(`{${name}}`))
+    );
+  const out: UnsaidRuntime[] = [];
+  agents.forEach((agent, index) => {
+    const label = agent.name ?? agent.displayName ?? `agent ${index + 1}`;
+    for (const field of RUNTIME_FIELDS) {
+      if (agent[field] === null && !appliesToAll(field)) out.push({ index, label, field });
+    }
+  });
+  return out;
 }
 
 /** How the Use page lays out what the template folds away. From the document's `form:` block. */

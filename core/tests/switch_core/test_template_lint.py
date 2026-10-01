@@ -456,6 +456,7 @@ def test_group_and_agents_keys_are_known():
     result = lint_template(
         "params:\n  team:\n    type: string\n"
         "agents:\n  - name: '{team}-triager'\n"
+        "    provider: claude\n    location: local\n    directory: /tmp/t\n"
         "group:\n  name: '{team}'\nrooms:\n  - name: '{team} lobby'\n"
         "    description: d\nlinks: []\n"
     )
@@ -508,3 +509,56 @@ def test_the_policy_fields_are_known_param_fields():
 def test_an_agent_template_without_a_room_is_not_told_agent_is_unused():
     result = lint_template("agent:\n  name: a\n  instructions: x\n")
     assert "unused_param" not in {w.code for w in result.warnings}
+
+
+class TestAgentRuntime:
+    """A template that creates an agent must say what runs it, where, and in
+    which folder: Switch Console supplies none of the three. Said at save as a
+    warning, never an error, so a document is always storable."""
+
+    def test_an_agent_with_nothing_said_is_warned_about_each_setting(self) -> None:
+        result = lint_template("agent:\n  name: helper\n  instructions: Help.\n")
+        assert result.ok, "an incomplete agent template must still be storable"
+        unsaid = [f for f in result.warnings if f.code == "agent_runtime_unsaid"]
+        assert [f.subject for f in unsaid] == ["provider", "location", "directory"]
+        assert "which coding agent runs helper" in unsaid[0].message
+
+    def test_fields_on_the_entry_say_it(self) -> None:
+        result = lint_template(
+            "agent:\n  name: helper\n  provider: claude\n  location: local\n"
+            "  directory: /tmp/helper\n  instructions: Help.\n"
+        )
+        assert "agent_runtime_unsaid" not in _codes(result.warnings)
+
+    def test_a_param_no_field_reads_says_it_for_every_agent(self) -> None:
+        result = lint_template(
+            "params:\n"
+            "  provider: {type: provider, default: [claude]}\n"
+            "  where: {type: location, default: local}\n"
+            "  dir: {type: directory, default: '{$agents_dir}/{agent}'}\n"
+            "agents:\n  - name: a\n    instructions: A.\n"
+            "  - name: b\n    instructions: B.\n"
+        )
+        assert "agent_runtime_unsaid" not in _codes(result.warnings)
+
+    def test_a_param_one_agent_reads_does_not_cover_another(self) -> None:
+        result = lint_template(
+            "params:\n  where: {type: location, default: local}\n"
+            "agents:\n"
+            "  - {name: a, provider: claude, location: '{where}', directory: /a, instructions: A.}\n"
+            "  - {name: b, provider: claude, directory: /b, instructions: B.}\n"
+        )
+        unsaid = [f for f in result.warnings if f.code == "agent_runtime_unsaid"]
+        assert [(f.subject, "b" in f.message) for f in unsaid] == [("location", True)]
+
+    def test_a_room_template_is_not_asked_about_agents(self) -> None:
+        result = lint_template("room:\n  name: r\n")
+        assert "agent_runtime_unsaid" not in _codes(result.warnings)
+
+    def test_a_runtime_param_for_every_agent_is_not_unused(self) -> None:
+        result = lint_template(
+            "params:\n  where: {type: location, default: local}\n"
+            "agent:\n  name: a\n  provider: claude\n  directory: /a\n  instructions: A.\n"
+        )
+        assert "unused_param" not in _codes(result.warnings)
+        assert "agent_runtime_unsaid" not in _codes(result.warnings)
