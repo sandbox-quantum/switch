@@ -152,13 +152,32 @@ class TestLeaving:
         assert bot.left == [-1001]
 
     @pytest.mark.parametrize(
-        "gone", [BadRequest("Chat not found"), Forbidden("bot was kicked")]
+        "gone",
+        [
+            BadRequest("Bad Request: chat not found"),
+            Forbidden("Forbidden: bot was kicked from the group chat"),
+            Forbidden("Forbidden: bot is not a member of the supergroup chat"),
+        ],
     )
     async def test_a_chat_it_is_already_out_of_is_a_success(
         self, gone: Exception
     ) -> None:
         installer, bot = await _installer(_Bot(leave_error=gone))
         await installer.release(external_workspace_id="-1001")
+
+    @pytest.mark.parametrize(
+        "refused",
+        [
+            BadRequest("Bad Request: CHANNEL_PRIVATE"),
+            Forbidden("Forbidden: bot can't initiate conversation with a user"),
+        ],
+    )
+    async def test_any_other_refusal_keeps_the_disconnect_from_finishing(
+        self, refused: Exception
+    ) -> None:
+        installer, _ = await _installer(_Bot(leave_error=refused))
+        with pytest.raises(MessagingInstallError, match="still in the chat"):
+            await installer.release(external_workspace_id="-1001")
 
     async def test_any_other_failure_keeps_the_disconnect_from_finishing(
         self,
