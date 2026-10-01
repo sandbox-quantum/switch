@@ -10,7 +10,7 @@ import type {
   HostSetupStepKind,
   HostSetupStepState,
 } from '@shared/core/remote-hosts/setup';
-import { resolveReadiness, stepsNeedingObservation } from './host-readiness';
+import { isProbing, resolveReadiness, stepsNeedingObservation } from './host-readiness';
 
 function reachability(status: HostReachabilityStatus): HostReachability {
   return {
@@ -271,5 +271,27 @@ describe('stepsNeedingObservation', () => {
 
   it('asks for nothing when there is no plan — that is a survey, not a refresh', () => {
     expect(stepsNeedingObservation(null, 'codex', NOW)).toEqual([]);
+  });
+});
+
+describe('isProbing', () => {
+  it('says checking before the first probe for this host and type has run', () => {
+    expect(isProbing(false, true, false)).toBe(true);
+  });
+
+  it('says checking while a probe is in flight', () => {
+    expect(isProbing(true, true, true)).toBe(true);
+    expect(isProbing(true, false, false)).toBe(true);
+  });
+
+  it('stops checking once the probe has run, even if steps still read as stale', () => {
+    // The probe failed, or the page stayed open past the observation TTL: the
+    // gate must judge from what it has rather than wait for a probe that is
+    // never sent again.
+    expect(isProbing(false, true, true)).toBe(false);
+  });
+
+  it('is not checking when nothing needs observing', () => {
+    expect(isProbing(false, false, false)).toBe(false);
   });
 });
