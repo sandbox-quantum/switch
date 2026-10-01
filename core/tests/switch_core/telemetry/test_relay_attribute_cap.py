@@ -1,14 +1,16 @@
-"""Every event fits through the relay's attribute cap, with room to spare.
+"""Every event fits through the relay's limits, with room to spare.
 
-The relay drops any log record carrying more than 128 attributes, and still
-answers 200. An event that grew past that would vanish from the dashboard with
-nothing anywhere reporting a fault. It is the one silent drop at the relay that
-Switch itself controls, so the margin is held here, beside the catalogue.
+The relay drops any log record carrying more than 128 attributes, and any
+event whose JSON is over 32 KiB never reaches Amplitude. It answers 200 either
+way. An event that grew past either would vanish from the dashboard with
+nothing anywhere reporting a fault. They are the silent drops at the relay that
+Switch itself controls, so the margins are held here, beside the catalogue.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -24,6 +26,11 @@ RELAY_ATTRIBUTE_CAP = 128
 # Headroom, so an event growing toward the cap is caught in review rather than
 # after its records have started disappearing.
 MAX_ATTRIBUTES = 100
+# `max_event_bytes` on the relay's Amplitude exporter: a larger event is dropped.
+RELAY_EVENT_BYTES = 32768
+# Half of it. Measured on the OTLP attributes, which wrap each value in more
+# JSON than the Amplitude event does, so this over-counts.
+MAX_EVENT_BYTES = RELAY_EVENT_BYTES // 2
 
 
 class _Capture:
@@ -46,7 +53,18 @@ def _example(kind: PropertyType) -> Any:
     return sorted(kind.values)[0]  # type: ignore[attr-defined]
 
 
-async def _attributes_on_the_wire(event: str) -> list[dict[str, Any]]:
+def _largest(kind: PropertyType) -> Any:
+    """The longest value the catalogue accepts for a property of this kind."""
+    if kind is NUMBER:
+        return -123456789012345.67
+    if kind is BOOLEAN:
+        return False
+    return max(kind.values, key=len)  # type: ignore[attr-defined]
+
+
+async def _attributes_on_the_wire(
+    event: str, value: Callable[[PropertyType], Any] = _example
+) -> list[dict[str, Any]]:
     """The log record's attributes exactly as the relay would receive them:
     validated by the service, encoded by the sink."""
     capture = _Capture()
@@ -58,9 +76,7 @@ async def _attributes_on_the_wire(event: str) -> list[dict[str, Any]]:
         version="1.0.0",
         environment=None,
     )
-    service.emit(
-        event, **{key: _example(kind) for key, kind in CATALOGUE[event].items()}
-    )
+    service.emit(event, **{key: value(kind) for key, kind in CATALOGUE[event].items()})
     await service.aclose()
 
     body: dict[str, Any] = {}
@@ -86,4 +102,16 @@ async def test_every_event_fits_through_the_relay(event: str) -> None:
         f"{event} carries {len(attributes)} attributes on the wire. The relay "
         f"drops any record over {RELAY_ATTRIBUTE_CAP} and still answers 200, "
         f"so this event is close to vanishing without a trace. Split it."
+    )
+
+
+@pytest.mark.parametrize("event", sorted(CATALOGUE))
+async def test_every_event_stays_well_under_the_relays_event_size(event: str) -> None:
+    attributes = await _attributes_on_the_wire(event, _largest)
+    size = len(json.dumps(attributes))
+
+    assert size <= MAX_EVENT_BYTES, (
+        f"{event} is {size} bytes of attributes at its largest. The relay drops "
+        f"any Amplitude event over {RELAY_EVENT_BYTES} bytes and still answers "
+        f"200, so this event is close to vanishing from Amplitude. Split it."
     )

@@ -67,6 +67,10 @@ choices are load-bearing rather than incidental:
 - **At most 100 attributes per record.** The relay drops any record over 128
   and still answers 200. The margin is held by a test over every event, on both
   the server and the Console.
+- **At most 16 KiB per event.** The relay drops an event over 32 KiB before it
+  reaches Amplitude, because Amplitude refuses a request over 1 MB. It answers
+  200 and counts the drop. A test over every event, at its largest possible
+  values, holds the margin on both clients; the largest today is about 3 KiB.
 
 ### What the relay's 200 means
 
@@ -83,8 +87,8 @@ refuse, and alerting on those counts. The relay's own repository documents the
 metrics, the alerts and how they are switched on, and the gaps that remain.
 
 What that leaves to Switch is not sending anything the relay would drop: the
-event name in both places, finite numbers, the attribute margin, and a valid
-client id.
+event name in both places, finite numbers, the attribute and size margins, and a
+valid client id.
 
 ## The rule: abstracted counts, never specifics
 
