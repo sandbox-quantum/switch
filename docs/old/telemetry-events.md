@@ -86,9 +86,12 @@ even `prod`:
   developer's machine, sets `local`. Any other value stops the server at
   startup. It is set by the Helm chart's `switchCore.telemetry.environment`,
   and forwarded by the standalone compose file.
-- **Switch Console** sends one per build: `prod` from a stable build, `staging`
-  from a canary, `local` from a development build. A server Console runs for
-  the user is given Console's.
+- **Switch Console** sends one per build: `prod` from a released stable build,
+  `staging` from a released canary, `dev` from a packaged build that is not a
+  release (a test build, or one packaged on a laptop), and `local` when run
+  from source. The release workflow stamps tagged builds `VITE_RELEASE=1`, and
+  a test holds every build step to it. A server Console runs for the user is
+  given Console's.
 
 `flint_env` rides on the resource, beside the client id. It describes where
 the reporting process runs, not anything inside the deployment, so it is not

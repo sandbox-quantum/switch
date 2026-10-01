@@ -1,4 +1,4 @@
-import { flintEnvFor, type TelemetryConfig } from './config';
+import type { TelemetryConfig, TelemetryFlintEnv } from './config';
 import {
   TELEMETRY_EVENT_PROPERTIES,
   type TelemetryEventMap,
@@ -69,6 +69,8 @@ export type TelemetryContext = {
   osType: string;
   osVersion: string;
   build: TelemetryConfig['build'];
+  /** The Amplitude project the event belongs in, which the relay routes on. */
+  flintEnv: TelemetryFlintEnv;
   timeMs: number;
 };
 
@@ -163,7 +165,7 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
             'service.name': SERVICE_NAME,
             'service.version': context.appVersion,
             'flint.client_id': context.clientId,
-            flint_env: flintEnvFor(context.build),
+            flint_env: context.flintEnv,
             'os.type': context.osType,
             'os.version': context.osVersion,
           }),

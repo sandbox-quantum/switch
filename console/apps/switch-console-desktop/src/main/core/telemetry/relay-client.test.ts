@@ -13,12 +13,14 @@ const CONTEXT: TelemetryContext = {
   osType: 'darwin',
   osVersion: '24.3.0',
   build: 'stable',
+  flintEnv: 'prod',
   timeMs: 1_700_000_000_000,
 };
 
 const CONFIG: TelemetryConfig = {
   endpoint: 'https://telemetry.example/v1/logs',
   build: 'stable',
+  flintEnv: 'prod',
 };
 
 type Attribute = { key: string; value: { stringValue: string } };
@@ -164,17 +166,16 @@ describe('the record that gets built', () => {
     expect(rawLogAttributes(payload).connected_to_room).toEqual({ boolValue: false });
   });
 
-  it.each([
-    ['stable', 'prod'],
-    ['canary', 'staging'],
-    ['dev', 'local'],
-  ] as const)('says a %s build belongs in the %s Amplitude project', (build, environment) => {
-    // The relay picks the project from this, beside the client id it already
-    // requires on the resource.
-    const payload = buildOtlpPayload('app_launched', {}, { ...CONTEXT, build });
+  it.each(['prod', 'staging', 'dev', 'local'] as const)(
+    'says the event belongs in the %s Amplitude project',
+    (flintEnv) => {
+      // The relay picks the project from this, beside the client id it already
+      // requires on the resource.
+      const payload = buildOtlpPayload('app_launched', {}, { ...CONTEXT, flintEnv });
 
-    expect(resourceAttributes(payload).flint_env).toBe(environment);
-  });
+      expect(resourceAttributes(payload).flint_env).toBe(flintEnv);
+    }
+  );
 
   it('carries a yes as a boolean, not as the word', () => {
     const payload = buildOtlpPayload(
