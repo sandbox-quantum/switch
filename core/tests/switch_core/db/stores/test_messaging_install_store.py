@@ -378,3 +378,12 @@ class TestNames:
             ids["-1002"]: (None, "Telegram"),
             ids["-1003"]: (None, None),
         }
+
+        # The same pairing, as the room itself, for who may see and disconnect
+        # the chat.
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            rooms = await store.rooms_for_tenant(session)
+
+        assert {install_id: room.name for install_id, room in rooms.items()} == {
+            ids["-1001"]: "Telegram: news"
+        }

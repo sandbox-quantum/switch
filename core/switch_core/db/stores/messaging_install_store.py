@@ -219,6 +219,25 @@ class MessagingInstallStore:
         )
         return [(row[0], row[1], row[2], row[3]) for row in result.all()]
 
+    async def rooms_for_tenant(self, session: AsyncSession) -> dict[str, Room]:
+        """The room bridged to each install's own workspace id, by install id.
+
+        The same pairing `names_for_tenant` names: only a chat claimed as a
+        room has one, and only while the install still points at its bridge.
+        Read for who may see and disconnect a chat, which is whoever may read
+        and write its room.
+        """
+        result = await session.execute(
+            select(MessagingInstall.id, Room).join(
+                Room,
+                and_(
+                    Room.bridge_id == MessagingInstall.bridge_id,
+                    Room.external_channel_id == MessagingInstall.external_workspace_id,
+                ),
+            )
+        )
+        return {row[0]: row[1] for row in result.all()}
+
     async def list_for_bridge(
         self, session: AsyncSession, *, bridge_id: str
     ) -> list[MessagingInstall]:

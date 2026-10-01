@@ -49,6 +49,14 @@ def _install(install_id: str, platform: str) -> SimpleNamespace:
     )
 
 
+def _room(
+    *, owner_id: str | None = None, read: str = "public", write: str = "public"
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        owner_id=owner_id, read_visibility=read, write_visibility=write
+    )
+
+
 @dataclass
 class _Service:
     connected: bool = False
@@ -57,6 +65,7 @@ class _Service:
         default_factory=lambda: [_install("s1", "slack"), _install("t1", "telegram")]
     )
     disconnected: list[str] = field(default_factory=list)
+    rooms: dict[str, SimpleNamespace] = field(default_factory=lambda: {"t1": _room()})
 
     def platforms(self) -> list[str]:
         return ["slack", "telegram"]
@@ -88,6 +97,9 @@ class _Service:
 
     async def install_names(self, session: Any) -> dict[str, str]:
         return {"t1": "Telegram: news"}
+
+    async def chat_rooms(self, session: Any) -> dict[str, SimpleNamespace]:
+        return self.rooms
 
     async def install_platform(self, session: Any, *, install_id: str) -> str:
         return next(i.platform for i in self.installs if i.id == install_id)
@@ -227,15 +239,15 @@ class TestOAuthIsATenantAdmins:
 
 class TestChats:
     async def test_a_member_sees_only_the_chats(self) -> None:
-        listed = await list_installs(_Session(), _Service(), False)  # type: ignore[arg-type]
+        listed = await list_installs(_Session(), _Service(), _user(), False)  # type: ignore[arg-type]
         assert [i.platform for i in listed.installs] == ["telegram"]
 
     async def test_a_tenant_admin_sees_everything(self) -> None:
-        listed = await list_installs(_Session(), _Service(), True)  # type: ignore[arg-type]
+        listed = await list_installs(_Session(), _Service(), _user(), True)  # type: ignore[arg-type]
         assert [i.platform for i in listed.installs] == ["slack", "telegram"]
 
     async def test_each_is_listed_by_the_name_it_still_has(self) -> None:
-        listed = await list_installs(_Session(), _Service(), True)  # type: ignore[arg-type]
+        listed = await list_installs(_Session(), _Service(), _user(), True)  # type: ignore[arg-type]
         assert [(i.id, i.name) for i in listed.installs] == [
             ("s1", None),
             ("t1", "Telegram: news"),
@@ -243,6 +255,55 @@ class TestChats:
 
     async def test_a_member_disconnects_one_chat(self) -> None:
         service = _Service()
+        with tenant_scope(_TENANT):
+            await disconnect_install("t1", _Session(), service, _user(), False)  # type: ignore[arg-type]
+        assert service.disconnected == ["t1"]
+
+
+class TestPrivateRooms:
+    """A chat is a room, so a room made private takes its chat with it: a
+    member who cannot read it does not see the chat, and one who cannot write
+    to it cannot disconnect it — the check moving the room onto another bridge
+    makes."""
+
+    async def test_a_member_does_not_see_a_chat_whose_room_they_cannot_read(
+        self,
+    ) -> None:
+        service = _Service(rooms={"t1": _room(read="private", write="private")})
+        listed = await list_installs(_Session(), service, _user(), False)  # type: ignore[arg-type]
+        assert listed.installs == []
+
+    async def test_its_owner_does(self) -> None:
+        service = _Service(
+            rooms={"t1": _room(owner_id="u-user", read="private", write="private")}
+        )
+        listed = await list_installs(_Session(), service, _user(), False)  # type: ignore[arg-type]
+        assert [i.id for i in listed.installs] == ["t1"]
+
+    async def test_an_admin_does(self) -> None:
+        service = _Service(rooms={"t1": _room(read="private", write="private")})
+        listed = await list_installs(_Session(), service, _user(), True)  # type: ignore[arg-type]
+        assert "t1" in [i.id for i in listed.installs]
+
+    async def test_a_member_cannot_disconnect_a_chat_whose_room_they_cannot_change(
+        self,
+    ) -> None:
+        service = _Service(rooms={"t1": _room(write="private")})
+        with tenant_scope(_TENANT), pytest.raises(HTTPException) as refused:
+            await disconnect_install("t1", _Session(), service, _user(), False)  # type: ignore[arg-type]
+        assert refused.value.status_code == 403
+        assert service.disconnected == []
+
+    async def test_an_admin_can(self) -> None:
+        service = _Service(rooms={"t1": _room(read="private", write="private")})
+        with tenant_scope(_TENANT):
+            await disconnect_install("t1", _Session(), service, _user(), True)  # type: ignore[arg-type]
+        assert service.disconnected == ["t1"]
+
+    async def test_a_chat_with_no_room_left_is_not_guarded(self) -> None:
+        """An ended chat has let go of its room, and there is nothing private
+        about it left to protect."""
+        service = _Service(rooms={})
         with tenant_scope(_TENANT):
             await disconnect_install("t1", _Session(), service, _user(), False)  # type: ignore[arg-type]
         assert service.disconnected == ["t1"]
