@@ -895,6 +895,20 @@ export async function updateBridge(
   });
 }
 
+/** Make a team the connection's default for new channels, which also turns
+ *  channel creation on. Throws `ApiError` with the server's reason — the team
+ *  is not one Switch is in, the connection is restarting, Microsoft could not
+ *  be asked — rather than returning null, so the dialog can say which. */
+export async function setDefaultTeamsTeam(
+  bridgeId: string,
+  teamId: string,
+): Promise<BridgeDetail> {
+  return jsonRequest<BridgeDetail>(`/collaborations/${bridgeId}`, "PATCH", {
+    connection_config: { team_id: teamId },
+    channel_creation_enabled: true,
+  });
+}
+
 // ── Teams placements ─────────────────────────────────────────────────────────
 //
 // Which of the organisation's teams the distributed Teams app is in. Chosen

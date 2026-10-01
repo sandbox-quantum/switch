@@ -7,6 +7,7 @@ import {
   fetchTeamPlacements,
   fetchTeamsAppPackage,
   removeBridgeFromTeam,
+  setDefaultTeamsTeam,
 } from "./api";
 
 describe("errorText", () => {
@@ -120,6 +121,53 @@ describe("addBridgeToTeam / removeBridgeFromTeam", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("/collaborations/b1/teams/t1");
     expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("setDefaultTeamsTeam", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("PATCHes the connection's config and turns channel creation on", async () => {
+    const bridge = {
+      bridge_id: "b1",
+      bridge_type: "teams",
+      display_name: "Acme Corp",
+      status: "active",
+      agent_greetings_enabled: true,
+      channel_creation_supported: true,
+      channel_creation_enabled: true,
+      room_count: 2,
+      created_at: "2026-01-01",
+      attention: null,
+      team_placement_supported: true,
+    };
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify(bridge), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await setDefaultTeamsTeam("b1", "t3");
+
+    expect(result).toEqual(bridge);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/collaborations/b1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(String(init.body))).toEqual({
+      connection_config: { team_id: "t3" },
+      channel_creation_enabled: true,
+    });
+  });
+
+  it("throws the server's reason when the team cannot be made the default", async () => {
+    respond(422, {
+      detail: "Switch is not in that team. Add it to the team first, then make it the default.",
+    });
+    const err = await setDefaultTeamsTeam("b1", "t3").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(422);
+    expect((err as ApiError).message).toBe(
+      "Switch is not in that team. Add it to the team first, then make it the default.",
+    );
   });
 });
 

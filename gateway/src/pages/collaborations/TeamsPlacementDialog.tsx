@@ -16,7 +16,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type BridgeDetail,
   type TeamPlacement,
@@ -24,7 +24,7 @@ import {
   fetchTeamPlacements,
   fetchTeamsAppPackage,
   removeBridgeFromTeam,
-  updateBridge,
+  setDefaultTeamsTeam,
 } from "../../data/api";
 
 interface Props {
@@ -58,21 +58,30 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
+  // Each change reloads the list; only the latest load may write it, so an
+  // earlier one answering late cannot put back what a later change undid.
+  const latestLoad = useRef(0);
+
   const load = useCallback(() => {
     if (!bridgeId) return;
+    const thisLoad = ++latestLoad.current;
     setLoading(true);
     setLoadError(null);
     fetchTeamPlacements(bridgeId)
       .then((result) => {
+        if (thisLoad !== latestLoad.current) return;
         setTeams(result.teams);
         setDefaultTeamId(result.default_team_id);
         setInCatalog(result.in_catalog);
         setCatalogProblem(result.catalog_problem);
       })
       .catch((e) => {
+        if (thisLoad !== latestLoad.current) return;
         setLoadError(e instanceof Error ? e.message : "Failed to load teams");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (thisLoad === latestLoad.current) setLoading(false);
+      });
   }, [bridgeId]);
 
   useEffect(() => {
@@ -121,19 +130,14 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
       try {
         // Choosing a default team is also the decision to turn channel
         // creation on: installed bridges start with it off.
-        const result = await updateBridge(bridgeId, {
-          connection_config: { team_id: team.team_id },
-          channel_creation_enabled: true,
+        await setDefaultTeamsTeam(bridgeId, team.team_id);
+        load();
+        onChanged();
+      } catch (e) {
+        setRowError({
+          teamId: team.team_id,
+          message: e instanceof Error ? e.message : "Failed to set the default team",
         });
-        if (result === null) {
-          setRowError({
-            teamId: team.team_id,
-            message: "Failed to set the default team",
-          });
-        } else {
-          load();
-          onChanged();
-        }
       } finally {
         setSettingDefaultId(null);
       }
@@ -246,6 +250,11 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
                               size="small"
                               value={team.team_id}
                               disabled={!team.has_switch || busy}
+                              slotProps={{
+                                input: {
+                                  "aria-label": `Make ${team.name} the default team`,
+                                },
+                              }}
                             />
                           </span>
                         </Tooltip>
@@ -289,6 +298,13 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
                                 (!team.has_switch && !inCatalog)
                               }
                               onChange={() => handleToggle(team)}
+                              slotProps={{
+                                input: {
+                                  "aria-label": team.has_switch
+                                    ? `Remove Switch from ${team.name}`
+                                    : `Add Switch to ${team.name}`,
+                                },
+                              }}
                             />
                           </span>
                         </Tooltip>
