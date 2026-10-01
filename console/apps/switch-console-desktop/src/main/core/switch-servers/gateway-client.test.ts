@@ -13,21 +13,53 @@ import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const refreshSession = vi.hoisted(() => vi.fn());
 const reauthenticateManagedServer = vi.hoisted(() => vi.fn());
+const setSessionCookie = vi.hoisted(() => vi.fn());
+/** The real cookie parse, so a missing cookie is read the way the client reads it. */
+const extractAuthCookie = vi.hoisted(() =>
+  vi.fn((setCookies: string[]) => {
+    for (const raw of setCookies) {
+      const [pair] = raw.split(';');
+      if (pair?.startsWith('switch_auth=')) return pair.slice('switch_auth='.length);
+    }
+    return null;
+  })
+);
 
 const managedServerHostBlocked = vi.hoisted(() => vi.fn<() => HostReachability | null>(() => null));
 const managedServerStoppedPhase = vi.hoisted(() =>
   vi.fn<() => LocalServerPhase | null>(() => null)
 );
+const noteManagedServerUnanswered = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   managedServerHostBlocked,
   managedServerStoppedPhase,
+  noteManagedServerUnanswered,
 }));
 
-vi.mock('./servers-store', () => ({ getSessionCookie }));
-vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
+vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie }));
+vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer, extractAuthCookie }));
+vi.mock('./console-identity', () => ({
+  consoleIdentityHeaders: async (server: { managed: boolean }) =>
+    server.managed
+      ? { 'X-Switch-Console-Id': 'console-1', 'X-Switch-Console-Name': 'alice@laptop' }
+      : {},
+}));
 
 const {
+  acceptInvitation,
+  acceptPendingInvitation,
+  beginMessagingAppInstall,
+  fetchInstallablePlatforms,
+  fetchPendingInvitations,
+  fetchJoinableWorkspaces,
+  joinWorkspaceByDomain,
+  fetchJoinDomains,
+  addJoinDomain,
+  removeJoinDomain,
+  createInvitation,
+  fetchInvitations,
+  fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
   fetchBridges,
@@ -161,6 +193,60 @@ describe('gatewayFetch proactive session renewal', () => {
     expect(refreshSession).not.toHaveBeenCalled();
     expect(reauthenticateManagedServer).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('gatewayFetch console attribution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockImplementation(async () => okMeResponse());
+    getSessionCookie.mockResolvedValue(makeJwt(2 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function headersOf(call: unknown[] | undefined): Record<string, string> {
+    return ((call?.[1] as RequestInit | undefined)?.headers ?? {}) as Record<string, string>;
+  }
+
+  it('says which Console is calling a server it manages', async () => {
+    await fetchMe(MANAGED);
+
+    expect(headersOf(fetchMock.mock.calls[0])).toMatchObject({
+      'X-Switch-Console-Id': 'console-1',
+      'X-Switch-Console-Name': 'alice@laptop',
+    });
+  });
+
+  it('keeps saying so on the retry after a silent re-login', async () => {
+    reauthenticateManagedServer.mockResolvedValue(makeJwt(24 * 60 * 60));
+    fetchMock.mockResolvedValueOnce(unauthorizedResponse());
+
+    await fetchMe(MANAGED);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(headersOf(fetchMock.mock.calls[1])).toMatchObject({
+      'X-Switch-Console-Id': 'console-1',
+    });
+  });
+
+  it('asks for the host to be read again when a managed server does not answer', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+
+    await expect(fetchMe(MANAGED)).rejects.toThrow(/Could not reach/);
+
+    expect(noteManagedServerUnanswered).toHaveBeenCalledExactlyOnceWith(MANAGED);
+  });
+
+  it('tells a server someone else runs nothing about the desktop', async () => {
+    await fetchMe(SERVER);
+
+    const headers = headersOf(fetchMock.mock.calls[0]);
+    expect(headers).not.toHaveProperty('X-Switch-Console-Id');
+    expect(headers).not.toHaveProperty('X-Switch-Console-Name');
   });
 });
 
@@ -756,5 +842,417 @@ describe('deleteBridge', () => {
     fetchMock.mockResolvedValue(errorResponse(500, 'adapter shutdown failed') as never);
 
     await expect(deleteBridge(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('acceptInvitation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function acceptedResponse(setCookies: string[]): Response {
+    return {
+      status: 200,
+      ok: true,
+      json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
+      headers: { getSetCookie: () => setCookies },
+      text: async () => '',
+    } as unknown as Response;
+  }
+
+  it('sends the token in the body and keeps the workspace-scoped cookie', async () => {
+    fetchMock.mockResolvedValue(
+      acceptedResponse(['switch_auth=scoped; Path=/; HttpOnly']) as never
+    );
+
+    const tenant = await acceptInvitation(SERVER, 'tok-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/invitations/accept');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ token: 'tok-1' });
+    expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
+    expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
+  });
+
+  it('raises when the server joins the workspace but sends no cookie', async () => {
+    fetchMock.mockResolvedValue(acceptedResponse([]) as never);
+
+    await expect(acceptInvitation(SERVER, 'tok-1')).rejects.toThrow(/no session cookie/);
+    expect(setSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the server's reason for refusing", async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(403, JSON.stringify({ detail: 'This invitation has expired' })) as never
+    );
+
+    await expect(acceptInvitation(SERVER, 'tok-1')).rejects.toMatchObject({
+      status: 403,
+      detail: 'This invitation has expired',
+    });
+  });
+});
+
+describe("installing the deployment's own messaging app", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists the platforms the deployment has an app for', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ platforms: ['slack'] }) as never);
+
+    await expect(fetchInstallablePlatforms(SERVER)).resolves.toEqual(['slack']);
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/messaging-apps'
+    );
+  });
+
+  it('reads a server without the route as having no app to install', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchInstallablePlatforms(SERVER)).resolves.toEqual([]);
+  });
+
+  it('raises on any other failure', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Forbidden"}') as never);
+
+    await expect(fetchInstallablePlatforms(SERVER)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('starts an install and returns the consent URL', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ authorize_url: 'https://slack.example/oauth?state=s' }) as never
+    );
+
+    await expect(beginMessagingAppInstall(SERVER, 'slack')).resolves.toBe(
+      'https://slack.example/oauth?state=s'
+    );
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/messaging-apps/slack/install');
+    expect(init.method).toBe('POST');
+  });
+
+  it('raises when the deployment has no app for the platform', async () => {
+    fetchMock.mockResolvedValue(errorResponse(501, '{"detail":"no app"}') as never);
+
+    await expect(beginMessagingAppInstall(SERVER, 'slack')).rejects.toMatchObject({ status: 501 });
+  });
+});
+
+describe('invitations addressed to the signed-in account', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists them with the workspace and who invited you', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          id: 'inv-1',
+          tenant_id: 't1',
+          tenant_slug: 'cryo',
+          tenant_name: 'Cryo Team',
+          role: 'admin',
+          expires_at: '2026-12-01T00:00:00+00:00',
+          invited_by: 'Ada',
+          created_at: '2026-11-24T00:00:00+00:00',
+        },
+      ]) as never
+    );
+
+    const listed = await fetchPendingInvitations(SERVER);
+
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/invitations/mine'
+    );
+    expect(listed).toEqual({
+      kind: 'listed',
+      invitations: [
+        {
+          id: 'inv-1',
+          tenantId: 't1',
+          workspaceName: 'Cryo Team',
+          role: 'admin',
+          expiresAt: '2026-12-01T00:00:00.000Z',
+          invitedBy: 'Ada',
+        },
+      ],
+    });
+  });
+
+  it('reads a server without the route as unable to say, not as none', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchPendingInvitations(SERVER)).resolves.toEqual({ kind: 'unsupported' });
+  });
+
+  it('raises on any other failure', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'boom') as never);
+
+    await expect(fetchPendingInvitations(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('accepts one by its workspace and id and keeps the workspace-scoped cookie', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
+      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      text: async () => '',
+    } as never);
+
+    const tenant = await acceptPendingInvitation(SERVER, 't1', 'inv-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/invitations/mine/accept');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ tenant_id: 't1', invitation_id: 'inv-1' });
+    expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
+    expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
+  });
+});
+
+describe('joining a workspace by e-mail domain', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists the workspaces open to your domain', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          tenant_id: 't9',
+          tenant_slug: 'skunk',
+          tenant_name: 'Skunkworks',
+          domain: 'acme.example',
+        },
+      ]) as never
+    );
+
+    const listed = await fetchJoinableWorkspaces(SERVER);
+
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/joinable-tenants'
+    );
+    expect(listed).toEqual({
+      kind: 'listed',
+      workspaces: [{ tenantId: 't9', workspaceName: 'Skunkworks', domain: 'acme.example' }],
+    });
+  });
+
+  it('reads a server without the route as unable to say, not as none', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchJoinableWorkspaces(SERVER)).resolves.toEqual({ kind: 'unsupported' });
+    await expect(fetchJoinDomains(SERVER, 't1')).resolves.toEqual({ kind: 'unsupported' });
+  });
+
+  it('joins one and keeps the workspace-scoped cookie', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' }),
+      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      text: async () => '',
+    } as never);
+
+    const tenant = await joinWorkspaceByDomain(SERVER, 't9');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/joinable-tenants/t9/join');
+    expect(init.method).toBe('POST');
+    expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
+    expect(tenant).toEqual({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' });
+  });
+
+  it("reads a workspace's domains and the admin's own", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        domains: [
+          { domain: 'acme.example', created_by: 'u1', created_at: '2026-11-24T00:00:00+00:00' },
+        ],
+        own_domain: 'acme.example',
+        own_domain_refusal: null,
+      }) as never
+    );
+
+    await expect(fetchJoinDomains(SERVER, 't1')).resolves.toEqual({
+      kind: 'listed',
+      domains: ['acme.example'],
+      ownDomain: 'acme.example',
+      ownDomainRefusal: null,
+    });
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/tenants/t1/join-domains'
+    );
+  });
+
+  it('adds and removes a domain', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}) as never);
+
+    await addJoinDomain(SERVER, 't1', 'acme.example');
+    await removeJoinDomain(SERVER, 't1', 'acme.example');
+
+    const calls = fetchMock.mock.calls as unknown as [string, { method: string; body?: string }][];
+    expect(calls[0]![0]).toBe('https://switch.example.com/gateway/tenants/t1/join-domains');
+    expect(calls[0]![1].method).toBe('POST');
+    expect(JSON.parse(calls[0]![1].body!)).toEqual({ domain: 'acme.example' });
+    expect(calls[1]![0]).toBe(
+      'https://switch.example.com/gateway/tenants/t1/join-domains/acme.example'
+    );
+    expect(calls[1]![1].method).toBe('DELETE');
+  });
+
+  it("surfaces the server's refusal of another domain", async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(
+        400,
+        JSON.stringify({
+          detail: 'You can only open the workspace to the domain of your own address, acme.example',
+        })
+      ) as never
+    );
+
+    await expect(addJoinDomain(SERVER, 't1', 'other.example')).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+});
+
+describe('workspace invitations', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function jsonResponse(body: unknown): Response {
+    return {
+      status: 200,
+      ok: true,
+      json: async () => body,
+      headers: { getSetCookie: () => [] },
+      text: async () => '',
+    } as unknown as Response;
+  }
+
+  const ROW = {
+    id: 'inv-1',
+    role: 'admin',
+    email: 'ada@example.com',
+    expires_at: '2026-10-05 12:00:00.123456+00:00',
+    uses_remaining: 1,
+    revoked_at: null,
+    created_by: 'u1',
+    created_at: '2026-09-28 12:00:00+00:00',
+  };
+
+  it("reads the server's timestamps as ISO, whatever separator it writes", async () => {
+    fetchMock.mockResolvedValue(jsonResponse([ROW]) as never);
+
+    const [invitation] = await fetchInvitations(SERVER, 'tenant 1');
+
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/tenants/tenant%201/invitations'
+    );
+    expect(invitation).toEqual({
+      id: 'inv-1',
+      role: 'admin',
+      email: 'ada@example.com',
+      expiresAt: '2026-10-05T12:00:00.123Z',
+      usesRemaining: 1,
+      revokedAt: null,
+      createdAt: '2026-09-28T12:00:00.000Z',
+    });
+  });
+
+  it('raises on a timestamp it cannot read rather than showing an invalid date', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ ...ROW, expires_at: 'soon' }]) as never);
+
+    await expect(fetchInvitations(SERVER, 't1')).rejects.toThrow(/unreadable timestamp/);
+  });
+
+  it('posts the invitation and returns the token and what became of the e-mail', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ...ROW, token: 'tok-1', email_delivery: 'not_configured' }) as never
+    );
+
+    const created = await createInvitation(SERVER, 't1', {
+      role: 'admin',
+      email: 'ada@example.com',
+      expiresInHours: 48,
+      usesRemaining: 1,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      role: 'admin',
+      email: 'ada@example.com',
+      expires_in_hours: 48,
+      uses_remaining: 1,
+    });
+    expect(created.token).toBe('tok-1');
+    expect(created.emailDelivery).toBe('not_configured');
+  });
+
+  it('reads a server older than e-mailed invitations as not sending them', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
+    await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
+
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
+  });
+
+  it('keeps the link when an older server says nothing about the e-mail', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...ROW, token: 'tok-1' }) as never);
+
+    const created = await createInvitation(SERVER, 't1', {
+      role: 'member',
+      email: 'ada@example.com',
+      expiresInHours: 48,
+      usesRemaining: 1,
+    });
+
+    expect(created.token).toBe('tok-1');
+    expect(created.emailDelivery).toBe('unsupported');
   });
 });

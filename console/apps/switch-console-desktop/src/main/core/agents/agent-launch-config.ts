@@ -13,7 +13,7 @@ import {
   isAgentUnmigrated,
   markAgentMigrated,
 } from './agent-storage-migration-ready';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getAgentById } from './getAgentById';
 import { importAgentConfig } from './import-agent-config';
 import { agentConfigRelativePath } from './switch-settings-paths';
@@ -56,7 +56,7 @@ export async function readRequiredAgentConfig(
   await agentStorageMigrationReady();
   if (isAgentUnmigrated(agent.id)) {
     await importAgentConfig({
-      workspaceFs: fs,
+      workdirFs: fs,
       repoAgents: getPlugin(agent.providerId).behavior.repoAgents ?? null,
       name: agent.name,
       providerConfig: agent.providerConfig,
@@ -82,7 +82,7 @@ export type AgentLaunchConfig = {
 };
 
 export async function agentLaunchConfig(agentId: string): Promise<AgentLaunchConfig> {
-  return withAgentWorkspace(agentId, async (agent, fs) => {
+  return withAgentWorkdir(agentId, async (agent, fs) => {
     const config = await readRequiredAgentConfig(agent, fs);
     const repoAgents = getPlugin(agent.providerId).behavior.repoAgents;
     return {
@@ -126,7 +126,7 @@ function launchSpecialization(config: AgentConfigFile): SwitchLaunchSpecializati
 }
 
 /** Run `run` against the agent's working directory, local or over SFTP. */
-export async function withAgentWorkspace<T>(
+export async function withAgentWorkdir<T>(
   agentId: string,
   run: (agent: Agent, fs: PluginFs) => Promise<T>
 ): Promise<T> {
@@ -134,10 +134,10 @@ export async function withAgentWorkspace<T>(
   if (!agent) throw new Error(`No agent with id ${agentId}`);
 
   const location = await getAgentLocation(agent);
-  const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const workdir = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
-    return await run(agent, workspace.fs);
+    return await run(agent, workdir.fs);
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }

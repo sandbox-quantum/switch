@@ -102,6 +102,9 @@ secrets:
   mattermostUserPassword: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
+  # SMTP relay password for invitation e-mails (required when
+  # switchCore.smtp.enabled and switchCore.smtp.username is set).
+  gatewaySmtpPassword: ""
   # `key=value` pairs, comma-separated, sent on every OTLP request. Here rather
   # than beside the other observability settings because the documented use for
   # it is a collector's API key, and every other credential in this chart comes
@@ -112,6 +115,12 @@ secrets:
   # a post by anyone who learned the URL.
   slackAppClientSecret: ""
   slackAppSigningSecret: ""
+  # Distributed Discord app (required when switchCore.discordApp.enabled). The
+  # bot token is the application-wide credential the single shared Gateway
+  # connection authenticates with — it is deployment config, not per install, so
+  # it lives here and is never stored against an install or revoked on disconnect.
+  discordAppClientSecret: ""
+  discordAppBotToken: ""
 
 # ── Switch Core (FastAPI) ─────────────────────────────────────────────────────
 switchCore:
@@ -220,6 +229,43 @@ switchCore:
     requireEmailVerified: true
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
+  # Where someone signing in through the IdP for the first time lands. Who may
+  # sign in at all is the IdP's decision; this decides what they get.
+  #   default_tenant — joined to the deployment's one pre-existing workspace
+  #   invite_only    — no workspace until they accept an invitation; only an
+  #                    operator may create one
+  #   open           — no workspace, and they may create their own, up to
+  #                    maxWorkspacesPerUser
+  signup:
+    mode: default_tenant
+    # Most workspaces one person may ever create (operators are exempt); 0
+    # turns self-service creation off. Applies in every mode but invite_only,
+    # which allows none.
+    maxWorkspacesPerUser: 3
+  # Answer a person with several workspaces and none selected with a 409 that
+  # lists them, rather than a 403. The gateway UI does not need it; turn it on
+  # once every API client authenticating against this deployment handles it.
+  tenantChoiceEnabled: false
+  # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
+  # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
+  # anything that speaks SMTP). Off, the invitation is still created and the
+  # admin is told to share the link themselves. Requires frontendBaseUrl, which
+  # the link in the e-mail points at.
+  smtp:
+    enabled: false
+    host: ""
+    # 587 with starttls, 465 with tls; none is for a relay on a trusted network.
+    port: 587
+    tls: starttls
+    # Leave empty for a relay that needs no login; set it and
+    # secrets.gatewaySmtpPassword otherwise.
+    username: ""
+    # The From address, e.g. "Switch <invites@your-domain>".
+    from: ""
+    # Addressed invitations one workspace may send per 24 hours. With sign-up
+    # open anyone can own a workspace, so this keeps the relay from being used
+    # to mail arbitrary addresses. Operators are exempt.
+    emailsPerDayPerWorkspace: 50
   # The distributed Slack app: the one a customer installs into their workspace
   # by clicking a button, as opposed to an app an operator registers themselves
   # and pastes a bot token for. Off unless you have registered such an app and
@@ -238,6 +284,30 @@ switchCore:
     # move every deeplink along with it.
     messagingPublicUrl: ""
     clientId: ""
+  # The distributed Discord app: one application we register that a customer adds
+  # to their server by clicking "Add to Server", never seeing a token — as
+  # opposed to a self-registered app an operator pastes a bot token for. Off
+  # unless you have registered and are distributing such an app.
+  #
+  # Unlike Slack there is no inbound webhook: messages and interactions arrive
+  # over the Gateway, so the only public route is the OAuth callback under
+  # /messaging. Enabling it still commits the deployment to being reachable at
+  # messagingPublicUrl (the callback origin) — add /messaging to
+  # ingress.agentApiPaths as well. The client secret and bot token are supplied
+  # through secrets.discordAppClientSecret / secrets.discordAppBotToken.
+  discordApp:
+    enabled: false
+    # Public origin Discord sends the OAuth callback to — scheme + host, https,
+    # no path. The same deployment-wide origin as slackApp.messagingPublicUrl; if
+    # both apps are enabled the Slack value is used and this one is ignored.
+    messagingPublicUrl: ""
+    clientId: ""
+    applicationId: ""
+    # Privileged Gateway intents, each off by default and requiring Discord
+    # verification past ~100 guilds (counted across every tenant). Off is
+    # mention-only operation; leave both false unless the app is verified.
+    messageContent: false
+    members: false
   # Bearer-token resolution runs before every authenticated request and agents
   # beat continuously, so a successful resolution is memoised in process for
   # this many seconds. Only successes are cached — an unknown or revoked token

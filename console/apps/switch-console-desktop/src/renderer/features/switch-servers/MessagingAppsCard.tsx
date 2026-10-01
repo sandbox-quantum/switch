@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -46,10 +47,11 @@ import {
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { useMyIdentities } from './use-my-identities';
+import { administersWorkspaceInScope } from './workspace-admin';
 
 /**
  * The messaging apps bridged to a server, which account in each one is the
- * signed-in user, and — for an admin — the way to connect another
+ * signed-in user, and — for a workspace owner or admin — the way to connect another
  * (CHOO-1784, CHOO-2137).
  *
  * One row per app: its name with the account you have claimed on it underneath,
@@ -61,7 +63,7 @@ import { useMyIdentities } from './use-my-identities';
  * Listing is offered on every server type, not just managed ones: a bridge is
  * registered through the server's own admin API, so there is nothing
  * Switch Console has to own locally for this to work. Attaching is gated on the
- * signed-in user being an admin, because the endpoint is; linking an account is
+ * signed-in user administering the workspace, because the endpoint is; linking an account is
  * not, because claiming an identity is something every user does for themselves.
  */
 /** Why a server has messaging apps at all: the agents registered here become
@@ -90,15 +92,16 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
   const showClaimIdentity = useShowModal('claimIdentityModal');
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
-  const isAdmin = switchServersStore.statusFor(serverId)?.user?.role === 'admin';
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const isAdmin = administersWorkspaceInScope(serverId);
   // Only a stack Switch Console runs has a chat whose credentials it generated and
   // can therefore show; anyone else's Mattermost is their own to hand out.
   const isManaged = !!switchServersStore.servers.find((s) => s.id === serverId)?.managed;
 
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', serverId],
-    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
-    enabled: !!serverId,
+    queryKey: ['remote-bridges', workspaceId],
+    queryFn: () => rpc.workspaces.listBridges(workspaceId as string),
+    enabled: workspaceId !== null,
   });
 
   const bridges = useMemo(() => orderBridges(bridgesQuery.data ?? []), [bridgesQuery.data]);
@@ -107,7 +110,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
     identities,
     error: identitiesError,
     refresh: refreshIdentities,
-  } = useMyIdentities(serverId);
+  } = useMyIdentities(workspaceId);
   // Whose claim to drop when unlinking. Every account here is one the signed-in
   // user claimed, and other people may hold the same one — so name the user
   // rather than let the server infer it. Null until the session is read back,
@@ -122,9 +125,9 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   // agent's policy should stop the warning on the next look, not a minute later.
   const anyUnlinked = hasUnlinkedMessagingApp(bridges, identities);
   const ownerAgentsQuery = useQuery({
-    queryKey: ['owns-owner-addressed-agent', serverId],
-    queryFn: () => rpc.switchServers.ownsOwnerAddressedAgent(serverId),
-    enabled: !!serverId && anyUnlinked,
+    queryKey: ['owns-owner-addressed-agent', workspaceId],
+    queryFn: () => rpc.workspaces.ownsOwnerAddressedAgent(workspaceId as string),
+    enabled: workspaceId !== null && anyUnlinked,
   });
   // The probe failing costs no data on screen, only the warning — so it is
   // logged rather than shown, and the card does not warn on a guess.
@@ -132,11 +135,11 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   useEffect(() => {
     if (ownerAgentsError) {
       log.warn('Could not check for owner-addressed agents', {
-        serverId,
+        workspaceId,
         error: ownerAgentsError,
       });
     }
-  }, [ownerAgentsError, serverId]);
+  }, [ownerAgentsError, workspaceId]);
 
   const unrecognisedIn = unrecognisedMessagingApps({
     bridges,
@@ -151,11 +154,12 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const [toggleError, setToggleError] = useState<string | null>(null);
 
   const handleToggleChannelCreation = async (bridge: RemoteBridge, enabled: boolean) => {
+    if (workspaceId === null) return;
     setSavingBridgeId(bridge.id);
     setToggleError(null);
     try {
-      const result = await rpc.switchServers.updateBridge({
-        serverId,
+      const result = await rpc.workspaces.updateBridge({
+        workspaceId,
         bridgeId: bridge.id,
         channelCreationEnabled: enabled,
       });
@@ -163,7 +167,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
         setToggleError(`Could not update ${bridge.displayName}: ${messageForUpdate(result)}`);
         return;
       }
-      await queryClient.invalidateQueries({ queryKey: ['remote-bridges', serverId] });
+      await queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] });
     } catch (cause) {
       setToggleError(failureText(cause, `Could not update ${bridge.displayName}.`));
     } finally {
@@ -206,7 +210,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                 onSuccess: ({ bridgeId, displayName, directorySearchSupported }) => {
                   // Refresh the bridge list everywhere it is consumed — this
                   // card and the room-creation picker share the query key.
-                  void queryClient.invalidateQueries({ queryKey: ['remote-bridges', serverId] });
+                  void queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] });
                   void switchRoomsStore.refreshRoomState();
                   // Step 2 of connecting a workspace: say which account in it
                   // is yours (CHOO-2137). Offered here because this is the one
@@ -222,8 +226,11 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                   // has messaged the app and there is a name to pick. Say that,
                   // rather than closing on nothing and leaving the step looking
                   // forgotten.
-                  if (shouldOfferIdentityLinkOnConnect({ directorySearchSupported })) {
-                    showClaimIdentity({ serverId, bridgeId });
+                  if (
+                    workspaceId !== null &&
+                    shouldOfferIdentityLinkOnConnect({ directorySearchSupported })
+                  ) {
+                    showClaimIdentity({ workspaceId, bridgeId });
                     return;
                   }
                   const note = identityLinkOrderingNote({ displayName, directorySearchSupported });
@@ -273,13 +280,14 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
         <p className="mt-3 text-xs text-foreground-muted">
           {isAdmin
             ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
-            : 'No messaging app is connected. An admin on this server can connect one.'}
+            : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">
           {bridges.map((bridge) => (
             <MessagingAppRow
               key={bridge.id}
+              workspaceId={workspaceId}
               serverId={serverId}
               bridge={bridge}
               /* Nothing is drawn in the identity column until the list
@@ -295,22 +303,23 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
               onToggleChannelCreation={(enabled) =>
                 void handleToggleChannelCreation(bridge, enabled)
               }
-              onDisconnect={() =>
+              onDisconnect={() => {
+                if (workspaceId === null) return;
                 showDisconnectMessagingApp({
-                  serverId,
+                  workspaceId,
                   bridgeId: bridge.id,
                   bridgeDisplayName: bridge.displayName,
                   onSuccess: () => {
                     void queryClient.invalidateQueries({
-                      queryKey: ['remote-bridges', serverId],
+                      queryKey: ['remote-bridges', workspaceId],
                     });
                     // The rooms on that bridge went with it, so the sidebar
                     // is stale in a way the bridge list alone does not
                     // repair.
                     void switchRoomsStore.refreshRoomState();
                   },
-                })
-              }
+                });
+              }}
             />
           ))}
         </div>
@@ -331,6 +340,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
  * disconnecting it — is in the menu.
  */
 export function MessagingAppRow({
+  workspaceId,
   serverId,
   bridge,
   identities,
@@ -342,9 +352,13 @@ export function MessagingAppRow({
   onToggleChannelCreation,
   onDisconnect,
 }: {
+  /** Null while this install has not resolved the server's workspace; the
+   *  identity actions are the only thing that needs it, and they wait. */
+  workspaceId: string | null;
+  /** Only for the bundled chat's sign-in, which is about the gateway. */
   serverId: string;
   bridge: RemoteBridge;
-  /** Accounts the user has claimed on this server, or null while unknown. */
+  /** Accounts the user has claimed in this workspace, or null while unknown. */
   identities: LinkedIdentity[] | null;
   currentUserId: string | null;
   onReleased: () => void;
@@ -361,14 +375,18 @@ export function MessagingAppRow({
 
   const identity = identities?.find((i) => i.bridgeId === bridge.id) ?? null;
   const platform = bridgePlatformLabel(bridge.type);
-  const claim = () => showClaimIdentity({ serverId, bridgeId: bridge.id });
+  const claim = () => {
+    if (workspaceId === null) return;
+    showClaimIdentity({ workspaceId, bridgeId: bridge.id });
+  };
 
   const release = async (identityId: string) => {
+    if (workspaceId === null) return;
     setReleasing(true);
     setReleaseError(null);
     try {
-      await rpc.switchServers.releaseBridgeIdentity({
-        serverId,
+      await rpc.workspaces.releaseBridgeIdentity({
+        workspaceId,
         bridgeId: bridge.id,
         identityId,
         userId: currentUserId,
@@ -397,7 +415,7 @@ export function MessagingAppRow({
   const channelsLockedReason = !bridge.channelCreationSupported
     ? `${platform} cannot create channels from Switch. Make the chat in the app and add the bot to it.`
     : !isAdmin
-      ? 'Only an admin on this server can change this.'
+      ? 'Only an owner or admin of this workspace can change this.'
       : null;
 
   return (
@@ -561,7 +579,7 @@ function messageForUpdate(result: { kind: string; message?: string }): string {
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'This requires an admin account on this server.';
+      return 'This requires an owner or admin of this workspace.';
     default:
       return result.message ?? 'The server rejected the change.';
   }

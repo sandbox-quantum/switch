@@ -79,8 +79,14 @@ def test_discord_adapter_registers_with_expected_required_fields() -> None:
     schema = service.get_config_schema("discord")
     # agent_roles is offered but not required: it needs Manage Roles and room
     # under Discord's 250-role cap, so a connection stays valid without it.
+    # event_delivery is hidden (SkipJsonSchema): it is written by the install
+    # flow, not chosen on the form.
     assert set(schema["properties"]) == {"bot_token", "guild_id", "agent_roles"}
-    assert set(schema["required"]) == {"bot_token", "guild_id"}
+    # bot_token is offered but not required by the schema: a shared-connection
+    # bridge (the distributed app) has none. What enforces it for a self-
+    # registered bridge — which opens its own connection and receives nothing
+    # without one — is the model validator, not this form.
+    assert set(schema["required"]) == {"guild_id"}
 
 
 def test_telegram_adapter_registers_with_expected_required_fields() -> None:
@@ -162,6 +168,7 @@ async def test_registering_telegram_cannot_grant_channel_creation() -> None:
             display_name="Acme Telegram",
             connection_config={"bot_token": "t", "bot_username": "b"},
             channel_creation_enabled=True,
+            preconfigured=False,
         )
 
 

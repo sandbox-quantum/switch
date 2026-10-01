@@ -2,16 +2,12 @@ import { eq } from 'drizzle-orm';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { discardControllerState } from '@main/core/sdk-host/shared-watcher';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
-import {
-  setAutoSessionAgent,
-  setControllerStopped,
-} from '@main/core/switch-rooms/auto-session-store';
+import { setControllerStopped } from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import {
   deleteAgent as gatewayDeleteAgent,
   GatewayError,
 } from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type {
   TelemetryAgentRemoveFailure,
@@ -21,6 +17,7 @@ import type {
 import { agentRemoveTriggerOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { viewStateService } from '@main/core/view-state/view-state-service';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { db } from '@main/db/client';
 import { agents, sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
@@ -29,7 +26,7 @@ import type { Location } from '@shared/core/locations/locations';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
 import { agentEvents } from './agent-events';
 import { getAgentLocation } from './agent-location';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getAgentById } from './getAgentById';
 import { stopRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
@@ -47,7 +44,8 @@ export type DeleteAgentOptions = {
   /**
    * Also tear down what was provisioned on disk for this agent (its
    * `.switch/agents/<name>.json` credentials, provider definition files, launch
-   * profile) and kill its sidecar on the host.
+   * profile) and kill its sidecar on the host. Implied by `deleteInSwitch` for
+   * a remote agent.
    *
    * Required with no default, because the right answer depends on who owns the
    * on-disk state: an agent this Console created can carry its files out, but an
@@ -101,17 +99,14 @@ function locationKindOfRow(location: Location | null): TelemetryLocationKind {
  * rather than leaving the row gone but the Switch identity orphaned.
  */
 async function deleteAgentInSwitch(agent: Agent): Promise<void> {
-  if (!agent.serverId || !agent.switchAgentId) {
+  const { workspaceId, switchAgentId } = agent;
+  if (!workspaceId || !switchAgentId) {
     throw new AgentNotLinkedToSwitchError(
-      `Agent ${agent.id} is not linked to a Switch server, so it cannot be deleted in Switch.`
+      `Agent ${agent.id} is not linked to a Switch workspace, so it cannot be deleted in Switch.`
     );
   }
-  const server = await getServer(agent.serverId);
-  if (!server) {
-    throw new AgentNotLinkedToSwitchError(`No Switch server with id ${agent.serverId}`);
-  }
 
-  await gatewayDeleteAgent(server, agent.switchAgentId);
+  await withWorkspaceSession(workspaceId, (server) => gatewayDeleteAgent(server, switchAgentId));
 }
 
 /**
@@ -126,7 +121,7 @@ async function deleteAgentInSwitch(agent: Agent): Promise<void> {
  * (visibly) rather than thrown — the credentials being torn down are already dead.
  */
 async function removeProvisionedFiles(agent: Agent, location: Location): Promise<void> {
-  const ctx = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const ctx = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
     const behavior = getPlugin(agent.providerId).behavior.repoAgents;
     if (behavior && agent.name) {
@@ -161,7 +156,7 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
         error: String(error),
       });
     });
-    await removeSwitchCredentials(ctx.fs);
+    await removeSwitchCredentials(ctx.fs, agent.switchAgentId);
     // A provider that registers the Switch server itself (Codex) leaves a
     // per-agent launch profile under the user's home — a different scope than
     // ctx.fs, reached through its own home filesystem (local or remote).
@@ -179,15 +174,14 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    only when `deleteInSwitch` is set (the opt-in "also delete in Switch").
  * 2. The agent's running sessions (runtime + view-state), which previously
  *    only the location-delete path handled.
- * 3. Its local controller and the state that controller left behind, plus the
- *    local auto_session mirror. The controller caches the agent's Switch
+ * 3. Its local controller and the state that controller left behind. The controller caches the agent's Switch
  *    credentials in memory, so without an explicit stop it keeps heartbeating
  *    and answering rooms for an agent that no longer exists. A controller on a
  *    remote host is stopped and discarded only for a full cleanup — see 4.
  * 4. Only when `removeProvisionedFiles` or `deleteInSwitch` is set: the remote
- *    controller and its state, and (for `removeProvisionedFiles`) the Switch
- *    credentials + definition file provisioned on disk for THIS agent and its
- *    sidecar. A plain remove leaves the working directory and the host's
+ *    controller and its state, and (for `removeProvisionedFiles`, or a remote
+ *    agent deleted in Switch) the Switch credentials + definition file
+ *    provisioned on disk for THIS agent and its sidecar. A plain remove leaves the working directory and the host's
  *    processes untouched — on a shared host they may belong to another install
  *    (CHOO-2560). Sibling agents' files are never touched either way.
  *
@@ -225,7 +219,11 @@ async function removeAgent(
   location: Location | null,
   options: DeleteAgentOptions
 ): Promise<void> {
-  const terminate = options.removeProvisionedFiles || options.deleteInSwitch;
+  // A remote agent deleted in Switch has nothing left to run, so it is removed
+  // from its host too.
+  const removeFiles =
+    options.removeProvisionedFiles || (options.deleteInSwitch && !!location?.sshHost);
+  const terminate = removeFiles || options.deleteInSwitch;
   const stopController = () =>
     location?.sshHost ? stopRemoteWatcher(agentId) : autoSessionWatcher.stopForAgent(agentId);
   const stoppedUpFront = terminate && agent !== undefined;
@@ -276,10 +274,9 @@ async function removeAgent(
     await discardControllerState(agentId);
   }
 
-  await setAutoSessionAgent(agentId, false);
   await setControllerStopped(agentId, false);
 
-  if (agent && location && options.removeProvisionedFiles) {
+  if (agent && location && removeFiles) {
     await removeProvisionedFiles(agent, location).catch((error) => {
       log.warn('deleteAgent: failed to remove provisioned files', {
         agentId,

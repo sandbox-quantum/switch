@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
-import { superviseSharedHost } from './supervisor';
+import { CHILD_STOP_GRACE_MS, superviseSharedHost } from './supervisor';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -182,3 +182,47 @@ it('does not relaunch a worker that exits with a fatal code', async () => {
     JSON.parse(await readFile(join(root, 'supervisor', 'failure.json'), 'utf8')).message
   ).toContain('worker.log');
 });
+
+it('kills a worker that will not stop when asked, and everything it started', async () => {
+  // A watcher waiting on a session host that hung up and stayed alive never
+  // exits on SIGTERM, and a replacement waiting for it used to give up.
+  const root = await fixture();
+  const grandchildPid = join(root, 'grandchild.pid');
+  const script = `
+    const fs = require('node:fs');
+    process.on('SIGTERM', () => {});
+    // In a group of its own, as a session host is: killing the worker's
+    // group alone would leave it.
+    const child = require('node:child_process').spawn(process.execPath,
+      ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+      { detached: true, stdio: 'ignore' });
+    fs.writeFileSync(${JSON.stringify(grandchildPid)}, String(child.pid));
+    setInterval(() => {}, 1000);
+  `;
+  const abort = new AbortController();
+  const supervising = superviseSharedHost({
+    root,
+    executable: process.execPath,
+    args: ['-e', script],
+    env: process.env,
+    signal: abort.signal,
+    build: 'test-bundle.mjs',
+    links: null,
+  });
+  let pid = 0;
+  for (let attempt = 0; attempt < 100 && !pid; attempt++) {
+    try {
+      pid = Number(await readFile(grandchildPid, 'utf8'));
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  expect(pid).toBeGreaterThan(0);
+
+  const started = Date.now();
+  abort.abort();
+  await supervising;
+
+  expect(Date.now() - started).toBeGreaterThanOrEqual(CHILD_STOP_GRACE_MS - 500);
+  expect(() => process.kill(pid, 0)).toThrow();
+}, 30_000);

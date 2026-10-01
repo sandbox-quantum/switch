@@ -18,7 +18,7 @@ vi.mock('@main/core/secrets/encrypted-app-secrets-store', () => ({
   UndecryptableSecretError: FakeUndecryptableSecretError,
 }));
 
-const { loadOrCreateSecrets, readSecrets } = await import('./secrets');
+const { loadOrCreateSecrets, readSecrets, storeSecrets } = await import('./secrets');
 
 describe('generateSecrets', () => {
   it('populates every field with a non-empty value', () => {
@@ -127,5 +127,19 @@ describe('readSecrets', () => {
     expect(secrets).toMatchObject(legacy);
     expect(secrets?.dbRuntimePassword).toBeTruthy();
     expect(setSecret).not.toHaveBeenCalled();
+  });
+});
+
+describe('storeSecrets', () => {
+  it('keeps a bundle taken from a shared host as this desktop’s copy, under the host’s key', async () => {
+    setSecret.mockReset();
+    const secrets = generateSecrets();
+
+    await storeSecrets({ secretsKey: 'remote-switch-server:vm-1:secrets' } as never, secrets);
+
+    expect(setSecret).toHaveBeenCalledWith(
+      'remote-switch-server:vm-1:secrets',
+      JSON.stringify(secrets)
+    );
   });
 });

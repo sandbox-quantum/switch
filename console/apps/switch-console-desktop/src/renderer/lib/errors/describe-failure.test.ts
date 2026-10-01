@@ -114,6 +114,16 @@ describe('describeFailure', () => {
       detail: null,
     });
   });
+
+  it('passes a refusal naming who is changing a shared server straight through', () => {
+    const message =
+      'bob@desk (as bob) is starting the server on vm-1 right now, so nothing was changed. Try ' +
+      'again once they are done.';
+    expect(describeFailure(rpcError('ServerBusyError', message), 'Could not stop.')).toEqual({
+      headline: message,
+      detail: null,
+    });
+  });
 });
 
 describe('failureText', () => {

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, ClassVar, Literal, final
+from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
@@ -197,6 +198,31 @@ class RichContentFailed(Exception):
         self.text = text
 
 
+class ChannelNotBindable(ValueError):
+    """A room was asked to bind to a channel that is not this bridge's to bind.
+
+    A `ValueError` because it is the caller's input that is wrong, and every
+    path that binds a channel already answers those as a bad request.
+    """
+
+
+class DirectorySearchBusy(RuntimeError):
+    """The platform's directory is being searched too often to take one more.
+
+    Refused at once rather than queued: a search is someone waiting on a
+    dialog, and one that sat behind a spent budget would only time out later.
+    A `RuntimeError`, so anything that reads directory failures as the
+    platform's still does.
+    """
+
+    def __init__(self, retry_after: float) -> None:
+        super().__init__(
+            "Too many directory searches right now — try again in "
+            f"{math.ceil(retry_after)} seconds"
+        )
+        self.retry_after = retry_after
+
+
 class RemovalFailed(Exception):
     """A published message could not be taken back, or not provably.
 
@@ -282,6 +308,27 @@ class ActivityMarkRefused(RuntimeError):
 #: thing to be told and is why it is a mark of its own rather than a second
 #: meaning for the first.
 ActivityMark = Literal["working", "queued"]
+
+
+@runtime_checkable
+class SupportsSharedConnection(Protocol):
+    """An adapter that runs on a shared, deployment-level connection it does not
+    own, attached after it starts rather than dialled at start.
+
+    A distributed bridge (currently only Discord) starts inert and is handed the
+    one shared connection once it is up — at boot for installs that already
+    exist, and lazily on first event for one added at runtime. Attaching also
+    re-runs whatever start-time work needed the connection (agent identities).
+
+    Structural on purpose: the lifecycle, the gateway and boot narrow to this
+    with `isinstance` and stay ignorant of the concrete adapter, and an adapter
+    with no shared connection (Slack, Mattermost, Teams, Telegram) never matches
+    and is left alone.
+    """
+
+    def attach_shared_connection(self, connection: Any) -> None: ...
+
+    def set_on_attached(self, callback: Callable[[], None]) -> None: ...
 
 
 class CollaborationAdapter(ABC):
@@ -1141,6 +1188,23 @@ class CollaborationAdapter(ABC):
         kinds of chat cannot be reached by a link at all, and the operator is
         better told where to go instead than left to conclude a button is
         missing. Markdown-free plain text; None when there is nothing to add."""
+        return None
+
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        """Refuse a channel id someone asked to bind a room to, unless it is
+        this bridge's own.
+
+        Asked before a room is bound to an existing channel by id, when a room
+        is created or moved, and never for a channel the platform delivered to
+        this bridge. The id is the caller's, and binding decides where the
+        room's messages are posted.
+
+        Nothing to refuse by default: a bridge whose credential is its own can
+        reach only what that credential reaches. A bridge on a connection
+        shared between organisations can reach every organisation's channels,
+        so being able to see one says nothing about whose it is, and it has to
+        say here which are its own. Raises `ChannelNotBindable`.
+        """
         return None
 
     @abstractmethod

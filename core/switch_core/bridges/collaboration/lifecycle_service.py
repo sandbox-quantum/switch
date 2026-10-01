@@ -4,7 +4,8 @@ import asyncio
 import logging
 import re
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
 
 import aiohttp
@@ -283,11 +284,25 @@ def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
     return f"switch-bridge-{bridge_type}-{safe_name}-{uuid4().hex[:8]}"
 
 
+class BridgeStartGuard(Protocol):
+    """Asked before a bridge starts whether it may; raises `BridgeStartRefused`."""
+
+    async def __call__(
+        self,
+        *,
+        bridge_id: str,
+        tenant_id: str,
+        bridge_type: str,
+        connection_config: Mapping[str, object],
+    ) -> None: ...
+
+
 class CollaborationBridgeLifecycleService:
     # See RoomService: a test may assemble this without `__init__`.
     _telemetry: TelemetryService | None = None
     _connect_failures: dict[str, int] = {}
     _bridge_facts: dict[str, tuple[str, object]] = {}
+    _preconfigured: set[str] = set()
     _connected: set[str] = set()
 
     def __init__(
@@ -326,6 +341,10 @@ class CollaborationBridgeLifecycleService:
         self._session_activity_listener = session_activity_listener
         self._session_activity_service = session_activity_service
         self._connections = connections
+        self._bridge_starting_listeners: list[
+            Callable[[CollaborationAdapter], None]
+        ] = []
+        self._bridge_start_guards: list[BridgeStartGuard] = []
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -342,6 +361,11 @@ class CollaborationBridgeLifecycleService:
         # Read off the row at start, so reporting never depends on what the
         # BridgeCore exposes.
         self._bridge_facts: dict[str, tuple[str, object]] = {}
+        # Bridges the deployment's setup step registered rather than a person,
+        # read off the row at start like `_bridge_facts`. Onboarding telemetry
+        # leaves these out: a bundled connector coming up is a deployment
+        # booting, not someone connecting their platform.
+        self._preconfigured: set[str] = set()
         # Reached the platform, as opposed to merely started.
         self._connected: set[str] = set()
         # bridge_id -> the host resource it holds exclusively while running
@@ -401,6 +425,59 @@ class CollaborationBridgeLifecycleService:
         to know the platform specifics."""
         bridge = self._bridges.get(bridge_id)
         return bridge.adapter if bridge is not None else None
+
+    def add_bridge_starting_listener(
+        self, listener: Callable[[CollaborationAdapter], None]
+    ) -> None:
+        """Be handed each bridge's adapter as it starts, before it runs.
+
+        For whatever the adapter needs from outside itself before its first
+        move — a bridge on a shared connection is given that connection here,
+        so it can reach its platform from the start. Called synchronously, and
+        with no await between the call and the bridge joining `iter_adapters`,
+        so a listener that also walks the running bridges misses none.
+        """
+        self._bridge_starting_listeners.append(listener)
+
+    def add_bridge_start_guard(self, guard: BridgeStartGuard) -> None:
+        """Be asked before each bridge starts whether it may, and refuse by raising.
+
+        For a condition outside the bridge's own config — whether whatever it
+        claims to serve is really this tenant's. Awaited before the adapter is
+        built, so a refused bridge runs nothing, and on an edit before the new
+        config is stored. A guard raises `BridgeStartRefused`.
+        """
+        self._bridge_start_guards.append(guard)
+
+    async def check_start_guards(
+        self,
+        *,
+        bridge_id: str,
+        tenant_id: str,
+        bridge_type: str,
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Raise `BridgeStartRefused` unless every guard lets this bridge start."""
+        for guard in self._bridge_start_guards:
+            await guard(
+                bridge_id=bridge_id,
+                tenant_id=tenant_id,
+                bridge_type=bridge_type,
+                connection_config=connection_config,
+            )
+
+    def iter_adapters(self) -> Iterator[CollaborationAdapter]:
+        """The live adapter of every running bridge, as a snapshot.
+
+        Platform-agnostic on purpose: a caller narrows with `isinstance` to the
+        capability it wants (e.g. `SupportsSharedConnection`) rather than this
+        exposing anything platform-specific.
+
+        Snapshotted so a caller may await between adapters — a runtime install
+        mutating `_bridges` mid-iteration would otherwise raise `dictionary
+        changed size during iteration`."""
+        for bridge in list(self._bridges.values()):
+            yield bridge.adapter
 
     def supports_channel_creation(self, bridge_type: str) -> bool:
         """Whether this platform can create a channel from Switch at all.
@@ -631,6 +708,7 @@ class CollaborationBridgeLifecycleService:
         display_name: str,
         connection_config: dict[str, object],
         channel_creation_enabled: bool,
+        preconfigured: bool,
     ) -> CollaborationBridge:
         async with self._register_lock:
             return await self._register_locked(
@@ -638,6 +716,7 @@ class CollaborationBridgeLifecycleService:
                 display_name=display_name,
                 connection_config=connection_config,
                 channel_creation_enabled=channel_creation_enabled,
+                preconfigured=preconfigured,
             )
 
     async def _register_locked(
@@ -647,6 +726,7 @@ class CollaborationBridgeLifecycleService:
         display_name: str,
         connection_config: dict[str, object],
         channel_creation_enabled: bool,
+        preconfigured: bool,
     ) -> CollaborationBridge:
         adapter_cls = self._adapter_registry.get(bridge_type)
         config_cls = self._config_registry.get(bridge_type)
@@ -689,6 +769,7 @@ class CollaborationBridgeLifecycleService:
             client_id=bridge_client_record.id,
             status="active",
             channel_creation_enabled=channel_creation_enabled,
+            preconfigured=preconfigured,
         )
         async with self._session_factory() as session:
             await self._bridge_store.create(session, bridge)
@@ -700,7 +781,10 @@ class CollaborationBridgeLifecycleService:
         emit_safely(
             self._telemetry,
             "connector_configured",
-            {"bridge_platform": normalise_platform(bridge_type)},
+            {
+                "bridge_platform": normalise_platform(bridge_type),
+                "is_preconfigured": preconfigured,
+            },
         )
 
         await self.start(bridge.id)
@@ -783,6 +867,12 @@ class CollaborationBridgeLifecycleService:
                         )
 
             typed_config = config_cls.model_validate(bridge.connection_config or {})
+            await self.check_start_guards(
+                bridge_id=bridge_id,
+                tenant_id=tenant_id,
+                bridge_type=bridge.type,
+                connection_config=bridge.connection_config or {},
+            )
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(
@@ -853,9 +943,16 @@ class CollaborationBridgeLifecycleService:
                 transport_factory=self._client_factory.transport_for,
             )
 
+            for listener in self._bridge_starting_listeners:
+                listener(adapter)
+
             # Stashed rather than passed: `_run_bridge`'s signature is what
             # the tenant-binding tests patch.
             self._bridge_facts[bridge_id] = (bridge.type, bridge.created_at)
+            if bridge.preconfigured:
+                self._preconfigured.add(bridge_id)
+            else:
+                self._preconfigured.discard(bridge_id)
             task = asyncio.create_task(
                 self._run_bridge(bridge_id, tenant_id, bridge_core, bridge_client)
             )
@@ -1051,7 +1148,11 @@ class CollaborationBridgeLifecycleService:
 
         `bridge_connected` fires every time, so a flapping bridge shows up.
         `connector_added` fires only on the first ever connect.
+        `first_connector_added` is the first connector a *person* added: a
+        preconfigured one never claims it, or the bundled Mattermost would
+        take it seconds after install on every deployment that ships one.
         """
+        preconfigured = bridge_id in self._preconfigured
         emit_safely(
             self._telemetry,
             "bridge_connected",
@@ -1076,9 +1177,11 @@ class CollaborationBridgeLifecycleService:
         ):
             # This bridge has reported, but the deployment-wide milestone may
             # not have. `emit_milestone` is itself once-ever.
-            await self._telemetry.emit_milestone(
-                "first_connector_added", bridge_platform=normalise_platform(platform)
-            )
+            if not preconfigured:
+                await self._telemetry.emit_milestone(
+                    "first_connector_added",
+                    bridge_platform=normalise_platform(platform),
+                )
             return
 
         elapsed_since_install = seconds_since_install(self._telemetry.installed_at)
@@ -1093,19 +1196,39 @@ class CollaborationBridgeLifecycleService:
                     elapsed_since_install if elapsed_since_install is not None else -1.0
                 ),
                 "seconds_since_configured": seconds_since(configured_at),
-                "is_first_connector": not self._any_connector_before(bridge_id),
+                "is_preconfigured": preconfigured,
+                "is_first_connector": (
+                    not preconfigured and not self._any_connector_before(bridge_id)
+                ),
                 "failed_attempts_before_success": self._connect_failures.pop(
                     bridge_id, 0
                 ),
             },
         )
-        await self._telemetry.emit_milestone(
-            "first_connector_added", bridge_platform=normalise_platform(platform)
-        )
+        if not preconfigured:
+            await self._telemetry.emit_milestone(
+                "first_connector_added", bridge_platform=normalise_platform(platform)
+            )
+
+    def note_preconfigured(self, bridge_id: str, preconfigured: bool) -> None:
+        """Follow a change to the row without a restart. Only a bridge this
+        process has started is tracked; any other reads the row when it
+        starts."""
+        if bridge_id not in self._bridge_facts:
+            return
+        if preconfigured:
+            self._preconfigured.add(bridge_id)
+        else:
+            self._preconfigured.discard(bridge_id)
 
     def _any_connector_before(self, bridge_id: str) -> bool:
-        """Whether another bridge was already connected when this one came up."""
-        return any(other != bridge_id for other in self._bridges)
+        """Whether another bridge a person added was already running when this
+        one came up. A preconfigured one does not count: it is there before
+        anybody does anything."""
+        return any(
+            other != bridge_id and other not in self._preconfigured
+            for other in self._bridges
+        )
 
     async def stop(self, bridge_id: str, *, reason: str = "shutdown") -> None:
         # Before the adapter goes, so a press in flight is answered as gone
@@ -1244,11 +1367,30 @@ class CollaborationBridgeLifecycleService:
         # Bridge ids are fresh UUIDs, so a deployment that repeatedly connects
         # and removes connectors grows these without bound otherwise.
         self._bridge_facts.pop(bridge_id, None)
+        self._preconfigured.discard(bridge_id)
         self._connect_failures.pop(bridge_id, None)
         self._connect_started.pop(bridge_id, None)
 
     def get(self, bridge_id: str) -> BridgeCore | None:
-        return self._bridges.get(bridge_id)
+        """The running bridge for ``bridge_id``, if it is the bound tenant's.
+
+        The registry holds every tenant's bridges, so a caller acting for one
+        tenant must not be handed another's. With no tenant bound (boot and
+        the per-tenant fan-outs) there is nothing to compare against.
+        """
+        bridge_core = self._bridges.get(bridge_id)
+        if bridge_core is None:
+            return None
+        bound = current_tenant_id()
+        if bound is not None and bridge_core.tenant_id != bound:
+            logger.warning(
+                "Refused bridge %s to tenant %s: it belongs to tenant %s",
+                bridge_id,
+                bound,
+                bridge_core.tenant_id,
+            )
+            return None
+        return bridge_core
 
     def expected_count(self) -> int:
         """Bridges that were started and have not been stopped deliberately."""

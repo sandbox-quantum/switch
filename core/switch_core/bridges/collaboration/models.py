@@ -215,6 +215,15 @@ class BridgeCredentialError(Exception):
     """
 
 
+class BridgeStartRefused(RuntimeError):
+    """A start guard refused to let a bridge run, with the reason.
+
+    Raised before the bridge's adapter is built, so nothing of it ran. Also
+    answers an edit that would leave a bridge unable to start, before the edit
+    is stored.
+    """
+
+
 class BridgeOperationError(RuntimeError):
     """A platform refused an operation the bridge asked it to perform.
 

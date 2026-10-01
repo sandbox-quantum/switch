@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.collaboration.adapter import ChannelNotBindable
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
 from switch_core.room_service import RoomService
 
@@ -69,6 +70,12 @@ class _FakeAdapter:
     def __init__(self, events: list[Any], new_channel_id: str) -> None:
         self._events = events
         self._new_channel_id = new_channel_id
+        self.not_bindable: set[str] = set()
+
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        self._events.append(("require_bindable", channel_id))
+        if channel_id in self.not_bindable:
+            raise ChannelNotBindable(f"{channel_id} is not this bridge's")
 
     async def create_channel(
         self, name: str, topic: str, *, channel_type: str = "channel_public"
@@ -324,8 +331,10 @@ class TestChangeBridge:
             external_channel_id="chan-reused",
         )
 
-        # No new channel provisioned; the provided id is bound and mapped.
+        # No new channel provisioned; the provided id is vouched for, then
+        # bound and mapped.
         assert not any(e[0] == "create_channel" for e in events)
+        assert events[0] == ("require_bindable", "chan-reused")
         assert room_store.update_bridge_calls[0]["external_channel_id"] == "chan-reused"
         assert ("add_room_mapping", "room-1", "chan-reused") in events
         assert ("add_agents", "chan-reused", ["agent.one"]) in events
@@ -333,6 +342,42 @@ class TestChangeBridge:
         # that already exists has nothing to piggy-back on, so capture must be
         # established explicitly or the room only ever hears @mentions.
         assert ("ensure_capture", [("chan-reused", "channel_public")]) in events
+
+    async def test_a_channel_the_bridge_refuses_is_not_bound(self) -> None:
+        """The id is the caller's, and binding decides where the room's
+        messages are posted: a bridge on a shared connection can see other
+        organisations' channels, so it is asked first and nothing moves."""
+        events: list[Any] = []
+        room = SimpleNamespace(
+            id="room-1",
+            tenant_id="room-tenant",
+            name="Work",
+            description="A room",
+            matrix_room_id="!mx:switch.local",
+            bridge_id="bridge-old",
+            channel_type="channel_public",
+            external_channel_id="chan-old",
+        )
+        new_bridge = _FakeBridgeCore(events, matrix_user_id="@bot-new:switch.local")
+        new_bridge.adapter.not_bindable.add("chan-elsewhere")
+        old_bridge = _FakeBridgeCore(events, matrix_user_id="@bot-old:switch.local")
+        svc, room_store = _build_service(
+            room=room,
+            agent_ids=["a1"],
+            agent_names={"a1": "agent.one"},
+            bridges={"bridge-new": new_bridge, "bridge-old": old_bridge},
+            events=events,
+        )
+
+        with pytest.raises(ChannelNotBindable):
+            await svc.change_bridge(
+                "room-1",
+                bridge_id="bridge-new",
+                external_channel_id="chan-elsewhere",
+            )
+
+        assert events == [("require_bindable", "chan-elsewhere")]
+        assert room_store.update_bridge_calls == []
 
     async def test_capture_is_established_for_a_freshly_created_channel(self) -> None:
         # Idempotent by design: the adapter skips a channel it is already

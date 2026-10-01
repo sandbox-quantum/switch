@@ -21,15 +21,19 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
@@ -54,10 +58,14 @@ def init_dependencies(
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
     invitation_store: InvitationStore,
+    join_domain_store: JoinDomainStore,
     template_store: TemplateStore,
+    usage_store: UsageStore,
+    budget_store: BudgetStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     install_service: MessagingInstallService | None,
+    invite_mailer: InviteMailer | None,
     config: SwitchConfig,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -75,10 +83,14 @@ def init_dependencies(
     _state["external_user_store"] = external_user_store
     _state["api_key_store"] = api_key_store
     _state["invitation_store"] = invitation_store
+    _state["join_domain_store"] = join_domain_store
     _state["template_store"] = template_store
+    _state["usage_store"] = usage_store
+    _state["budget_store"] = budget_store
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
     _state["install_service"] = install_service
+    _state["invite_mailer"] = invite_mailer
     _state["config"] = config
 
 
@@ -194,6 +206,18 @@ def get_invitation_store() -> InvitationStore:
     return _state["invitation_store"]  # type: ignore[no-any-return]
 
 
+def get_join_domain_store() -> JoinDomainStore:
+    return _state["join_domain_store"]  # type: ignore[no-any-return]
+
+
+def get_usage_store() -> UsageStore:
+    return _state["usage_store"]  # type: ignore[no-any-return]
+
+
+def get_budget_store() -> BudgetStore:
+    return _state["budget_store"]  # type: ignore[no-any-return]
+
+
 def get_connector_lifecycle() -> ServerSideConnectorLifecycleService:
     return _state["connector_lifecycle"]  # type: ignore[no-any-return]
 
@@ -240,6 +264,12 @@ def get_install_store() -> MessagingInstallStore:
     credentials are taken away, which is exactly when the service is gone.
     """
     return MessagingInstallStore()
+
+
+def get_invite_mailer() -> InviteMailer | None:
+    """None when no SMTP relay is configured: an addressed invitation is
+    still minted, and the response says nothing was sent."""
+    return _state["invite_mailer"]  # type: ignore[no-any-return]
 
 
 def get_install_service() -> MessagingInstallService | None:

@@ -50,4 +50,34 @@ console.log(JSON.stringify(process.argv[2]==='logs'?logs.join('\n\n'):result));
  */
 export const removeWatcherRoots = String.raw`${IS_STATE_ROOT}const fs=require('node:fs'),path=require('node:path');const identity=process.argv[1];const base=path.join(require('node:os').homedir(),'.local','state','switch','sdk-watchers');const roots=new Set([path.join(base,require('node:crypto').createHash('sha256').update(identity).digest('hex'))]);if(fs.existsSync(base))for(const name of fs.readdirSync(base).filter(isStateRoot)){try{if(JSON.parse(fs.readFileSync(path.join(base,name,'config.json'),'utf8')).session.agentId===identity)roots.add(path.join(base,name))}catch(e){if(e.code!=='ENOENT')throw e}}for(const root of roots)fs.rmSync(root,{recursive:true,force:true})`;
 
-export const waitForWatcherStop = String.raw`const fs=require('node:fs'),path=require('node:path');const files=['shared-owner.lock','supervisor/owner.json'];const alive=file=>{try{const pid=JSON.parse(fs.readFileSync(path.join(process.argv[1],file),'utf8')).pid;if(!Number.isSafeInteger(pid)||pid<=0)throw new Error('Invalid watcher PID');process.kill(pid,0);return true}catch(e){if(['ENOENT','ESRCH'].includes(e.code))return false;throw e}};(async()=>{for(let i=0;i<100;i++){if(!files.some(alive))return;await new Promise(r=>setTimeout(r,200))}throw new Error('The shared watcher has not stopped; retry after checking its log.')})().catch(e=>{console.error(e.message);process.exitCode=1})`;
+/**
+ * `waitForWatcherStop(root)` for scripts run with `node -e`: returns once
+ * neither the watcher nor its supervisor at `root` is alive, and throws if
+ * they are still up after 20 s.
+ */
+export const WAIT_FOR_WATCHER_STOP_FN = String.raw`
+function waitForWatcherStop(root) {
+  const fs = require('node:fs'), path = require('node:path');
+  const files = ['shared-owner.lock', 'supervisor/owner.json'];
+  const alive = (file) => {
+    try {
+      const pid = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')).pid;
+      if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid watcher PID');
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      if (['ENOENT', 'ESRCH'].includes(e.code)) return false;
+      throw e;
+    }
+  };
+  for (let i = 0; i < 100; i++) {
+    if (!files.some(alive)) return;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
+  throw new Error('The shared watcher has not stopped; retry after checking its log.');
+}
+`;
+
+export const waitForWatcherStop = String.raw`${WAIT_FOR_WATCHER_STOP_FN}
+try { waitForWatcherStop(process.argv[1]); } catch (e) { console.error(e.message); process.exitCode = 1; }
+`;

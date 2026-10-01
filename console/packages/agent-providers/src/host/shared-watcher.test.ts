@@ -12,6 +12,7 @@ import { ensureSharedProcess, type Supervision } from './launch';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 import {
+  MAX_HOST_RESTARTS,
   stopSupersededSessions,
   runSharedWatcher,
   SharedWatchAssignments,
@@ -1054,6 +1055,8 @@ it('hands a session it has just created the event that created it', async () => 
   expect(started[0]!.parked).toMatchObject([
     { sequence: 1, roomId: 'room', messageId: 'message-1' },
   ]);
+  // Started because the room addressed the agent, which its host reports.
+  expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].startSource).toBe('room');
   expect(hosts.to(join(root, assigned!.session.sessionId))).toMatchObject([
     {
       type: 'room',
@@ -1583,3 +1586,49 @@ function placementsOf(maps: Record<string, string>[]): Record<string, string> {
     Object.entries(maps.at(-1) ?? {}).map(([session, room]) => [room, session])
   );
 }
+
+it('tells the room once a session keeps not taking a message, instead of starting it forever', async () => {
+  // A host that is up but never takes the message — it hung up its pipe and
+  // stayed alive — used to be started again every few seconds, for ever,
+  // with nobody told.
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-restart-cap-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  hosts.drop = true;
+  const calls = switchOperations({ owner: 'ada' });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    for (let second = 0; second < 120; second++) {
+      if (calls.some((call) => call.name === 'send_targeted_message')) break;
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    const told = calls.filter((call) => call.name === 'send_targeted_message');
+    expect(told).toHaveLength(1);
+    expect(String((told[0]!.body as { body: string }).body)).toContain(
+      `after being started ${MAX_HOST_RESTARTS} times`
+    );
+    expect(error.mock.calls.some((call) => String(call[0]).includes('stay queued'))).toBe(true);
+
+    // And it stops: nothing starts the host again on its own.
+    const starts = vi.mocked(ensureSharedProcess).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.mocked(ensureSharedProcess).mock.calls.length).toBe(starts);
+    // The message is still owed, for when the session can take it.
+    expect((await SharedWatchAssignments.open(root)).pending().map((e) => e.messageId)).toEqual([
+      'message-1',
+    ]);
+  } finally {
+    abort.abort();
+    await run;
+    vi.useRealTimers();
+  }
+});

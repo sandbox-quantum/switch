@@ -228,9 +228,12 @@ export class SshClientProxy {
             this.client.exec(command, wrappedCallback);
           }
         } catch (err) {
-          // e.g. connection not available — surface via callback, don't leak the slot.
-          release();
-          userCallback?.(err as Error, undefined as never);
+          // e.g. connection not available. Settled through the wrapper, so its
+          // open-timeout is cancelled and the failure is reported once: called
+          // around it, the timer outlived the throw and fired a second,
+          // invented "timed out" 15 s later, into the callback again and into
+          // the wedge count. The wrapper's callback frees the slot.
+          wrappedCallback(err as Error & { code: number }, undefined as never);
         }
       };
 
@@ -257,14 +260,22 @@ export class SshClientProxy {
       try {
         this.client.forwardOut('127.0.0.1', 0, '127.0.0.1', dstPort, wrapped);
       } catch (err) {
-        reject(err instanceof Error ? err : new Error(String(err)));
+        // Through the wrapper, not around it: see exec.
+        const error = err instanceof Error ? err : new Error(String(err));
+        wrapped(error as Error & { code: number }, undefined as never);
       }
     });
   }
 
   sftp(callback: ClientSFTPCallback): void {
     const wrapped = this.withChannelOpenTimeout('sftp', callback as unknown as ClientCallback);
-    this.client.sftp(wrapped as unknown as ClientSFTPCallback);
+    try {
+      this.client.sftp(wrapped as unknown as ClientSFTPCallback);
+    } catch (err) {
+      // Through the wrapper, not around it: see exec.
+      const error = err instanceof Error ? err : new Error(String(err));
+      wrapped(error as Error & { code: number }, undefined as never);
+    }
   }
 
   private reportChannelResult(err: Error | undefined): void {

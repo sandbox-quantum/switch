@@ -57,8 +57,15 @@ export {
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
+export { hostStartSources, type HostStartSource } from './host/session-start';
 export { runSharedWatcher } from './host/shared-watcher';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
+export {
+  recordWatcherHealth,
+  WATCHER_HEALTH_FILE,
+  type WatcherHealthFile,
+  watcherHealthFileSchema,
+} from './host/watcher-health-file';
 export {
   readWatchFlags,
   WATCH_FLAGS_FILE,

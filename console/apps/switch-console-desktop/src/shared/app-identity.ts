@@ -24,15 +24,17 @@ const isCanary = env?.VITE_BUILD === 'canary';
 // cost is paid once, at the release that changes them: Linux package managers
 // see `switch-console` as a new package rather than an upgrade of
 // `switchdash`, so the old one has to be removed by hand.
+//
+// Canary is a separate install (its own APP_ID and PRODUCT_NAME) that shares
+// stable's data on purpose: same database, same agents, same keychain key, same
+// managed local server. That is why OS_APP_NAME and USER_DATA_DIR_NAME do not
+// branch on the channel — giving canary its own would start it empty and leave
+// it unable to decrypt the sign-ins stable saved.
 export const APP_ID = isCanary ? 'com.switchdash.canary' : 'com.switchdash.stable';
 export const PRODUCT_NAME = isCanary ? 'Switch Console Canary' : 'Switch Console';
-export const OS_APP_NAME = isCanary ? 'Switchdash Canary' : 'Switchdash';
+export const OS_APP_NAME = 'Switchdash';
 export const APP_NAME_LOWER = isCanary ? 'switch-console-canary' : 'switch-console';
-export const USER_DATA_DIR_NAME = isDev
-  ? 'switchdash-dev'
-  : isCanary
-    ? 'switchdash-canary'
-    : 'switchdash';
+export const USER_DATA_DIR_NAME = isDev ? 'switchdash-dev' : 'switchdash';
 export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
 export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-console';
 export const IS_CANARY = isCanary;
@@ -60,7 +62,7 @@ export const RELEASE_REPO_NAME = 'switch';
 // core/pyproject.toml is the first step of cutting a switch-core release, and a
 // derived pin would immediately point local-server mode at images that are not
 // on the registry yet.
-export const COMPATIBLE_SWITCH_VERSION = '0.28.0';
+export const COMPATIBLE_SWITCH_VERSION = '0.29.0';
 
 // The last switch-core release that can still read a Matrix homeserver.
 //

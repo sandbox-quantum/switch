@@ -2231,8 +2231,10 @@ async def update_room(
             bridge instead of provisioning a new one — e.g. to move a room
             back onto a channel it previously used (channels are left in place
             on a bridge change, so the old one still exists). The id must be a
-            real channel on the target bridge whose bridge bot is a member.
-            Ignored unless `bridge_id` is given.
+            real channel on the target bridge whose bridge bot is a member,
+            and one the bridge serves: a channel belonging to another Discord
+            server than the bridge's is refused. Ignored unless `bridge_id` is
+            given.
         aliases: Per-room agent aliases to set, keyed by agent name → alias.
             `@<alias>` then addresses that agent in the room like its real
             name. Pass an empty string ("") as the value to clear an agent's

@@ -40,15 +40,19 @@ function requestQuit(): void {
 export function setupApplicationMenu(): void {
   const isMac = process.platform === 'darwin';
 
+  // app.name is the frozen OS name that keys the keychain and data folder (see
+  // app-identity.ts), so user-facing labels use PRODUCT_NAME instead.
+  if (isMac) app.setAboutPanelOptions({ applicationName: PRODUCT_NAME });
+
   const template: Electron.MenuItemConstructorOptions[] = [
     // macOS app menu
     ...(isMac
       ? [
           {
-            label: app.name,
+            label: PRODUCT_NAME,
             submenu: [
               {
-                label: `About ${app.name}`,
+                label: `About ${PRODUCT_NAME}`,
                 click: () => app.showAboutPanel(),
               },
               { type: 'separator' as const },
@@ -64,12 +68,12 @@ export function setupApplicationMenu(): void {
               { type: 'separator' as const },
               { role: 'services' as const },
               { type: 'separator' as const },
-              { role: 'hide' as const },
+              { role: 'hide' as const, label: `Hide ${PRODUCT_NAME}` },
               { role: 'hideOthers' as const },
               { role: 'unhide' as const },
               { type: 'separator' as const },
               {
-                label: `Quit ${app.name}`,
+                label: `Quit ${PRODUCT_NAME}`,
                 accelerator: 'CmdOrCtrl+Q',
                 click: requestQuit,
               },

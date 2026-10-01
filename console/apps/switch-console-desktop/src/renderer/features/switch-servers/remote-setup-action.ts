@@ -1,0 +1,78 @@
+import type { RemoteStackProbe } from '@shared/core/managed-switch-server/managed-switch-server';
+
+/**
+ * What the remote setup step offers for a host, from what the host was found
+ * to have (CHOO-2893). A host is shared, so the step never assumes it is empty:
+ * it looks first, then offers the one action that is safe there.
+ */
+export type RemoteSetupAction =
+  /** Not looked at yet, or being looked at. */
+  | { kind: 'checking' }
+  /** Join a running stack as it is or, when `updatesTo` is set, update it for
+   * everyone first, since this Console cannot use it as it is. */
+  | {
+      kind: 'connect';
+      deployedVersion: string | null;
+      shared: boolean;
+      updatesTo: string | null;
+    }
+  /** Start a stack — `existing` when one is set up but stopped, whose data and
+   * credentials the start keeps; otherwise a new one. */
+  | { kind: 'start'; existing: boolean }
+  /** Nothing is safe to do from this account; the reason is for the user. */
+  | { kind: 'blocked'; title: string; detail: string }
+  /** Docker is not usable on the host; the Docker notice says why. */
+  | { kind: 'docker' };
+
+export function remoteSetupAction(
+  hostLabel: string,
+  probe: RemoteStackProbe | null,
+  probing: boolean
+): RemoteSetupAction {
+  if (probing || probe === null) return { kind: 'checking' };
+  switch (probe.kind) {
+    case 'absent':
+      return { kind: 'start', existing: false };
+    case 'present':
+      // Stopped or running, a start is refused as a downgrade, so none is offered.
+      if (probe.drift?.direction === 'downgrade') {
+        return {
+          kind: 'blocked',
+          title: `The server on ${hostLabel} is newer than this Console`,
+          detail:
+            `It ${probe.running ? 'runs' : 'was last run on'} switch-core ${probe.drift.deployed}, ` +
+            `and this Console runs ${probe.drift.expected}, so it cannot use it. Update Switch ` +
+            `Console, then ${probe.running ? 'connect' : 'start it'}.`,
+        };
+      }
+      if (!probe.running) return { kind: 'start', existing: true };
+      return {
+        kind: 'connect',
+        deployedVersion: probe.deployedVersion,
+        shared: probe.shared,
+        updatesTo: probe.drift?.direction === 'upgrade' ? probe.drift.expected : null,
+      };
+    case 'unshared':
+      return {
+        kind: 'blocked',
+        title: `The server on ${hostLabel} belongs to another account`,
+        detail: probe.message,
+      };
+    case 'incomplete':
+      return {
+        kind: 'blocked',
+        title: `The server on ${hostLabel} cannot be read`,
+        detail:
+          `Its settings are missing ${probe.missing.join(', ')}. Starting it from here could ` +
+          `replace the credentials its data was created with, so it is not offered.`,
+      };
+    case 'unreadable':
+      return {
+        kind: 'blocked',
+        title: `Could not check ${hostLabel} for a Switch server`,
+        detail: probe.reason,
+      };
+    case 'docker-unavailable':
+      return { kind: 'docker' };
+  }
+}

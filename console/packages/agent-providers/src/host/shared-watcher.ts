@@ -121,6 +121,14 @@ const OWNERSHIP_RETRY_MS = 5000;
 /** How long a message waits for its session's host to start and take it. */
 const HOST_START_MS = 120000;
 
+/**
+ * How many times in a row a session's host is started again for a message it
+ * would not take before the room is told it cannot be reached. Starting it
+ * again is what fixes a host that stopped; one that keeps not taking the
+ * message is stuck in a way starting it does not fix.
+ */
+export const MAX_HOST_RESTARTS = 5;
+
 /** How often a room still waiting for an owner says so again. */
 const HELD_DISCLOSURE_MS = 30000;
 
@@ -580,6 +588,7 @@ export async function runSharedWatcher(
             `Session ${sessionId} is running again; handing it the ${entry.queue.length} room message(s) that waited for it.`
           );
           entry.failed = null;
+          entry.restarts = 0;
           pump(entry.config);
         }
       })
@@ -614,6 +623,9 @@ export async function runSharedWatcher(
         watcher: false,
         restart: false,
         supervision,
+        // Every session this watcher starts answers a room message. Recorded
+        // only if this launch creates the session, so a relaunch is not a start.
+        startSource: 'room',
       });
     };
     const superseded = await supersededSessions(template.session.agentId, supervision);
@@ -676,14 +688,22 @@ export async function runSharedWatcher(
      * journal first and released on the host's acknowledgement, so one this
      * controller dies holding is routed again when it restarts.
      *
-     * `failed` is set when the host stopped on a failure it recorded: the
+     * `failed` is set when the host stopped on a failure it recorded, or
+     * would not take a message however often it was started again: the
      * messages stay queued and the host is not started again until something
      * changes — another room message for it, or its host coming up because
-     * somebody started it from Console.
+     * somebody started it from Console. `restarts` counts the starts in a row
+     * that did not get the first queued message taken.
      */
     const pumps = new Map<
       string,
-      { queue: Handoff[]; running: boolean; failed: string | null; config: SharedHostConfig }
+      {
+        queue: Handoff[];
+        running: boolean;
+        failed: string | null;
+        restarts: number;
+        config: SharedHostConfig;
+      }
     >();
     const pump = (config: SharedHostConfig) => {
       const sessionId = config.session.sessionId;
@@ -701,6 +721,7 @@ export async function runSharedWatcher(
               HOST_START_MS
             );
             entry.queue.shift();
+            entry.restarts = 0;
             pending = pending.then(() => assignments.released(event));
             await pending;
           } catch (error) {
@@ -714,6 +735,15 @@ export async function runSharedWatcher(
               break;
             }
             if (!(error instanceof SessionUnavailableError)) throw error;
+            if (entry.restarts >= MAX_HOST_RESTARTS) {
+              entry.failed = `The session did not take a message after being started ${MAX_HOST_RESTARTS} times (${error.message}).`;
+              console.error(
+                `Session ${sessionId}: ${entry.failed} Its ${entry.queue.length} room message(s) stay queued; it is started again when the room next addresses the agent or the session is restarted from Console.`
+              );
+              void announce(config, entry.queue.at(-1) ?? event, entry.failed);
+              break;
+            }
+            entry.restarts++;
             // Not running, or it stopped before it answered: start it again
             // and hand the message over once it is back.
             console.warn(
@@ -739,7 +769,13 @@ export async function runSharedWatcher(
       const sessionId = config.session.sessionId;
       const sessionRoot = sharedSessionRoot(sessionId);
       if (!waiting) await assignments.park(event, false);
-      const entry = pumps.get(sessionId) ?? { queue: [], running: false, failed: null, config };
+      const entry = pumps.get(sessionId) ?? {
+        queue: [],
+        running: false,
+        failed: null,
+        restarts: 0,
+        config,
+      };
       pumps.set(sessionId, entry);
       entry.config = config;
       const fresh = !entry.queue.some((queuedEvent) => queuedEvent.messageId === event.messageId);
@@ -752,6 +788,7 @@ export async function runSharedWatcher(
           `Room ${event.roomId} addressed the agent again; starting session ${sessionId} again after it failed (${entry.failed}).`
         );
         entry.failed = null;
+        entry.restarts = 0;
       }
       if (!links.ready(sessionRoot)) await launch(config);
       pump(config);

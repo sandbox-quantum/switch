@@ -46,23 +46,23 @@ import { agentConfigRelativePath } from './switch-settings-paths';
  * file cannot be parsed — writing over it would lose what it holds.
  */
 export async function importAgentConfig(params: {
-  workspaceFs: PluginFs;
+  workdirFs: PluginFs;
   /** Null for a provider with no repository definitions. */
   repoAgents: IRepoAgentsBehavior | null;
   name: string;
   providerConfig: AgentProviderConfig | null;
 }): Promise<boolean> {
-  const { workspaceFs, repoAgents, name, providerConfig } = params;
-  const existing = await readAgentConfigFile(workspaceFs, name);
+  const { workdirFs, repoAgents, name, providerConfig } = params;
+  const existing = await readAgentConfigFile(workdirFs, name);
 
   const imported = repoAgents
-    ? await importDefinition({ workspaceFs, repoAgents, name, existing })
+    ? await importDefinition({ workdirFs, repoAgents, name, existing })
     : (existing ?? fromProviderConfig(providerConfig));
 
   if (existing && serialiseAgentConfigFile(imported) === serialiseAgentConfigFile(existing)) {
     return false;
   }
-  await writeAgentConfigFile(workspaceFs, name, imported);
+  await writeAgentConfigFile(workdirFs, name, imported);
   return true;
 }
 
@@ -76,15 +76,15 @@ export async function importAgentConfig(params: {
  * a definition it generated itself and regenerates it from the config instead.
  */
 export async function acknowledgeDefinition(params: {
-  workspaceFs: PluginFs;
+  workdirFs: PluginFs;
   repoAgents: IRepoAgentsBehavior | null;
   name: string;
   config: AgentConfigFile;
 }): Promise<AgentConfigFile> {
-  const { workspaceFs, repoAgents, name, config } = params;
+  const { workdirFs, repoAgents, name, config } = params;
   if (!repoAgents) return config;
   const definitionPath = repoAgents.definitionPath(name);
-  const current = await workspaceFs.read(definitionPath);
+  const current = await workdirFs.read(definitionPath);
   if (current === null) return config;
   return {
     ...config,
@@ -93,21 +93,21 @@ export async function acknowledgeDefinition(params: {
 }
 
 async function importDefinition(params: {
-  workspaceFs: PluginFs;
+  workdirFs: PluginFs;
   repoAgents: IRepoAgentsBehavior;
   name: string;
   existing: AgentConfigFile | null;
 }): Promise<AgentConfigFile> {
-  const { workspaceFs, repoAgents, name, existing } = params;
+  const { workdirFs, repoAgents, name, existing } = params;
   const config = existing ?? {};
   const acknowledge = (next: AgentConfigFile) =>
-    acknowledgeDefinition({ workspaceFs, repoAgents, name, config: next });
+    acknowledgeDefinition({ workdirFs, repoAgents, name, config: next });
 
   const definitionPath = repoAgents.definitionPath(name);
-  const current = await workspaceFs.read(definitionPath);
+  const current = await workdirFs.read(definitionPath);
   if (current === null) return config;
 
-  const attributes = await repoAgents.readDefinition(workspaceFs, name);
+  const attributes = await repoAgents.readDefinition(workdirFs, name);
   if (attributes === null || !hasFrontmatter(current)) {
     log.warn('importAgentConfig: agent definition has no frontmatter; not importing it', {
       name,

@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { SessionLinks } from './session-channel';
+import { owedSessionStart, type HostStartSource } from './session-start';
 import type { SharedHostConfig } from './shared-config';
 
 const roots: string[] = [];
@@ -56,6 +57,7 @@ async function fixture() {
     watcher: false,
     restart: true,
     supervision: detachedSupervision(entrypoint),
+    startSource: null as HostStartSource | null,
   };
 }
 it('refuses to replace missing conversation state with a fresh session', async () => {
@@ -224,3 +226,128 @@ it('stops the hosts it supervises in-process when closed, and starts no more', a
     supervision.start({ root, configPath: join(root, 'config.json'), watcher: false })
   ).rejects.toThrow('shutting down');
 });
+
+/** Launches that start nothing, so what is written to the root can be read. */
+const inert = {
+  build: 'test',
+  links: null,
+  start: async () => {},
+  stop: async () => {},
+};
+
+it('records how a session started when the launch creates it', async () => {
+  const input = await fixture();
+  await ensureSharedProcess({
+    ...input,
+    resuming: false,
+    restart: false,
+    supervision: inert,
+    startSource: 'user',
+  });
+
+  expect(await owedSessionStart(input.root)).toBe('user');
+});
+
+it('records a launcher that said nothing as unknown rather than not at all', async () => {
+  const input = await fixture();
+  await ensureSharedProcess({ ...input, resuming: false, restart: false, supervision: inert });
+
+  expect(await owedSessionStart(input.root)).toBe('unknown');
+});
+
+it('records nothing for a session that already existed', async () => {
+  const input = await fixture();
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await ensureSharedProcess({
+    ...input,
+    resuming: false,
+    restart: false,
+    supervision: inert,
+    startSource: 'room',
+  });
+
+  expect(await owedSessionStart(input.root)).toBeNull();
+});
+
+it('records nothing for a watcher, which is not a session', async () => {
+  const input = await fixture();
+  await ensureSharedProcess({
+    ...input,
+    resuming: false,
+    restart: false,
+    watcher: true,
+    supervision: inert,
+    startSource: 'room',
+  });
+
+  expect(await owedSessionStart(input.root)).toBeNull();
+});
+
+it('starts the session anyway when its start cannot be recorded', async () => {
+  const input = await fixture();
+  // Something in the way of the record: here, a directory where the file goes.
+  await mkdir(join(input.root, 'session-start.json'));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const started = vi.fn(async () => {});
+
+  await ensureSharedProcess({
+    ...input,
+    resuming: false,
+    restart: false,
+    supervision: { ...inert, start: started },
+    startSource: 'user',
+  });
+
+  expect(started).toHaveBeenCalledOnce();
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not record how session'));
+  // And leaves nothing half-written behind.
+  expect(
+    (await readdir(input.root)).filter((name) => name.includes('session-start.json.'))
+  ).toEqual([]);
+  warn.mockRestore();
+});
+
+it.skipIf(process.platform === 'win32')(
+  'kills a host that will not stop for its replacement, with the session hosts under it',
+  async () => {
+    // The case that blocked an update: an old watcher waiting forever on a
+    // session host that had hung up, so SIGTERM never finished and every
+    // replacement gave up with "has not stopped".
+    const root = await mkdtemp(join(tmpdir(), 'stop-owned-'));
+    const grandchildPid = join(root, 'grandchild.pid');
+    const stubborn = spawn(
+      process.execPath,
+      [
+        '-e',
+        `process.on('SIGTERM', () => {});
+         const child = require('node:child_process').spawn(process.execPath,
+           ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+           { detached: true, stdio: 'ignore' });
+         require('node:fs').writeFileSync(process.argv[1] + '/grandchild.pid', String(child.pid));
+         setInterval(() => {}, 1000);`,
+        // On its command line, which is how the stop confirms the pid is still its host.
+        root,
+      ],
+      { detached: true, stdio: 'ignore' }
+    );
+    try {
+      let pid = 0;
+      for (let attempt = 0; attempt < 100 && !pid; attempt++) {
+        pid = Number(await readFile(grandchildPid, 'utf8').catch(() => '0'));
+        if (!pid) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: stubborn.pid }));
+
+      await detachedSupervision('bundle.mjs').stop(root);
+
+      expect(() => process.kill(stubborn.pid!, 0)).toThrow();
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      try {
+        process.kill(-stubborn.pid!, 'SIGKILL');
+      } catch {}
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  40_000
+);

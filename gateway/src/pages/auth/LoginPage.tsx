@@ -16,6 +16,7 @@ import {
   oidcLoginUrl,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { readPendingInvite } from "../../data/sessionState";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -50,6 +51,11 @@ export default function LoginPage() {
   const passwordLoginEnabled = authConfig?.password_login_enabled ?? true;
   const oidcEnabled = authConfig?.oidc_enabled ?? false;
   const providerLabel = authConfig?.oidc_provider_label ?? "SSO";
+  const subtitle = readPendingInvite()
+    ? "Sign in to accept your invitation."
+    : oidcEnabled && authConfig?.signup_mode === "open"
+      ? `Sign in with ${providerLabel} to create a workspace or join one.`
+      : "Sign in to manage your agents, rooms and resources.";
 
   return (
     <Box
@@ -70,7 +76,7 @@ export default function LoginPage() {
           Switch Gateway
         </Typography>
         <Typography variant="body2" sx={{ mb: 3, color: "text.secondary" }}>
-          Sign in to manage your agents, rooms and resources.
+          {subtitle}
         </Typography>
         <Stack spacing={2}>
           {error && <Alert severity="error">{error}</Alert>}

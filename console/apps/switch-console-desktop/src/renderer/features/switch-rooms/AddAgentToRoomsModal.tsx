@@ -17,12 +17,12 @@ import {
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 
 type Props = BaseModalProps<void> & {
-  serverId: string;
+  workspaceId: string;
   switchAgentId: string;
   agentName: string;
 };
 
-/** A room the agent can be put in: one on its own server it is not already in. */
+/** A room the agent can be put in: one in its own workspace it is not already in. */
 type Candidate = { id: string; name: string; bridgeType: string | null };
 
 /**
@@ -31,10 +31,11 @@ type Candidate = { id: string; name: string; bridgeType: string | null };
  *
  * Both write the same membership through `addRoomAgents`; which one you reach
  * for is only a matter of what you were looking at. An agent can only join rooms
- * on the server it is registered with, so the choice is scoped to that server.
+ * in the workspace it is registered in, so the choice is scoped to that
+ * workspace.
  */
 export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
-  serverId,
+  workspaceId,
   switchAgentId,
   agentName,
   onSuccess,
@@ -50,7 +51,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
   // so the rooms offered here and the rooms the agent is shown under cannot
   // disagree. Undefined means it was never fetched — offering every room then
   // would invite a join that is already in place, so say so instead.
-  const memberships = switchRoomsStore.roomsFor(serverId, switchAgentId);
+  const memberships = switchRoomsStore.roomsFor(workspaceId, switchAgentId);
   const membershipUnknown = memberships === undefined;
   const alreadyIn = new Set((memberships ?? []).map((m) => m.roomId));
 
@@ -58,7 +59,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
   // agent's usefulness is mostly in rooms someone else set up, and a picker that
   // omitted them made those rooms unreachable from here entirely.
   const candidates: Candidate[] = switchRoomsStore
-    .readableRoomsOnServer(serverId)
+    .readableRoomsInWorkspace(workspaceId)
     .filter((room) => !alreadyIn.has(room.id) && !selected.some((s) => s.id === room.id))
     .map((room) => ({ id: room.id, name: room.name, bridgeType: room.bridgeType }));
   const nothingToAdd = candidates.length === 0 && selected.length === 0;
@@ -70,8 +71,8 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
     setError(null);
     try {
       for (const room of selected) {
-        await rpc.switchServers.addRoomAgents({
-          serverId,
+        await rpc.workspaces.addRoomAgents({
+          workspaceId,
           roomId: room.id,
           agentIds: [switchAgentId],
           direction: 'room_to_agents',
@@ -85,7 +86,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
       setIsSubmitting(false);
       setCloseGuard(false);
     }
-  }, [serverId, switchAgentId, selected, onSuccess, setCloseGuard]);
+  }, [workspaceId, switchAgentId, selected, onSuccess, setCloseGuard]);
 
   return (
     <>
@@ -130,13 +131,13 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
             />
             {membershipUnknown && (
               <p className="mt-1 text-xs text-foreground-warning">
-                Which rooms {agentName} is already in could not be read, so every room on the server
-                is listed. Adding it to one it already belongs to changes nothing.
+                Which rooms {agentName} is already in could not be read, so every room in the
+                workspace is listed. Adding it to one it already belongs to changes nothing.
               </p>
             )}
             {nothingToAdd && !membershipUnknown && (
               <p className="mt-1 text-xs text-foreground-muted">
-                {agentName} is already in every room you can see on this server.
+                {agentName} is already in every room you can see in this workspace.
               </p>
             )}
           </Field>

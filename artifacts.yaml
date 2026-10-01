@@ -60,13 +60,13 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.28.1
+    version: 0.29.0
     declared_in: core/pyproject.toml
     published_as: switch-core
 
   switch-console:
     description: The desktop app.
-    version: 0.37.2
+    version: 0.38.1
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -78,13 +78,13 @@ artifacts:
     # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
-      switch-core: 0.28.0
+      switch-core: 0.29.0
 
   agent-runtime:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.7.0
+    version: 0.7.2
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -92,7 +92,7 @@ artifacts:
       The remote runtime Switch Console deploys to an agent host. Deployed rather
       than published, so nothing else declares its version — this file is its
       only source and the constant is generated from it.
-    version: 1.9.10
+    version: 1.9.12
 
   # ── Published under the switch-core release ────────────────────────────────
   # No version of their own: `helm package` and the image build stamp them with

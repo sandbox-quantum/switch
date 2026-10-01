@@ -14,15 +14,45 @@ import { titleCase } from "../../theme/hootFormat";
 
 /**
  * Disconnecting is the only way an install-created connection can be removed,
- * because it is the only one that revokes the token at the platform first.
- * Deleting the connection instead is refused, so this dialog carries the
- * warning that would otherwise sit on the delete: the rooms survive and go
- * internal-only, which is not obvious and cannot be undone by re-installing.
+ * so this dialog carries the warning that would otherwise sit on the delete
+ * (which is refused): the rooms survive and go internal-only, which is not
+ * obvious and cannot be undone by re-installing.
  *
  * It can fail with the platform's own refusal, in which case nothing has been
  * destroyed and trying again is the right move — so the error is shown here
  * rather than closing the dialog on the way out.
  */
+
+/**
+ * What Disconnect does differs by platform, and telling an operator a
+ * credential was revoked when it was not is the kind of thing that surfaces in
+ * an incident review. Most platforms hold a token that Disconnect revokes and
+ * so removes the app; the distributed Discord app holds none, so disconnecting
+ * only stops Switch from using the bot — the bot stays in the server until it
+ * is removed in Discord.
+ *
+ * Keyed on platform as a proxy for token-presence: the backend branches on
+ * whether the install has a token, but that field is not surfaced here. Any
+ * platform not listed gets the default (revoking) copy. `noun` is what the
+ * platform calls the place installed into — a Discord "server", not a
+ * "workspace".
+ */
+const PLATFORM_COPY: Record<string, { noun: string; effect: string }> = {
+  discord: {
+    noun: "server",
+    effect:
+      "Switch will stop mirroring messages to and from it. The bot stays in " +
+      "the server until you remove it in Discord — disconnecting here does " +
+      "not remove it.",
+  },
+};
+const DEFAULT_COPY = {
+  noun: "workspace",
+  effect:
+    "Switch's access token is revoked at the platform and the connection it " +
+    "created is removed.",
+};
+
 interface Props {
   install: InstalledApp | null;
   onClose: () => void;
@@ -36,6 +66,7 @@ export default function DisconnectAppDialog({
 }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const copy = PLATFORM_COPY[install?.platform ?? ""] ?? DEFAULT_COPY;
 
   const handleClose = () => {
     if (submitting) return;
@@ -62,13 +93,12 @@ export default function DisconnectAppDialog({
       <DialogTitle>Disconnect the app</DialogTitle>
       <DialogContent>
         <DialogContentText>
-          Remove Switch from the {titleCase(install?.platform ?? "")} workspace{" "}
-          <b>{install?.external_workspace_id}</b>? The token is revoked at the
-          platform and the connection it created is removed.
+          Disconnect Switch from the {titleCase(install?.platform ?? "")}{" "}
+          {copy.noun} <b>{install?.external_workspace_id}</b>? {copy.effect}
         </DialogContentText>
         <DialogContentText sx={{ mt: 2 }}>
           Rooms that used this connection are kept, but become internal-only:
-          they stop mirroring to the workspace, and installing again creates a
+          they stop mirroring to the {copy.noun}, and installing again creates a
           new connection rather than reattaching them.
         </DialogContentText>
         {error && (

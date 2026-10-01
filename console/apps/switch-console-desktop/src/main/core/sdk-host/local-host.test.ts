@@ -34,8 +34,13 @@ vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
 }));
 vi.mock('@main/lib/logger', () => ({ log: { error: vi.fn(), warn: vi.fn() } }));
 
-const { startLocalWatcher, localWatcherRoot, localWatcherControl, readLocalHostFailure } =
-  await import('./local-host');
+const {
+  startLocalSession,
+  startLocalWatcher,
+  localWatcherRoot,
+  localWatcherControl,
+  readLocalHostFailure,
+} = await import('./local-host');
 
 const roots: string[] = [];
 let home: string;
@@ -146,4 +151,34 @@ it('gives the watcher the control Console moves this agent’s sessions through'
   await startLocalWatcher(config, { intent: 'explicit', spawning: true });
   expect(mocks.runWatcher.mock.calls[0][4]).toBe(localWatcherControl('switch-agent-1'));
   expect(localWatcherControl('switch-agent-2')).not.toBe(localWatcherControl('switch-agent-1'));
+});
+
+it('hands a local session’s launch how it started, so its host can tell Switch', async () => {
+  mocks.ensure.mockResolvedValue({ created: true });
+  const config = { session: { sessionId: 'session-1', agentId: 'agent-1' } } as never;
+
+  await startLocalSession('/sessions/session-1', config, {
+    resuming: false,
+    restart: false,
+    startSource: 'user',
+  });
+
+  expect(mocks.ensure).toHaveBeenCalledWith(
+    expect.objectContaining({
+      root: '/sessions/session-1',
+      watcher: false,
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    })
+  );
+});
+
+it('starts the watcher with no start source, since it is not a session', async () => {
+  await startLocalWatcher({ session: { sessionId: 'watcher', agentId: 'agent-1' } } as never, {
+    intent: 'explicit',
+    spawning: true,
+  });
+
+  expect(mocks.ensure.mock.calls[0]![0]).toMatchObject({ watcher: true, startSource: null });
 });

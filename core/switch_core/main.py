@@ -46,10 +46,14 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
+from switch_core.bridges.collaboration.adapter import SupportsSharedConnection
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.discord.connection import DiscordConnection
+from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
+from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
 from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
@@ -100,11 +104,13 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
@@ -120,10 +126,12 @@ from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.logging_config import configure_logging
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
@@ -380,6 +388,7 @@ async def run(config: SwitchConfig) -> None:
     user_store = UserStore()
     api_key_store = ApiKeyStore()
     invitation_store = InvitationStore()
+    join_domain_store = JoinDomainStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -389,6 +398,8 @@ async def run(config: SwitchConfig) -> None:
     room_group_store = RoomGroupStore()
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
+    usage_store = UsageStore()
+    budget_store = BudgetStore()
     media_store = MediaStore()
     template_store = TemplateStore()
 
@@ -470,6 +481,7 @@ async def run(config: SwitchConfig) -> None:
         config=config,
         room_store=room_store,
         message_store=message_store,
+        usage_store=usage_store,
         media_store=media_store,
         listener=message_listener,
         invites=invites,
@@ -610,6 +622,16 @@ async def run(config: SwitchConfig) -> None:
                 signing_secret=config.slack_app_signing_secret,
             )
         )
+    if config.discord_app_client_id:
+        assert config.discord_app_client_secret is not None
+        assert config.discord_app_application_id is not None
+        installers.register(
+            DiscordAppInstaller(
+                client_id=config.discord_app_client_id,
+                client_secret=config.discord_app_client_secret,
+                application_id=config.discord_app_application_id,
+            )
+        )
 
     install_service: MessagingInstallService | None = None
     if installers.platforms():
@@ -641,10 +663,18 @@ async def run(config: SwitchConfig) -> None:
         external_user_store=external_user_store,
         api_key_store=api_key_store,
         invitation_store=invitation_store,
+        join_domain_store=join_domain_store,
         template_store=template_store,
+        usage_store=usage_store,
+        budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,
+        invite_mailer=(
+            SmtpInviteMailer.from_config(config)
+            if config.invite_email_enabled
+            else None
+        ),
         config=config,
     )
 
@@ -772,7 +802,50 @@ async def run(config: SwitchConfig) -> None:
 
     # ── Start runtime ────────────────────────────────────────────────────────
     await client_lifecycle.start_all()
+    # Before the bridges start, so none on a shared app runs without the
+    # install that entitles it.
+    if install_service is not None:
+        collab_lifecycle.add_bridge_start_guard(
+            install_service.refuse_uninstalled_bridge
+        )
     await collab_lifecycle.start_all()
+
+    # The one shared Discord Gateway connection. Started after the bridges so it
+    # can attach to the inert ones the moment it connects — a shared-delivery
+    # bridge opens no socket of its own, and attaching re-runs the agent-identity
+    # provisioning that could not run at start. Supervised in the background: a
+    # configured-but-unreachable Discord app must never block or fail a boot that
+    # serves every other platform, so its initial connect retries with backoff
+    # and Discord installs stay inert until it succeeds.
+    discord_gateway: DiscordGatewayClient | None = None
+    discord_gateway_task: asyncio.Task[None] | None = None
+    if config.discord_app_bot_token:
+        # install_service is present whenever an installer is registered, and the
+        # Discord bot token being set means the Discord installer is — so this is
+        # not None here. Asserted rather than branched to say that out loud.
+        assert install_service is not None
+
+        async def _attach_shared_discord_bridges(
+            connection: DiscordConnection,
+        ) -> None:
+            # Runs once the socket is up: hand it to every already-running bridge
+            # that rides a shared connection. Platform-agnostic — narrowed by
+            # capability, not by knowing which platform that is.
+            for adapter in collab_lifecycle.iter_adapters():
+                if isinstance(adapter, SupportsSharedConnection):
+                    adapter.attach_shared_connection(connection)
+
+        discord_gateway = DiscordGatewayClient(
+            bot_token=config.discord_app_bot_token,
+            message_content=config.discord_app_message_content,
+            members=config.discord_app_members,
+            install_service=install_service,
+            on_connected=_attach_shared_discord_bridges,
+        )
+        collab_lifecycle.add_bridge_starting_listener(discord_gateway.attach_if_live)
+        discord_gateway_task = asyncio.create_task(
+            discord_gateway.start_with_retry(), name="discord-gateway-start"
+        )
 
     # Backfill room membership: system clients (e.g. the admin client) added
     # after a room was created, and any agent whose invite did not land. The
@@ -807,6 +880,8 @@ async def run(config: SwitchConfig) -> None:
                     collab_lifecycle,
                     connector_lifecycle,
                     matrix_admin,
+                    discord_gateway,
+                    discord_gateway_task,
                 )
             ),
         )
@@ -1254,11 +1329,23 @@ async def _shutdown(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
     matrix_admin: Provisioning,
+    discord_gateway: DiscordGatewayClient | None,
+    discord_gateway_task: asyncio.Task[None] | None,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()
+    # Cancel the supervised connect/retry loop before closing the socket, so a
+    # retry in flight cannot re-open what stop() just closed.
+    if discord_gateway_task is not None:
+        discord_gateway_task.cancel()
+        try:
+            await discord_gateway_task
+        except asyncio.CancelledError:
+            pass
+    if discord_gateway is not None:
+        await discord_gateway.stop()
     await client_lifecycle.stop_all()
     await matrix_admin.close()
 

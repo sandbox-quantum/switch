@@ -231,8 +231,13 @@ export class SessionManagerStore {
       }
     });
 
+    // A session this interface creates is a person pressing something: the
+    // automation API and adoption start theirs in the main process, never
+    // through here. Reported by this app's telemetry and, by the session's
+    // host, to Switch.
+    const request: CreateSessionParams = { ...toJS(params), startSource: 'user' };
     const result = await rpc.sessions
-      .createSession(JSON.parse(JSON.stringify(toJS(params))) as typeof params)
+      .createSession(JSON.parse(JSON.stringify(request)) as typeof params)
       .catch((e: unknown) => {
         const message = failureText(e, 'Could not create the session.');
         clearOptimisticInitialWorking();

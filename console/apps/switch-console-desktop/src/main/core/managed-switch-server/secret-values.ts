@@ -38,3 +38,19 @@ export function generateSecrets(): LocalServerSecrets {
     mattermostUserPassword: token(),
   };
 }
+
+/**
+ * Fill in `dbRuntimePassword` for secrets written before switch-core added its
+ * restricted runtime role. Safe where regenerating the bundle is not: nothing on
+ * the existing volume used it, and `init-db` sets the role's password on every start.
+ */
+export function withRuntimePassword(secrets: LocalServerSecrets): {
+  secrets: LocalServerSecrets;
+  migrated: boolean;
+} {
+  if (secrets.dbRuntimePassword) return { secrets, migrated: false };
+  return {
+    secrets: { ...secrets, dbRuntimePassword: generateSecrets().dbRuntimePassword },
+    migrated: true,
+  };
+}

@@ -33,7 +33,7 @@ export function useOnboardingProgress(): OnboardingProgress {
     addServer: switchServersStore.servers.length > 0,
     agentProviders: (agentTypes ?? []).some((type) => type.available),
     onboardAgents: appState.locations.locations.size > 0,
-    createRoom: switchRoomsStore.listedRoomsOnAllServers.length > 0,
+    createRoom: switchRoomsStore.listedRoomsInAllWorkspaces.length > 0,
   };
 }
 

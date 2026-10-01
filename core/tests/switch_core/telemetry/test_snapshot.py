@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
+from switch_core.clients.client_base import ClientBase
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -27,7 +29,9 @@ from switch_core.db.models import (
     Room,
     User,
 )
+from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.telemetry.snapshot import (
+    SPOKEN_EVENT_TYPES,
     UsageCounts,
     collect_tenant_counts,
     collect_usage,
@@ -152,6 +156,57 @@ async def _say(
     session.add(message)
     await session.flush()
     return message
+
+
+async def _stored(
+    session: AsyncSession,
+    room: Room,
+    sender: Client,
+    *,
+    seq: int,
+    event_type: str,
+    content: dict[str, object],
+    when: datetime | None = None,
+) -> None:
+    """A row the transport writes that is not a chat message: an arrival, a
+    tool-call report, a task transition. Every durable event gets one."""
+    session.add(
+        Message(
+            room_id=room.id,
+            seq=seq,
+            transport_event_id=f"$evt-{uuid.uuid4().hex}",
+            sender_id=sender.matrix_user_id,
+            sender_client_id=sender.id,
+            event_type=event_type,
+            msgtype=None,
+            body=None,
+            content=content,
+            sent_at=when or (NOW - timedelta(hours=1)),
+        )
+    )
+    await session.flush()
+
+
+async def _arrive(
+    session: AsyncSession,
+    room: Room,
+    client: Client,
+    *,
+    seq: int,
+    when: datetime | None = None,
+) -> None:
+    """Join the room the way the transport does: a membership row and a
+    message-log row, not only the former."""
+    await _join(session, client, room)
+    await _stored(
+        session,
+        room,
+        client,
+        seq=seq,
+        event_type="m.room.member",
+        content={"membership": "join", "displayname": client.display_name},
+        when=when,
+    )
 
 
 TENANT_ZERO = "00000000-0000-0000-0000-000000000000"
@@ -410,6 +465,200 @@ class TestMessageCounts:
             counts = await _counts(session)
 
         assert counts.message_count_1d == 0
+
+
+class TestOnlyWhatSomeoneSaidCounts:
+    """The message log holds every durable event, not only the conversation.
+    An agent joining a room or reporting a tool call is not an agent message,
+    and a person being added to a room is not that person using it."""
+
+    async def test_agent_arrivals_and_reports_are_not_agent_messages(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            await _arrive(session, room, agent, seq=1)
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=2,
+                event_type="com.switch.report.tool_call",
+                content={"agent_id": "a", "tool_id": "Bash"},
+            )
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=3,
+                event_type="com.switch.task.update",
+                content={"task_id": "t", "status": "working"},
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_count_1d == 0
+        assert counts.message_from_agent_1d == 0
+        assert counts.agent_active_7d == 0
+
+    async def test_a_person_added_to_a_room_is_not_active_in_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _join(session, agent, room)
+            await _arrive(session, room, human, seq=1)
+
+            counts = await _counts(session)
+            ever_active = await room_had_human_activity(session, TENANT_ZERO, room.id)
+
+        assert counts.message_from_human_1d == 0
+        assert counts.user_active_1d == 0
+        assert counts.user_active_7d == 0
+        assert counts.room_active_1d == 0
+        assert counts.room_active_7d == 0
+        assert ever_active is False
+
+    async def test_a_command_a_person_typed_is_something_they_said(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _join(session, agent, room)
+            await _join(session, human, room)
+            await _stored(
+                session,
+                room,
+                human,
+                seq=1,
+                event_type="com.switch.command",
+                content={"command": "reset", "args": ""},
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_from_human_1d == 1
+        assert counts.user_active_1d == 1
+        assert counts.room_active_1d == 1
+
+    async def test_the_notice_switch_posts_for_an_agent_is_not_the_agent_talking(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Addressed while it has no session, an agent "replies" with an
+        automatic notice. Counted, every unavailable agent reads as a
+        responsive one."""
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _say(session, room, human, seq=1)
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=2,
+                event_type="m.room.message",
+                content={
+                    "msgtype": "m.notice",
+                    "body": "no session; starting one",
+                    AUTO_REPLY_FLAG: True,
+                },
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_count_1d == 1
+        assert counts.message_from_agent_1d == 0
+        assert counts.agent_active_7d == 0
+        assert counts.turn_human_to_agent_1d == 0
+
+    async def test_a_person_added_to_a_room_does_not_activate_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session, created_at=NOW - timedelta(hours=5))
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _join(session, agent, room)
+            await _arrive(session, room, human, seq=1, when=NOW - timedelta(hours=1))
+            await session.commit()
+
+        found = await newly_active_rooms(
+            session_factory, since=NOW - timedelta(hours=4), now=NOW
+        )
+
+        assert found == []
+
+    async def test_a_room_activates_when_the_person_speaks_not_when_they_arrived(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Added before the window and speaking inside it is a room first used
+        inside it. Read off the arrival, it would have looked already active
+        and never been reported at all."""
+        async with session_factory() as session:
+            room = await _room(session, created_at=NOW - timedelta(days=2))
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _join(session, agent, room)
+            await _arrive(session, room, human, seq=1, when=NOW - timedelta(days=1))
+            await _say(session, room, human, seq=2, when=NOW - timedelta(hours=1))
+            await session.commit()
+
+        found = await newly_active_rooms(
+            session_factory, since=NOW - timedelta(hours=4), now=NOW
+        )
+
+        assert len(found) == 1
+
+    async def test_an_agent_that_arrived_and_left_still_makes_it_an_agent_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Deliberately not narrowed to what agents said: its arrival row is the
+        durable record that an agent was there, which its membership is not
+        once it is removed."""
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=1,
+                event_type=MEMBERSHIP_EVENT_TYPE,
+                content={"membership": "join", "displayname": "agent"},
+            )
+            await _say(session, room, human, seq=2)
+
+            counts = await _counts(session)
+
+        assert counts.room_active_1d == 1
+
+    async def test_a_turn_pairs_across_rows_that_are_not_messages(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A second agent arriving between a question and its answer must not
+        be what the answer is paired with: that would read as one
+        human-to-agent turn from the arrival and one agent-to-agent turn from
+        the answer."""
+        async with session_factory() as session:
+            room = await _room(session)
+            human = await _client(session, "user")
+            answering = await _client(session, "agent")
+            arriving = await _client(session, "agent")
+            await _say(session, room, human, seq=1)
+            await _arrive(session, room, arriving, seq=2)
+            await _say(session, room, answering, seq=3)
+
+            counts = await _counts(session)
+
+        assert counts.turn_human_to_agent_1d == 1
+        assert counts.turn_agent_to_agent_1d == 0
 
 
 class TestAgentsAndConnectors:
@@ -920,3 +1169,37 @@ class TestATurnNeedsTwoParticipants:
             counts = await _counts(session)
 
         assert counts.turn_agent_to_human_1d == 1
+
+
+# Stored in the message log, and not something a participant said.
+NOT_SPOKEN = frozenset(
+    {
+        MEMBERSHIP_EVENT_TYPE,  # an arrival
+        "com.switch.report.tool_call",  # measurements of a run
+        "com.switch.report.llm_call",
+        "com.switch.task.delegate",  # task transitions
+        "com.switch.task.accept",
+        "com.switch.task.update",
+        "com.switch.task.finalise",
+        "com.switch.task.cancel",
+        "com.switch.agent.runtime_state",  # presence; never stored
+    }
+)
+
+
+def test_every_event_type_is_decided_spoken_or_not() -> None:
+    """A new room event type lands in the message log by default. Undecided,
+    it would either inflate the message counts or be silently left out of
+    them; this makes whoever adds one say which."""
+    known = set(ClientBase._EVENT_DISPATCH) | {"m.room.message", MEMBERSHIP_EVENT_TYPE}
+    spoken = set(SPOKEN_EVENT_TYPES)
+
+    assert not (known - spoken - NOT_SPOKEN), (
+        "Decide whether these count as something a participant said, in "
+        "SPOKEN_EVENT_TYPES in telemetry/snapshot.py or NOT_SPOKEN here: "
+        f"{sorted(known - spoken - NOT_SPOKEN)}"
+    )
+    assert not (spoken & NOT_SPOKEN)
+    assert not (NOT_SPOKEN - known), (
+        f"No longer an event type: {sorted(NOT_SPOKEN - known)}"
+    )

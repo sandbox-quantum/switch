@@ -128,6 +128,16 @@ pnpm run dev
 pnpm run d
 ```
 
+Switch Cloud, the hosted deployment the first-run page and the Add server dialog
+offer, has no URL in source. Point a run at one with `SWITCH_CLOUD_URL`, or bake
+one into a build with `MAIN_VITE_SWITCH_CLOUD_URL` (inlined into the main
+process by electron-vite). Either must be a bare https origin; with neither set
+the Cloud choice reads "Coming soon".
+
+```bash
+SWITCH_CLOUD_URL=https://cloud.example.com pnpm run dev
+```
+
 Run main-process or renderer-only dev watches:
 
 ```bash
@@ -483,9 +493,12 @@ pnpm run lint
   distribution. Note also that `satisfies { [K in Name]: readonly (keyof T[K])[] }`
   constrains what an array *may* contain, never what it *must* — that is why
   `_everyPropertyIsAllowListed` is a separate check.
-- **The sidecar sends nothing.** It runs headless on a user's VM with no consent prompt
-  and no access to this setting, so sessions it starts are not counted. Do not "fix" that
-  by having it report; the gate is not reachable from there.
+- **The sidecar sends nothing to the relay.** It runs headless on a user's VM with no
+  consent prompt and no access to this setting, so sessions it starts are not counted in
+  this app's telemetry. Do not "fix" that by having it report; the gate is not reachable
+  from there. What a session host does tell is the Switch server it already works for:
+  that a new session started and how (`host/session-start.ts`), as ordinary traffic to
+  that server. Whether that leaves the server as telemetry is the server's own setting.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.

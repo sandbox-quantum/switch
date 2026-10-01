@@ -24,6 +24,9 @@ const prepareUpgradeMock = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve(null))
 );
 const finishUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock('./console-register', () => ({
+  readRegister: vi.fn(async () => ({ self: 'me', consoles: [], activity: [] })),
+}));
 vi.mock('@shared/app-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
   COMPATIBLE_SWITCH_VERSION: '0.11.0',
@@ -63,13 +66,17 @@ vi.mock('./telemetry-consent', () => ({
 }));
 const setActiveServerIdMock = vi.hoisted(() => vi.fn());
 vi.mock('@main/core/switch-servers/servers-store', () => ({
+  assertManagedServerUrlFree: () => Promise.resolve(),
   ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),
   setActiveServerId: setActiveServerIdMock,
+}));
+// Reads this install's own workspace rows, and through them the database client.
+vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
+  reconcileServerWorkspaces: () => Promise.resolve(),
 }));
 vi.mock('@main/core/switch-servers/auth', () => ({
   passwordLogin: () => Promise.resolve({ success: true }),
 }));
-vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
 vi.mock('./managed-upgrade', () => ({
   prepareUpgrade: prepareUpgradeMock,
   finishUpgrade: finishUpgradeMock,
@@ -84,8 +91,10 @@ function options() {
   );
   const host = {
     label: 'this computer',
+    sharedState: null,
     writeFile,
     detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
+    checkNetworking: vi.fn(() => Promise.resolve()),
     establishNetworking: vi.fn(() => Promise.resolve()),
   };
   return {
@@ -100,6 +109,7 @@ function options() {
       onUpgrade: vi.fn(),
       signal: new AbortController().signal,
       checkoutRoot: null as string | null,
+      lease: null,
     },
   };
 }
@@ -145,6 +155,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     expect(writeFile).toHaveBeenCalledWith(ENV_FILE_NAME, expect.any(String), 0o600);
     expect(composeUpMock).toHaveBeenCalledOnce();
@@ -157,6 +168,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
   });
 
@@ -171,6 +183,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
   });
 
@@ -182,6 +195,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     // Degraded, but disclosed — a transient probe failure must not make the app
     // unstartable.
@@ -199,6 +213,7 @@ describe('startStack version guard', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
   });
 
@@ -256,6 +271,7 @@ describe('startStack checkout build', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
 
     const override = writeFile.mock.calls.find(
@@ -278,6 +294,7 @@ describe('startStack checkout build', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     expect(logWarn).toHaveBeenCalled();
   });
@@ -294,6 +311,7 @@ describe('startStack checkout build', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: true,
+      warning: null,
     });
     expect(buildEnvFileMock).toHaveBeenCalledWith(
       expect.objectContaining({ telemetryEnabled: true })

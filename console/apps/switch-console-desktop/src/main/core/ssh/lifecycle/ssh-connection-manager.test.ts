@@ -827,4 +827,128 @@ describe('SshConnectionManager', () => {
       vi.useRealTimers();
     }
   });
+
+  /**
+   * A transport that dies without ssh2 ever saying `close`: its read side
+   * ended (an IAP tunnel's stdout, on dev-vm), and from then on ssh2 refuses
+   * every channel with "Not connected" while `destroy()` and `end()` do
+   * nothing. Every recovery that waited on `close` waited forever — the wedge
+   * rebuild fired ~260 times a minute for hours, and the host was never
+   * reported down.
+   */
+  describe('a connection that dies without closing', () => {
+    class SilentlyDyingClient extends PassThrough {
+      ready = true;
+      connect() {
+        queueMicrotask(() => {
+          if (this.ready) this.emit('ready');
+        });
+      }
+      destroy() {
+        return this;
+      }
+      end() {
+        return this;
+      }
+    }
+
+    async function setUp() {
+      const { SshConnectionManager } = await import('./ssh-connection-manager');
+      const clients: SilentlyDyingClient[] = [];
+      const cleanups: number[] = [];
+      const manager = new SshConnectionManager({
+        createClient: () => {
+          const client = new SilentlyDyingClient();
+          clients.push(client);
+          return client as unknown as Client;
+        },
+      });
+      manager.register('ssh-1', async () => ({
+        config: { sock: new PassThrough(), username: 'alice' },
+        cleanup: () => cleanups.push(clients.length),
+        debugLogs: [],
+      }));
+      const events: string[] = [];
+      manager.on('connection-event', (event) => events.push(event.type));
+      const proxy = await manager.connect('ssh-1');
+      expect(proxy.isConnected).toBe(true);
+      return { manager, clients, cleanups, events, proxy };
+    }
+
+    async function expectRecovered(
+      ctx: Awaited<ReturnType<typeof setUp>>,
+      what: string
+    ): Promise<void> {
+      expect(ctx.proxy.isConnected, `${what}: dead client still serves`).toBe(false);
+      expect(ctx.events).toContain('disconnected');
+      expect(ctx.events).toContain('reconnecting');
+      // The transport is torn down (for a ProxyCommand, its process killed).
+      expect(ctx.cleanups).toEqual([1]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(ctx.proxy.isConnected).toBe(true);
+      expect(ctx.proxy.client).toBe(ctx.clients[1]);
+      // These clients never close, so the graceful disconnect runs to its timeout.
+      const disconnected = ctx.manager.disconnect('ssh-1');
+      await vi.advanceTimersByTimeAsync(5_000);
+      await disconnected;
+    }
+
+    it('reconnects when the transport ends, without waiting for close', async () => {
+      vi.useFakeTimers();
+      try {
+        const ctx = await setUp();
+        ctx.clients[0]!.emit('end');
+        await expectRecovered(ctx, 'end');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reconnects on the first "Not connected", which is never transient', async () => {
+      vi.useFakeTimers();
+      try {
+        const ctx = await setUp();
+        ctx.manager.reportChannelError('ssh-1', new Error('Not connected'));
+        await expectRecovered(ctx, 'Not connected');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('completes a wedge rebuild whose client never emits close', async () => {
+      vi.useFakeTimers();
+      try {
+        const ctx = await setUp();
+        const wedgeError = { reason: 2, message: 'channel open failure' };
+        for (let i = 0; i < 3; i += 1) ctx.manager.reportChannelError('ssh-1', wedgeError);
+        await expectRecovered(ctx, 'wedge');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('completes a resume refresh whose client never emits close', async () => {
+      vi.useFakeTimers();
+      try {
+        const ctx = await setUp();
+        ctx.manager.handleSystemResume();
+        await expectRecovered(ctx, 'resume');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not act twice when the dead client closes after all', async () => {
+      vi.useFakeTimers();
+      try {
+        const ctx = await setUp();
+        ctx.clients[0]!.emit('end');
+        ctx.clients[0]!.emit('close');
+        expect(ctx.events.filter((e) => e === 'reconnecting')).toHaveLength(1);
+        await expectRecovered(ctx, 'late close');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

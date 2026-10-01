@@ -62,12 +62,19 @@ MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .V
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
+{{- if and .Values.switchCore.smtp.enabled .Values.switchCore.smtp.username }}
+GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when switchCore.smtp.username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
+{{- end }}
 {{- if .Values.secrets.otlpHeaders }}
 OTLP_HEADERS: {{ .Values.secrets.otlpHeaders | b64enc | quote }}
 {{- end }}
 {{- if .Values.switchCore.slackApp.enabled }}
 SLACK_APP_CLIENT_SECRET: {{ required "secrets.slackAppClientSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppClientSecret | b64enc | quote }}
 SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppSigningSecret | b64enc | quote }}
+{{- end }}
+{{- if .Values.switchCore.discordApp.enabled }}
+DISCORD_APP_CLIENT_SECRET: {{ required "secrets.discordAppClientSecret is required when switchCore.discordApp.enabled" .Values.secrets.discordAppClientSecret | b64enc | quote }}
+DISCORD_APP_BOT_TOKEN: {{ required "secrets.discordAppBotToken is required when switchCore.discordApp.enabled" .Values.secrets.discordAppBotToken | b64enc | quote }}
 {{- end }}
 {{- end }}
 
@@ -610,6 +617,45 @@ Include with `nindent 12`.
   value: "false"
 {{- end }}
 {{- end }}
+{{- $signupMode := .Values.switchCore.signup.mode }}
+{{- if not (has $signupMode (list "default_tenant" "invite_only" "open")) }}
+{{- fail (printf "switchCore.signup.mode must be one of default_tenant, invite_only, open. Got %q." $signupMode) }}
+{{- end }}
+- name: GATEWAY_SIGNUP_MODE
+  value: {{ $signupMode | quote }}
+- name: GATEWAY_MAX_WORKSPACES_PER_USER
+  value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
+- name: GATEWAY_TENANT_CHOICE_ENABLED
+  value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
+{{- with .Values.switchCore.smtp }}
+{{- if .enabled }}
+{{- if not $.Values.switchCore.frontendBaseUrl }}
+{{- fail "switchCore.frontendBaseUrl is required when switchCore.smtp.enabled — invitation e-mails link to the dashboard at that origin." }}
+{{- end }}
+{{- if not (has .tls (list "starttls" "tls" "none")) }}
+{{- fail (printf "switchCore.smtp.tls must be one of starttls, tls, none. Got %q." .tls) }}
+{{- end }}
+- name: GATEWAY_SMTP_HOST
+  value: {{ required "switchCore.smtp.host is required when smtp.enabled" .host | quote }}
+- name: GATEWAY_SMTP_PORT
+  value: {{ .port | quote }}
+- name: GATEWAY_SMTP_TLS
+  value: {{ .tls | quote }}
+- name: GATEWAY_SMTP_FROM
+  value: {{ required "switchCore.smtp.from is required when smtp.enabled" .from | quote }}
+- name: GATEWAY_INVITE_EMAILS_PER_DAY
+  value: {{ .emailsPerDayPerWorkspace | quote }}
+{{- if .username }}
+- name: GATEWAY_SMTP_USERNAME
+  value: {{ .username | quote }}
+- name: GATEWAY_SMTP_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: GATEWAY_SMTP_PASSWORD
+{{- end }}
+{{- end }}
+{{- end }}
 - name: GATEWAY_COOKIE_SECURE
   value: {{ .Values.switchCore.cookieSecure | quote }}
 - name: SWITCH_LOG_LEVEL
@@ -686,6 +732,34 @@ Include with `nindent 12`.
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: SLACK_APP_SIGNING_SECRET
+{{- end }}
+{{- if .Values.switchCore.discordApp.enabled }}
+{{- if not .Values.switchCore.slackApp.enabled }}
+- name: MESSAGING_PUBLIC_URL
+  value: {{ required "switchCore.discordApp.messagingPublicUrl is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.messagingPublicUrl | quote }}
+{{- end }}
+- name: DISCORD_APP_CLIENT_ID
+  value: {{ required "switchCore.discordApp.clientId is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.clientId | quote }}
+- name: DISCORD_APP_APPLICATION_ID
+  value: {{ required "switchCore.discordApp.applicationId is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.applicationId | quote }}
+- name: DISCORD_APP_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: DISCORD_APP_CLIENT_SECRET
+- name: DISCORD_APP_BOT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: DISCORD_APP_BOT_TOKEN
+{{- if .Values.switchCore.discordApp.messageContent }}
+- name: DISCORD_APP_MESSAGE_CONTENT
+  value: "true"
+{{- end }}
+{{- if .Values.switchCore.discordApp.members }}
+- name: DISCORD_APP_MEMBERS
+  value: "true"
+{{- end }}
 {{- end }}
 {{- end }}
 

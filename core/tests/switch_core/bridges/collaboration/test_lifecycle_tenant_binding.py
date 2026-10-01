@@ -578,3 +578,24 @@ async def test_a_conflict_with_nothing_bound_fails_closed_to_the_non_disclosing_
     assert "Their Secret Teams" not in message
     assert incumbent_tenant not in message
     assert "already claimed" in message
+
+
+class _RunningBridge:
+    def __init__(self, tenant_id: str) -> None:
+        self.tenant_id = tenant_id
+
+
+@pytest.mark.no_ambient_tenant
+def test_get_hands_a_running_bridge_only_to_its_own_tenant(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _service(session_factory)
+    bridge = _RunningBridge("tenant-a")
+    svc._bridges["bridge-a"] = bridge  # type: ignore[assignment]
+
+    with tenant_scope("tenant-a"):
+        assert svc.get("bridge-a") is bridge
+    with tenant_scope("tenant-b"):
+        assert svc.get("bridge-a") is None
+    assert svc.get("bridge-a") is bridge
+    assert svc.get("bridge-missing") is None

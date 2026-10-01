@@ -3,7 +3,7 @@ import {
   UndecryptableSecretError,
 } from '@main/core/secrets/encrypted-app-secrets-store';
 import type { ServerHost } from './host/types';
-import { generateSecrets, type LocalServerSecrets } from './secret-values';
+import { generateSecrets, type LocalServerSecrets, withRuntimePassword } from './secret-values';
 
 /**
  * A stored bundle that will not parse is not the same as no bundle at all, and
@@ -29,29 +29,6 @@ async function readStoredSecrets(host: Pick<ServerHost, 'secretsKey'>): Promise<
   } catch (cause) {
     return { kind: 'unreadable', cause };
   }
-}
-
-/**
- * `dbRuntimePassword` did not exist before switch-core split its database
- * connection into an owner role and a restricted runtime role, so a bundle
- * stored before that split parses as `LocalServerSecrets` with that one field
- * missing. Filling it in is safe in a way regenerating the bundle is not:
- * nothing on the existing Postgres volume was ever created with it, since the
- * runtime role did not exist yet either. `init-db` creates that role and
- * `ALTER ROLE`s its password idempotently on every start (see
- * `deploy/local/standalone-docker-compose.yml`), so whatever value lands here
- * simply becomes the role's password on the next start, the same way a
- * freshly generated bundle's would.
- */
-function withRuntimePassword(secrets: LocalServerSecrets): {
-  secrets: LocalServerSecrets;
-  migrated: boolean;
-} {
-  if (secrets.dbRuntimePassword) return { secrets, migrated: false };
-  return {
-    secrets: { ...secrets, dbRuntimePassword: generateSecrets().dbRuntimePassword },
-    migrated: true,
-  };
 }
 
 /**
@@ -103,6 +80,15 @@ export async function readSecrets(
 ): Promise<LocalServerSecrets | null> {
   const stored = await readStoredSecrets(host);
   return stored.kind === 'present' ? withRuntimePassword(stored.secrets).secrets : null;
+}
+
+/** Cache `secrets` as this desktop's copy of the host's bundle, replacing any
+ * earlier copy. The host, not this cache, is the source of truth. */
+export async function storeSecrets(
+  host: Pick<ServerHost, 'secretsKey'>,
+  secrets: LocalServerSecrets
+): Promise<void> {
+  await encryptedAppSecretsStore.setSecret(host.secretsKey, JSON.stringify(secrets));
 }
 
 /** Drop the host's secret bundle so the next start generates fresh credentials.

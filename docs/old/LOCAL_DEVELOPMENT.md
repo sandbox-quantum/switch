@@ -177,10 +177,49 @@ and enter `http://localhost:5173` as the Gateway URL and
 `http://localhost:8000` as the API URL — with `just gateway-dev` already
 running.
 
+## A local Switch Cloud
+
+A shared deployment runs whatever was last deployed to it, which is often
+older than the branch you are testing. Switch Console can instead treat a
+server run from your checkout as **Switch Cloud**, so the first-run Cloud
+path, invite links and invitation e-mails can all be tried against your
+code:
+
+```bash
+just up                  # Postgres and the rest, as usual
+just local-cloud         # switch-core on :8000, plus a mail catcher
+just local-cloud-console # the Console, with Switch Cloud at http://localhost:8000
+```
+
+- **Sign-in** is by password. The gateway admin from `.env` works, and
+  `just local-cloud-user <email> "<name>" <password>` adds more accounts.
+  Every account made this way joins the admin's workspace; create another
+  workspace in the Console to invite people into, or to open to a domain.
+- **Invitation e-mails** are sent to Mailpit, which keeps them rather than
+  delivering them: read them at `http://localhost:8025`. Their links point at
+  `http://localhost:8000`, so pasting one into the Console's "Paste your
+  invite link" finds the local Cloud. That comes from `FRONTEND_BASE_URL`,
+  which `just local-cloud` sets to `:8000`. The dashboard's own links follow
+  it, so in this mode they open switch-core's JSON rather than the dashboard.
+- **Joining by domain** is offered only for the domain of the admin's own
+  address: `switch.local` for the default admin. Give test accounts
+  addresses there.
+- **The Cloud address** must be https, except for `localhost`, `127.0.0.1`
+  and `[::1]`, which may be plain http for exactly this. The Console matches
+  its Switch Cloud entry by address, so an install that has signed in to the
+  real Cloud gets a second "Switch Cloud" server for the local one rather
+  than reusing it.
+- **The Console's data** (servers, sign-ins, its database) lives in its own
+  directory, `switchdash-local-cloud` under the system's app-data folder,
+  rather than the one every other dev build shares. Branches that number
+  their migrations differently cannot break each other's database this
+  way. Delete that directory to start the Console from scratch.
+
 ## Other useful recipes
 
 | Command | What it does |
 | --- | --- |
+| `just local-cloud` / `just local-cloud-console` | Run switch-core as a stand-in for Switch Cloud, and the Console pointed at it (see above) |
 | `just format` / `just check` | Format with ruff / lint-check in CI mode (no changes) |
 | `just typecheck` | mypy over `core/switch_core/` and `connectors/` |
 | `just test` / `just test -k name` | Run the test suite / a single test |

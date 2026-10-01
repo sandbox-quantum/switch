@@ -13,7 +13,7 @@ import {
   markAgentStorageMigrationComplete,
 } from './agent-storage-migration-marker';
 import { markAgentUnmigrated } from './agent-storage-migration-ready';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getAgents } from './getAgents';
 import { importAgentConfig } from './import-agent-config';
 import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
@@ -35,7 +35,7 @@ import { writeNeutralAgentSettingsFs } from './write-switch-settings';
  */
 export async function migrateAgentStorage(): Promise<void> {
   // Once a full pass has migrated every agent, never re-run: the steady-state
-  // migration re-opens each agent's workspace filesystem (an SSH/SFTP round trip
+  // migration re-opens each agent's workdir filesystem (an SSH/SFTP round trip
   // per remote agent) on every boot for no benefit.
   const completed = await completedAgentStorageMigrationGeneration();
   if (completed >= AGENT_STORAGE_MIGRATION_GENERATION) return;
@@ -69,7 +69,7 @@ export async function migrateAgentStorage(): Promise<void> {
  *
  * `completedGeneration` is the generation this install already finished, so a
  * re-run can skip agents the new generation cannot change — the check happens
- * before the workspace filesystem is opened, which for a remote agent is an SSH
+ * before the workdir filesystem is opened, which for a remote agent is an SSH
  * connect and an SFTP channel.
  */
 async function migrateOne(agent: Agent, completedGeneration: number): Promise<boolean> {
@@ -87,7 +87,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
   const location = await getLocationById(agent.locationId);
   if (!location) return false;
 
-  const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const workdir = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
     // The agent's identity is its single `name` (CHOO-1440): the creds/definition
     // stem on disk. It is authoritative — earlier migrations, and the 0041 SQL
@@ -95,7 +95,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     const name = agent.name;
 
     let changed = false;
-    if (!credentialsDone && (await migrateCredentials(agent, workspace.fs, behavior))) {
+    if (!credentialsDone && (await migrateCredentials(agent, workdir.fs, behavior))) {
       changed = true;
     }
 
@@ -103,7 +103,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     //    in its provider definition or on its row.
     if (
       await importAgentConfig({
-        workspaceFs: workspace.fs,
+        workdirFs: workdir.fs,
         repoAgents: behavior ?? null,
         name,
         providerConfig: agent.providerConfig,
@@ -114,7 +114,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
 
     return changed;
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }
 

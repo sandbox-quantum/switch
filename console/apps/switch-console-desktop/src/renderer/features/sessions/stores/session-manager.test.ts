@@ -12,6 +12,8 @@ type MockViewModel = {
 
 const mocks = vi.hoisted(() => ({
   archiveSession: vi.fn(),
+  createSession: vi.fn(),
+  getAgentById: vi.fn(),
   agentAcquire: vi.fn(),
   agentRelease: vi.fn(),
   getLocationManagerStore: vi.fn(),
@@ -33,10 +35,11 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
   rpc: {
     agents: {
-      getAgentById: vi.fn(),
+      getAgentById: mocks.getAgentById,
     },
     sessions: {
       archiveSession: mocks.archiveSession,
+      createSession: mocks.createSession,
       getSessions: mocks.getSessions,
       provisionSession: mocks.provisionSession,
       teardownSession: mocks.teardownSession,
@@ -242,5 +245,35 @@ describe('SessionManagerStore discardFailedCreations', () => {
     expect(mocks.agentRelease).not.toHaveBeenCalled();
 
     manager.dispose();
+  });
+});
+
+describe('SessionManagerStore creating a session', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getAgentById.mockResolvedValue({ id: 'agent-1', providerId: 'claude' });
+    mocks.agentAcquire.mockReturnValue({ agent: null });
+    mocks.createSession.mockImplementation(async (params: { id: string }) => ({
+      success: true,
+      data: { session: makeSession({ id: params.id }) },
+    }));
+    mocks.getLocationManagerStore.mockReturnValue({ mountLocation: mocks.mountLocation });
+    mocks.mountLocation.mockResolvedValue(undefined);
+    mocks.provisionSession.mockResolvedValue({
+      success: true,
+      data: { path: '/tmp/location-1', locationId: 'location-1' },
+    });
+  });
+
+  it('says a person started it, which is the only way this interface starts one', async () => {
+    await makeSessionManager().createSession({
+      id: 'session-2',
+      agentId: 'agent-1',
+      title: 'Session 2',
+    });
+
+    expect(mocks.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'session-2', startSource: 'user' })
+    );
   });
 });

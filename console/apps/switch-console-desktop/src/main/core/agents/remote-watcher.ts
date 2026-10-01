@@ -34,7 +34,13 @@ export async function startRemoteDiscovery(agentId: string): Promise<void> {
  */
 export async function ensureRemoteWatcher(agentId: string): Promise<void> {
   if (!(await getAgentById(agentId))?.switchAgentId) return;
-  await applyControllerState(agentId, 'restore');
+  await applyControllerState(agentId, 'restore', 'host');
+  remoteSessionReconciler.start(agentId);
+}
+/** {@link ensureRemoteWatcher}, but writing this Console's auto-approve to the
+ * host instead of adopting the host's. */
+export async function pushRemoteAutoApprove(agentId: string): Promise<void> {
+  await applyControllerState(agentId, 'restore', 'this-console');
   remoteSessionReconciler.start(agentId);
 }
 export async function stopRemoteWatcher(agentId: string): Promise<void> {

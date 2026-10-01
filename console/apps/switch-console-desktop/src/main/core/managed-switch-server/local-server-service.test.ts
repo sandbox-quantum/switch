@@ -40,7 +40,8 @@ vi.mock('./managed-upgrade', async (importOriginal) => ({
   ...(await importOriginal<typeof ManagedUpgrade>()),
   readUpgradeJournal: m.journal,
 }));
-vi.mock('./pipeline', () => ({ startStack: m.start, stopStack: m.stop, resetStack: vi.fn() }));
+const resetStack = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('./pipeline', () => ({ startStack: m.start, stopStack: m.stop, resetStack }));
 vi.mock('./host/local-host', () => ({
   LocalServerHost: class {
     dispose() {}
@@ -63,6 +64,7 @@ const started: StartLocalServerResult = {
   kind: 'started',
   serverId: 'local',
   telemetryEnabled: false,
+  warning: null,
 };
 
 /** A start that runs the upgrade the way the pipeline does: announce, then work. */
@@ -254,4 +256,12 @@ it('keeps an owed upgrade pending across a stop', async () => {
     phase: 'stopped',
     upgrade: { state: 'pending', from: '0.10.0', to: '0.11.0' },
   });
+});
+
+it('resets the stack on this computer holding no lock, since nobody else shares it', async () => {
+  const service = new LocalServerService();
+
+  await service.reset();
+
+  expect(resetStack).toHaveBeenCalledWith(expect.anything(), null);
 });

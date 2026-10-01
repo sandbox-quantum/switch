@@ -15,9 +15,11 @@ const RESUME_NOTE = 'Sessions on this server resume once the update finishes.';
  * this build of Switch Console pins (CHOO-1736).
  *
  * A stack that is behind the pin is upgraded by Console on its own, so for that
- * case this is a status rather than an offer: the update in progress, the
- * error it failed with (and a retry), or — for a stopped stack — that starting
- * it will update it. Sessions on the server wait for it either way.
+ * case this is mostly a status rather than an offer: the update in progress,
+ * the error it failed with (and a retry), or — for a stopped stack — that
+ * starting it will update it. The exception is a running shared server others
+ * have used lately, which is updated only when someone here says so, naming
+ * who it reaches. Sessions on the server wait for it either way.
  *
  * The downgrade direction gets no action, only an explanation: the stack's
  * database has already migrated forward and switch-core cannot roll back, so
@@ -28,11 +30,14 @@ export function VersionDriftNotice({
   upgrade,
   progress,
   disabled,
+  affected,
   onRestart,
 }: {
   drift: SwitchVersionDrift | null;
   /** The upgrade the stack owes this build, if any. */
   upgrade: ManagedServerUpgrade | null;
+  /** Who else an update of a shared server reaches, when anyone does. */
+  affected: string | null;
   /** The current step of a start in flight ("Pulling images…"), or null. */
   progress: string | null;
   /** True while a lifecycle operation is in flight (or the host is unreachable). */
@@ -46,6 +51,7 @@ export function VersionDriftNotice({
         upgrade={upgrade}
         progress={progress}
         disabled={disabled}
+        affected={affected}
         onRetry={onRestart}
       />
     );
@@ -115,11 +121,13 @@ export function ServerUpgradeNotice({
   upgrade,
   progress,
   disabled,
+  affected,
   onRetry,
 }: {
   upgrade: ManagedServerUpgrade;
   progress: string | null;
   disabled: boolean;
+  affected: string | null;
   onRetry: () => void;
 }) {
   const versions = `switch-core ${upgrade.from} → ${upgrade.to}`;
@@ -148,6 +156,25 @@ export function ServerUpgradeNotice({
           <Button size="sm" disabled={disabled} onClick={onRetry}>
             <RefreshCw className="size-4" />
             Retry
+          </Button>
+        </AlertAction>
+      </Alert>
+    );
+  }
+  if (upgrade.state === 'held') {
+    return (
+      <Alert variant="warning">
+        <ArrowUpCircle className="size-4" />
+        <AlertTitle>{`switch-core ${upgrade.to} is required`}</AlertTitle>
+        <AlertDescription>
+          <p>{`This server runs switch-core ${upgrade.from}. Others use it too, so Switch Console has not updated it on its own: updating restarts it for everyone. Its rooms, agents and data are kept, and the database is backed up first.`}</p>
+          {affected && <p>{affected}</p>}
+          <p>{RESUME_NOTE}</p>
+        </AlertDescription>
+        <AlertAction>
+          <Button size="sm" disabled={disabled} onClick={onRetry}>
+            <RefreshCw className="size-4" />
+            Update for everyone
           </Button>
         </AlertAction>
       </Alert>

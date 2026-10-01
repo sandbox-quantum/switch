@@ -64,10 +64,14 @@ export const LOAD_AGENTS_QUERY_KEY = 'load-existing-agents';
 export function LoadExistingAgentsSection({
   sshHost,
   serverId,
+  workspaceId,
   initiallyOpen = false,
 }: {
   sshHost: string;
   serverId: string;
+  /** The workspace whose agents are discovered. One server can host several,
+   *  and each answers `GET /agents` with its own list. */
+  workspaceId: string;
   initiallyOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(initiallyOpen);
@@ -76,8 +80,8 @@ export function LoadExistingAgentsSection({
   const showRemoveConfig = useShowModal('removeAgentConfigModal');
 
   const discovery = useQuery({
-    queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
-    queryFn: () => rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId }),
+    queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, workspaceId],
+    queryFn: () => rpc.agents.discoverLoadableAgentsOnHost({ sshHost, workspaceId }),
     enabled: isOpen && scanRequested,
   });
 
@@ -194,7 +198,7 @@ export function LoadExistingAgentsSection({
       // waiting for the SSH round trip that a full refetch requires.
       const loaded = new Set(names);
       queryClient.setQueryData(
-        [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
+        [LOAD_AGENTS_QUERY_KEY, sshHost, workspaceId],
         (prev: { agents: LoadableAgentRow[]; serverApiUrl: string } | undefined) => {
           if (!prev) return prev;
           return {
@@ -216,7 +220,9 @@ export function LoadExistingAgentsSection({
         )
       );
 
-      void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
+      void queryClient.invalidateQueries({
+        queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, workspaceId],
+      });
     },
     onError: (error) => {
       toast({
@@ -246,7 +252,9 @@ export function LoadExistingAgentsSection({
         next.delete(key);
         return next;
       });
-      void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
+      void queryClient.invalidateQueries({
+        queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, workspaceId],
+      });
     },
     onError: (error) => {
       toast({
@@ -271,7 +279,8 @@ export function LoadExistingAgentsSection({
 
   const [manualDir, setManualDir] = useState('');
   const manualScan = useMutation({
-    mutationFn: (dir: string) => rpc.agents.discoverLoadableAgentsInDir({ sshHost, dir, serverId }),
+    mutationFn: (dir: string) =>
+      rpc.agents.discoverLoadableAgentsInDir({ sshHost, dir, workspaceId }),
     onSuccess: (found) => {
       setManualServerApiUrl(found.serverApiUrl);
       setManualAgents((prev) => {
@@ -287,9 +296,9 @@ export function LoadExistingAgentsSection({
 
   const deepScan = useMutation({
     mutationFn: () =>
-      rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId, includeHomeScan: true }),
+      rpc.agents.discoverLoadableAgentsOnHost({ sshHost, workspaceId, includeHomeScan: true }),
     onSuccess: (result) => {
-      queryClient.setQueryData([LOAD_AGENTS_QUERY_KEY, sshHost, serverId], result);
+      queryClient.setQueryData([LOAD_AGENTS_QUERY_KEY, sshHost, workspaceId], result);
     },
   });
 
@@ -404,7 +413,7 @@ export function LoadExistingAgentsSection({
                     disabled={discovery.isFetching}
                     onClick={() =>
                       void queryClient.invalidateQueries({
-                        queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
+                        queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, workspaceId],
                       })
                     }
                   >

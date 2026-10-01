@@ -1,4 +1,4 @@
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 import { existingAgentIdInSlot, foreignCredentialsOwnerFs } from './write-switch-settings';
 
@@ -22,11 +22,11 @@ export async function foreignCredentialsOwner(
   slug: string,
   apiEndpoint: string
 ): Promise<string | null> {
-  const workspace = await resolveWorkspaceFsFor(sshHost, dir);
+  const workdir = await resolveWorkdirFsFor(sshHost, dir);
   try {
-    return await foreignCredentialsOwnerFs(workspace.fs, slug, apiEndpoint);
+    return await foreignCredentialsOwnerFs(workdir.fs, slug, apiEndpoint);
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }
 
@@ -46,11 +46,11 @@ export async function sameEndpointAgentId(
   slug: string,
   apiEndpoint: string
 ): Promise<string | null> {
-  const workspace = await resolveWorkspaceFsFor(sshHost, dir);
+  const workdir = await resolveWorkdirFsFor(sshHost, dir);
   try {
-    const existingRaw = await workspace.fs.read(agentSettingsRelativePath(slug));
+    const existingRaw = await workdir.fs.read(agentSettingsRelativePath(slug));
     return existingAgentIdInSlot(existingRaw, apiEndpoint);
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }

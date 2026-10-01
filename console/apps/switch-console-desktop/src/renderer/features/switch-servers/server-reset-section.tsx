@@ -21,11 +21,18 @@ import {
  */
 export function ServerResetSection({
   dialogTitle,
+  shared,
+  affected,
   disabled,
   onConfirm,
 }: {
   /** Names the stack being destroyed — the confirmation has to say which. */
   dialogTitle: string;
+  /** Whether other people can be using the stack: true for a remote one. */
+  shared: boolean;
+  /** Who else it reaches, for the confirmation to name — or that it could not
+   * be told; null when nobody. */
+  affected: string | null;
   disabled: boolean;
   onConfirm: () => void;
 }) {
@@ -64,6 +71,12 @@ export function ServerResetSection({
               <strong className="text-foreground">every agent you've configured against it</strong>.
               This can't be undone. A fresh Start rebuilds an empty stack from scratch.
             </DialogDescription>
+            {shared && (
+              <DialogDescription className="mt-2">
+                It is deleted for <strong className="text-foreground">everyone who uses it</strong>,
+                not only for this Console. {affected}
+              </DialogDescription>
+            )}
           </DialogContentArea>
           <DialogFooter>
             <DialogClose render={<Button variant="outline" size="sm" />}>Cancel</DialogClose>

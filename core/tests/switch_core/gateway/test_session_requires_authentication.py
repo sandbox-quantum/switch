@@ -40,14 +40,17 @@ from switch_core.gateway.dependencies import get_session, get_system_session
 
 # The only routes that may open a session with no tenant bound. `get_session`
 # is unavailable to them because there is no `get_current_user` to bind one:
-# for login and the OIDC callback there is no caller yet at all; for switching
-# tenants the caller is authenticated (`get_authenticated_user_id`) but has,
-# by construction, not yet selected the tenant this session opens for — see
-# `get_system_session`'s docstring. All three take `get_system_session`
-# instead, which says so in the signature.
+# for login and the OIDC callback there is no caller yet at all; for the rest
+# the caller is authenticated but has, by construction, no selected tenant to
+# bind — switching is choosing one, creating a workspace makes one, and the
+# session state is how a caller without one learns so. See
+# `get_system_session`'s docstring. They take `get_system_session` instead,
+# which says so in the signature.
 _ROUTES_WITH_NO_TENANT_BOUND = {
     ("POST", "/auth/login"),
     ("GET", "/auth/oidc/callback"),
+    ("GET", "/auth/session"),
+    ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
     # Locks the caller's `users` row, which has no tenant, while it creates a
     # workspace that has none yet either.
@@ -74,6 +77,9 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/auth/oidc/callback"),
     ("POST", "/auth/login"),
     ("POST", "/auth/logout"),
+    # What a signed-in caller's session resolves to — including that it
+    # resolves to no workspace, which is the answer a caller with none needs.
+    ("GET", "/auth/session"),
     # A deployment-wide constant — the agent types this build knows about.
     # Nothing tenant-specific to scope it to.
     ("GET", "/known-types"),
@@ -87,6 +93,21 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.
     ("POST", "/invitations/accept"),
+    # Invitations addressed to the caller are in workspaces they are not in, so
+    # no session of theirs is bound to one. Listing opens a `tenant_session`
+    # per tenant `tenants_with_invitations_for` names; accepting opens one
+    # around the tenant the request names, and finds nothing if the
+    # invitation is not there — see `list_my_invitations` and
+    # `accept_my_invitation`.
+    ("GET", "/invitations/mine"),
+    ("POST", "/invitations/mine/accept"),
+    # Workspaces open to the caller's e-mail domain are ones they are not in
+    # yet, for the same reason. Listing opens a `tenant_session` per tenant
+    # `tenants_open_to` names; joining opens one around the tenant in the path
+    # and finds nothing unless it is open to the caller's domain — see
+    # `list_joinable_tenants` and `join_tenant_by_domain`.
+    ("GET", "/joinable-tenants"),
+    ("POST", "/joinable-tenants/{tenant_id}/join"),
 }
 
 

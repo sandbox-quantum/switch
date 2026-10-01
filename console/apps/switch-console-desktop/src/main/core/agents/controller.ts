@@ -35,11 +35,6 @@ import type { RemoveLoadableAgentConfigParams } from './remove-loadable-agent-co
 import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
 import { resetRemoteAgent } from './reset-remote-agent';
 import { setAgentAutoApprove, type AgentAutoApproveParams } from './setAgentAutoApprove';
-import {
-  getAgentAutoSession,
-  setAgentAutoSession,
-  type AgentAutoSessionParams,
-} from './setAgentAutoSession';
 
 export const agentsController = createRPCController({
   addAgent: (params: AddAgentParams) => addAgent(params),
@@ -82,7 +77,7 @@ export const agentsController = createRPCController({
   onboardAgent: (params: OnboardAgentParams) => onboardAgent(params),
   discoverLoadableAgentsOnHost: (params: DiscoverLoadableAgentsParams) =>
     discoverLoadableAgentsOnHost(params),
-  discoverLoadableAgentsInDir: (params: { sshHost: string; dir: string; serverId: string }) =>
+  discoverLoadableAgentsInDir: (params: { sshHost: string; dir: string; workspaceId: string }) =>
     discoverLoadableAgentsInDir(params),
   attachConfiguredAgents: (params: AttachConfiguredAgentsParams) => attachConfiguredAgents(params),
   removeLoadableAgentConfig: (params: RemoveLoadableAgentConfigParams) =>
@@ -98,10 +93,6 @@ export const agentsController = createRPCController({
   resetRemoteAgent: (params: { agentId: string }) => resetRemoteAgent(params.agentId),
   assignServer: (params: { agentId: string; serverId: string }): Promise<AgentVerifyResult> =>
     assignAgentServer(params),
-  setAgentAutoSession: (params: AgentAutoSessionParams): Promise<void> =>
-    setAgentAutoSession(params),
   setAgentAutoApprove: (params: AgentAutoApproveParams): Promise<void> =>
     setAgentAutoApprove(params),
-  getAgentAutoSession: (params: { agentId: string }): Promise<boolean> =>
-    getAgentAutoSession(params),
 });

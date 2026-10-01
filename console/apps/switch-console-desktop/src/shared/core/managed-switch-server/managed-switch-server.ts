@@ -137,11 +137,15 @@ export type DeployedTelemetry =
  *   `error` until a retry succeeds.
  * - `pending` — the stack is stopped. It is upgraded when it is next started,
  *   never started at the old version.
+ * - `held` — the stack is running on a shared host and others have used it
+ *   recently. The update restarts it for all of them, so it waits for someone
+ *   here to run it.
  */
 export type ManagedServerUpgrade =
   | { state: 'updating'; from: string; to: string }
   | { state: 'failed'; from: string; to: string; error: string }
-  | { state: 'pending'; from: string; to: string };
+  | { state: 'pending'; from: string; to: string }
+  | { state: 'held'; from: string; to: string };
 
 /** Why a session cannot start on a managed server whose upgrade has not
  * finished. Shared so the thrown error and the UI say the same thing. */
@@ -151,6 +155,9 @@ export function managedServerUpgradeBlockedReason(
 ): string {
   if (upgrade.state === 'pending') {
     return `${serverName} is stopped on switch-core ${upgrade.from} and needs switch-core ${upgrade.to}. Start it from the server's page to update it; sessions on it start once the update finishes.`;
+  }
+  if (upgrade.state === 'held') {
+    return `${serverName} runs switch-core ${upgrade.from} and this Console needs switch-core ${upgrade.to}. Others use it too, so it is not updated without asking: update it from the server's page. Sessions on it start once the update finishes.`;
   }
   return `Updating ${serverName} from switch-core ${upgrade.from} to ${upgrade.to} failed: ${upgrade.error} Retry the update from the server's page; sessions on it stay paused until it succeeds.`;
 }
@@ -226,6 +233,9 @@ export type StartLocalServerResult =
        * record what the server is now doing without probing for what it just
        * wrote. */
       telemetryEnabled: boolean;
+      /** Something the start could not do that does not undo it, for the
+       * server page to say; null when there is nothing to say. */
+      warning: string | null;
     }
   | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string }
   | { kind: 'version-downgrade'; deployed: string; expected: string }
@@ -234,3 +244,200 @@ export type StartLocalServerResult =
   // and still on `deployed`; retrying is safe and resumes where it stopped.
   | { kind: 'matrix-migration-failed'; deployed: string; expected: string; detail: string }
   | { kind: 'error'; message: string };
+
+/** Outcome of starting a remote stack: a start's, or `cancelled` when the user
+ * stopped waiting for another Console's hold on the stack, before anything
+ * was changed. */
+export type StartRemoteServerResult = StartLocalServerResult | { kind: 'cancelled' };
+
+/**
+ * Outcome of joining a remote stack another Console started. Everything short
+ * of `connected` leaves the host exactly as it was.
+ */
+export type ConnectRemoteServerResult =
+  | {
+      kind: 'connected';
+      serverId: string;
+      /** The switch-core version the stack's settings name, when they do. */
+      deployedVersion: string | null;
+    }
+  /** The stack is set up but stopped: Start it, which keeps its data. */
+  | { kind: 'not-running' }
+  /** Nothing is set up on the host: Start sets one up. */
+  | { kind: 'absent' }
+  /** Another account's stack whose settings were never shared. `message` says
+   * so and what fixes it. */
+  | { kind: 'unshared'; ownerDir: string | null; message: string }
+  | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string }
+  /** The user stopped waiting for another Console's hold on the stack. */
+  | { kind: 'cancelled' }
+  | { kind: 'error'; message: string };
+
+/** Something a Console did to a shared remote stack, as recorded on its host. */
+export type StackActivityAction = 'started' | 'connected' | 'stopped' | 'reset' | 'disconnected';
+
+/**
+ * A Console that uses a shared remote stack, as it last recorded itself on the
+ * stack's host. Everyone sharing the stack signs in as the one admin account,
+ * so this, not the server, is where they are told apart.
+ */
+export type StackConsole = {
+  /** The Console's random id: the same one it sends the server. */
+  consoleId: string;
+  /** `user@host` of the desktop the Console runs on. */
+  name: string;
+  /** The account on the stack's host that Console reaches it as. */
+  hostAccount: string;
+  appVersion: string;
+  /** ISO timestamp of the last time it started, joined or picked up the stack. */
+  lastSeenAt: string;
+};
+
+export type StackActivityEntry = {
+  /** ISO timestamp. */
+  at: string;
+  action: StackActivityAction;
+  consoleId: string;
+  name: string;
+  hostAccount: string;
+};
+
+/** The Consoles recorded on a shared stack's host, and what they last did to it. */
+export type StackRegister = {
+  /** This Console's own id, so it can tell itself apart in the lists. */
+  self: string;
+  /** Most recently seen first. */
+  consoles: StackConsole[];
+  /** Most recent first, and only the latest few. */
+  activity: StackActivityEntry[];
+};
+
+/** How long a Console counts as still using a shared server after it was last
+ * seen: long enough to span a holiday, short enough that someone who tried it
+ * once in the spring is not warned about in the autumn. */
+export const RECENTLY_SEEN_DAYS = 14;
+
+/** The other Consoles seen on the server recently, most recent first — the
+ * people a stop, restart, reset or update from here will affect. */
+export function othersRecentlySeen(register: StackRegister | null, now: Date): StackConsole[] {
+  if (!register) return [];
+  const cutoff = now.getTime() - RECENTLY_SEEN_DAYS * 24 * 60 * 60 * 1000;
+  return register.consoles.filter((c) => {
+    if (c.consoleId === register.self) return false;
+    const seen = Date.parse(c.lastSeenAt);
+    return Number.isFinite(seen) && seen >= cutoff;
+  });
+}
+
+/** What a Console holding a shared server's lock is doing to it. */
+export type ServerLockAction =
+  | 'starting'
+  | 'updating'
+  | 'connecting'
+  | 'checking'
+  | 'stopping'
+  | 'resetting';
+
+/**
+ * A Console's hold on a shared server's lock: whoever changes a server others
+ * use holds it, so two Consoles cannot start, update, stop or reset it over
+ * each other. Both durations are by the host's clock.
+ */
+export type ServerLockHolder = {
+  name: string;
+  hostAccount: string;
+  action: ServerLockAction;
+  heldForSeconds: number;
+  /** When the lock lapses unless its holder renews it — which a Console that
+   * has gone away no longer does. */
+  expiresInSeconds: number;
+};
+
+const LOCK_ACTION_PHRASE: Record<ServerLockAction, string> = {
+  starting: 'starting',
+  updating: 'updating',
+  connecting: 'connecting to',
+  checking: 'checking',
+  stopping: 'stopping',
+  resetting: 'resetting',
+};
+
+function lockHolderName(holder: ServerLockHolder): string {
+  return `${holder.name} (as ${holder.hostAccount})`;
+}
+
+function minutes(seconds: number): string {
+  const whole = Math.max(1, Math.ceil(seconds / 60));
+  return whole === 1 ? 'a minute' : `${whole} minutes`;
+}
+
+/** What a Console waiting for the lock says while it waits. */
+export function waitingForLockMessage(holder: ServerLockHolder): string {
+  return `Waiting for ${lockHolderName(holder)} to finish ${LOCK_ACTION_PHRASE[holder.action]} the server…`;
+}
+
+/** What a check of the server says when the user stopped waiting to make it. */
+export function stoppedWaitingForLockMessage(holder: ServerLockHolder | null): string {
+  const what = holder
+    ? `${lockHolderName(holder)} to finish ${LOCK_ACTION_PHRASE[holder.action]} the server`
+    : 'the server';
+  return `Stopped waiting for ${what}, so this Console has not checked it since.`;
+}
+
+/** What the Add Server step says of a server someone is changing right now. */
+export function lockHolderSentence(holder: ServerLockHolder): string {
+  return (
+    `${lockHolderName(holder)} is ${LOCK_ACTION_PHRASE[holder.action]} this server right now. ` +
+    `Starting or connecting here waits until they are done.`
+  );
+}
+
+/** Why a stop or reset was refused: someone else is changing the server. */
+export function serverBusyMessage(hostLabel: string, holder: ServerLockHolder): string {
+  return (
+    `${lockHolderName(holder)} is ${LOCK_ACTION_PHRASE[holder.action]} the server on ` +
+    `${hostLabel} right now, so nothing was changed. Try again once they are done. If that ` +
+    `Console has gone away, its hold on the server clears by itself within ` +
+    `${minutes(holder.expiresInSeconds)}.`
+  );
+}
+
+/**
+ * A stop or reset of a shared server turned away because another Console is
+ * changing it right now. Nothing was touched. Lives with the model, like
+ * {@link ManagedServerStoppedError}, so the RPC boundary and the renderer can
+ * recognise a refusal that is a state to show rather than a fault.
+ */
+export class ServerBusyError extends Error {
+  constructor(
+    readonly holder: ServerLockHolder,
+    hostLabel: string
+  ) {
+    super(serverBusyMessage(hostLabel, holder));
+    this.name = 'ServerBusyError';
+  }
+}
+
+/**
+ * What a remote host has of a stack, for the renderer to decide what to offer
+ * — Connect, Start, or neither. The main process's reading of the host with
+ * every secret left out. `busy` is the Console changing the stack right now,
+ * if any, which whatever is offered will wait for.
+ */
+export type RemoteStackProbe =
+  | { kind: 'absent'; busy: ServerLockHolder | null }
+  /** A stack whose settings this account can read. `shared` is false for one
+   * this account started before settings were shared; connecting shares it.
+   * `drift` compares the version its settings name with this build's pin. */
+  | {
+      kind: 'present';
+      running: boolean;
+      deployedVersion: string | null;
+      shared: boolean;
+      drift: SwitchVersionDrift | null;
+      busy: ServerLockHolder | null;
+    }
+  | { kind: 'unshared'; running: boolean; ownerDir: string | null; message: string }
+  | { kind: 'incomplete'; running: boolean; missing: string[] }
+  | { kind: 'unreadable'; reason: string }
+  | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string };

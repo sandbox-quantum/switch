@@ -14,10 +14,8 @@ vi.mock('@main/db/client', () => ({
 }));
 
 const {
-  listAutoSessionAgentIds,
   listAutoSessionSubagents,
   listStoppedControllerAgentIds,
-  setAutoSessionAgent,
   setAutoSessionSubagent,
   setControllerStopped,
 } = await import('./auto-session-store');
@@ -43,12 +41,15 @@ it('keeps both agents stopped when two controllers are stopped at once', async (
   expect((await listStoppedControllerAgentIds()).sort()).toEqual(['agent-1', 'agent-2']);
 });
 
-it('does not put an agent back in the auto-session mirror because another was added', async () => {
-  await setAutoSessionAgent('agent-1', true);
+it('does not put an agent back on the air because another was started', async () => {
+  await setControllerStopped('agent-1', true);
 
-  await Promise.all([setAutoSessionAgent('agent-1', false), setAutoSessionAgent('agent-2', true)]);
+  await Promise.all([
+    setControllerStopped('agent-1', false),
+    setControllerStopped('agent-2', true),
+  ]);
 
-  expect(await listAutoSessionAgentIds()).toEqual(['agent-2']);
+  expect(await listStoppedControllerAgentIds()).toEqual(['agent-2']);
 });
 
 it('keeps both subagents when two are enabled at once', async () => {

@@ -5,8 +5,8 @@ import {
   type ConnectionHealthDeps,
   ConnectionHealthMonitor,
   type LinkedAgent,
-  type RemoteHealthSource,
 } from './connection-health-monitor';
+import type { HostWatcherStatus } from './host-watchers';
 
 const NOW = Date.parse('2026-09-24T12:00:00.000Z');
 
@@ -38,31 +38,26 @@ function localWatcher(initial: WatcherHealth) {
   };
 }
 
-/** A sidecar's control connection, as the monitor uses it. */
-function sidecar(initial: WatcherHealth) {
-  let current = initial;
-  const listeners = new Set<(health: WatcherHealth) => void>();
-  const closers = new Set<(error: Error) => void>();
-  const client: RemoteHealthSource = {
-    health: async () => current,
-    onHealth: async (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    onClose: (listener) => {
-      closers.add(listener);
-      return () => closers.delete(listener);
-    },
-  };
+/** A remote watcher as its host's files describe it, with what it wrote about itself. */
+function onHost(
+  written: WatcherHealth | null,
+  overrides: Partial<HostWatcherStatus> = {}
+): HostWatcherStatus {
   return {
-    client,
-    report(next: WatcherHealth) {
-      current = next;
-      for (const listener of listeners) listener(next);
-    },
-    close(error: Error) {
-      for (const closer of closers) closer(error);
-    },
+    agentId: 'switch-remote',
+    root: '/state/sdk-watchers/remote',
+    running: true,
+    build: '/state/sdk-host/shared-host-abc.mjs',
+    enabled: true,
+    spawn: true,
+    stoodDown: false,
+    supervisorPid: 100,
+    workerPid: 101,
+    workerAlive: true,
+    health: written && { ...written, pid: 101, updatedAt: new Date(NOW).toISOString() },
+    failure: null,
+    takenOver: null,
+    ...overrides,
   };
 }
 
@@ -82,13 +77,12 @@ function monitorWith(overrides: Partial<ConnectionHealthDeps>) {
     local: () => {
       throw new Error('no local watcher in this test');
     },
-    remote: () => Promise.reject(new Error('no sidecar in this test')),
-    remoteStatus: async () => null,
+    remoteWatcher: () => Promise.reject(new Error('no remote agent in this test')),
     emit: (_serverId, snapshot) => pushed.push(snapshot),
     redact: (text) => text.replaceAll('secret', '[redacted]'),
     logError: vi.fn(),
     now: () => NOW,
-    retryMs: 10_000,
+    pollMs: 5_000,
     ...overrides,
   };
   const monitor = new ConnectionHealthMonitor(deps);
@@ -153,75 +147,131 @@ it('shows a stream that just dropped as connecting, then failed once the grace h
   ]);
 });
 
-it('reads a remote agent through its sidecar and follows what the sidecar pushes', async () => {
-  const remote = sidecar(health({ state: 'connecting', since: new Date(NOW).toISOString() }));
+it('reads a remote agent from what its watcher wrote on its host, and reads it again', async () => {
+  vi.useFakeTimers();
+  const host = vi
+    .fn<(agentId: string) => Promise<HostWatcherStatus | null>>()
+    .mockResolvedValueOnce(
+      onHost(health({ state: 'connecting', since: new Date(NOW).toISOString() }))
+    )
+    .mockResolvedValue(onHost(health({ placements: { 'session-9': 'room-9' } })));
   const { monitor, pushed } = monitorWith({
     linkedAgents: async () => [agent('remote')],
     isRemote: async () => true,
-    remote: async (agentId) => {
-      expect(agentId).toBe('remote');
-      return remote.client;
-    },
+    remoteWatcher: host,
   });
   expect((await monitor.snapshot('server')).agents).toEqual([
     { agentId: 'remote', state: 'connecting', detail: null },
   ]);
-  remote.report(health({ placements: { 'session-9': 'room-9' } }));
-  await vi.waitFor(() =>
-    expect(pushed.at(-1)).toEqual({
-      agents: [{ agentId: 'remote', state: 'connected', detail: null }],
-      placements: { 'session-9': 'room-9' },
-    })
-  );
+  expect(host).toHaveBeenCalledWith('remote');
+
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(pushed.at(-1)).toEqual({
+    agents: [{ agentId: 'remote', state: 'connected', detail: null }],
+    placements: { 'session-9': 'room-9' },
+  });
 });
 
-it('says a sidecar cannot be reached, and why, and connects again once it can', async () => {
+it('never keeps showing what a replaced watcher last said', async () => {
+  // The bug this replaces: a push connection to a sidecar that was swapped
+  // out died without saying so, and its last words — "not running", as it
+  // stopped — stayed on screen for good.
   vi.useFakeTimers();
-  const remote = sidecar(health({}));
-  const reach = vi
-    .fn<(agentId: string) => Promise<RemoteHealthSource>>()
-    .mockRejectedValueOnce(new Error("The agent's sidecar is not running on its host."))
-    .mockResolvedValue(remote.client);
+  const host = vi
+    .fn<(agentId: string) => Promise<HostWatcherStatus | null>>()
+    .mockResolvedValueOnce(
+      onHost(health({ state: 'not-running', since: new Date(NOW - 60_000).toISOString() }), {
+        workerAlive: false,
+        failure: null,
+      })
+    )
+    .mockResolvedValue(
+      onHost(null, {
+        workerPid: 202,
+        health: { ...health({}), pid: 202, updatedAt: new Date(NOW).toISOString() },
+      })
+    );
   const { monitor, pushed } = monitorWith({
     linkedAgents: async () => [agent('remote')],
     isRemote: async () => true,
-    remote: reach,
-    remoteStatus: async () => ({ takenOver: null, failure: 'out of memory' }),
+    remoteWatcher: host,
+  });
+  await monitor.snapshot('server');
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(pushed.at(-1)!.agents).toEqual([{ agentId: 'remote', state: 'connected', detail: null }]);
+});
+
+it('does not take a file a previous watcher left as this watcher’s word', async () => {
+  vi.useFakeTimers();
+  let now = NOW;
+  // Written by pid 101; the watcher alive now is 202 and has written nothing.
+  const stale = onHost(health({}), { workerPid: 202 });
+  const { monitor, pushed } = monitorWith({
+    linkedAgents: async () => [agent('remote')],
+    isRemote: async () => true,
+    remoteWatcher: async () => stale,
+    now: () => now,
+  });
+  expect((await monitor.snapshot('server')).agents).toEqual([
+    { agentId: 'remote', state: 'connecting', detail: null },
+  ]);
+  now = NOW + 20_000;
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(pushed.at(-1)!.agents).toEqual([
+    {
+      agentId: 'remote',
+      state: 'failed',
+      detail:
+        "The agent's room watcher is running but does not report its connection to Switch. Update its sidecar to this Console's build.",
+    },
+  ]);
+});
+
+it('says the host cannot be read, and reads it again on the next round', async () => {
+  vi.useFakeTimers();
+  const host = vi
+    .fn<(agentId: string) => Promise<HostWatcherStatus | null>>()
+    .mockRejectedValueOnce(new Error('SSH exec channel open timed out after 15000ms'))
+    .mockResolvedValue(onHost(health({})));
+  const { monitor, pushed } = monitorWith({
+    linkedAgents: async () => [agent('remote')],
+    isRemote: async () => true,
+    remoteWatcher: host,
   });
   expect((await monitor.snapshot('server')).agents).toEqual([
     {
       agentId: 'remote',
       state: 'unreachable',
       detail:
-        "The agent's sidecar is not running on its host. The sidecar last stopped with: out of memory",
+        "Could not read the agent's state on its host: SSH exec channel open timed out after 15000ms",
     },
   ]);
-
-  await vi.advanceTimersByTimeAsync(10_000);
+  await vi.advanceTimersByTimeAsync(5_000);
   expect(pushed.at(-1)!.agents).toEqual([{ agentId: 'remote', state: 'connected', detail: null }]);
-
-  // The connection drops: unreachable again, not a made-up "disconnected".
-  remote.close(new Error('The connection to the agent sidecar closed.'));
-  await vi.advanceTimersByTimeAsync(0);
-  expect(pushed.at(-1)!.agents).toMatchObject([
-    { agentId: 'remote', state: 'unreachable', detail: expect.stringContaining('closed') },
-  ]);
-  // Asking again (a refetch) tries the sidecar at once rather than waiting.
-  expect((await monitor.snapshot('server')).agents).toEqual([
-    { agentId: 'remote', state: 'connected', detail: null },
-  ]);
-  expect(reach).toHaveBeenCalledTimes(3);
 });
 
-it('names a takeover the unreachable sidecar stood down for', async () => {
+it('names a takeover, the failure a stopped watcher recorded, and a host with no watcher', async () => {
+  const statuses: Record<string, HostWatcherStatus | null> = {
+    displaced: onHost(null, {
+      stoodDown: true,
+      takenOver: { at: new Date(NOW).toISOString(), reason: 'another client' },
+    }),
+    crashed: onHost(null, { workerAlive: false, running: false, failure: 'out of memory' }),
+    missing: null,
+  };
   const { monitor } = monitorWith({
-    linkedAgents: async () => [agent('remote')],
+    linkedAgents: async () => [agent('displaced'), agent('crashed'), agent('missing')],
     isRemote: async () => true,
-    remote: () => Promise.reject(new Error('not running')),
-    remoteStatus: async () => ({ takenOver: { reason: 'another client' }, failure: null }),
+    remoteWatcher: async (agentId) => statuses[agentId]!,
   });
   expect((await monitor.snapshot('server')).agents).toEqual([
-    { agentId: 'remote', state: 'taken-over', detail: 'another client' },
+    { agentId: 'displaced', state: 'taken-over', detail: 'another client' },
+    { agentId: 'crashed', state: 'failed', detail: 'out of memory' },
+    {
+      agentId: 'missing',
+      state: 'failed',
+      detail: 'No room watcher has been set up for this agent on its host.',
+    },
   ]);
 });
 

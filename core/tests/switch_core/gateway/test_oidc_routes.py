@@ -11,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import SwitchConfig
-from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    OidcIdentity,
+    Tenant,
+    TenantMember,
+    User,
+)
 from switch_core.db.stores.user_store import OidcIdentityRaceError, UserStore
 from switch_core.gateway.auth import decode_jwt, hash_password
 from switch_core.gateway.auth_routes import auth_config
@@ -88,18 +94,20 @@ class TestOidcCallback:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
 
             assert response.status_code == 303
             set_cookie = response.headers.get("set-cookie")
             assert set_cookie is not None and "switch_auth=" in set_cookie
-            # Signing in selects no workspace. That null claim is the recovery
-            # path out of a selection that has gone stale — a removed member is
-            # 403'd on every request until something mints one without it — so
-            # a later change carrying the previous tenant forward here would
-            # strand them until their cookie expired (CHOO-2723).
-            assert _tenant_claim(set_cookie) is None
+            # Signing in selects a workspace only from the user's *current*
+            # memberships — here, the one just created. Signing in is the
+            # recovery path out of a selection that has gone stale (a removed
+            # member is 403'd on every request until something mints a claim
+            # they can use), so it must never carry a previous claim forward
+            # unchecked (CHOO-2723).
+            assert _tenant_claim(set_cookie) == TENANT_ZERO_ID
 
             user = await UserStore().get_by_email(session, "alice@example.com")
             assert user is not None
@@ -135,6 +143,7 @@ class TestOidcCallback:
                     request=SimpleNamespace(),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
+                    session_factory=session_factory,
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 401
@@ -165,6 +174,7 @@ class TestOidcCallback:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
 
@@ -191,6 +201,7 @@ class TestOidcCallback:
                     request=SimpleNamespace(),  # type: ignore[arg-type]
                     config=_config(gateway_oidc_require_email_verified=False),
                     session=session,
+                    session_factory=session_factory,
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 401
@@ -229,6 +240,7 @@ class TestOidcCallback:
                     request=SimpleNamespace(),  # type: ignore[arg-type]
                     config=_config(gateway_oidc_require_email_verified=False),
                     session=session,
+                    session_factory=session_factory,
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 409
@@ -268,6 +280,7 @@ class TestOidcCallback:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
             assert response.status_code == 303
@@ -306,6 +319,7 @@ class TestOidcCallback:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
             assert first.status_code == 303
@@ -330,6 +344,7 @@ class TestOidcCallback:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
             assert response.status_code == 303
@@ -378,6 +393,7 @@ class TestOidcCallback:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
             assert response.status_code == 303
@@ -416,6 +432,7 @@ class TestOidcCallback:
                     request=SimpleNamespace(),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
+                    session_factory=session_factory,
                     user_store=_AlwaysRacingStore(),  # type: ignore[arg-type]
                 )
             assert exc.value.status_code == 503
@@ -436,6 +453,7 @@ class TestOidcCallback:
                     request=SimpleNamespace(),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
+                    session_factory=session_factory,
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 401
@@ -462,6 +480,7 @@ class TestOidcCallback:
                     request=SimpleNamespace(),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
+                    session_factory=session_factory,
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 502
@@ -489,6 +508,7 @@ class TestOidcCallback:
                     request=SimpleNamespace(),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
+                    session_factory=session_factory,
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 502
@@ -518,6 +538,7 @@ class TestOidcCallback:
                     request=SimpleNamespace(),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
+                    session_factory=session_factory,
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 503
@@ -531,8 +552,9 @@ class TestTheCallbackPlacesTheUserInATenant:
     """Sign-in provisions accounts, and an account with no membership can
     never sign in again (`gateway/auth.py` refuses to guess one). The callback
     binds tenant zero explicitly rather than letting `TenantScoped`'s fallback
-    supply it — the same row today, but a decision rather than an accident,
-    and the line a later sign-up phase changes.
+    supply it — the same row today, but a decision rather than an accident.
+    That is the `default_tenant` sign-up mode; `TestSignUpWithoutADefaultTenant`
+    covers the others.
     """
 
     async def _memberships(
@@ -563,6 +585,7 @@ class TestTheCallbackPlacesTheUserInATenant:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
             user = await UserStore().get_by_email(session, "jit@example.com")
@@ -606,6 +629,7 @@ class TestTheCallbackPlacesTheUserInATenant:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
             memberships = await self._memberships(session, user_id)
@@ -644,11 +668,143 @@ class TestTheCallbackPlacesTheUserInATenant:
                 request=SimpleNamespace(),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
+                session_factory=session_factory,
                 user_store=UserStore(),
             )
             memberships = await self._memberships(session, user_id)
 
         assert [m.tenant_id for m in memberships] == [TENANT_ZERO_ID]
+
+
+def _verified_token(email: str, sub: str) -> dict:
+    return {
+        "userinfo": {
+            "email": email,
+            "email_verified": True,
+            "sub": sub,
+            "name": email.split("@", 1)[0],
+        }
+    }
+
+
+async def _memberships(session: AsyncSession, user_id: str) -> list[TenantMember]:
+    result = await session.execute(
+        select(TenantMember).where(TenantMember.user_id == user_id)
+    )
+    return list(result.scalars().all())
+
+
+class TestSignUpWithoutADefaultTenant:
+    """In `open` and `invite_only` the callback places nobody: a new account
+    arrives with no workspace and makes or accepts one itself. Tenant zero is
+    an operator's workspace on such a server, not a lobby."""
+
+    @pytest.mark.parametrize("mode", ["open", "invite_only"])
+    async def test_a_new_account_has_no_membership_and_no_claim(
+        self,
+        mode: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        email = f"new-{mode.replace('_', '-')}@example.com"
+        token = _verified_token(email, f"okta|new-{mode}")
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(gateway_signup_mode=mode),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+            )
+            user = await UserStore().get_by_email(session, email)
+            assert user is not None
+            memberships = await _memberships(session, user.id)
+
+        assert response.status_code == 303
+        assert memberships == []
+        set_cookie = response.headers.get("set-cookie")
+        assert set_cookie is not None
+        assert _tenant_claim(set_cookie) is None
+
+    async def test_linking_a_verified_email_adds_no_membership(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            existing = User(
+                name="Unplaced",
+                email="unplaced@example.com",
+                role="user",
+                password_hash=hash_password("pw"),
+            )
+            session.add(existing)
+            await session.commit()
+            user_id = existing.id
+
+        token = _verified_token("unplaced@example.com", "okta|unplaced")
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(gateway_signup_mode="open"),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+            )
+            identity = (
+                await session.execute(
+                    select(OidcIdentity).where(OidcIdentity.sub == "okta|unplaced")
+                )
+            ).scalar_one()
+            memberships = await _memberships(session, user_id)
+
+        assert identity.user_id == user_id
+        assert memberships == []
+
+    async def test_a_returning_account_lands_in_its_last_workspace(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        other = "oidc-returning-other"
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            await session.flush()
+            existing = User(
+                name="Back",
+                email="back@example.com",
+                role="user",
+                metadata_={"last_tenant_id": other},
+            )
+            session.add(existing)
+            await session.flush()
+            for tenant_id in (TENANT_ZERO_ID, other):
+                session.add(
+                    TenantMember(
+                        tenant_id=tenant_id, user_id=existing.id, role="member"
+                    )
+                )
+            await session.commit()
+
+        token = _verified_token("back@example.com", "okta|back")
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(gateway_signup_mode="open"),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+            )
+
+        set_cookie = response.headers.get("set-cookie")
+        assert set_cookie is not None
+        assert _tenant_claim(set_cookie) == other
 
 
 class TestAuthConfigEndpoint:
@@ -670,3 +826,7 @@ class TestAuthConfigEndpoint:
         result = await auth_config(config=config)
         assert result.oidc_enabled is False
         assert result.password_login_enabled is False
+
+    async def test_reports_the_signup_mode(self) -> None:
+        result = await auth_config(config=_config(gateway_signup_mode="invite_only"))
+        assert result.signup_mode == "invite_only"

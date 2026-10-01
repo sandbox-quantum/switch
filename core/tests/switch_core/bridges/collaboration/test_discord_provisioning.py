@@ -122,7 +122,7 @@ class _FakePrivateChannel:
 def _wire(
     adapter: DiscordAdapter, guild: _FakeGuild, channels: dict[int, Any] | None = None
 ) -> None:
-    adapter._client = _FakeClient(guild, channels)  # type: ignore[assignment]
+    adapter._connection._client = _FakeClient(guild, channels)  # type: ignore[assignment]
 
 
 # ── create_channel ───────────────────────────────────────────────────────────

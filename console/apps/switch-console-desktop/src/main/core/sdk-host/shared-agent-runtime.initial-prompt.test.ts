@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   definition: vi.fn(),
   behavior: {} as Record<string, unknown>,
   ready: vi.fn(),
+  sidecarEnsure: vi.fn(),
 }));
 
 vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
@@ -27,7 +28,11 @@ vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
 
 vi.mock('./transcripts', () => ({ currentSnapshot: mocks.snapshot }));
 vi.mock('./host-journal', () => ({ JournalUnavailableError: class extends Error {} }));
-vi.mock('./sidecar-control', () => ({ withSidecar: vi.fn() }));
+vi.mock('./sidecar-control', () => ({
+  withSidecar: async (_agentId: string, act: (client: unknown) => Promise<unknown>) =>
+    act({ ensure: mocks.sidecarEnsure }),
+}));
+vi.mock('./legacy-sidecar', () => ({ stopLegacySidecar: vi.fn() }));
 vi.mock('@switch-console/shared/session-v1', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   snapshotSchema: { parse: (value: unknown) => value },
@@ -37,7 +42,7 @@ vi.mock('@main/core/switch-rooms/session-room-store', () => ({
   getPersistedRoomConnection: mocks.persistedRoom,
 }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
+vi.mock('@main/core/workspaces/workspace-session', () => ({ workspaceServer: mocks.server }));
 class FakeNotRecorded extends Error {}
 vi.mock('./session-commands', () => ({
   CommandNotRecordedError: FakeNotRecorded,
@@ -117,7 +122,7 @@ beforeEach(() => {
     id: 'agent-1',
     name: 'scout',
     switchAgentId: 'remote-agent',
-    serverId: 'server-1',
+    workspaceId: 'workspace-1',
   });
   mocks.server.mockResolvedValue({ id: 'server-1' });
   mocks.ready.mockResolvedValue(undefined);
@@ -156,6 +161,39 @@ it('delivers the initial prompt on a relaunch that did not create the host', asy
     body: { type: 'message.send', text: 'Say hello', delivery: 'queue' },
   });
   expect(mocks.persist.mock.calls.map((call) => call[1].state)).toEqual(['pending', 'submitted']);
+});
+
+it('hands the host how a new session started, so it can tell Switch', async () => {
+  await runtime().start(session, false, 'Say hello', 'user');
+
+  expect(mocks.runHost).toHaveBeenCalledWith(expect.any(String), expect.anything(), {
+    resuming: false,
+    restart: false,
+    startSource: 'user',
+  });
+});
+
+it('hands a remote host how a new session started, beside its config', async () => {
+  const agent = new SharedAgentRuntime(
+    { kind: 'ssh', connectionId: 'host-1' } as LocationTransport,
+    { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
+  );
+
+  await agent.start(session, false, 'Say hello', 'user');
+
+  expect(mocks.runHost).not.toHaveBeenCalled();
+  expect(mocks.sidecarEnsure).toHaveBeenCalledWith(
+    expect.objectContaining({ resuming: false, restart: false, startSource: 'user' })
+  );
+  // Beside the config, never in it: an older sidecar refuses a config key it
+  // does not know, and would refuse the session with it.
+  expect(mocks.sidecarEnsure.mock.calls[0][0].config).not.toHaveProperty('startSource');
+});
+
+it('hands the host no start source for a caller that gave none', async () => {
+  await runtime().start(session, true);
+
+  expect(mocks.runHost.mock.calls[0][2]).toMatchObject({ startSource: null });
 });
 
 it('accepts a host that awaits an explicit reset decision and holds the initial prompt', async () => {
@@ -378,7 +416,7 @@ it('reports restart progress through host replacement and authentication until r
         release = resolve;
       })
   );
-  mocks.loadSession.mockResolvedValue({ serverId: 'server-1', row: { config: {} } });
+  mocks.loadSession.mockResolvedValue({ workspaceId: 'workspace-1', row: { config: {} } });
   mocks.snapshot
     .mockResolvedValueOnce({
       session: { epoch: 'old', connectivity: 'online', status: 'ready' },

@@ -17,6 +17,9 @@ const dockerRunOneOffMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 const prepareUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve(null)));
 const finishUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock('./console-register', () => ({
+  readRegister: vi.fn(async () => ({ self: 'me', consoles: [], activity: [] })),
+}));
 vi.mock('@shared/app-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
   COMPATIBLE_SWITCH_VERSION: '0.24.0',
@@ -57,13 +60,17 @@ vi.mock('./telemetry-consent', () => ({
   readDeployedTelemetry: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
+  assertManagedServerUrlFree: () => Promise.resolve(),
   ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),
   setActiveServerId: vi.fn(),
+}));
+// Reads this install's own workspace rows, and through them the database client.
+vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
+  reconcileServerWorkspaces: () => Promise.resolve(),
 }));
 vi.mock('@main/core/switch-servers/auth', () => ({
   passwordLogin: () => Promise.resolve({ success: true }),
 }));
-vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
 vi.mock('./managed-upgrade', () => ({
   prepareUpgrade: prepareUpgradeMock,
   finishUpgrade: finishUpgradeMock,
@@ -77,8 +84,10 @@ function options(checkoutRoot: string | null = null) {
   );
   const host = {
     label: 'this computer',
+    sharedState: null,
     writeFile,
     detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
+    checkNetworking: vi.fn(() => Promise.resolve()),
     establishNetworking: vi.fn(() => Promise.resolve()),
   };
   return {
@@ -93,6 +102,7 @@ function options(checkoutRoot: string | null = null) {
       onUpgrade: vi.fn(),
       signal: new AbortController().signal,
       checkoutRoot,
+      lease: null,
     },
   };
 }
@@ -127,6 +137,7 @@ describe('startStack across the Matrix boundary', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     // The old stack comes up and is drained before the new compose file lands:
     // that file is what removes the homeserver being read from.
@@ -183,6 +194,7 @@ describe('startStack across the Matrix boundary', () => {
       kind: 'started',
       serverId: 'srv-1',
       telemetryEnabled: false,
+      warning: null,
     });
     expect(dockerRunOneOffMock).not.toHaveBeenCalled();
   });

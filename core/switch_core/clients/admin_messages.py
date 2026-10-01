@@ -4,6 +4,16 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import NamedTuple
 
+# Content flag stamped on the no-session / busy-elsewhere auto-reply (see
+# AgentClient.on_message). Its first job is to mark a message as itself an
+# auto-reply so that another offline agent addressed by it does NOT emit a
+# second auto-reply — two session-less agents tagging each other would
+# otherwise ping-pong identical "no session" replies forever. It also lets the
+# usage snapshot tell a notice Switch posted under an agent's name from
+# something the agent said. Riding as a field on the plain m.room.message
+# keeps the reply rendering normally for humans.
+AUTO_REPLY_FLAG = "com.switch.auto_reply"
+
 # Marker stamped on the content of an admin/system `m.room.message`. Two jobs,
 # mirroring AUTO_REPLY_FLAG:
 #   1. It tells the collaboration bridge to render the message through the
