@@ -67,6 +67,8 @@ _APP = dict(
     teams_app_client_secret="secret",
     teams_app_notification_certificate=_NOTIFICATION_CERT,
     teams_app_notification_private_key=_NOTIFICATION_KEY,
+    teams_app_privacy_url="https://switch.example/privacy",
+    teams_app_terms_url="https://switch.example/terms",
     messaging_public_url="https://switch.example",
 )
 
@@ -114,6 +116,8 @@ def test_a_federated_token_file_is_accepted(tmp_path: Path) -> None:
         "teams_app_tenant_id",
         "teams_app_notification_certificate",
         "teams_app_notification_private_key",
+        "teams_app_privacy_url",
+        "teams_app_terms_url",
     ],
 )
 def test_a_missing_required_setting_raises(missing: str) -> None:
@@ -202,3 +206,8 @@ def test_a_missing_federated_token_file_raises(tmp_path: Path) -> None:
 def test_an_app_with_no_public_origin_raises() -> None:
     with pytest.raises(ValueError, match="MESSAGING_PUBLIC_URL"):
         _config(**_without("messaging_public_url"))
+
+
+def test_a_privacy_page_that_is_not_https_raises() -> None:
+    with pytest.raises(ValueError, match="TEAMS_APP_PRIVACY_URL must be an https"):
+        _config(**_without(teams_app_privacy_url="http://switch.example/privacy"))

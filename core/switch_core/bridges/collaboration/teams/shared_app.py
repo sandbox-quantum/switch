@@ -27,6 +27,7 @@ import base64
 import hashlib
 import hmac
 import logging
+from typing import Any
 
 import httpx
 from cryptography.hazmat.primitives import serialization
@@ -45,6 +46,7 @@ from switch_core.bridges.collaboration.teams.auth import (
     GraphNotificationAuthenticator,
     SigningKeys,
     TeamsTokenProvider,
+    verify_microsoft_id_token,
 )
 from switch_core.bridges.collaboration.teams.crypto import (
     load_certificate_der_b64,
@@ -139,9 +141,13 @@ class TeamsSharedApp:
             app_id=app_id,
             keys=SigningKeys(metadata_url=BOTFRAMEWORK_OPENID, http=http),
         )
+        # One set of Microsoft identity platform keys signs both Graph's
+        # validation tokens and the id token an approving admin signs in with.
+        self._identity_keys = SigningKeys(
+            metadata_url=MICROSOFT_IDENTITY_OPENID, http=http
+        )
         self.notification_authenticator = GraphNotificationAuthenticator(
-            app_id=app_id,
-            keys=SigningKeys(metadata_url=MICROSOFT_IDENTITY_OPENID, http=http),
+            app_id=app_id, keys=self._identity_keys
         )
 
     @classmethod
@@ -192,6 +198,22 @@ class TeamsSharedApp:
     @property
     def http(self) -> httpx.AsyncClient:
         return self._http
+
+    @property
+    def credential(self) -> ClientCredential:
+        return self._credential
+
+    async def verify_id_token(self, id_token: str) -> dict[str, Any]:
+        """The claims of an id token Microsoft issued to this app, verified.
+
+        Checked as Microsoft asks of a multi-tenant app: signed by a Microsoft
+        identity platform key, addressed to this app, current, and issued by
+        the organisation it names — the issuer carries the organisation's id,
+        so a token from one organisation cannot claim to be another's.
+        """
+        return await verify_microsoft_id_token(
+            id_token, app_id=self._app_id, keys=self._identity_keys
+        )
 
     def client_state_for(self, org_tenant_id: str) -> str:
         return client_state_for(self._client_state_secret, org_tenant_id)

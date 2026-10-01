@@ -440,6 +440,11 @@ class SwitchConfig(BaseSettings):
     teams_app_notification_certificate: str | None = None
     teams_app_notification_private_key: str | None = None
     teams_app_notification_previous_private_key: str | None = None
+    # Where the app's privacy statement and terms of use live. Every Teams app
+    # package has to name both, and they are shown to the admin approving it,
+    # so they are the deployment's to state rather than a placeholder of ours.
+    teams_app_privacy_url: str | None = None
+    teams_app_terms_url: str | None = None
 
     # Public origin (scheme + host, no path) that a messaging platform reaches
     # Switch on: the base of the OAuth redirect and of the three event URLs
@@ -1009,6 +1014,8 @@ class SwitchConfig(BaseSettings):
             "TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY": (
                 self.teams_app_notification_previous_private_key
             ),
+            "TEAMS_APP_PRIVACY_URL": self.teams_app_privacy_url,
+            "TEAMS_APP_TERMS_URL": self.teams_app_terms_url,
         }
         if not any(settings.values()):
             return self
@@ -1020,6 +1027,8 @@ class SwitchConfig(BaseSettings):
                 "TEAMS_APP_TENANT_ID",
                 "TEAMS_APP_NOTIFICATION_CERTIFICATE",
                 "TEAMS_APP_NOTIFICATION_PRIVATE_KEY",
+                "TEAMS_APP_PRIVACY_URL",
+                "TEAMS_APP_TERMS_URL",
             )
             if not settings[name]
         ]
@@ -1027,9 +1036,17 @@ class SwitchConfig(BaseSettings):
             raise ValueError(
                 "Partial distributed Teams app config: "
                 f"{' / '.join(missing)} must be set as well. The app needs its "
-                "id, the directory its bot is registered in, and the keypair "
-                "Graph encrypts captured messages to."
+                "id, the directory its bot is registered in, the keypair Graph "
+                "encrypts captured messages to, and the privacy and terms pages "
+                "its package names."
             )
+        for name in ("TEAMS_APP_PRIVACY_URL", "TEAMS_APP_TERMS_URL"):
+            parts = urlsplit(str(settings[name]))
+            if parts.scheme != "https" or not parts.netloc:
+                raise ValueError(
+                    f"{name} must be an https URL; Teams refuses an app package "
+                    f"naming anything else, got {settings[name]!r}."
+                )
 
         try:
             uuid.UUID(str(self.teams_app_tenant_id))

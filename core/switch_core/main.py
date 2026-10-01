@@ -75,6 +75,10 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
 )
+from switch_core.bridges.collaboration.teams.app_package import (
+    build_distributed_app_package,
+)
+from switch_core.bridges.collaboration.teams.install import TeamsAppInstaller
 from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
@@ -634,6 +638,27 @@ async def run(config: SwitchConfig) -> None:
             )
         )
 
+    # The one distributed Teams app. Built here because its installer needs it;
+    # unlike Discord's Gateway client there is nothing to connect, and its
+    # bridges are handed it as each one starts (below).
+    teams_app: TeamsSharedApp | None = None
+    if config.teams_app_client_id:
+        assert config.messaging_public_url is not None
+        assert config.teams_app_privacy_url is not None
+        assert config.teams_app_terms_url is not None
+        teams_app = TeamsSharedApp.from_config(config)
+        installers.register(
+            TeamsAppInstaller(
+                app=teams_app,
+                package=build_distributed_app_package(
+                    app_id=config.teams_app_client_id,
+                    messaging_public_url=config.messaging_public_url,
+                    privacy_url=config.teams_app_privacy_url,
+                    terms_url=config.teams_app_terms_url,
+                ),
+            )
+        )
+
     install_service: MessagingInstallService | None = None
     if installers.platforms():
         assert config.messaging_public_url is not None
@@ -809,13 +834,9 @@ async def run(config: SwitchConfig) -> None:
         collab_lifecycle.add_bridge_start_guard(
             install_service.refuse_uninstalled_bridge
         )
-    # The one distributed Teams app. Unlike Discord's Gateway client there is
-    # nothing to connect: its bridges are handed it as each one starts, so it
-    # is in place before any of them runs. Built from config validated at
-    # startup, so a half-configured app never gets this far.
-    teams_app: TeamsSharedApp | None = None
-    if config.teams_app_client_id:
-        teams_app = TeamsSharedApp.from_config(config)
+    # Before the bridges start, so every bridge on the distributed Teams app
+    # has the app before it runs.
+    if teams_app is not None:
         collab_lifecycle.add_bridge_starting_listener(teams_app.attach_if_teams)
     await collab_lifecycle.start_all()
 

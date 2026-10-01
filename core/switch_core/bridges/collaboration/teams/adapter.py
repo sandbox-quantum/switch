@@ -468,7 +468,7 @@ _REPAIR_MIN_INTERVAL_SECONDS = 30
 _REPAIR_MAX_INTERVAL_SECONDS = 5 * 60
 
 
-def _activity_tenant(activity: dict[str, Any]) -> str | None:
+def activity_tenant(activity: dict[str, Any]) -> str | None:
     """The organisation an activity says it is from, or None if it does not
     say one thing.
 
@@ -2886,6 +2886,19 @@ class TeamsAdapter(CollaborationAdapter):
             return web.Response(status=200)
         return web.json_response(answer)
 
+    async def dispatch_event(
+        self, *, envelope_type: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """An activity or a notification for the distributed app, from the
+        deployment's public route — already authenticated, and routed here by
+        the organisation it is for."""
+        if envelope_type == "activity":
+            return await self.receive_activity(payload)
+        if envelope_type == "notification":
+            await self.receive_notification(payload)
+            return None
+        raise ValueError(f"not a Teams envelope: {envelope_type!r}")
+
     async def receive_activity(self, activity: dict[str, Any]) -> dict[str, Any] | None:
         """Handle one authenticated Bot Framework activity; return an invoke's answer.
 
@@ -2901,7 +2914,7 @@ class TeamsAdapter(CollaborationAdapter):
         since this bridge then sends the deployment's token to it.
         """
         identity = self._me
-        tenant = _activity_tenant(activity)
+        tenant = activity_tenant(activity)
         if not identity.serves(tenant):
             logger.warning(
                 "Refused a Teams activity from organisation %s on the bridge for %s",

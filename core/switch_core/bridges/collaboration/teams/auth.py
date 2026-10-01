@@ -551,3 +551,30 @@ def _issued_in(claims: Mapping[str, object], tenant: str) -> bool:
         f"https://sts.windows.net/{tenant}/",
         f"https://login.microsoftonline.com/{tenant}/v2.0",
     )
+
+
+async def verify_microsoft_id_token(
+    id_token: str, *, app_id: str, keys: SigningKeys
+) -> dict[str, Any]:
+    """Verify an id token the Microsoft identity platform issued to `app_id`.
+
+    Raises `PermissionError` unless it is signed by one of the platform's keys,
+    addressed to the app, current, and issued by the very organisation its
+    `tid` names (`https://login.microsoftonline.com/{tid}/v2.0`).
+    """
+    signing_key = await keys.get(_kid(id_token))
+    try:
+        claims: dict[str, Any] = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=app_id,
+            leeway=_CLOCK_SKEW_SECONDS,
+            options={"require": ["exp", "aud", "iss", "tid"]},
+        )
+    except jwt.PyJWTError as exc:
+        raise PermissionError(f"id token rejected: {exc}") from exc
+    tenant = str(claims.get("tid") or "")
+    if claims.get("iss") != f"https://login.microsoftonline.com/{tenant}/v2.0":
+        raise PermissionError("id token was not issued by the organisation it names")
+    return claims

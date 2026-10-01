@@ -718,3 +718,33 @@ async def test_what_could_not_be_withdrawn_is_said() -> None:
 
     with pytest.raises(BridgeOperationError, match="SUB-1"):
         await adapter.withdraw()
+
+
+# ── From the deployment's public route ───────────────────────────────────────
+
+
+async def test_an_activity_from_the_public_route_is_delivered() -> None:
+    adapter = _shared_adapter()
+    seen = _capture(adapter)
+
+    answer = await adapter.dispatch_event(envelope_type="activity", payload=_activity())
+
+    assert answer is None
+    assert [m.content for m in seen] == ["hello"]
+
+
+async def test_a_press_from_the_public_route_is_answered() -> None:
+    adapter = _shared_adapter()
+
+    answer = await adapter.dispatch_event(
+        envelope_type="activity",
+        payload=_activity(tenant=OTHER_ORG, type="invoke", name="adaptiveCard/action"),
+    )
+
+    assert answer is not None and answer["statusCode"] == 403
+
+
+async def test_an_envelope_it_does_not_know_is_refused() -> None:
+    adapter = _shared_adapter()
+    with pytest.raises(ValueError):
+        await adapter.dispatch_event(envelope_type="mystery", payload={})
