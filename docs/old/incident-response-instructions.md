@@ -7,7 +7,7 @@ configuration, not the argument.
 
 Nothing here is installed. Each block says which field it goes in. Replace
 `<placeholders>` with the product's own values. Those values (channel names,
-on-call handles, owners, ids) are kept out of this public repository and
+people and their handles, owners, ids) are kept out of this public repository and
 supplied to the team separately.
 
 - [Where the rules come from](#where-the-rules-come-from)
@@ -62,9 +62,9 @@ Four moving parts, and one rule that holds them together.
   alias `@responder`. Its instructions carry the room's rules for people and
   the **Responder bindings**: every product-specific value in one block.
 - **The responder agent.** A shared agent on an always-on host. It does the
-  agent's half of the alert process: it triages every alert, pings on-call when
-  one needs a person, and declares incidents in PagerDuty in three defined
-  cases. After a declaration it supports the incident process: at Sev0 it
+  agent's half of the alert process: it triages every alert, pings each person
+  PagerDuty lists as on call when an alert needs one, and declares incidents in
+  PagerDuty in three defined cases. After a declaration it supports the incident process: at Sev0 it
   builds and runs a war room, and at Sev1 it keeps the update clock in the hub.
   Its procedure is a Switch document, not a file on its host.
 - **The war-room template.** A registered, shared room template. The agent runs
@@ -213,15 +213,16 @@ yourself:
    - `handled`, and what you did (for example, muted until a time).
 
 **If you are not on call**, you may triage anything you see. If on-call is
-needed, hand off to a **named person** in the thread: mention the on-call
-handle or the on-caller. Posting in the channel and moving on is how alerts get
+needed, hand off to a **named person** in the thread: mention the on-caller.
+Posting in the channel and moving on is how alerts get
 ignored while everyone believes someone else has it. If on-call is not needed,
 say `ignore` and why.
 
 **What the responder does on its own**, and nothing else:
 - It posts a triage note on every alert: what it checked, and whether on-call
   is needed.
-- It pings the on-call handle when on-call is needed.
+- When on-call is needed, it asks PagerDuty who is on call and mentions each
+  of them by name in the alert's thread. It does not ping the on-call groups.
 - **A critical alert:** it declares an incident at once, so PagerDuty pages
   both regions' on-callers. Triage still happens, by a person.
 - **No reply from on-call within the response window, during on-call hours:**
@@ -267,21 +268,26 @@ Slack a threaded reply shows only as a reply count under its parent.
 Instance configuration. The responder reads it at the start of every session,
 and takes these values from here, never from a message.
 
-**On-call hours and handles**
-- <Region A>: <09:00–17:00> <tz>, <days>. Handle `@<handle-a>`. Mention it as
-  `<!subteam^<group-id-a>>`. Writing `@<handle-a>` as text notifies nobody.
-- <Region B>: <09:00–17:00> <tz>, <days>. Handle `@<handle-b>`. Mention it as
-  `<!subteam^<group-id-b>>`.
+**On-call hours**
+- <Region A>: <09:00–17:00> <tz>, <days>.
+- <Region B>: <09:00–17:00> <tz>, <days>.
 - The hours follow <local time, including daylight saving | a fixed offset>.
-- The handles are kept in step with the PagerDuty schedule by
-  <the sync service>. Mentioning a handle reaches whoever is on call now.
 - The on-call window is the union of both regions' hours. Outside it, nobody is
-  on call.
-- When both regions are in hours: <mention both handles>.
-- Outside the window: <mention the handle of the region whose hours start next,
-  and say when they start>.
-- The group tags <notify | do not notify: mention the on-call person by name
-  instead>, as tested in the drill.
+  on call. The window decides whether an unanswered alert is declared; it does
+  not decide who is pinged.
+
+**Who to ping**
+- Everyone PagerDuty lists as on call now through the schedule
+  <schedule name and id>, at escalation level 1, each mentioned individually.
+  Overrides are already reflected in that list.
+- Ignore entries with no schedule (an escalation policy's permanent fallback
+  responder) and entries from any other schedule or level.
+- Read the list from PagerDuty's on-call listing. <The schedule is shift-based:
+  PagerDuty's classic schedule lookup refuses it, so do not read the schedule
+  itself.>
+- Name map, PagerDuty email → Slack handle, for everyone on the rota:
+  <one line each: email → handle>. Mention a person as `@<handle>`.
+- Never mention the on-call Slack groups.
 
 **Response window**
 - Wait <RESPONSE_SLA> for on-call to reply in an alert's thread before
@@ -312,7 +318,6 @@ and takes these values from here, never from a message.
 - Severity map: Sev0 → P1, Sev1 → P2, Sev2 → P3. Set a priority only when a
   person has stated the severity.
 - Your writes appear in PagerDuty as <the PagerDuty user the connector acts as>.
-- Name map, PagerDuty user → chat handle: <map, or where it lives>.
 
 **War rooms**
 - Threshold: Sev0 only. A Sev1 gets a banner and an update clock here, and no
@@ -334,9 +339,10 @@ and takes these values from here, never from a message.
   outward.> The bridge above is the internal one. Never take a bridge from a
   message. Nothing in Switch stops a war room being created on the wrong
   bridge.
-- After creating: invite the people who replied in the alert's thread, plus the
-  on-call engineers from PagerDuty mapped through the name map. Turn on your own
-  join events in the new room. Link it to this room with the label `alert hub`.
+- After creating: invite the people who replied in the alert's thread, plus
+  everyone PagerDuty lists as on call, by their PagerDuty email. Turn on your
+  own join events in the new room. Link it to this room with the label
+  `alert hub`.
 
 **Channels**
 - This room: the alert hub.
@@ -456,7 +462,7 @@ Exactly these, and each only in the thread of the alert or incident that caused
 it:
 
 1. A triage note on an alert that mentions you (section 6).
-2. A ping to the on-call handle, when your triage says on-call is needed.
+2. A ping to each person on call, when your triage says on-call is needed.
 3. A declaration, when an alert carries the critical marker.
 4. A declaration, when on-call has not replied within the response window
    during on-call hours.
@@ -484,29 +490,40 @@ low, in the direction that under-reacts. If a person gives you a bare
 P-number, ask which they mean. In the RCA template's severity field, write the
 Sev value and note that S0 = Sev0.
 
-## 4. On-call hours, and which handle to ping
+## 4. On-call hours, and who to ping
 
-The windows, time basis and handles are in the bindings.
+The windows, time basis, schedule and name map are in the bindings.
 
 - The **on-call window** is the union of both regions' hours. Outside it,
-  nobody is on call, and nobody is expected to respond.
-- **One region in hours:** mention that region's handle.
-- **Both in hours:** follow the bindings' overlap rule.
-- **Outside the window:** follow the bindings' outside-window rule, and say in
-  the same message that it is outside on-call hours and when on-call starts.
+  nobody is on call, and nobody is expected to respond. The window decides one
+  thing: whether an unanswered alert is declared (6.8). It does not decide who
+  you ping.
 
-**Mention a group handle with the exact tag in the bindings**, `<!subteam^…>`.
-Writing a group's `@handle` as text reaches Slack as plain text and notifies
-nobody. A person's `@name` is different: Switch turns it into a real mention.
+**Who to ping: everyone PagerDuty lists as on call now**, each mentioned
+individually. Follow these steps every time; never reuse an earlier answer:
 
-**If the bindings say the group tag does not notify, or give no tag**, mention
-the on-call person instead: ask PagerDuty who is on call for that region, and
-write their chat name from the bindings' name map as `@name`. If the map has no
-entry for them, say so in the thread and name them in plain text; do not guess
-a handle.
+1. Read PagerDuty's on-call listing for the bindings' schedule, at escalation
+   level 1. Drop entries with no schedule and entries from any other schedule
+   or level. Overrides are already in the list: whoever is covering is the
+   person to ping.
+2. For each person, take their Slack handle from the bindings' name map, keyed
+   by their PagerDuty email, and write it as `@<handle>`. Switch turns that
+   into a real Slack mention.
+3. **A person with no entry in the name map:** name them in plain text, say in
+   the same message that they could not be mentioned, and carry on with the
+   rest. Never guess a handle: a wrong one notifies a stranger, or nobody.
+4. **Nobody listed:** say in the thread that PagerDuty lists nobody on call,
+   and mention nobody.
+5. **Outside the window:** ping the people listed all the same, and say in the
+   same message that it is outside on-call hours and nobody is expected to
+   respond before on-call starts, with the time.
+
+**Never mention the on-call Slack groups.** Switch does not turn a workspace
+group's `@handle` into a mention, so it would notify nobody.
 
 **Who is on call now** comes from PagerDuty, never from memory or from the
-room. You need it to tell whether a reply came from the on-caller.
+room. The response check (6.8) uses the same list to recognise the on-caller's
+reply.
 
 ## 5. Waking up
 
@@ -637,7 +654,7 @@ yes" or "On-call needed: no", with a one-line reason.
 ### 6.7 Ping on-call
 
 In the same message as the triage note, as a reply in the alert's thread,
-mention the handle the hours rule gives (section 4). Include the service's
+mention each person on call, individually, as section 4 says. Include the service's
 owner from the SOP document, its Sev1 threshold if listed, its dashboard, and
 its runbook, or say each is not listed. Say nothing about whether customers are
 affected: that is theirs to decide.
@@ -657,8 +674,10 @@ ping moves the deadline.
 
 **At the check, read the alert's thread, then:**
 
-1. **The on-caller has replied** (a message in the thread from someone
-   PagerDuty says is on call now; a reaction does not count): delete the job.
+1. **The on-caller has replied**: a message in the thread from one of the
+   people you pinged, or from anyone PagerDuty lists as on call now, matched
+   through the name map (a reply's sender is shown by Slack handle). A reaction
+   does not count. Delete the job.
    Nothing more is yours until they give a verdict.
 2. **A verdict of "not needed" or "ignore"** was stated by a person, and
    nobody has since handed off to on-call: delete the job and stop.
@@ -707,6 +726,8 @@ the on-caller's call. Make a suggestion about a monitor at most once a day.
 Something outside Switch addresses you at the start of each on-call window.
 Answer, in one message at the root:
 
+- who PagerDuty lists as on call now, by name. This line is also your
+  fallback list if PagerDuty cannot be read later in the window (section 15);
 - how many incidents are open, and whether every update clock is current;
 - the alerts waiting for on-call since the last window closed: pinged, and no
   reply from the on-caller;
@@ -714,8 +735,8 @@ Answer, in one message at the root:
 - anything you failed to do while you were away: a deadline that passed, a
   check that did not run. Lead with that if there is any.
 
-If there is nothing to report, say "Start of shift: nothing open, nothing
-waiting" in one line. The point of the check is that a person sees an answer:
+If there is nothing else to report, say "Start of shift: <names> on call,
+nothing open, nothing waiting" in one line. The point of the check is that a person sees an answer:
 nothing inside you can notice that you are gone.
 
 ## 8. Declaring an incident
@@ -748,8 +769,8 @@ the thread with the banner's link and stop. **Never declare one alert twice.**
 **3. Read it back.** Confirm PagerDuty shows the incident triggered, at high
 urgency, with the right title, and note who it is assigned to. **If the write
 failed, or you cannot confirm it:** say so at once in the thread (DEGRADED
-shape), mention both regions' handles, and say plainly that PagerDuty has not
-paged anyone. Never report a declaration you could not confirm.
+shape), mention every person on call by name, and say plainly that PagerDuty
+has not paged anyone. Never report a declaration you could not confirm.
 
 **4. Post the BANNER at the hub's root**, and reply in the alert's thread with
 the banner's link, so the triage conversation points to where the incident
@@ -796,8 +817,9 @@ procedure and On-call SOP documents: you pass their text in as inputs.
 
 **4. Finish what the template cannot do yet**, in this order:
 - **Invite people** with `add_users_to_room`: everyone who replied in the
-  alert's thread, plus the on-call engineers from PagerDuty mapped through the
-  name map. Read the result. For anyone it could not add, **name them and say
+  alert's thread, by the name the room shows, plus everyone PagerDuty lists as
+  on call, by their PagerDuty email. Switch resolves an email against the
+  workspace's directory. Read the result. For anyone it could not add, **name them and say
   why, under the banner.** A war room that quietly came up short is the failure
   this design exists to prevent.
 - **Turn on your own join events** in the room with `update_room`, so you can
@@ -989,11 +1011,15 @@ answer for a real one.
   room itself when it refuses a message addressed to you, and the hub's
   instructions tell them what to do.
 - **A PagerDuty write fails, or you cannot confirm it:** say PagerDuty has not
-  paged anyone, mention both regions' handles, and say what you tried. This is
+  paged anyone, mention every person on call by name, and say what you tried. This is
   the one failure that must never be quiet.
 - **PagerDuty or the alerting tool cannot be read:** say so straight away, name
   what you could not find out, and carry on with what you know. Mark anything
   that depends on it as unverified. Never guess who is on call.
+- **PagerDuty cannot be read when you need to ping:** use the on-call list from
+  the latest start-of-shift check in this room, mention those people, and say
+  the list is from that check, at its time, and not re-verified. If there is no
+  such list from the current window, say nobody could be pinged by name.
 - **You cannot tell whether a reply came from the on-caller:** treat it as not
   from the on-caller, and say why in the thread.
 - **Someone could not be invited:** name them and say why.
@@ -1036,7 +1062,7 @@ ping when on-call is needed; without one when not.
 > **Blast radius:** <finding> (checked: <what>)
 > **Novelty:** <first in 7 days | Nth in 7 days> (checked: <what>)
 > **Already known:** <open incident / deploy in flight / nothing found> (checked: <what>)
-> **On-call needed: yes** — <one-line reason>. <!subteam^…> this needs triaging.
+> **On-call needed: yes** — <one-line reason>. @<handle> @<handle> this needs triaging.
 > Owner: <owner>. Sev1 threshold: <threshold, or "none listed">. Dashboard: <link, or "none listed">. Runbook: <link, or "none on file">.
 
 **DECLARED**: alert hub only, in the alert's thread.
@@ -1074,12 +1100,12 @@ contain.
 
 **DECLINE**: one line. What you will not do, and who does it.
 
-> Not mine to do: muting is the on-caller's call. <!subteam^…> can mute it if you agree.
+> Not mine to do: muting is the on-caller's call. @<handle> can mute it if you agree.
 
 **DEGRADED**: when you could not do something. What you could not do, why, and
 what it means for what you just said.
 
-> ⚠️ PagerDuty did not accept the declaration, so nobody has been paged. <!subteam^…> <!subteam^…> please pick this up directly.
+> ⚠️ PagerDuty did not accept the declaration, so nobody has been paged. @<handle> @<handle> please pick this up directly.
 
 **CLOSE**: when the write-up is done and the room is being archived. Link the
 RCA page.
@@ -1350,7 +1376,7 @@ for what was checked, and for the four things the template cannot do yet.
 alert hub. The war room gets a copy through the template's `sop` input.
 
 This is the team's on-call manual, restructured so an agent can answer from it
-and apply it: coverage and handles, the alert process as rules, the incident
+and apply it: coverage and who is on call, the alert process as rules, the incident
 process, the severity table with each service's owner and Sev1 thresholds, the
 cadence, close-out, what is out of the agent's scope, and what the manual
 leaves open. It is the one document that is entirely product content, which is
@@ -1379,8 +1405,8 @@ Sources: <each manual page's title and version>. Restructured for use by the
 responder. Where they disagree, the source wins.
 
 ## Coverage
-<regions, hours, time basis, days, the on-call window, handles and how they
-stay in step with the rota>
+<regions, hours, time basis, days, the on-call window, where PagerDuty says
+who is on call, and the name map from PagerDuty email to Slack handle>
 
 ## Channels
 <alert hub, stakeholder channel, war-room naming>
@@ -1653,20 +1679,25 @@ Either way, **a declared incident must page by phone.** A PagerDuty service
 whose urgency is set to low will create the incident and notify nobody. Check
 it in Phase 0.
 
-### The on-call handles
+### Pinging the on-callers
 
-The agent mentions on-call with each handle's raw Slack tag,
-`<!subteam^<group-id>>`, from the bindings. It cannot use `@handle`: Switch
-turns people and agents' own groups into real mentions on the way out, but
-leaves any other group's handle as plain text, which notifies nobody. The raw
-tag works because Switch does not escape an agent's text. That is current
-behaviour, not a promise, so the drill tests it, and the design document files
-a ticket to make it deliberate.
+The agent pings people, not groups: it reads who is on call from PagerDuty and
+mentions each of them individually. Switch turns `@<handle>` into a real Slack
+mention for a person the bridge knows (anyone it has seen post, or has resolved
+before). It does not do that for a workspace user group's handle, which is why
+the on-call groups are not used.
 
-When the handles are groups a sync service keeps in step with the PagerDuty
-schedule, the agent never needs to know who is on call in order to ping them.
-It still asks PagerDuty who is on call, to tell whether a reply came from the
-on-caller.
+Two things make the individual ping reliable:
+
+- **The name map.** PagerDuty knows a person by email; Slack by handle. The
+  bindings map one to the other for everyone on the rota. The agent never
+  guesses a handle.
+- **Every rota member known to the bridge.** A handle the bridge has never seen
+  stays plain text and notifies nobody, and the agent cannot tell. So once at
+  deploy time, and again for each new rota member, add every rota member to the
+  alert hub with `add_users_to_room`, by email. Switch resolves an email
+  against the workspace's directory, and re-adding someone already in the
+  channel is harmless. Anyone it reports as unresolved will not get pings.
 
 ### The start-of-shift check
 
@@ -1698,20 +1729,23 @@ invalidate a later phase.**
       so check the tool appears there. Without it, the agent cannot build a war
       room, and falls back to telling on-call to use the Console.
 - [ ] **The hub is the real alert channel.** Confirm the Switch room is bridged
-      to the channel the monitors post to, in the workspace where the on-call
-      groups live.
+      to the channel the monitors post to, in the workspace the on-call
+      engineers use.
 - [ ] **An alert can wake the agent.** Create a test monitor carrying the
       mention, trigger it, and check that the agent is woken. Then compare what
       the agent reads (`read_context` on the hub) with what Slack shows, and
       check the critical marker survives. Decide from that whether the agent
       needs a Datadog connector to see the alert's detail.
-- [ ] **The agent's post can notify a group.** Make a test Slack group
-      containing yourself, have the agent post its raw tag in the hub, and
-      confirm Slack notifies you. If it does not, record that in the bindings:
-      the agent then mentions the on-call person by name, which Switch does
-      translate, and the name map becomes required for the ping as well.
-- [ ] **The on-call handles.** Confirm they are Slack user groups kept in step
-      with the PagerDuty schedule, and get each group's id.
+- [ ] **PagerDuty lists the right people.** Ask the connector who is on call
+      for the schedule, and compare with PagerDuty's own view, overrides
+      included. Check what it returns outside on-call hours. A shift-based
+      schedule cannot be read through PagerDuty's classic schedule lookup, so
+      the on-call listing is the one to use.
+- [ ] **Every rota member can be pinged.** Build the name map (PagerDuty email
+      → Slack handle) for everyone on the rota. Add them all to the alert hub
+      with `add_users_to_room`, by email; nobody may come back unresolved. Then
+      have the agent mention each of them in a test thread and confirm each is
+      notified.
 - [ ] **PagerDuty access, read and write.** The connector on the agent's host
       can read incidents, services and who is on call, **and** create an
       incident and change an incident's urgency, title and priority. Note which
@@ -1755,14 +1789,14 @@ Record each answer in the bindings or in the On-call SOP document.
       `Sev TBD` until the on-caller states one.
 - [ ] **Whether a recovery before the deadline cancels an auto-declaration.**
       The recommendation: no; the on-caller still triages.
-- [ ] **On-call days,** the overlap rule, the outside-window ping rule, and
-      whether the hours follow daylight saving.
+- [ ] **On-call days,** and whether the hours follow daylight saving.
 - [ ] **The triage rule's thresholds:** the novelty lookback, and whether
       non-production alerts ever need on-call.
-- [ ] **The name map covers everyone on both rotations.** The response check
-      recognises the on-caller's reply by matching PagerDuty's on-call to the
-      reply's sender. A name it cannot match counts as not the on-caller, and
-      errs towards paging.
+- [ ] **Who keeps the name map current.** The ping and the response check both
+      depend on it. A person missing from it is named in plain text and never
+      notified, and their reply does not count as the on-caller's, which errs
+      towards paging. Adding a rota member means a map line and an
+      `add_users_to_room` call.
 - [ ] **Which on-call engineers are invited to a war room.**
 - [ ] **The Sev0 escalation rule.** The process states only Sev1's.
 - [ ] **When the Sev1 clock stops.** The process gives "until mitigated" for
@@ -1854,17 +1888,22 @@ Either way:
 ### Phase 5 — the drill
 
 Run it in a test channel first, then in the real hub with a test monitor and a
-test PagerDuty service. Use a compressed response window (minutes), and stand
-someone in for each on-call group. This is the phase that gets skipped, and the
+test PagerDuty service. Use a compressed response window (minutes), and a
+test schedule with stand-ins on call for each region. This is the phase that gets skipped, and the
 one that matters.
 
 **The alert process, path by path**
 - [ ] **An alert on-call does not need** (non-production, already known). A
       triage note with all three facts and their evidence, "On-call needed:
       no", no mention.
-- [ ] **An alert on-call needs.** One triage note with all three facts, the
-      right handle for the time of day, and the owner, threshold, dashboard and
-      runbook lines filled in or honestly empty.
+- [ ] **An alert on-call needs.** One triage note with all three facts, each
+      person PagerDuty lists as on call mentioned individually (and notified),
+      and the owner, threshold, dashboard and runbook lines filled in or
+      honestly empty.
+- [ ] **An override in place.** The person covering is pinged, not the person
+      they cover for.
+- [ ] **A rota member missing from the name map.** Named in plain text, with a
+      line saying they could not be mentioned.
 - [ ] **On-call replies within the window.** No declaration. Then each verdict:
       "ignore" and "handled" end it in one line; "incident sev1" declares.
 - [ ] **On-call does not reply, inside the window.** One declaration after the
@@ -1913,7 +1952,9 @@ one that matters.
       "promote staging", "fix the bug" and "post in the stakeholder channel"
       each get a one-line decline naming who does it.
 - [ ] **PagerDuty refuses the write.** The agent says nobody was paged and
-      mentions both handles.
+      mentions every person on call by name.
+- [ ] **PagerDuty cannot be read at ping time.** The agent pings the list from
+      the start-of-shift check and says it is not re-verified.
 - [ ] **A budget refusal.** On a test agent with a small budget, confirm what the
       room sees when Switch refuses it, and that the hub's instructions tell
       on-call what to do.
@@ -1953,4 +1994,8 @@ one that matters.
   and their pages are not attached.
 - **A re-ping of an unanswered alert.** The alert process replaces it with the
   response window and a declaration that pages.
+- **Pinging the on-call groups.** The agent pings each on-call person by name
+  instead. Switch does not turn a workspace group's handle into a mention, and
+  writing the group's raw tag would work only because Switch happens not to
+  escape an agent's text.
 - **Instructions for the stakeholder channel.** No agent posts there.

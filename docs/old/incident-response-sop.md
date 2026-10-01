@@ -186,6 +186,9 @@ alert process changes it in these places:
   design's addition; the manual's answer is better.
 - **The response clock runs on a person's hand-off too,** not only the agent's
   ping.
+- **The ping goes to people, not groups.** The team decided the agent reads who
+  is on call from PagerDuty and mentions each of them, rather than mentioning
+  an on-call Slack group. See [Pinging on-call](#pinging-on-call).
 - **Critical alerts skip triage** and go straight to a declaration.
 - **The agent's scope is stated,** because the manual now describes a whole
   on-call job, most of which the agent must not touch.
@@ -215,9 +218,9 @@ as committed in its infrastructure repository.
   never fires.
 - **The response window is TBC** on the diagram itself.
 - **Names.** The page for agents names the alert channel slightly differently
-  from the real one, and the incident process names an on-call handle with a
-  suffix the synced groups do not have. Both are typos in the manual; the
-  bindings carry the real values.
+  from the real one, and the incident process names an on-call group handle
+  that does not exist. The first is a typo; the second no longer matters to the
+  agent, which pings people (below), but the page should say so.
 - **"Manage alerts, e.g. mute" versus "never mute".** The page's objectives list
   muting; its agent role forbids it. The design takes the stricter reading:
   suggest, never change.
@@ -251,7 +254,8 @@ says, and why. Each point is also a Phase 1 decision in the deploy guide.
 - **Additions the manual does not ask for,** each marked in the bindings:
   - a rule for when triage says on-call is needed (the manual names the
     decision but not the rule);
-  - which handle to ping outside the window;
+  - pinging each on-caller individually, rather than the group handle the
+    incident process names (the team's decision);
   - a start-of-shift check that also lists alerts left waiting or without a
     verdict;
   - suggestions about noisy alerts, at most daily per monitor;
@@ -269,7 +273,7 @@ All listed for the team to decide in the deploy guide's Phase 1:
 - which bridge into PagerDuty the team wants;
 - the severity of an agent-declared incident;
 - whether a recovery before the deadline cancels an auto-declaration;
-- on-call days, the overlap rule, and daylight saving;
+- on-call days, and daylight saving;
 - which on-call engineers are invited to a war room;
 - the escalation rule at Sev0 (only Sev1's is stated);
 - when the Sev1 clock stops, and whether Sev2 has one.
@@ -401,7 +405,7 @@ a document the agent reads.
 | Seen by a person first | The agent stays out of the thread, and starts the response clock in case of a hand-off. |
 | **Seen by the agent** | It triages (blast radius, novelty, already known), says what it checked, and records "on-call needed: yes/no" in the alert's thread. |
 | On-call not needed | The note is the end: "no action", on the record. |
-| **On-call needed** | The same note mentions the on-call handle for the time of day, with the service's owner, threshold, dashboard and runbook. The response clock starts. |
+| **On-call needed** | The same note mentions each person PagerDuty lists as on call, individually, with the service's owner, threshold, dashboard and runbook. The response clock starts. |
 | On-call replies in time | The on-caller triages. The agent answers lookups. |
 | **No reply, inside hours** | The agent declares, `Sev TBD`, so PagerDuty pages both regions. A banner. The alert still waits for the on-caller. |
 | No reply, outside hours | Nothing escalates. One line saying it waits, and when on-call starts. The start-of-shift check lists it. |
@@ -476,10 +480,9 @@ response window now decides whether anyone is paged.
 ## Watching the alert hub
 
 The alert process asks three things of Switch that it does not do out of the
-box. The agent must *see* every alert, it must *notify* a Slack group that is
-not one of Switch's own, and it must *wait* on a person without holding a
-session open. All three work today with configuration. None works by default,
-and one works only because of an omission.
+box. The agent must *see* every alert, it must *notify* whoever is on call,
+and it must *wait* on a person without holding a session open. All three work
+today with configuration and two deploy steps. None works by default.
 
 ### Seeing every alert
 
@@ -537,43 +540,60 @@ G28.
 
 ### Pinging on-call
 
-**`@handle` notifies nobody.** On the way out, Switch rewrites `@name` into a
-real Slack mention for two kinds of name only: people it has seen (`<@U…>`),
-and agents' own groups (`<!subteam^…>`). Any other name stays plain text
-(`core/switch_core/bridges/collaboration/slack/adapter.py`,
-`_translate_mentions_to_slack`). The workspace's other groups are known to it,
-and on the way *in* it turns their tags into `@handle` text, but on the way out
-it does not reverse that.
+**The team's decision: ping people, not groups.** When on-call is needed, the
+agent asks PagerDuty who is on call and mentions each of them individually in
+the alert's thread. The incident process names a Slack group handle; the team
+has replaced that, and the design follows.
 
-**The raw tag works.** An agent's text reaches Slack unescaped. Only labels,
-such as display names spliced into a notice, are escaped. So an agent that
-writes `<!subteam^S…>` with the group's id notifies the group. The ids go in
-the bindings, and the procedure says to use the tag, never the handle.
+It is the better choice on Switch's own terms. On the way out, Switch rewrites
+`@name` into a real Slack mention for two kinds of name only: people the bridge
+knows (`<@U…>`), and agents' own groups (`<!subteam^…>`). Any other name stays
+plain text (`core/switch_core/bridges/collaboration/slack/adapter.py`,
+`_translate_mentions_to_slack`). So `@<on-call group>` from an agent notifies
+nobody, which is what the team's own comment on its incident process found. The
+group's raw tag would get through, but only because Switch does not escape an
+agent's text: a hole, not a contract (G29). A person's `@handle` is the one
+mention Switch translates on purpose.
 
-**That works by omission, not by contract.** The same hole lets any agent write
-`<!channel>` and notify a whole channel. [Gaps](#gaps) G29. The team has already
-hit the visible half of this: a comment on its incident process says an agent
-"can't ping a group", which is true of `@handle` and not of the raw tag. The
-drill settles it. If the tag does not notify in practice, the fallback is the
-one path Switch does translate: the agent mentions the on-call *person* by
-name, taken from PagerDuty through the name map. That makes G1 a dependency of
-the ping as well as of the response check.
+**Who to ping.** Everyone PagerDuty's on-call listing shows for the responder
+schedule, at the first escalation level, overrides included, and nobody else.
+Two details are worth writing into the procedure rather than leaving to the
+agent:
 
-**The handles are the rotation.** The team runs a sync service that mirrors the
-PagerDuty schedule into one Slack group per region, overrides included. So the
-ping reaches whoever is on call without anyone, Switch included, knowing who
-that is.
+- **Filter the listing.** An escalation policy's permanent fallback responder
+  appears in it with no schedule; the team's own sync service learned to drop
+  those, or the fallback person is pinged forever.
+- **Use the listing, not the schedule.** The team's schedule is shift-based,
+  and PagerDuty's classic schedule lookup refuses that kind outright. A
+  connector that reads schedules the classic way gets an error, not a list.
 
-### Choosing the handle
+**What makes a person's mention land.** Two things, and the agent can check
+neither after the fact, so both are deploy steps:
 
-The on-call window is the union of two regions' business hours. The agent
-picks by the clock: one region in hours gets its handle; both in hours follows
-an overlap rule in the bindings. Outside the window, the diagram still pings
-(the wait comes after), so the bindings name which handle: the recommendation
-is the region whose hours start next, with the time they start, because that is
-who will see it first. The ping says it is outside hours, so nobody reads a
-mention as a demand to work out of hours, which the manual says nobody is
-expected to do.
+- **The name map.** PagerDuty knows a person by email; Slack by handle. The
+  bindings map one to the other for everyone on the rota, and the agent never
+  guesses a handle. A person missing from the map is named in plain text, with
+  a line saying they could not be mentioned.
+- **The bridge must know the person.** Switch translates `@handle` only for
+  people it has seen post or has resolved. A handle it has never seen stays
+  plain text, silently. So every rota member is added to the alert hub once, by
+  email, with `add_users_to_room`: Switch resolves an email against the
+  workspace's directory (an exact match, so it never picks the wrong person),
+  records the person, and treats re-adding someone already in the channel as
+  harmless. Each new rota member needs the same step.
+
+**If PagerDuty cannot be read when a ping is due,** the agent pings the list the
+start-of-shift check recorded at the start of the window, and says it is not
+re-verified. That check now names who is on call for exactly this reason.
+
+### Choosing when, not who
+
+The on-call window is the union of two regions' business hours. It no longer
+decides who is pinged: everyone PagerDuty lists is. It decides one thing,
+whether an unanswered alert is declared. Outside the window the diagram still
+pings (the wait comes after), and the ping says it is outside hours and when
+on-call starts, so nobody reads a mention as a demand to work out of hours,
+which the manual says nobody is expected to do.
 
 The manual writes its hours in named timezones. Whether they move with daylight
 saving is something the bindings have to state, because the agent will
@@ -592,11 +612,12 @@ call. Two things do not count, and neither needs enforcing:
 - **Anyone else's reply.** A non-on-caller's "looking" does not answer for the
   on-caller. Their hand-off, though, restarts the clock.
 
-To tell whether a reply came from the on-caller, the agent asks PagerDuty who
-is on call and matches the name to the reply's sender. That match is the
-identity problem in G1, and it is now on the paging path: a name the agent
-cannot match counts as not the on-caller, which errs towards paging. The
-bindings' name map has to cover everyone on both rotations.
+To tell whether a reply came from the on-caller, the agent compares the
+reply's sender with the people it pinged. Switch shows a Slack user by their
+handle, which is what the name map holds, so the match is exact. A sender the
+map does not cover counts as not the on-caller, which errs towards paging. This
+is the identity problem in G1, and the name map is how the design carries it
+until G1 is fixed.
 
 **When it runs.** A one-shot job at the deadline, which is the response window
 after the later of the ping and any hand-off, backed by the session's
@@ -668,7 +689,7 @@ A person can declare twice, an alert can renotify, and a retry looks exactly
 like a new event. Before writing, the agent looks for a banner in the hub and
 an open, high-urgency incident for the alert. After writing, it reads the
 incident back. **If the write failed or cannot be confirmed, it says nobody has
-been paged and mentions both handles.** That is the one failure the design
+been paged and mentions every on-caller by name.** That is the one failure the design
 cannot allow to be quiet.
 
 ### What the write access costs
@@ -726,7 +747,8 @@ three verdicts, how to hand off, what the agent does on its own and never
 does), the banner protocol, a pointer to the agent's procedure, and the
 **Responder bindings**: every product-specific value in one block.
 
-- on-call hours, the window, and each handle's group tag;
+- on-call hours and the window, which schedule says who is on call, and the
+  name map from PagerDuty email to Slack handle;
 - the response window;
 - the critical marker, environments, dashboards, and where to look for a deploy
   in flight;
@@ -938,30 +960,33 @@ to do something it cannot do.
 that is true at that moment. Switch never models a rotation, never syncs a
 schedule, and never goes stale.
 
-**Closed for the ping.** It goes to a Slack group the sync service keeps in
-step with PagerDuty, so it needs no lookup at all.
+**Closed: inviting them.** PagerDuty gives each on-caller's email, and
+`add_users_to_room` now resolves an email against the workspace's directory by
+exact match, recording the person as it goes. So the war room invites the
+on-call engineers by email, with no map. (The operation's own description still
+says a name must already be known to the bridge; it is out of date.)
 
-**Not closed: matching a person across systems.** PagerDuty identifies a person
-by name and email. Switch resolves a room invitee by the username the bridge
-knows, and shows a reply's sender the same way. Those do not join up. So the
-agent can reliably **say** "the on-call for payments is Jane Doe", and cannot
-reliably **invite** her, or **recognise her reply** in the alert's thread,
-unless a map says which chat user she is. The response check now depends on
-the second of those.
+**Not closed: mentioning them, and recognising their reply.** Both need the
+person's Slack *handle*, and an agent has no way to turn an email into one:
+`add_users_to_room` resolves the email but does not say which handle it found,
+and no agent operation looks a person up. So the agent can reliably **say** "the
+on-call is Jane Doe", and invite her, but mention her or recognise her reply
+only if a map says which handle is hers. The ping and the response check both
+depend on that now.
 
 Three ways to close it, in increasing order of doing it properly:
 
-1. **A static map,** PagerDuty user → chat handle, in the bindings. Goes stale,
-   works today.
+1. **A static map,** PagerDuty email → Slack handle, in the bindings. Goes
+   stale, works today.
 2. **Chat handles on PagerDuty profiles,** so the mapping lives with the
    people.
-3. **Resolve it live,** with a directory lookup from email to platform id. It
-   needs a credential Switch does not hold (G20).
+3. **Let Switch resolve it:** return the handle `add_users_to_room` already
+   finds, or let an agent mention a person by email and have the bridge
+   translate it.
 
-Take (1) now. The war room also invites the people who replied in the alert's
-thread, whom the bridge already knows. And the sync service proves the other
-half is solvable: it maps PagerDuty users to Slack users by email, with an
-override table for the few that differ. [Gaps](#gaps) G1.
+Take (1) now. The sync service proves the mapping is mechanical: it matches
+PagerDuty users to Slack users by email, with an override table for the few
+that differ. [Gaps](#gaps) G1.
 
 ### The two real constraints on MCP
 
@@ -1196,6 +1221,7 @@ that meets every line except ownership, on the conditions in
 | sidecar | installed as a service | The agent is on the paging path; a reboot must not silence it. |
 | credential | one copy, on that host | Cannot be revoked per holder, so do not spread it. |
 | PagerDuty identity | a dedicated PagerDuty user | Declarations read as the agent's, not a person's. |
+| name map | everyone on the rota, PagerDuty email → Slack handle, each also added to the hub once | The ping and the response check depend on it until G1 is fixed. |
 | addressing policy | open | A rotation cannot be enumerated, and an alerting tool's mention is refused under any restricted policy. |
 | handle | alias `responder`, in the hub and every war room | Always wakes an on-demand agent. |
 | procedure | a Switch document, not the host's `CLAUDE.md` | Follows the rooms; does not leak into its other work. |
@@ -1228,31 +1254,33 @@ here, and a ticket to file. Sizes are rough: **S** is days, **M** is a sprint,
 ### A. Knowing who is on call — mostly closed
 
 Switch has no rotation, schedule or concept of duty, and it should not acquire
-one. The agent asks PagerDuty, and pings a Slack group a sync service keeps in
-step. What remains is smaller, and one part of it is now on the paging path:
+one. The agent asks PagerDuty who is on call and pings each person. What
+remains is smaller, and it is on the paging path:
 
-**G1 — There is no identity mapping across systems, and it is load-bearing.**
-PagerDuty knows a person by name and email; the bridge knows them by a platform
-handle. So the on-call *lookup* does not become an on-call *invite*, and, under
-the alert process, the agent cannot reliably tell that a reply in the alert's
-thread came from the on-caller. An unmatched name counts as not the on-caller,
-which errs towards paging. And a name that cannot be invited is returned as
+**G1 — An agent cannot turn an email into a chat handle, and it is
+load-bearing.** Narrowed since the first draft: `add_users_to_room` now
+resolves an email against the workspace's directory, so inviting the on-call
+engineers needs no mapping. What is still missing is the handle. Mentioning a
+person needs it, and so does recognising their reply in the alert's thread, and
+`add_users_to_room` resolves the email without saying which handle it found. So
+the ping and the response check both run on a hand-maintained map. A person
+missing from it is not notified, and their reply does not count, which errs
+towards paging. Separately, a name that cannot be invited is returned as
 unresolved rather than raising, so a war room quietly comes up short unless the
 caller inspects the result.
 
 > **Proposed ticket:** *Surface unresolved invitees as a first-class result.*
 > **S**
 
-> **Proposed ticket:** *Cross-system identity mapping* — a per-bridge map from an
-> external identity (email, or a third-party user id) to a Switch user and its
-> platform handle, available to agents, so an agent holding a PagerDuty user can
-> invite and recognise the person. Until it exists the mapping is a
-> hand-maintained table in the hub's bindings. **M**
+> **Proposed ticket:** *Mention a person by email* — return the resolved handle
+> from `add_users_to_room`, and let the bridge translate an agent's mention of a
+> directory-resolvable email into a real mention, so an agent holding a
+> PagerDuty user can ping and recognise the person with no map. Fix the
+> operation's out-of-date description in the same change. **S**
 
-> **Proposed ticket:** *Invite a platform user group's members* — let room
-> creation and `add_users_to_room` take a Slack user group. Where a sync service
-> keeps the on-call group current, this makes "invite the on-call engineers" one
-> step with no mapping. **S**
+> **Proposed ticket:** *Cross-system identity mapping* — the general form: a
+> per-bridge map from an external identity (email, or a third-party user id) to
+> a Switch user and its platform handle, available to agents. **M**
 
 ### B. The template format
 
@@ -1430,8 +1458,10 @@ already solve the same problem with a per-room, per-agent opt-in.
 > **Proposed ticket:** *Per-room message listeners.* **M**
 
 **G29 — An agent cannot notify a Slack user group, except by writing raw
-markup.** The workaround works only because an agent's text is not escaped on
-the way out, and the same omission lets any agent write `<!channel>`.
+markup.** Off this design's path since the team chose to ping people, but the
+hole it exposed stays: the raw tag gets through only because an agent's text is
+not escaped on the way out, and the same omission lets any agent write
+`<!channel>`.
 
 > **Proposed ticket:** *Outbound user-group mentions, and a rule for raw
 > markup.* **S**
@@ -1482,7 +1512,8 @@ The on-call manual runs on Switch today with no change to Switch:
   `run_template`.
 - PagerDuty is reached the way Jira already is, with write access for declaring.
 - Every alert wakes the agent because every monitor mentions its group.
-- The agent notifies on-call by writing the group's raw tag.
+- The agent reads who is on call from PagerDuty and mentions each of them,
+  through a name map.
 - The response window and the update clock run on the agent host's scheduler.
 
 Standing it up is configuration: one template, two documents, and a few lines in
@@ -1501,10 +1532,10 @@ Six compromises in that, worth naming out loud rather than discovering:
 - **The write boundary is prose.** The agent's PagerDuty connector can resolve
   as easily as it can declare, and so can every other agent on its host (G19,
   G27).
-- **Two workarounds that work by omission.** The ping relies on the bridge not
-  escaping an agent's text (G29). Seeing alerts relies on every monitor carrying
-  the agent's group, while Switch drops most of what those monitors say (G28,
-  G21).
+- **A hand-kept map, and a workaround.** The ping and the response check run on
+  a name map someone keeps current (G1). Seeing alerts relies on every monitor
+  carrying the agent's group, while Switch drops most of what those monitors
+  say (G28, G21).
 
 **Then, in order of value per unit of work:**
 
@@ -1516,22 +1547,22 @@ Six compromises in that, worth naming out loud rather than discovering:
 3. **G31 — budget exemptions and warnings.** Small, and on the paging path:
    until it exists, the deploy guide's answer is "no budget covers the
    responder".
-4. **G29 — outbound user-group mentions, and a rule for raw markup.** Small.
-   Turns the ping from an accident into a contract.
+4. **G1 — mention a person by email.** Small. The ping and the response check
+   stop depending on a hand-kept map.
 5. **G21 — extend what Switch keeps of an app's post.** Small. The agent stops
    depending on a connector to find out what fired.
 6. **G11 — a service account.** The ownership compromise ends here.
-7. **G1 — cross-system identity mapping.** The response check depends on
-   recognising the on-caller.
-8. **G27 — a built-in `pagerduty` reference type.** Small. Puts the write
+7. **G27 — a built-in `pagerduty` reference type.** Small. Puts the write
    boundary under code review.
-9. **G28 — per-room message listeners.** Moves "observe all alerts" from the
+8. **G28 — per-room message listeners.** Moves "observe all alerts" from the
    alerting tool into one setting per room.
-10. **G30 — wake a role's agent when no one holds it.** Gives the responder
-    failover back.
-11. **G23 — detect a session that cannot receive events.** Small.
-12. **G9 — the remaining room fields in templates.**
-13. **G8 — mirror to a linked room.**
+9. **G30 — wake a role's agent when no one holds it.** Gives the responder
+   failover back.
+10. **G23 — detect a session that cannot receive events.** Small.
+11. **G9 — the remaining room fields in templates.**
+12. **G8 — mirror to a linked room.**
+13. **G29 — a rule for raw markup.** Off this design's path, but the
+    `<!channel>` hole is every agent's.
 14. **G25, then G24.** Together they turn "we run a responder" from a favour
     someone is doing into infrastructure.
 15. Everything else, as it starts to hurt.
@@ -1539,6 +1570,6 @@ Six compromises in that, worth naming out loud rather than discovering:
 The honest summary: **the design needs no Switch changes to run. Before anyone
 should depend on it, it needs one operational fix (a supervised sidecar), one
 setting (no usage budget covering the responder), and one piece of design work
-started (a clock that does not die with the agent).**
-Neither is specific to incident response. The same gaps will surface for every
+started (a clock that does not die with the agent).** None of them is
+specific to incident response. The same gaps will surface for every
 shared agent that sits on a path someone depends on.
