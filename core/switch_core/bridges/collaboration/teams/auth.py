@@ -277,7 +277,11 @@ class TeamsTokenProvider:
         issues a token — one without that role — so this, not whether a token
         was issued, is what says the approval is intact.
         """
-        claims = jwt.decode(
+        # Graph access tokens are Microsoft's to verify, not their holder's:
+        # Graph signs them with a nonce in the header that makes any other
+        # party's signature check fail by design. This one is read only for
+        # the claims Microsoft just issued to us, never to admit a caller.
+        claims = jwt.decode(  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
             await self.graph_token(), options={"verify_signature": False}
         )
         roles = claims.get("roles") or []
