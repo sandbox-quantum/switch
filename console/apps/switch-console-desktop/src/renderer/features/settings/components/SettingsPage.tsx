@@ -7,6 +7,7 @@ import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
 import NotificationSettingsCard from './NotificationSettingsCard';
 import { OnboardingChecklistRow } from './OnboardingSettingsRow';
+import { ReplayOnboardingRow } from './ReplayOnboardingRow';
 import {
   AutoGenerateSessionNamesRow,
   AutoTrustWorktreesRow,
@@ -44,6 +45,7 @@ function GeneralSettingsPage() {
       <PreserveSessionNameCapitalizationRow />
       <NotificationSettingsCard />
       <OnboardingChecklistRow />
+      <ReplayOnboardingRow />
       <TelemetrySettingsCard />
     </div>
   );

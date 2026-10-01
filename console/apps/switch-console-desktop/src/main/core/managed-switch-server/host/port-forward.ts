@@ -2,6 +2,30 @@ import { createServer, type Server, type Socket } from 'node:net';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { log } from '@main/lib/logger';
 
+/** Listen on `127.0.0.1:<port>`, saying why not when that fails. */
+function bind(server: Server, port: number, label: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (err: NodeJS.ErrnoException) =>
+      reject(
+        new Error(
+          err.code === 'EADDRINUSE'
+            ? // Likely on a shared host: the stack was set up from another
+              // computer, whose free ports this one's need not be.
+              `Port ${port} is already in use on this computer, so the Switch server on ` +
+                `${label} cannot be reached from here. Switch Console reaches a remote ` +
+                `server through the same port number on this computer as on the host, so ` +
+                `whatever is using port ${port} here has to stop first.`
+            : `cannot bind local port ${port} for ${label}: ${err.message}`
+        )
+      );
+    server.once('error', onError);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', onError);
+      resolve();
+    });
+  });
+}
+
 /**
  * A persistent local→remote loopback bridge over the SSH connection.
  *
@@ -41,22 +65,27 @@ export class PortForwarder {
     }
   }
 
-  private listen(port: number): Promise<void> {
+  /**
+   * Throw what {@link start} would if any of `ports` cannot be bound here, without
+   * keeping them. Asked before a shared-host start changes anything, so a taken
+   * port is found before the stack is restarted for everyone.
+   */
+  static async check(ports: number[], label: string): Promise<void> {
+    for (const port of ports) {
+      const server = createServer();
+      await bind(server, port, label);
+      await new Promise((resolve) => server.close(() => resolve(null)));
+    }
+  }
+
+  private async listen(port: number): Promise<void> {
     const server = createServer((socket) => this.bridge(socket, port));
     this.servers.push(server);
-    return new Promise((resolve, reject) => {
-      const onError = (err: Error) =>
-        reject(new Error(`cannot bind local port ${port} for ${this.label}: ${err.message}`));
-      server.once('error', onError);
-      server.listen(port, '127.0.0.1', () => {
-        server.removeListener('error', onError);
-        // Later listener errors are non-fatal — log rather than crash.
-        server.on('error', (err) =>
-          log.warn(`port-forward: listener error on :${port} (${this.label})`, { err })
-        );
-        resolve();
-      });
-    });
+    await bind(server, port, this.label);
+    // Later listener errors are non-fatal — log rather than crash.
+    server.on('error', (err) =>
+      log.warn(`port-forward: listener error on :${port} (${this.label})`, { err })
+    );
   }
 
   private bridge(socket: Socket, port: number): void {

@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as nine functions.
+"""The whole exemption from row-level security, written out as eleven functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -129,6 +129,28 @@ this would otherwise answer twice — refusing a customer's live traffic on the
 strength of an install they themselves ended. The predicate here and the one
 on the index are the same predicate, and have to stay that way.
 
+**`tenants_inviting_email` is the tenth, and the only one keyed on a
+person's address rather than on something they hold.** An invitation
+addressed to someone is theirs to accept whichever workspace they are signed
+in to, or with none selected at all; listing those means reading
+`invitations`, which is scoped, across every tenant that might have written
+one. So this answers which tenants hold a live invitation addressed to an
+e-mail — the gates `InvitationStore`'s `_usable` applies, compared
+case-insensitively as the acceptance does — and the caller binds each tenant
+in turn and reads its own invitations through the ordinary scoped store. Like
+every lookup here it discloses a tenant id and no row. What it adds to the
+metadata above is which workspaces have invited a given address, to anyone
+holding the runtime role's credentials; the endpoint that calls it only ever
+passes the signed-in caller's own address.
+
+**`tenants_open_to_domain` is the eleventh**, and the same shape one step
+wider: keyed on the domain of a person's address rather than on the address.
+A workspace can let anyone at a domain join it without an invitation, and
+offering those workspaces means reading `tenant_join_domains` across every
+tenant before any is bound. It discloses which workspaces are open to a
+domain; the endpoint that calls it only ever passes the domain of the
+signed-in caller's own address.
+
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
@@ -221,7 +243,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The nine of them. Ordered as the three shapes above: enumeration, then
+# The eleven of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -308,6 +330,36 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
+        name="tenants_inviting_email",
+        arguments=("email",),
+        query=(
+            "SELECT DISTINCT tenant_id FROM invitations "
+            "WHERE lower(email) = lower(p_email) "
+            "AND revoked_at IS NULL AND expires_at > now() AND uses_remaining > 0 "
+            "ORDER BY tenant_id"
+        ),
+        purpose=(
+            "Which tenants hold a live invitation addressed to an e-mail, so a "
+            "signed-in person can be shown the invitations waiting for them "
+            "before any of those tenants is bound. Live by the same three "
+            "gates `InvitationStore` applies; the rows themselves are read "
+            "afterwards, one bound tenant at a time."
+        ),
+    ),
+    TenantLookup(
+        name="tenants_open_to_domain",
+        arguments=("domain",),
+        query=(
+            "SELECT tenant_id FROM tenant_join_domains "
+            "WHERE domain = lower(p_domain) ORDER BY tenant_id"
+        ),
+        purpose=(
+            "Which tenants let anyone with an address at a domain join them "
+            "without an invitation, so a signed-in person can be offered those "
+            "workspaces before any of them is bound."
+        ),
+    ),
+    TenantLookup(
         name="tenant_of_messaging_install",
         arguments=("platform", "external_workspace_id"),
         query=(
@@ -380,12 +432,12 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the nine names are fixed and known here, so there is nothing
+# at call time: the eleven names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
 # The assertion below is what keeps this dict from quietly falling behind
-# `TENANT_LOOKUPS` — a tenth lookup with no entry here fails at import, not
+# `TENANT_LOOKUPS` — a twelfth lookup with no entry here fails at import, not
 # with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
@@ -410,6 +462,12 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     ),
     "tenant_of_invitation": text(
         "SELECT tenant_id FROM tenant_of_invitation(:token_hash) AS tenant_id"
+    ),
+    "tenants_inviting_email": text(
+        "SELECT tenant_id FROM tenants_inviting_email(:email) AS tenant_id"
+    ),
+    "tenants_open_to_domain": text(
+        "SELECT tenant_id FROM tenants_open_to_domain(:domain) AS tenant_id"
     ),
     "tenant_of_messaging_install": text(
         "SELECT tenant_id FROM "
@@ -514,6 +572,22 @@ async def tenant_of_invitation(
 ) -> str | None:
     lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_invitation"]
     return _at_most_one(lookup, await _call(session_factory, lookup, token_hash))
+
+
+async def tenants_inviting_email(
+    session_factory: async_sessionmaker[AsyncSession], email: str
+) -> list[str]:
+    return await _call(
+        session_factory, TENANT_LOOKUPS_BY_NAME["tenants_inviting_email"], email
+    )
+
+
+async def tenants_open_to_domain(
+    session_factory: async_sessionmaker[AsyncSession], domain: str
+) -> list[str]:
+    return await _call(
+        session_factory, TENANT_LOOKUPS_BY_NAME["tenants_open_to_domain"], domain
+    )
 
 
 async def tenant_of_messaging_install(

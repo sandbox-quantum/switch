@@ -1,10 +1,11 @@
 import { expect, it, vi } from 'vitest';
-import { initializeRemoteDiscovery } from './remote-watcher';
+import { initializeRemoteDiscovery, pushRemoteAutoApprove } from './remote-watcher';
 
 const mocks = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
   handlers: new Map<string, (value: unknown) => void>(),
+  applyControllerState: vi.fn(async () => {}),
 }));
 vi.mock('./agent-events', () => ({
   agentEvents: {
@@ -18,7 +19,10 @@ vi.mock('./getAgents', () => ({
   getAgents: async () => [{ id: 'existing', switchAgentId: 'registered' }],
 }));
 vi.mock('./getAgentById', () => ({ getAgentById: vi.fn() }));
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({ configureSharedWatcher: vi.fn() }));
+vi.mock('@main/core/sdk-host/shared-watcher', () => ({
+  configureSharedWatcher: vi.fn(),
+  applyControllerState: mocks.applyControllerState,
+}));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({ listAutoSessionAgentIds: vi.fn() }));
 
 it('discovers existing and newly onboarded agents and stops removed identities', async () => {
@@ -36,4 +40,11 @@ it('discovers existing and newly onboarded agents and stops removed identities',
   expect(mocks.start).toHaveBeenCalledWith('missing-server');
   mocks.handlers.get('agent:deleted')!('existing');
   expect(mocks.stop).toHaveBeenCalledWith('existing');
+});
+
+it('rewrites the watcher with this Console’s auto-approve, not the host’s, then follows its sessions', async () => {
+  await pushRemoteAutoApprove('agent-1');
+
+  expect(mocks.applyControllerState).toHaveBeenCalledWith('agent-1', 'restore', 'this-console');
+  expect(mocks.start).toHaveBeenCalledWith('agent-1');
 });

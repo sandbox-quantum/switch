@@ -29,11 +29,28 @@ export const LOCAL_SERVER_PROJECT_NAME =
 export const REMOTE_SERVER_PROJECT_NAME =
   USER_DATA_DIR_NAME === 'switchdash' ? 'switchdash-remote' : `${USER_DATA_DIR_NAME}-remote`;
 
+/**
+ * The volume holding what every Console sharing a remote stack must agree on:
+ * the published `.env`, the register and the activity log. Labelled with
+ * {@link STACK_STATE_LABEL} rather than compose's project label, so compose
+ * never removes it and a reset keeps the record of who reset the stack.
+ */
+export const STACK_STATE_VOLUME_SUFFIX = 'console-state';
+export const STACK_STATE_LABEL = 'com.switch-console.stack-state';
+
+/** For the throwaway containers that reach the state volume. The stack's own
+ * Postgres image, so any host that has run the stack already has it;
+ * `stack-state.test.ts` holds it to the bundled compose file. */
+export const STACK_HELPER_IMAGE = 'postgres:16-alpine';
+
 /** File names of the compose file and generated `.env` inside the host working
  * dir. Kept relative so `docker compose -f <name>` resolves against the working
  * dir on either host, independent of its absolute path. */
 export const COMPOSE_FILE_NAME = 'standalone-docker-compose.yml';
 export const ENV_FILE_NAME = '.env';
+/** The database volume the `.env` beside it was written for, like the
+ * published copy's stamp. */
+export const ENV_STAMP_FILE_NAME = '.env.db';
 
 /** File name of the dev-only build override layered on top of the compose file
  * when the stack is built from a local checkout (see checkout-build.ts). */
@@ -76,3 +93,7 @@ export const LOCAL_SERVER_MATTERMOST_TEAM = 'switch';
  * name the seeder actually used — the generated env, the embed's silent login,
  * and the sign-in Switch Console shows the user — so it is named once here. */
 export const LOCAL_SERVER_MATTERMOST_USER = 'user';
+
+/** Its container stands for "the stack is up", its image tag is the stack's
+ * version, and its environment carries the server's settings. */
+export const CORE_SERVICE = 'switch';

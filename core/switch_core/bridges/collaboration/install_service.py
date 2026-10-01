@@ -74,6 +74,7 @@ from switch_core.bridges.collaboration.install_state import (
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
+from switch_core.bridges.collaboration.models import BridgeStartRefused
 from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import MessagingInstall
 from switch_core.db.session_scope import tenant_session
@@ -239,7 +240,14 @@ class MessagingInstallService:
                     session,
                     platform=platform,
                     external_workspace_id=grant.external_workspace_id,
-                    encrypted_bot_token=encrypt_token(grant.bot_token, self._secret),
+                    # A grant with no token is a platform whose credential is
+                    # deployment-level (Discord), not per-install; there is
+                    # nothing to encrypt and the column is nullable for it.
+                    encrypted_bot_token=(
+                        encrypt_token(grant.bot_token, self._secret)
+                        if grant.bot_token is not None
+                        else None
+                    ),
                     scopes=grant.scopes,
                     user_id=burnt.created_by_user_id,
                 )
@@ -276,6 +284,44 @@ class MessagingInstallService:
                 bridge.id,
             )
             return attached
+
+    async def refuse_uninstalled_bridge(
+        self,
+        *,
+        bridge_id: str,
+        tenant_id: str,
+        bridge_type: str,
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Refuse a bridge on the deployment's credential that no install of its
+        tenant built. A start guard, so a refused bridge never runs.
+
+        Such a bridge reaches whatever workspace its config names through the
+        one credential every tenant shares, so naming a workspace is not
+        evidence of owning it. The tenant's live install of that workspace is:
+        it came from the platform's own consent screen, and the unique index
+        lets only one tenant hold a workspace. The install's bridge pointer is
+        still empty while the install flow registers the bridge, which is what
+        the empty case admits.
+        """
+        if bridge_type not in self._installers.platforms():
+            return
+        workspace_id = self._installers.get(bridge_type).workspace_of_bridge(
+            connection_config
+        )
+        if workspace_id is None:
+            return
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            install = await self._store.get_for_workspace(
+                session, platform=bridge_type, external_workspace_id=workspace_id
+            )
+        if install is None or install.bridge_id not in (None, bridge_id):
+            raise BridgeStartRefused(
+                f"Bridge {bridge_id} names {bridge_type} workspace {workspace_id}, "
+                "which its tenant has not installed this deployment's app into. "
+                "A bridge on that app is created by installing it, and serves "
+                "only what it was installed into."
+            )
 
     async def list_installs(self, session: AsyncSession) -> list[MessagingInstall]:
         """The bound tenant's installs, for the operator's own list.
@@ -461,7 +507,17 @@ class MessagingInstallService:
         )
 
     async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
-        """Turn a workspace id into the one bridge entitled to the event.
+        """Turn a webhook event's workspace into the bridge entitled to it."""
+        installer = self._installers.get(platform)
+        workspace_id = installer.workspace_of_event(event.payload)
+        return await self.resolve_by_workspace(
+            platform=platform, workspace_id=workspace_id
+        )
+
+    async def resolve_by_workspace(
+        self, *, platform: str, workspace_id: str
+    ) -> WebhookTarget:
+        """Turn a workspace id into the one bridge entitled to its events.
 
         The tenant comes from the exempt lookup (`db/tenant_lookup.py`), which
         is the only way to answer it: the caller authenticated to nothing, and
@@ -469,10 +525,13 @@ class MessagingInstallService:
         *again* under that tenant rather than returned by the lookup — a
         deliberate second check, so a wrong answer above is a miss here instead
         of a cross-tenant read.
-        """
-        installer = self._installers.get(platform)
-        workspace_id = installer.workspace_of_event(event.payload)
 
+        Split from `resolve` so a caller that already holds the workspace id
+        reaches it without a webhook: the Discord shared connection reads the
+        guild id straight off the Gateway event, and calling this keeps the
+        exempt-lookup caller inside this already-allowlisted module and inherits
+        the scoped re-read for free.
+        """
         tenant_id = await tenant_of_messaging_install(
             self._session_factory, platform, workspace_id
         )

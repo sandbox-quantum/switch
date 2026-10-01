@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
+import { killProcessTree } from './process-fence';
 import type { SessionLinks } from './session-channel';
 import { recordSessionStart, type HostStartSource } from './session-start';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
@@ -273,14 +274,31 @@ async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> 
       'The saved PID no longer identifies this SDK host. Refusing to stop another process.'
     );
   process.kill(pid, 'SIGTERM');
-  for (let attempt = 0; attempt < 100; attempt++) {
+  if (await exitsWithin(pid, STOP_GRACE_MS)) return;
+  // Asked, and still here: most likely waiting on a child that will never
+  // finish, such as a session host that hung up and stayed alive. Waiting
+  // longer changes nothing, and refusing leaves every update to this agent
+  // failing the same way, so what is left of the tree is killed.
+  console.warn(
+    `The SDK host at ${root} (pid ${pid}) did not stop within ${STOP_GRACE_MS / 1000} s of being asked; killing it and everything it started.`
+  );
+  await killProcessTree(pid);
+  if (await exitsWithin(pid, 5000)) return;
+  throw new Error('The SDK host has not stopped. Recovery cannot start a competing owner.');
+}
+
+/** How long a host asked to stop is given before it and what it started are killed. */
+export const STOP_GRACE_MS = 20_000;
+
+async function exitsWithin(pid: number, ms: number): Promise<boolean> {
+  for (let waited = 0; ; waited += 200) {
     try {
       process.kill(pid, 0);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
       throw error;
     }
+    if (waited >= ms) return false;
     await delay(200);
   }
-  throw new Error('The SDK host has not stopped. Recovery cannot start a competing owner.');
 }

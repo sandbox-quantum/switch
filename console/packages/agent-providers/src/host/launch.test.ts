@@ -306,3 +306,48 @@ it('starts the session anyway when its start cannot be recorded', async () => {
   ).toEqual([]);
   warn.mockRestore();
 });
+
+it.skipIf(process.platform === 'win32')(
+  'kills a host that will not stop for its replacement, with the session hosts under it',
+  async () => {
+    // The case that blocked an update: an old watcher waiting forever on a
+    // session host that had hung up, so SIGTERM never finished and every
+    // replacement gave up with "has not stopped".
+    const root = await mkdtemp(join(tmpdir(), 'stop-owned-'));
+    const grandchildPid = join(root, 'grandchild.pid');
+    const stubborn = spawn(
+      process.execPath,
+      [
+        '-e',
+        `process.on('SIGTERM', () => {});
+         const child = require('node:child_process').spawn(process.execPath,
+           ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+           { detached: true, stdio: 'ignore' });
+         require('node:fs').writeFileSync(process.argv[1] + '/grandchild.pid', String(child.pid));
+         setInterval(() => {}, 1000);`,
+        // On its command line, which is how the stop confirms the pid is still its host.
+        root,
+      ],
+      { detached: true, stdio: 'ignore' }
+    );
+    try {
+      let pid = 0;
+      for (let attempt = 0; attempt < 100 && !pid; attempt++) {
+        pid = Number(await readFile(grandchildPid, 'utf8').catch(() => '0'));
+        if (!pid) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: stubborn.pid }));
+
+      await detachedSupervision('bundle.mjs').stop(root);
+
+      expect(() => process.kill(stubborn.pid!, 0)).toThrow();
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      try {
+        process.kill(-stubborn.pid!, 'SIGKILL');
+      } catch {}
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  40_000
+);

@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     DDL,
@@ -336,6 +337,46 @@ class Invitation(TenantScoped, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TenantJoinDomain(TenantScoped, Base):
+    """An e-mail domain whose people may join a tenant without an invitation.
+
+    Anyone signed in with an address at `domain` is offered the tenant and
+    joins it as a member. The natural key is `(tenant_id, domain)`, so
+    `tenant_id` joins the primary key directly, as on `reference_types`, and
+    two tenants may each open themselves to the same domain.
+
+    `domain` is stored lower-case, and the constraint is what makes that true
+    rather than a convention: the lookup that finds these rows
+    (`tenants_open_to_domain`, `db/tenant_lookup.py`) compares by equality,
+    and a mixed-case row would be one nobody could ever match.
+
+    Who may add a domain, and which, is the gateway's decision rather than this
+    row's — today an admin may open a tenant only to the domain of their own
+    address, and never to a public e-mail provider's.
+    """
+
+    __tablename__ = "tenant_join_domains"
+    __table_args__ = (
+        CheckConstraint(
+            "domain = lower(domain)", name="ck_tenant_join_domains_lower_case"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("tenants.id", name="fk_tenant_join_domains_tenant"),
+        primary_key=True,
+        default=require_tenant_id,
+    )
+    domain: Mapped[str] = mapped_column(Text, primary_key=True)
     created_by: Mapped[str] = mapped_column(
         Text, ForeignKey("users.id"), nullable=False
     )
@@ -2352,6 +2393,131 @@ for _table, _triggers in (
 ):
     for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
         event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+
+
+# ── Usage metering ───────────────────────────────────────────────────────────
+
+
+class UsageMetric(StrEnum):
+    """What is counted. Cache reads and writes are kept apart from input
+    tokens because providers price them apart."""
+
+    MESSAGES = "messages"
+    TURNS = "turns"
+    INPUT_TOKENS = "input_tokens"
+    OUTPUT_TOKENS = "output_tokens"
+    CACHE_READ_TOKENS = "cache_read_tokens"
+    CACHE_WRITE_TOKENS = "cache_write_tokens"
+
+
+class TenantUsage(TenantScoped, Base):
+    """What a tenant has consumed, counted as it happens, one row per hour.
+
+    The record that quotas are enforced against and that billing will read,
+    so it is kept apart from the rows it counts: deleting a room cascades to
+    its messages, and a count derived from `messages` would forget usage the
+    tenant has already spent. Written in the same transaction as the thing it
+    counts, so the two cannot disagree.
+
+    Hourly buckets because a budget period is configurable: any period of a
+    whole number of hours is a sum over these rows, while a coarser bucket
+    would fix the shortest period a budget can have.
+
+    `client_id` is who consumed it: the sender of a message, or the client of
+    the agent a turn ran for. No foreign key, so a count outlives the client it
+    names. `model` is empty where a metric has none.
+    """
+
+    __tablename__ = "tenant_usage"
+    __table_args__ = (
+        # Leads on the metric so "this tenant's turns since a moment" — the
+        # shape every budget check asks — is a range scan on the key itself.
+        PrimaryKeyConstraint(
+            "tenant_id", "metric", "bucket_start", "client_id", "model"
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_tenant_usage_metric",
+        ),
+        CheckConstraint("amount > 0", name="ck_tenant_usage_amount"),
+    )
+
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+# A budget's period is at most a leap year, and its limit at most the largest
+# integer a JavaScript client reads exactly. Both keep the period arithmetic
+# and the gateway's numbers from overflowing.
+MAX_BUDGET_PERIOD_HOURS = 8784
+MAX_BUDGET_AMOUNT = 2**53 - 1
+
+
+class UsageBudget(TenantScoped, Base):
+    """A ceiling on one metric over a repeating period.
+
+    `agent_id` null covers every agent in the tenant; otherwise the one agent.
+    `model` empty covers every model. An agent that has reached any budget
+    covering it is stopped until the period turns over; people are never
+    stopped. A tenant with no budgets is unlimited.
+
+    Periods are whole hours counted from the Unix epoch in UTC, so a daily
+    budget turns over at midnight UTC and every writer agrees when.
+    """
+
+    __tablename__ = "usage_budgets"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_usage_budgets_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_usage_budgets_metric",
+        ),
+        CheckConstraint(
+            f"amount_limit > 0 AND amount_limit <= {MAX_BUDGET_AMOUNT}",
+            name="ck_usage_budgets_amount_limit",
+        ),
+        CheckConstraint(
+            f"period_hours > 0 AND period_hours <= {MAX_BUDGET_PERIOD_HOURS}",
+            name="ck_usage_budgets_period_hours",
+        ),
+        Index(
+            "uq_usage_budgets_tenant_wide",
+            "tenant_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NULL"),
+        ),
+        Index(
+            "uq_usage_budgets_agent",
+            "tenant_id",
+            "agent_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the

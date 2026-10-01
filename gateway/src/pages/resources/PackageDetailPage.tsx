@@ -33,7 +33,7 @@ import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 export default function PackageDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, canAdminTenant } = useAuth();
   const [pkg, setPkg] = useState<PackageDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -76,7 +76,7 @@ export default function PackageDetailPage() {
   }
 
   const canMutate =
-    !!user && (user.id === pkg.owner_id || user.role === "admin");
+    !!user && (user.id === pkg.owner_id || canAdminTenant);
 
   return (
     <Box>

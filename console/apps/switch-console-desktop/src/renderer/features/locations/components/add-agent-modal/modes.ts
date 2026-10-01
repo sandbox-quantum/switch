@@ -54,7 +54,6 @@ export function useConfigureAgentForm() {
   // with none runs on its provider's defaults, and the description stands in
   // where a provider needs a prompt.
   const [instructions, setInstructions] = useState('');
-  const [autoSession, setAutoSession] = useState(true);
   const [autoApprove, setAutoApproveRaw] = useState(false);
   const [autoApproveTouched, setAutoApproveTouched] = useState(false);
   // Scoped addressing policy (CHOO-1585). null = open; a new agent starts
@@ -141,8 +140,6 @@ export function useConfigureAgentForm() {
     setDescription,
     instructions,
     setInstructions,
-    autoSession,
-    setAutoSession,
     autoApprove,
     setAutoApprove,
     suggestAutoApprove,

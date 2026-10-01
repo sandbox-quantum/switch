@@ -6,9 +6,9 @@ import { getAgentLocation } from '@main/core/agents/agent-location';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
-import { getServer } from '@main/core/switch-servers/servers-store';
 import { redactSecrets } from '@main/lib/file-logger';
 import { listHostSessions } from './host-sessions';
+import { hostWatcherStatus } from './host-watcher-snapshot';
 import { inspectWatchers } from './watcher-inspection';
 
 const watcherSchema = z.object({
@@ -28,7 +28,7 @@ const watcherSchema = z.object({
 
 async function agentHost(agentId: string) {
   const agent = await getAgentById(agentId);
-  if (!agent?.serverId || !agent.switchAgentId)
+  if (!agent?.workspaceId || !agent.switchAgentId)
     throw new Error('The agent is not linked to Switch.');
   const location = await getAgentLocation(agent);
   const ctx = location.sshHost
@@ -37,12 +37,34 @@ async function agentHost(agentId: string) {
   return { agent, location, ctx };
 }
 
+/**
+ * A remote watcher as the panel shows it, from the same read of its host the
+ * connection state comes from, so the two cannot disagree.
+ */
+async function remoteWatchers(agentId: string): Promise<z.infer<typeof watcherSchema>[]> {
+  const status = await hostWatcherStatus(agentId);
+  if (!status) return [];
+  return [
+    {
+      running: status.workerAlive,
+      enabled: status.enabled ?? false,
+      failure: status.workerAlive ? null : status.failure,
+      pid: status.workerAlive ? status.workerPid : null,
+      supervisorPid: status.running ? status.supervisorPid : null,
+      buildHash: status.build?.match(/shared-host-([a-f0-9]{64})\.mjs$/)?.[1] ?? null,
+      takenOver: status.takenOver,
+    },
+  ];
+}
+
 export async function sharedAgentDiagnostics(agentId: string) {
   const { agent, location, ctx } = await agentHost(agentId);
-  const server = await getServer(agent.serverId!);
-  if (!server) throw new Error('The agent’s Switch server is missing.');
-  const [host, bundle, remote] = await Promise.all([
-    ctx.exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'status']),
+  const [watchers, bundle, remote] = await Promise.all([
+    location.sshHost
+      ? remoteWatchers(agentId)
+      : ctx
+          .exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'status'])
+          .then((host) => watcherSchema.array().parse(JSON.parse(host.stdout))),
     readFile(resolveSharedHostBundlePath()),
     listHostSessions(agentId).then(
       (sessions) => ({ sessions, error: null }),
@@ -53,16 +75,13 @@ export async function sharedAgentDiagnostics(agentId: string) {
     workingDir: location.dir,
     transport: location.sshHost ? ('ssh' as const) : ('local' as const),
     availableBuildHash: createHash('sha256').update(bundle).digest('hex'),
-    watchers: watcherSchema
-      .array()
-      .parse(JSON.parse(host.stdout))
-      .map((watcher) => ({
-        ...watcher,
-        failure: watcher.failure ? redactSecrets(watcher.failure) : null,
-        takenOver: watcher.takenOver
-          ? { ...watcher.takenOver, reason: redactSecrets(watcher.takenOver.reason) }
-          : null,
-      })),
+    watchers: watchers.map((watcher) => ({
+      ...watcher,
+      failure: watcher.failure ? redactSecrets(watcher.failure) : null,
+      takenOver: watcher.takenOver
+        ? { ...watcher.takenOver, reason: redactSecrets(watcher.takenOver.reason) }
+        : null,
+    })),
     sessions: remote.sessions?.filter((session) => session.agentId === agent.switchAgentId) ?? null,
     sessionError: remote.error,
   };
@@ -72,14 +91,4 @@ export async function sharedAgentLogs(agentId: string): Promise<string> {
   const { agent, ctx } = await agentHost(agentId);
   const result = await ctx.exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'logs']);
   return redactSecrets(z.string().parse(JSON.parse(result.stdout)));
-}
-
-/**
- * The watcher's state as its files on the host record it: why a sidecar that
- * cannot be reached stopped, or that it stood down for another client.
- */
-export async function remoteWatcherStatus(agentId: string) {
-  const { agent, ctx } = await agentHost(agentId);
-  const host = await ctx.exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'status']);
-  return watcherSchema.array().parse(JSON.parse(host.stdout))[0] ?? null;
 }

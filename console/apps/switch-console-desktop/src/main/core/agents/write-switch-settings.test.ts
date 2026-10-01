@@ -259,19 +259,15 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
 
   it('reports the owning server through foreignCredentialsOwnerFs, for a caller checking before it registers', async () => {
     await seed('shared-name', otherInstall);
-    const workspaceFs = createPluginFs(dir);
+    const workdirFs = createPluginFs(dir);
 
     expect(
-      await foreignCredentialsOwnerFs(workspaceFs, 'shared-name', 'https://switch.example.com')
+      await foreignCredentialsOwnerFs(workdirFs, 'shared-name', 'https://switch.example.com')
     ).toBe('https://other-switch.example.com');
     expect(
-      await foreignCredentialsOwnerFs(
-        workspaceFs,
-        'shared-name',
-        'https://other-switch.example.com'
-      )
+      await foreignCredentialsOwnerFs(workdirFs, 'shared-name', 'https://other-switch.example.com')
     ).toBeNull();
-    expect(await foreignCredentialsOwnerFs(workspaceFs, 'absent', 'https://switch.example.com')) //
+    expect(await foreignCredentialsOwnerFs(workdirFs, 'absent', 'https://switch.example.com')) //
       .toBeNull();
   });
 });
@@ -390,7 +386,7 @@ describe('removeSwitchSettings', () => {
       agentId: 'agent-123',
     });
 
-    expect(removeSwitchSettings(provisioned)).toEqual({ kind: 'delete' });
+    expect(removeSwitchSettings(provisioned, 'agent-123')).toEqual({ kind: 'delete' });
   });
 
   it('strips only the SWITCH_* keys and Switch rules, preserving everything else', () => {
@@ -405,7 +401,7 @@ describe('removeSwitchSettings', () => {
       },
     });
 
-    const result = removeSwitchSettings(existing);
+    const result = removeSwitchSettings(existing, 'agent-123');
     expect(result.kind).toBe('write');
     const parsed = JSON.parse((result as { content: string }).content) as Record<string, unknown>;
 
@@ -430,7 +426,7 @@ describe('removeSwitchSettings', () => {
       env: { SWITCH_API_ENDPOINT: 'e', SWITCH_API_TOKEN: 't', SWITCH_AGENT_ID: 'a' },
     });
 
-    const result = removeSwitchSettings(existing);
+    const result = removeSwitchSettings(existing, 'a');
     expect(result.kind).toBe('write');
     const parsed = JSON.parse((result as { content: string }).content) as Record<string, unknown>;
 
@@ -443,20 +439,31 @@ describe('removeSwitchSettings', () => {
 
   it('skips files that are not a provisioned Switch agent', () => {
     // Absent file.
-    expect(removeSwitchSettings(null)).toEqual({ kind: 'skip' });
+    expect(removeSwitchSettings(null, 'a')).toEqual({ kind: 'skip' });
     // Unparseable.
-    expect(removeSwitchSettings('{not json')).toEqual({ kind: 'skip' });
+    expect(removeSwitchSettings('{not json', 'a')).toEqual({ kind: 'skip' });
     // Empty object.
-    expect(removeSwitchSettings('{}')).toEqual({ kind: 'skip' });
+    expect(removeSwitchSettings('{}', 'a')).toEqual({ kind: 'skip' });
     // A real config with no Switch creds -> leave it untouched.
-    expect(removeSwitchSettings(JSON.stringify({ env: { OTHER: 'x' } }))).toEqual({ kind: 'skip' });
+    expect(removeSwitchSettings(JSON.stringify({ env: { OTHER: 'x' } }), 'a')).toEqual({
+      kind: 'skip',
+    });
   });
 
   it('tears down even a partially-provisioned file (only some SWITCH_* keys)', () => {
     // Defensive: if a write was interrupted and only the token survived, teardown
     // must still remove it rather than leaving a dangling secret.
     const existing = JSON.stringify({ env: { SWITCH_API_TOKEN: 'secret-token' } });
-    expect(removeSwitchSettings(existing)).toEqual({ kind: 'delete' });
+    expect(removeSwitchSettings(existing, 'agent-123')).toEqual({ kind: 'delete' });
+  });
+
+  it('leaves another agent’s credentials in a shared directory alone', () => {
+    const existing = JSON.stringify({
+      env: { SWITCH_API_ENDPOINT: 'e', SWITCH_API_TOKEN: 't', SWITCH_AGENT_ID: 'agent-main' },
+    });
+
+    expect(removeSwitchSettings(existing, 'agent-sibling')).toEqual({ kind: 'skip' });
+    expect(removeSwitchSettings(existing, null)).toEqual({ kind: 'skip' });
   });
 
   it('leaves the directory undetectable as a Switch agent after teardown', async () => {
@@ -467,7 +474,7 @@ describe('removeSwitchSettings', () => {
     });
     const raw = await fs.readFile(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), 'utf8');
 
-    const result = removeSwitchSettings(raw);
+    const result = removeSwitchSettings(raw, 'agent-123');
     // The file was ours alone -> delete it, which makes the dir undetectable.
     expect(result).toEqual({ kind: 'delete' });
     await fs.rm(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), { force: true });

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   connectParent,
+  HOST_HUNG_UP_MS,
   SessionHostFailedError,
   SessionLinks,
   SessionUnavailableError,
@@ -19,6 +20,7 @@ function fakeChild() {
   };
   child.sent = [];
   (child as unknown as { connected: boolean }).connected = true;
+  Object.assign(child, { pid: 4242, exitCode: null, signalCode: null });
   child.send = (message, callback) => {
     child.sent.push(message);
     callback(null);
@@ -246,4 +248,82 @@ it('refuses a question from a host that has not said who it is, and tells who ex
   child.emit('exit', 0, null);
   expect(exits).toEqual([['root', IDENTITY]]);
   expect(links.identity('root')).toBeNull();
+});
+
+it('stops sending to a host that hung up, and waits for the next one', async () => {
+  // A host that closed its pipe and did not exit — something it started still
+  // running — used to read as ready for good, so every message went down a
+  // closed pipe and failed, forever.
+  const links = new SessionLinks();
+  const hung = fakeChild();
+  links.attach('root', hung as unknown as ChildProcess);
+  hung.emit('message', { kind: 'ready' });
+  const unanswered = links.request('root', { type: 'snapshot' }, 1000);
+  await vi.waitFor(() => expect(hung.sent).toHaveLength(1));
+
+  (hung as unknown as { connected: boolean }).connected = false;
+  hung.emit('disconnect');
+
+  await expect(unanswered).rejects.toThrow('hung up before it answered');
+  expect(links.ready('root')).toBe(false);
+  const next = links.request('root', { type: 'snapshot' }, 1000);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(hung.sent).toHaveLength(1);
+
+  const replacement = fakeChild();
+  links.attach('root', replacement as unknown as ChildProcess);
+  replacement.emit('message', { kind: 'ready' });
+  await vi.waitFor(() => expect(replacement.sent).toHaveLength(1));
+  const [request] = replacement.sent as { id: number }[];
+  replacement.emit('message', { kind: 'reply', id: request!.id, ok: true, value: 'fresh' });
+  expect(await next).toBe('fresh');
+});
+
+it('kills a host that hung up and stays alive, with what it started', async () => {
+  vi.useFakeTimers();
+  try {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const links = new SessionLinks();
+    const hung = fakeChild();
+    links.attach('root', hung as unknown as ChildProcess);
+    hung.emit('disconnect');
+
+    await vi.advanceTimersByTimeAsync(HOST_HUNG_UP_MS - 1);
+    expect(kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    // Its group: the provider it started is in it.
+    expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('leaves a host that hung up and then exited on its own', async () => {
+  vi.useFakeTimers();
+  try {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const links = new SessionLinks();
+    const leaving = fakeChild();
+    links.attach('root', leaving as unknown as ChildProcess);
+    leaving.emit('disconnect');
+    leaving.emit('exit', 0, null);
+
+    await vi.advanceTimersByTimeAsync(HOST_HUNG_UP_MS * 2);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('tells a request waiting on a host that the host stopped, rather than at its deadline', async () => {
+  const links = new SessionLinks();
+  const child = fakeChild();
+  links.attach('root', child as unknown as ChildProcess);
+  const started = Date.now();
+  const waiting = links.request('root', { type: 'snapshot' }, 60000);
+
+  child.emit('exit', 0, null);
+
+  await expect(waiting).rejects.toThrow('stopped before it was ready');
+  expect(Date.now() - started).toBeLessThan(5000);
 });

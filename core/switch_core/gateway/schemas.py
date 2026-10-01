@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from switch_core.addressing import AddressingPolicy
 from switch_core.bridges.collaboration.models import BridgeInstallLink
+from switch_core.db.models import (
+    MAX_BUDGET_AMOUNT,
+    MAX_BUDGET_PERIOD_HOURS,
+    UsageMetric,
+)
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -684,8 +690,51 @@ class TenantMembershipResponse(BaseModel):
     role: str
 
 
+class CurrentTenantResponse(TenantMembershipResponse):
+    """The tenant this request is bound to. `administers` is whether the
+    caller may manage it — an `owner` or `admin` membership, or the operator
+    bit, which no membership role shows."""
+
+    administers: bool
+
+
 class TenantCreateRequest(BaseModel):
     name: str
+
+
+class SessionStateUser(BaseModel):
+    id: str
+    name: str
+    email: str
+    # The deployment operator (`users.role == "admin"`), who administers every
+    # workspace and the deployment-wide user list.
+    is_operator: bool
+
+
+class SessionStateResponse(BaseModel):
+    """Where this session stands with respect to workspaces — the body of
+    `GET /auth/session`, readable before any workspace is selected.
+
+    `state` mirrors what tenant resolution would do with this session's claim
+    on any other request:
+
+    - "ready": a workspace resolves, and it is `tenant`.
+    - "needs_selection": the caller belongs to at least one workspace but the
+      session resolves none — no claim with several memberships, or a claim
+      naming a workspace they no longer belong to. Selecting one of `tenants`
+      (`POST /tenants/{id}/switch`) fixes it.
+    - "needs_workspace": no memberships at all. Creating a workspace (when
+      `can_create_workspace`) or accepting an invitation fixes it.
+    """
+
+    user: SessionStateUser
+    tenant: TenantMembershipResponse | None
+    tenants: list[TenantMembershipResponse]
+    state: Literal["ready", "needs_selection", "needs_workspace"]
+    can_create_workspace: bool
+    # Whether an invitation addressed to an e-mail is sent there, or only
+    # minted for the admin to share.
+    invite_email_enabled: bool
 
 
 class InvitationCreateRequest(BaseModel):
@@ -699,12 +748,89 @@ class InvitationCreateRequest(BaseModel):
     expires_in_hours: int = Field(default=168, gt=0, le=8760)
     uses_remaining: int = Field(default=1, ge=1)
 
+    @field_validator("email")
+    @classmethod
+    def _address_shaped(cls, value: str | None) -> str | None:
+        # Not full RFC 5322: enough that what is stored, compared against a
+        # signed-in account and put in a To header is one plausible address.
+        if value is None:
+            return None
+        address = value.strip().lower()
+        local, at, domain = address.partition("@")
+        if (
+            not at
+            or not local
+            or "." not in domain
+            or "@" in domain
+            or len(address) > 320
+            or any(c.isspace() or not c.isprintable() for c in address)
+        ):
+            raise ValueError("Not an e-mail address")
+        return address
+
 
 class InvitationAcceptRequest(BaseModel):
     # In the body rather than the path: a URL travels through proxy logs,
     # browser history and `Referer` headers, and this one is a bearer
     # credential.
     token: str
+
+
+class AddressedInvitation(BaseModel):
+    """An invitation waiting for the signed-in caller, as they are shown it.
+
+    What an invitee needs to decide, and no more: the workspace, the role it
+    would grant, until when, and who sent it. Never the token.
+    """
+
+    id: str
+    tenant_id: str
+    tenant_slug: str
+    tenant_name: str
+    role: str
+    expires_at: str
+    invited_by: str
+    created_at: str
+
+
+class AddressedInvitationAcceptRequest(BaseModel):
+    tenant_id: str
+    invitation_id: str
+
+
+class JoinDomainDetail(BaseModel):
+    domain: str
+    created_by: str
+    created_at: str
+
+
+class JoinDomainsResponse(BaseModel):
+    """The domains a workspace is open to, and whether the caller could add
+    theirs.
+
+    An admin may open a workspace only to the domain of their own address, so
+    `own_domain` is the one domain they could add, and `own_domain_refusal`
+    says why they cannot when they cannot — a public e-mail provider's domain,
+    say. Already being open to it is not a refusal; it is in `domains`.
+    """
+
+    domains: list[JoinDomainDetail]
+    own_domain: str
+    own_domain_refusal: str | None
+
+
+class JoinDomainCreateRequest(BaseModel):
+    domain: str
+
+
+class JoinableTenant(BaseModel):
+    """A workspace the signed-in caller may join because of their address's
+    domain, as they are shown it."""
+
+    tenant_id: str
+    tenant_slug: str
+    tenant_name: str
+    domain: str
 
 
 class InvitationDetail(BaseModel):
@@ -722,6 +848,11 @@ class InvitationCreateResponse(InvitationDetail):
     # The plaintext token. Present only here — see
     # `InvitationStore.create`, which is the one call that can hand it back.
     token: str
+    # What happened to the e-mail, so the admin knows whether to share the
+    # link themselves: "not_requested" when the invitation names no address,
+    # "not_configured" when this server has no mail relay, "failed" when the
+    # relay refused or could not be reached, "sent" otherwise.
+    email_delivery: Literal["sent", "not_configured", "failed", "not_requested"]
 
 
 class MemberDetail(BaseModel):
@@ -730,6 +861,21 @@ class MemberDetail(BaseModel):
     email: str
     role: str
     created_at: str
+
+
+class UsageTotalResponse(BaseModel):
+    """One consumer's total of one metric over the requested window.
+
+    `client_name` and `client_type` are null when the client has since been
+    deleted; what it spent still counts against the workspace.
+    """
+
+    metric: str
+    client_id: str
+    client_name: str | None
+    client_type: str | None
+    model: str
+    amount: int
 
 
 class MemberUpdateRequest(BaseModel):
@@ -746,6 +892,9 @@ class AuthConfigResponse(BaseModel):
     password_login_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
+    # Where a first sign-in lands (`SwitchConfig.gateway_signup_mode`), so the
+    # page can say whether signing in also creates an account of your own.
+    signup_mode: Literal["default_tenant", "invite_only", "open"]
 
 
 class ContractRangeResponse(BaseModel):
@@ -1186,3 +1335,44 @@ class TemplateValidateResponse(BaseModel):
     blocked: bool
     errors: list[TemplateFinding]
     warnings: list[TemplateFinding]
+
+
+class BudgetCreateRequest(BaseModel):
+    """A new budget. `agent_id` null covers every agent in the workspace;
+    `model` empty covers every model."""
+
+    agent_id: str | None
+    metric: UsageMetric
+    model: str
+    amount_limit: int = Field(gt=0, le=MAX_BUDGET_AMOUNT)
+    period_hours: int = Field(gt=0, le=MAX_BUDGET_PERIOD_HOURS)
+
+    @model_validator(mode="after")
+    def _model_only_on_token_metrics(self) -> BudgetCreateRequest:
+        if self.model and self.metric in (UsageMetric.MESSAGES, UsageMetric.TURNS):
+            raise ValueError(
+                f"A {self.metric.value} budget cannot name a model: "
+                f"{self.metric.value} are not counted per model"
+            )
+        return self
+
+
+class BudgetUpdateRequest(BaseModel):
+    amount_limit: int = Field(gt=0, le=MAX_BUDGET_AMOUNT)
+    period_hours: int = Field(gt=0, le=MAX_BUDGET_PERIOD_HOURS)
+
+
+class BudgetResponse(BaseModel):
+    """A budget and what has been spent against it in the current period,
+    which ends at `resets_at`."""
+
+    id: str
+    agent_id: str | None
+    agent_name: str | None
+    metric: str
+    model: str
+    amount_limit: int
+    period_hours: int
+    spent: int
+    resets_at: datetime
+    exhausted: bool

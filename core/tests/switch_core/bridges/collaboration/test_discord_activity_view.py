@@ -528,7 +528,7 @@ async def test_a_conversation_discord_will_not_resolve_is_not_a_turn_that_is_gon
     has established nothing about the turn, which is still exactly where it
     was, so the reader is told to try again instead."""
     adapter, channel = _guild_with({READER_ID})
-    client: Any = adapter._client
+    client: Any = adapter._connection._client
     client._channels.pop(CHANNEL_ID)
     response = _HTTPResponse()
     response.status = 500  # type: ignore[misc]
@@ -551,7 +551,7 @@ async def test_a_conversation_discord_says_is_not_there_is_gone() -> None:
     one answer again. A 404 is Discord saying the channel does not exist, and
     that really is a turn nothing can be read from."""
     adapter, channel = _guild_with({READER_ID})
-    client: Any = adapter._client
+    client: Any = adapter._connection._client
     client._channels.pop(CHANNEL_ID)
     client.fetch_errors[CHANNEL_ID] = discord.NotFound(  # type: ignore[arg-type]
         _HTTPResponse(), {"code": 10003, "message": "Unknown Channel"}

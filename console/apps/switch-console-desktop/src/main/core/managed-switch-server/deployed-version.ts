@@ -5,8 +5,9 @@ import type {
   SwitchVersionDriftDirection,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { runningImages } from './compose';
-import { ENV_FILE_NAME } from './constants';
+import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
 import { readEnvValue } from './env-file';
+import { errorText } from './error-text';
 import type { ServerHost } from './host/types';
 
 /**
@@ -17,9 +18,6 @@ import type { ServerHost } from './host/types';
  * "did the app's pin move underneath a stack that is already up?" needs the
  * other side of the comparison, read back off the host.
  */
-
-/** The core service whose image tag defines the stack's version. */
-const CORE_SERVICE = 'switch';
 
 export type DeployedVersion =
   /** Read successfully. `source` records how, since the two differ in strength:
@@ -135,7 +133,7 @@ export async function readVersionStatus(
 /** The tag of a `[registry[:port]/]repo[:tag]` image reference, or null when it
  * carries no tag (an implicit `latest`, or a `@sha256:` digest pin — neither
  * names a version we can compare). */
-function imageTag(image: string): string | null {
+export function imageTag(image: string): string | null {
   const lastSlash = image.lastIndexOf('/');
   const name = lastSlash === -1 ? image : image.slice(lastSlash + 1);
   if (name.includes('@')) return null;
@@ -143,8 +141,4 @@ function imageTag(image: string): string | null {
   if (colon === -1) return null;
   const tag = name.slice(colon + 1).trim();
   return tag.length > 0 ? tag : null;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

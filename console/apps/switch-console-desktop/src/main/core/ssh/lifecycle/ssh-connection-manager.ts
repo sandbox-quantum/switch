@@ -3,7 +3,11 @@ import ssh2, { type Client, type ConnectConfig } from 'ssh2';
 import type { ConnectionState, SshHealthState } from '@shared/core/ssh/ssh';
 import type { SshConnectionEvent } from '@shared/core/ssh/sshEvents';
 import type { SshConnectResult } from '../connect/resolve-ssh-connect-config';
-import { isSshChannelOpenFailure, isSshChannelTimeout } from './ssh-channel-open-failure';
+import {
+  isSshChannelOpenFailure,
+  isSshChannelTimeout,
+  isSshTransportGone,
+} from './ssh-channel-open-failure';
 import { SshClientProxy } from './ssh-client-proxy';
 
 const { Client: Ssh2Client } = ssh2;
@@ -118,6 +122,13 @@ interface ConnectionRecord {
    * transport (terminal + agent runtime providers) always get their signal.
    */
   hasConnectedBefore: boolean;
+  /**
+   * Declare the live client dead and recover, without waiting for it to say
+   * so. Set while a client backs the proxy. A transport can die without ssh2
+   * ever emitting `close` — and then `destroy()` emits nothing either — so any
+   * recovery that waits on that event waits forever.
+   */
+  abandon?: (reason: string) => void;
 }
 
 // ─── Implementation ──────────────────────────────────────────────────────────
@@ -313,6 +324,12 @@ export class SshConnectionManager extends EventEmitter {
    * events never surface — so the manager force-rebuilds it.
    */
   reportChannelError(connectionId: string, error: unknown): void {
+    if (isSshTransportGone(error)) {
+      // Not a symptom to count towards a wedge: the client has already lost
+      // its transport and will refuse every open from now on. One is proof.
+      this.records.get(connectionId)?.abandon?.('channel open refused: the transport is gone');
+      return;
+    }
     if (!isSshChannelOpenFailure(error) && !isSshChannelTimeout(error)) return;
 
     const record = this.record(connectionId);
@@ -347,9 +364,11 @@ export class SshConnectionManager extends EventEmitter {
         }
       );
       record.channelFailureStreak = 0;
-      // Destroying the client fires its close handler, which invalidates the
-      // proxy and schedules the normal auto-reconnect path.
-      record.client.destroy();
+      // Not `destroy()` and wait for its close handler: a dead transport may
+      // never emit `close`, and this rebuild then repeated every few seconds
+      // for hours without ever reconnecting (dev-vm, 2026-09-30).
+      if (record.abandon) record.abandon('wedged: consecutive channel failures');
+      else record.client.destroy();
     }
   }
 
@@ -445,7 +464,10 @@ export class SshConnectionManager extends EventEmitter {
         this.deps.log.warn('SshConnectionManager: system resumed — refreshing live connection', {
           connectionId: record.id,
         });
-        record.client?.destroy();
+        // Abandoned rather than destroyed-and-awaited, for the same reason as
+        // the wedge rebuild: the reconnect must not hinge on a `close` event.
+        if (record.abandon) record.abandon('system resumed');
+        else record.client?.destroy();
       } else if (record.state === 'reconnecting') {
         this.deps.log.warn('SshConnectionManager: system resumed — retrying reconnect now', {
           connectionId: record.id,
@@ -545,6 +567,40 @@ export class SshConnectionManager extends EventEmitter {
         this.deps.publishEvent({ type: 'disconnected', connectionId: id });
       };
 
+      /**
+       * Tear the live client down ourselves and schedule the reconnect — the
+       * same outcome as its `close` handler, reached without needing `close`.
+       * Once the proxy no longer points at this client, a `close` or `error`
+       * that straggles in from it later finds nothing to act on.
+       */
+      const abandon = (reason: string) => {
+        if (!(proxy.isConnected && proxy.client === client)) return;
+        this.deps.log.warn('SshConnectionManager: abandoning dead connection', {
+          event: 'ssh_connection_abandoned',
+          connectionId: id,
+          reason,
+        });
+        if (record.abandon === abandon) record.abandon = undefined;
+        proxy.invalidate();
+        emitDisconnectedOnce();
+        cleanupOnce();
+        try {
+          client.destroy();
+        } catch {
+          // A client in this state may throw on teardown; it is discarded anyway.
+        }
+        const isCurrent = record.generation === generation;
+        if (!isCurrent) return;
+        this.setState(record, 'disconnected');
+        if (!record.intentional) this.scheduleReconnect(record);
+      };
+
+      // The transport's read side ended. ssh2 surfaces that as `end`, and only
+      // emits `close` once the socket is fully torn down — which a half-open
+      // ProxyCommand pipe may never be. From here every channel open throws
+      // "Not connected", so this is the moment the connection is gone.
+      client.on('end', () => abandon('the transport ended'));
+
       client.on('error', (error: Error) => {
         // A remote host being down is an expected condition, not a fault in the
         // app: laptops sleep, VPNs drop, SSO tokens expire. The host's
@@ -630,6 +686,7 @@ export class SshConnectionManager extends EventEmitter {
         }
 
         proxy.update(client);
+        record.abandon = abandon;
         record.channelFailureStreak = 0;
         record.hasConnectedBefore = true;
         this.clearHealthState(record);

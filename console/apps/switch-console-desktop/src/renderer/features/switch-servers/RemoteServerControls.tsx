@@ -1,11 +1,14 @@
-import { TriangleAlert } from 'lucide-react';
+import { Info, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import { LogTail } from './log-tail';
 import { remoteServerStore } from './remote-server-store';
 import { phaseLabel, StackAction, StackSection, StackStatusRow } from './server-stack-section';
+import { useSharedActionConfirm } from './shared-action-confirm';
+import { sharedWithSentence } from './shared-consoles';
 
 /**
  * Lifecycle for a managed Switch stack running in Docker on an SSH host. The
@@ -21,11 +24,18 @@ export const RemoteServerControls = observer(function RemoteServerControls({
 }) {
   const store = remoteServerStore;
   const [showActivity, setShowActivity] = useState(false);
+  const confirm = useSharedActionConfirm(sshHost);
 
   useEffect(() => {
     void store.init();
     void store.checkDocker(sshHost);
+    void store.loadRegister(sshHost);
+    // Someone else may have started or removed a stack shown as stopped.
+    void store.refresh(sshHost);
   }, [store, sshHost]);
+
+  // A remote stack is shared: stopping or restarting it here does so for everyone.
+  const others = othersRecentlySeen(store.registerFor(sshHost), new Date());
 
   const status = store.statusFor(sshHost);
   const hostBlocked = store.isHostBlocked(sshHost);
@@ -69,13 +79,13 @@ export const RemoteServerControls = observer(function RemoteServerControls({
               <StackAction
                 label="Restart"
                 disabled={transitioning}
-                onClick={() => void store.start(sshHost, name)}
+                onClick={() => confirm.request('restart', () => void store.start(sshHost, name))}
               />
               <StackAction
                 label="Stop"
                 danger
                 disabled={transitioning}
-                onClick={() => void store.stop(sshHost)}
+                onClick={() => confirm.request('stop', () => void store.stop(sshHost))}
               />
             </>
           ) : (
@@ -89,10 +99,39 @@ export const RemoteServerControls = observer(function RemoteServerControls({
       />
 
       <div className="space-y-3">
+        {sharedWithSentence(others) && (
+          <p className="text-xs text-foreground-muted">{sharedWithSentence(others)}</p>
+        )}
+
+        {status.notice && !transitioning && (
+          <Alert>
+            <Info className="size-4" />
+            <AlertTitle>{status.notice}</AlertTitle>
+          </Alert>
+        )}
+
+        {status.recordWarning && !transitioning && (
+          <Alert>
+            <TriangleAlert className="size-4 text-amber-500" />
+            <AlertTitle>{status.recordWarning}</AlertTitle>
+          </Alert>
+        )}
+
         {status.message && transitioning && (
           <div className="flex items-center gap-2 text-sm text-foreground-muted">
             <Spinner className="size-3.5" />
             <span>{status.message}</span>
+            {/* Only a wait for another Console can be cancelled: nothing has
+                been changed yet. */}
+            {status.waitingFor && (
+              <button
+                type="button"
+                onClick={() => void store.cancelWait(sshHost)}
+                className="text-foreground-muted underline underline-offset-2 transition-colors hover:text-foreground"
+              >
+                Stop waiting
+              </button>
+            )}
           </div>
         )}
 
@@ -119,6 +158,8 @@ export const RemoteServerControls = observer(function RemoteServerControls({
             the log is what you go looking for, not what the section is for. */}
         {showActivity && logs.length > 0 && <LogTail lines={logs} placeholder={null} />}
       </div>
+
+      {confirm.dialog}
     </StackSection>
   );
 });

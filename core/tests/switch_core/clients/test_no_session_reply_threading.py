@@ -127,6 +127,20 @@ async def test_no_session_reply_threads_under_triggering_mention() -> None:
     ]
     # The reply is stamped as an auto-reply so it can't re-trigger another one.
     assert send_message.calls[0]["extra_content"] == {AUTO_REPLY_FLAG: True}
+    # Switch said it, not the agent, so the tenant is not charged for it.
+    assert send_message.calls[0]["metered"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_command_reply_is_not_metered() -> None:
+    send_message = _Recorder()
+    await AgentClient.reply_command(
+        SimpleNamespace(send_message=send_message),  # type: ignore[arg-type]
+        "!matrix:server",
+        "the result",
+    )
+
+    assert send_message.calls[0]["metered"] is False
 
 
 @pytest.mark.asyncio

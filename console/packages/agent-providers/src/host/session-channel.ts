@@ -6,6 +6,20 @@ import { z } from 'zod';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 
 /**
+ * How long a session host that has finished may take to exit once it has
+ * closed its end of the pipe. It exits by itself within this; see
+ * `HOST_HUNG_UP_MS` for when its parent stops waiting.
+ */
+export const HOST_EXIT_GRACE_MS = 5000;
+
+/**
+ * How long a host that hung up its pipe may stay alive before its parent
+ * kills it. Longer than the host's own grace, so a host that is leaving is
+ * given the chance to leave on its own.
+ */
+export const HOST_HUNG_UP_MS = 15000;
+
+/**
  * The pipe between a session host and the process that started it.
  *
  * A session host runs as a child of Console (a local session) or of the
@@ -161,6 +175,8 @@ type Link = {
   pending: Map<number, Pending>;
   waiting: (() => void)[];
   subscribers: Set<(event: ServerEvent) => void>;
+  /** How many hosts here have exited, so a waiting request can tell one did. */
+  exits: number;
 };
 
 /**
@@ -186,6 +202,7 @@ export class SessionLinks {
         pending: new Map(),
         waiting: [],
         subscribers: new Set(),
+        exits: 0,
       };
       this.links.set(root, link);
     }
@@ -235,12 +252,40 @@ export class SessionLinks {
         else pending.reject(new Error(message.error ?? 'The session host refused the request.'));
       }
     });
+    // A host that closes its end of the pipe is leaving, and nothing sent
+    // down the pipe reaches it again. It is gone from here from that moment,
+    // not from the moment it exits: a host that hung up and stays alive —
+    // something it started still running — holds its session's lock, so it
+    // cannot be started again, while every message sent down the pipe fails.
+    // Requests wait for the next host instead, and one that is still alive
+    // after `HOST_HUNG_UP_MS` is killed with everything it started, which
+    // frees the lock and lets its supervisor start it again.
+    let hungUp: ReturnType<typeof setTimeout> | null = null;
+    child.once('disconnect', () => {
+      if (link.child !== child) return;
+      link.ready = false;
+      for (const [id, pending] of link.pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new SessionUnavailableError('The session host hung up before it answered.'));
+        link.pending.delete(id);
+      }
+      hungUp = setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        console.warn(
+          `The session host at ${root} hung up ${HOST_HUNG_UP_MS / 1000} s ago and has not exited; stopping it and what it started.`
+        );
+        killHostGroup(child);
+      }, HOST_HUNG_UP_MS);
+      hungUp.unref?.();
+    });
     child.once('exit', (code) => {
+      if (hungUp) clearTimeout(hungUp);
       if (link.child !== child) return;
       const identity = link.identity;
       link.child = null;
       link.ready = false;
       link.identity = null;
+      link.exits++;
       // A non-zero exit other than a lapsed lease is one the supervisor does
       // not recover from: the host has already written why.
       if (code !== null && code !== 0 && code !== LEASE_EXPIRED_EXIT_CODE)
@@ -338,8 +383,13 @@ export class SessionLinks {
   async request(root: string, request: SessionRequest, timeoutMs: number): Promise<unknown> {
     const link = this.link(root);
     const deadline = Date.now() + timeoutMs;
+    const exits = link.exits;
     while (!link.ready || !link.child) {
       if (link.failure !== null) throw new SessionHostFailedError(link.failure);
+      // The host this request was waiting on is gone, and nothing here starts
+      // another: say so now, so the caller starts it, rather than at the deadline.
+      if (link.exits !== exits && !link.child)
+        throw new SessionUnavailableError('The session host stopped before it was ready.');
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new SessionUnavailableError('The session host is not running.');
       await new Promise<void>((resolve) => {
@@ -354,6 +404,10 @@ export class SessionLinks {
       });
     }
     const child = link.child;
+    // Belt and braces for the 'disconnect' handler above: a send down a
+    // closed pipe fails anyway, but saying why is clearer than the error.
+    if (!child.connected)
+      throw new SessionUnavailableError('The session host hung up and is on its way out.');
     const id = link.nextId++;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(
@@ -378,6 +432,21 @@ export class SessionLinks {
     const link = this.link(root);
     link.subscribers.add(listener);
     return () => link.subscribers.delete(listener);
+  }
+}
+
+/**
+ * Kill a session host and every process in its group. A host is started
+ * detached, so it leads its own group, and the provider processes it starts
+ * are in it too.
+ */
+function killHostGroup(child: ChildProcess): void {
+  if (!child.pid) return;
+  try {
+    if (process.platform === 'win32') child.kill('SIGKILL');
+    else process.kill(-child.pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
   }
 }
 

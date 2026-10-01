@@ -52,6 +52,8 @@ CONTEXT_FIELDS: tuple[str, ...] = (
     "agent_id",
     "room_id",
     "user_id",
+    "console_id",
+    "console_name",
 )
 
 
@@ -62,6 +64,10 @@ class LogContext:
     agent_id: str | None = None
     room_id: str | None = None
     user_id: str | None = None
+    # The Switch Console that sent the request (see `request_context.py`):
+    # people can share one sign-in, so `user_id` alone cannot tell them apart.
+    console_id: str | None = None
+    console_name: str | None = None
 
 
 _EMPTY = LogContext()
@@ -165,4 +171,6 @@ class LogContextFilter(logging.Filter):
         record.agent_id = context.agent_id
         record.room_id = context.room_id
         record.user_id = context.user_id
+        record.console_id = context.console_id
+        record.console_name = context.console_name
         return True

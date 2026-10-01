@@ -67,4 +67,8 @@ export function SettingsMainPanel() {
 export const settingsView = {
   WrapView: SettingsViewWrapper,
   MainPanel: SettingsMainPanel,
+  // Preferences, themes, remote hosts and connector installs all stand on their
+  // own before any server is registered, and ⌘, has to lead somewhere on a
+  // fresh install.
+  worksWithoutServer: true,
 };

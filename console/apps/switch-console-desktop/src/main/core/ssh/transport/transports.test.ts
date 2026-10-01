@@ -176,6 +176,23 @@ describe('childToDuplex', () => {
     ]);
   });
 
+  it('closes the duplex when the proxy process exits cleanly', async () => {
+    // A clean exit used to leave the pipe half-open: read side ended, never
+    // destroyed, so ssh2 never emitted `close` and the connection was never
+    // seen to die (an IAP tunnel on dev-vm, for hours).
+    const child = fakeChild();
+    const duplex = childToDuplex(child);
+    const closed = once(duplex, 'close');
+    const errors: unknown[] = [];
+    duplex.on('error', (error) => errors.push(error));
+
+    child.emit('close', 0, null);
+
+    await closed;
+    expect(duplex.destroyed).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
   it('ignores stdin EPIPE but destroys on other stdin errors', async () => {
     const epipeChild = fakeChild();
     const epipeDuplex = childToDuplex(epipeChild);

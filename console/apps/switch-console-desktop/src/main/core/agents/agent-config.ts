@@ -1,10 +1,9 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { providerConfigFromAttributes } from '@shared/core/agents/agent-provider-config';
 import type { AgentConfigFile } from './agent-config-file';
 import { writeAgentConfigFile, type AgentTemplateOrigin } from './agent-config-file';
-import { readRequiredAgentConfig, withAgentWorkspace } from './agent-launch-config';
+import { readRequiredAgentConfig, withAgentWorkdir } from './agent-launch-config';
 import { getAgentById } from './getAgentById';
 import { ensureRemoteWatcher } from './remote-watcher';
 import { setAgentProviderConfig } from './setAgentProviderConfig';
@@ -20,7 +19,7 @@ import { setAgentProviderConfig } from './setAgentProviderConfig';
  */
 
 export async function readAgentConfig(agentId: string): Promise<AgentConfigFile> {
-  return withAgentWorkspace(agentId, (agent, fs) => readRequiredAgentConfig(agent, fs));
+  return withAgentWorkdir(agentId, (agent, fs) => readRequiredAgentConfig(agent, fs));
 }
 
 /** The template the agent was created from, or null for an agent created without one. */
@@ -62,12 +61,12 @@ export async function setAgentSettings(params: {
   }));
 }
 
-/** Read, change, write — in one workspace session. */
+/** Read, change, write — in one workdir session. */
 async function updateAgentConfig(
   agentId: string,
   change: (config: AgentConfigFile) => AgentConfigFile
 ): Promise<AgentConfigFile> {
-  const config = await withAgentWorkspace(agentId, async (agent, fs) => {
+  const config = await withAgentWorkdir(agentId, async (agent, fs) => {
     const next = change(await readRequiredAgentConfig(agent, fs));
     await writeAgentConfigFile(fs, agent.name, next);
     return next;
@@ -109,6 +108,5 @@ async function propagateToLaunch(agentId: string, config: AgentConfigFile): Prom
     return;
   }
 
-  if (!(await listAutoSessionAgentIds()).includes(agentId)) return;
   await ensureRemoteWatcher(agentId);
 }

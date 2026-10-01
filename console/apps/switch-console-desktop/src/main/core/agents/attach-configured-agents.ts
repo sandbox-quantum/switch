@@ -5,8 +5,11 @@ import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
@@ -15,11 +18,10 @@ import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { readAgentConfigFile } from './agent-config-file';
 import { agentEvents } from './agent-events';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { createAgent } from './createAgent';
 import { discoverConfiguredAgents } from './discover-configured-agents';
 import { importAgentConfig } from './import-agent-config';
-import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 
 export type AttachConfiguredAgentsParams = {
   sshHost: string | null;
@@ -74,6 +76,7 @@ export async function attachConfiguredAgents(
 
   const server = await getServer(params.serverId);
   if (!server) throw new Error(`No Switch server with id ${params.serverId}`);
+  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
 
   const discovered = new Map(
     (
@@ -120,7 +123,10 @@ export async function attachConfiguredAgents(
     if (!found) continue;
 
     try {
-      if (!(await agentExistsOnServer(server, found.switchAgentId))) {
+      const exists = await withWorkspaceSession(targetWorkspace.id, (target) =>
+        agentExistsOnServer(target, found.switchAgentId)
+      );
+      if (!exists) {
         return err({
           type: 'switch-agent-not-on-server',
           dir: params.dir,
@@ -164,18 +170,13 @@ export async function attachConfiguredAgents(
       providerId,
       switchAgentId: found.switchAgentId,
       apiEndpoint: found.apiEndpoint,
-      serverId: params.serverId,
+      workspaceId: targetWorkspace.id,
       autoApprove: params.sshHost !== null,
       ownerName: ownerName ?? null,
     });
     created.push(agent);
 
-    await reconcileAgentAutoSessionFromGateway(agent.id).catch((error) => {
-      log.warn('attachConfiguredAgents: failed to reconcile auto_session', {
-        agentId: agent.id,
-        error: String(error),
-      });
-    });
+    await autoSessionWatcher.bringUp(agent.id, 'explicit');
   }
 
   await locationManager.openLocation(location);
@@ -206,16 +207,16 @@ async function ensureAgentConfig(params: {
   name: string;
   providerId: AgentProviderId;
 }): Promise<void> {
-  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
   try {
-    if ((await readAgentConfigFile(workspace.fs, params.name)) !== null) return;
+    if ((await readAgentConfigFile(workdir.fs, params.name)) !== null) return;
     await importAgentConfig({
-      workspaceFs: workspace.fs,
+      workdirFs: workdir.fs,
       repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
       name: params.name,
       providerConfig: null,
     });
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }

@@ -19,6 +19,7 @@ silently does less on a remote host. This page is the map of the remote half.
 | Remote dependency detection and install | `dependencies/remote-dependency-manager.ts`, `dependencies/ssh-install-runner.ts` |
 | The persistent SDK host | `packages/agent-providers/src/host/`, `src/main/core/sdk-host/` |
 | A Switch Console-managed Switch server | `src/main/core/managed-switch-server/` |
+| A remote server's shared state: published settings, who uses it | `managed-switch-server/stack-state.ts`, `console-register.ts` |
 | Renderer surfaces | `src/renderer/features/remote-hosts/` |
 
 ## Reachability is a state machine, not a boolean (CHOO-1682)
@@ -78,6 +79,216 @@ Two properties worth preserving:
   `wrong-version`, `unknown`. `not-running` matters because `docker` being on `PATH` tells
   you nothing about whether `dockerd` is up, and running an installer over a stopped
   service would misreport the cause.
+
+## A remote Switch server is shared (CHOO-2893)
+
+A server Switch Console runs on a remote host is used by everyone with access
+to that host, from their own Consoles and often under their own accounts. The
+access boundary is being able to run Docker there — which already means being
+able to read every secret the stack has — so nothing here pretends otherwise.
+
+**The host is the source of truth for its stack.** A remote stack's ports and
+credentials used to live only in the encrypted store of the Console that
+started it; a second Console had neither, generated its own, rewrote the
+stack's `.env` and took the running server down. Now:
+
+- The `.env` the stack was last started with is published into a Docker volume
+  beside the stack's own (`<project>_console-state`, labelled outside compose's
+  project so `compose down -v` leaves it). Every account that can reach the
+  daemon can read it, where the working dir holding the real `.env` belongs to
+  whoever started the stack first. It is read and written through a throwaway
+  container of the stack's own Postgres image, with secrets on stdin, never in
+  a command line — see `stack-state.ts`. One shell launcher per round trip
+  checks the image is there, creates the volume when writing, and runs the
+  container. A host without the helper image uses the image the stack's own
+  Postgres container runs; only with neither is it pulled — under a pull's
+  timeout, never by `docker run` inside a quick one.
+- "Nothing of the stack" is read from empty `docker ps` / `docker volume ls`
+  output, so a command over SSH succeeds only on an exit status of 0: a channel
+  that closes without one — a dropped connection — or on a signal is a failure,
+  never an empty answer (`SshExecutionContext.exec`, `RemoteServerHost`).
+- A start reads the host first (`inspectStack`) and takes the published copy,
+  then this account's `.env`. New credentials are made **only** on a host with
+  nothing of the stack at all. Another account's unpublished stack, or a host
+  that cannot be read, is refused before anything is written — this desktop's
+  cache cannot tell whether someone has reset the stack since, and starting
+  from it, then publishing it, would lock everyone out. The cache may fill
+  gaps in a partial `.env` only when it agrees with every port and credential
+  the file does carry, for the same reason.
+- The published copy is stamped with the creation time of the Postgres volume
+  it was written for (after compose up on a first start, when the volume did
+  not exist at publish). A copy whose stamp no longer matches is ignored: a
+  Console from before settings were shared can reset the stack without
+  knowing the copy exists, leaving it naming credentials that open nothing.
+  This account's own `.env` is stamped the same way (`.env.db` beside it), and
+  one written for a database since recreated is not used either — it reads as
+  another account's unshared stack — so a reset, start and `compose down` from
+  such a Console cannot leave a stale copy to be trusted.
+- Every account's Console writes the published `.env` verbatim. Compose run
+  from a second working dir with a byte-identical `.env` recreates nothing
+  (measured; it follows from the bundled compose referencing nothing by path),
+  which is what lets several accounts run one stack.
+- **Connect** joins a running stack without writing its settings differently or
+  running compose. **Disconnect** leaves it running for everyone else; only
+  **Delete for everyone** resets it. Both take this Console off the register,
+  so it stops counting as a user; leaving does not wait on the host for that.
+- A Console re-reads the host at launch, on reachability recovery, and when a
+  running stack stops answering (rate-limited), so a stack another Console
+  stopped, restarted on new ports or reset shows as it is. A stack shown as
+  stopped is sent nothing, so opening its page has the host looked at again:
+  one someone has started or removed is taken up; one still stopped keeps
+  what the page says about it, and one this Console removed itself is not
+  reported as removed. A stack that could not be taken up says why on the page
+  rather than showing as simply stopped; one running with settings that cannot
+  be read now keeps the forward this Console already has. An update this Console held sessions back for is
+  finished once the host is at its pin, whoever made it. The status carries a
+  `notice` for what this Console did not do.
+- A start checks, before it changes anything on the host, that this Console
+  can reach the stack afterwards — its ports free here, its address not
+  another server's (`checkNetworking`, `assertManagedServerUrlFree`) — since
+  compose restarts or updates it for everyone before the forward is opened.
+  A new stack's ports are this desktop's to choose, so a kept choice with a
+  port now taken here is chosen again.
+- Joining or picking up a stack at this build's version also replaces an older
+  compose file in the account's working dir, which is then the stack's own:
+  Stop and Reset run from it.
+
+**One Console changes a shared stack at a time.** Two Consoles pressing Start
+on an empty host together would otherwise both find nothing, both make
+credentials, and both publish them and run compose — the second publish wins
+the file, and the database is created with whichever credentials compose read
+first. So whoever changes a stack holds its lock (`stack-lock.ts`), a lease in
+the state volume:
+
+- Everything that reads the host to act on it takes the lock *first*: start,
+  the update at launch, *Update and connect*, restarts from notices, Connect,
+  and the check at launch or recovery. The second of two starts therefore finds
+  the first one's stack and joins it with the same credentials. A Connect or a
+  check holds it only while reading and adopting, not while waiting for the
+  server to answer. The register and the Add Server preview take none; the
+  preview says who holds it.
+- Start, Connect and the check **wait** for a held lock, with the holder and
+  what they are doing on the status (`waitingFor`) and a *Stop waiting* that
+  changes nothing. Stop and reset **refuse** instead (`ServerBusyError`, naming
+  the holder) — stopping a server someone has just started because Stop was
+  clicked while they started it is not what was asked — and a reset takes the
+  lock before it deletes the stack's agents.
+- It is a lease: `ttlSeconds` at a time, renewed while its holder works, with a
+  hard `maxHoldSeconds` above anything a start can take (a backup may run 30
+  minutes). A Console that crashes or loses its network holds it for at most a
+  lease; a restarted Console takes back its own previous run's at once (the
+  same id and name — two desktops restored from one backup share only the id),
+  and a lease this run failed to give back is its own to take over, not to
+  wait for. Expiry is decided by the host's clock inside the script, never a
+  desktop's.
+- Taking and renewing happen under a `flock` on `/state/.mutex`, held for the
+  script's lifetime, so exactly one of two Consoles gets it — including two
+  taking over one lapsed lease. The containers share one volume on one kernel,
+  so the lock holds across them and dies with the script. Every script that
+  writes the volume takes that mutex (`state-mutex.ts`); the register's trim and
+  the published copy's temp files needed it anyway. A write that fails ends the
+  script with an error: "taken" over a lock file a full disk left empty would
+  let the next Console take it too.
+- A Console that lost its lease while away could come back and carry on, so
+  publishing, stamping and withdrawing the settings check the lease's token
+  under the mutex in the same step, and compose runs only after
+  `assertHeld`. The pipeline refuses a shared host without a lease, and a local
+  one with one.
+- A stop or reset that did not get the lock — held, or not askable — touched
+  nothing, so this Console keeps its forward and the phase it had.
+
+This only binds Consoles that have it, which is every Console that shares
+stacks at all. The lock scripts and the mutex are tested against a real volume
+through Docker (`stack-lock.docker.test.ts`), since macOS has no `flock`.
+
+**Updating a shared stack is an update for everyone.** A Console brings a
+managed stack up to its own switch-core pin when it takes the stack up
+(`managed-upgrade.ts`), and on a shared host that restarts it for everyone
+using it, from the account that happened to do it — the pre-update backup lands
+in that account's working dir. So:
+
+- **Connect** joins as-is only at this build's own version. An older stack is
+  brought up to date as a start from the host's settings (the connect step
+  says so and names who else uses it); a newer one is refused, since its
+  database has migrated past anything this build can run.
+- Connect and the version checks go by the version the core container runs
+  when the stack is up, not the one its published settings name: a start that
+  published and then failed leaves the old containers running.
+- At launch or reachability recovery, a running stack behind the pin is updated
+  on its own only when no other Console has used it in the last
+  `RECENTLY_SEEN_DAYS` (the register on the host says who). Otherwise its
+  upgrade is `held`: the stack is still forwarded, sessions on it wait
+  (`ensureReady`), and the server page offers *Update for everyone*, naming
+  who it reaches. A register that cannot be read counts as others using it. An
+  update this account already started (its journal is there) is resumed
+  regardless.
+
+**Usage data on a shared stack.** One "Share usage data" answer covers a
+Console and the server it runs, but a shared server serves everyone using it.
+A start always applies this Console's "no"; it applies a "yes" only where that
+takes nobody's "no" away — the stack already shares, or no other Console has
+used it lately (an unreadable register counts as others). The page's notice
+offers a restart to apply a "no", never to switch sharing on over others.
+
+**Identity is shared; attribution is not.** Everyone signs in as the stack's one
+seeded admin — sessions are owner-only on the server with no admin override, so
+per-person accounts would hide each person's sessions from the others. Instead:
+
+- Each Console has a random id (`console-identity.ts`, deliberately not the
+  telemetry install id) and a `user@host` name, sent as `X-Switch-Console-Id` /
+  `X-Switch-Console-Name` to managed servers only; switch-core stamps them on
+  its log lines. A server someone else runs signs each person in as themselves
+  and is told nothing about the desktop.
+- Each Console records itself in the state volume (`console-register.ts`): a
+  register of who uses the stack and an activity log of starts, connects,
+  stops, resets and disconnects. Every action refreshes the Console's entry;
+  otherwise it is refreshed at most once a day, since each write is a
+  container run on the host — when it last did is kept across launches. A
+  disconnect takes the Console off the register
+  and keeps its line of activity. A reset keeps the activity. The
+  record is for people, never a control, and a write that fails does not fail
+  the operation: the server page says what could not be recorded
+  (`recordWarning`) until a later record gets through.
+
+**Several Consoles, one agent.** Under one account, each Console holds its own
+row for the same agent and writes the agent's one watcher on the host. Model
+and instructions come from the agent's config file on the host, so they agree.
+Auto-approve lives in each row, so what they share is the last choice a person
+made, kept beside the watcher (`auto-approve.json`): every watcher write takes
+auto-approve from it and brings the row in line, except the write that follows
+the person changing it (`pushRemoteAutoApprove`). A change goes on the host
+before the row (`keepAutoApproveChoice`), so a watcher write racing it takes
+the new value; when the watcher is not starting sessions — stopped, or
+automatic sessions off — nothing rewrites the spec now, so the change goes
+into the choice and the spec together (`recordAutoApproveOnHost`). Only an explicit
+change writes the choice: a saved spec is written from whichever row wrote the
+watcher last — an older Console's too — so it is never taken for one.
+
+Two Consoles under one account acting on one session do not collide: prompts
+queue in the session's SDK host and run in turn, and either one's interrupt or
+stop ends the turn for both — it is one session, reached through the same
+sidecar.
+
+**Removing an agent.** A plain remove takes the row out of this Console and
+leaves the agent running on its host, for its automatic sessions and anyone
+else using it there. *Also remove it from the host* stops it there and deletes
+the files Console provisioned. Deleting it in Switch implies that: a deleted
+identity has nothing left to run. In a directory several agents share, only
+this agent's credentials go: the one-file settings from before each agent had
+its own are stripped only when they name this agent.
+
+**Agents another account runs are not loaded.** Their working directories,
+credentials, watchers and sessions are in that account's home, which this
+account cannot read — and a session is reached through its owner's sidecar — so
+Load existing agents does not offer them. They are on the shared server all the
+same, and can be talked to in its rooms.
+
+**Limitations.** Rootless Docker gives each account its own daemon, so there is
+nothing to share. A remote server's port numbers must also be free on each
+desktop, because the forward mirrors them and agent endpoints depend on the
+number. Two different Console versions on one account restart each other's SDK
+hosts. Agents that run on someone's laptop appear in the server view but cannot
+be loaded.
 
 ## Persistent execution
 

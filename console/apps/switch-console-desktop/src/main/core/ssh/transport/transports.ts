@@ -93,7 +93,15 @@ export function childToDuplex(child: SshChild): Duplex {
   });
   child.once('error', (error) => duplex.destroy(error));
   child.once('close', (code, signal) => {
-    if (duplex.destroyed || code === 0) return;
+    if (duplex.destroyed) return;
+    // A clean exit still ends the transport. Left alone, the pipe stayed
+    // half-open — read side ended, never destroyed — so ssh2 refused every
+    // channel with "Not connected" and never emitted `close` (an IAP tunnel
+    // on dev-vm, 2026-09-30, for hours).
+    if (code === 0) {
+      duplex.destroy();
+      return;
+    }
     const reason = signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`;
     duplex.destroy(new Error(`Proxy process exited with ${reason}`));
   });

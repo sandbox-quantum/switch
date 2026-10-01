@@ -1,10 +1,13 @@
 # Phase 2: several workspaces per person
 
-Status: design, not built. Covers `CHOO-2723` (several memberships),
-`CHOO-2722` (the tenant API and invitations), `CHOO-2724` (joining by email
-domain) and `CHOO-2726` (how anyone becomes an administrator). They are four
-tickets and one design: each is a different question about the same object,
-and answering them separately produces four answers that do not fit together.
+Status: built, except joining by email domain (§6), which is deferred. Covers
+`CHOO-2723` (several memberships), `CHOO-2722` (the tenant API and
+invitations), `CHOO-2724` (joining by email domain) and `CHOO-2726` (how anyone
+becomes an administrator). They are four tickets and one design: each is a
+different question about the same object, and answering them separately
+produces four answers that do not fit together. §9a records how sign-up was
+closed off afterwards. As everywhere in these notes, where this page and the
+code disagree, the code is right.
 
 Phase 1 built the boundary. This phase is about crossing it deliberately —
 letting one person belong to several tenants, and giving them a way to create,
@@ -230,6 +233,15 @@ three together take the workspace.
 `uses_remaining`, `revoked_at`, `created_by`, and a hash of the token rather
 than the token. Expiry and revocation are not optional.
 
+**An addressed invitation is also e-mailed, when the deployment has a relay.**
+The e-mail is delivery on top of the invitation, not a condition of it: the
+invitation is minted first and stands if sending fails or no relay is
+configured, and the create response reports which of those happened so the
+admin can share the link instead. Only the plaintext token in that one
+response can build the link, so a resend is a revoke and a new invitation. A
+per-workspace daily cap on addressed invitations keeps self-service sign-up
+from turning the relay into a way to mail arbitrary addresses.
+
 **Accepting runs in its own tenant-bound session.** The request session is
 already stamped with the caller's current workspace; inserting a membership for
 a different one on it is refused by the policy, and rebinding it raises. This
@@ -331,6 +343,38 @@ What remains uncovered there is everything downstream of creation: a workspace
 that exists still costs its fan-out whether or not anyone uses it, and nothing
 reclaims an abandoned one — the cap bounds how many a person can open, not how
 many a deployment ends up carrying.
+
+## 9a. Sign-up, as built
+
+§9's quota question and the path in for someone new were closed together.
+
+- **`GATEWAY_SIGNUP_MODE`** decides what the OIDC callback does with an
+  account it provisions. `default_tenant` (the default, and the behaviour
+  before this) places it in tenant zero. `open` and `invite_only` place it
+  nowhere: the person arrives with no workspace, and either creates one or
+  accepts an invitation. Linking a verified email to an existing account
+  follows the same rule. Password accounts are made by an operator and are
+  unaffected.
+- **Creating a workspace** is refused in `invite_only` for everyone but a
+  deployment operator. In the other modes it is bounded by
+  `GATEWAY_MAX_WORKSPACES_PER_USER`, as above. Operators are exempt.
+  A taken slug gets a short random suffix rather than a 409, which would tell
+  the caller a workspace of that name exists.
+- **Signing in picks a workspace** rather than minting a null claim: the one
+  last used, if the person still belongs to it, else their only one, else none.
+  The last-used workspace is `last_tenant_id` in `users.metadata`, written by
+  switching, creating and accepting. The claim is chosen from current
+  memberships every time, so signing in still clears a stale selection.
+- **Creating and accepting switch you in.** Both re-mint the session cookie
+  for the workspace they land on, as `/tenants/{id}/switch` does.
+- **`GET /auth/session`** reports what tenant resolution would decide for this
+  cookie — `ready`, `needs_selection` or `needs_workspace` — with the caller's
+  memberships and whether they may create a workspace. It answers the callers
+  `/auth/me` refuses, which is what the dashboard needs to route someone with
+  no workspace, or several and none chosen. `/auth/me` is unchanged.
+- **Messaging app installs** are workspace administration
+  (`require_tenant_admin`), not the operator bit: on a self-sign-up server
+  nobody who runs a workspace is an operator.
 
 ## 10. Done when
 

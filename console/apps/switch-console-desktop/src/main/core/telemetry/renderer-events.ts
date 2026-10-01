@@ -53,6 +53,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
   add_server_step: z.object({
     step: z.enum(ADD_SERVER_STEPS),
     choice: z.enum(ADD_SERVER_CHOICES),
+    first_run: z.boolean(),
   }),
   renderer_crashed: z.object({}),
 } as const satisfies {

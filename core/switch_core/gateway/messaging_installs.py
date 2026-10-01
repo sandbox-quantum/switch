@@ -21,7 +21,7 @@ from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_service import MessagingInstallService
 from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.messaging_install_store import MessagingInstallNotFound
-from switch_core.gateway.auth import require_admin
+from switch_core.gateway.auth import require_tenant_admin
 from switch_core.gateway.dependencies import get_install_service, get_session
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def _require_installs(
 @router.get("")
 async def installable_platforms(
     service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> InstallablePlatforms:
     return InstallablePlatforms(
         platforms=[] if service is None else service.platforms()
@@ -98,7 +98,7 @@ async def begin_install(
     platform: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
-    user: Annotated[User, Depends(require_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
 ) -> InstallStart:
     try:
         authorize_url = await _require_installs(service).begin(
@@ -116,7 +116,7 @@ async def begin_install(
 async def list_installs(
     session: Annotated[AsyncSession, Depends(get_session)],
     service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> InstalledApps:
     """This organisation's installs, ended ones included.
 
@@ -139,7 +139,7 @@ async def list_installs(
 async def disconnect_install(
     install_id: str,
     service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
-    user: Annotated[User, Depends(require_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
 ) -> InstalledApp:
     """End an install: revoke the credential, remove the bridge, free the workspace.
 

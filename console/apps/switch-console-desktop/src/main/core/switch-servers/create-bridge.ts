@@ -18,7 +18,7 @@ import type {
  */
 export async function createBridgeOnServer(
   server: SwitchServer,
-  params: Omit<CreateBridgeParams, 'serverId'>
+  params: Omit<CreateBridgeParams, 'workspaceId'>
 ): Promise<CreateBridgeResult> {
   try {
     const bridge = await createBridge(server, {

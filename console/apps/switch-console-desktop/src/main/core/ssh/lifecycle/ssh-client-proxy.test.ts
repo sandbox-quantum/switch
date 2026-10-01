@@ -286,6 +286,40 @@ describe('SshClientProxy channel open timeouts', () => {
     }
   });
 
+  it('settles an exec that throws synchronously once, with no invented timeout after it', async () => {
+    // ssh2 throws "Not connected" from exec on a dead transport. The open
+    // timer used to outlive that throw and fire 15 s later: a second callback,
+    // and a fake "timed out" fed into the wedge count.
+    vi.useFakeTimers();
+    try {
+      const reporter = { reportChannelError: vi.fn(), reportChannelSuccess: vi.fn() };
+      const client = {
+        exec: vi.fn(() => {
+          throw new Error('Not connected');
+        }),
+      };
+      const proxy = new SshClientProxy('ssh-1', reporter);
+      proxy.update(client as never);
+
+      const callback = vi.fn();
+      proxy.exec('true', callback);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(String(callback.mock.calls[0]![0])).toContain('Not connected');
+      // Reported, so the manager can drop the dead transport at once.
+      expect(reporter.reportChannelError).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(reporter.reportChannelError).toHaveBeenCalledTimes(1);
+
+      // The slot was freed: four more execs are all attempted.
+      for (let i = 0; i < 4; i += 1) proxy.exec('true', vi.fn());
+      expect(client.exec).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects a forwardOut whose open is never answered', async () => {
     vi.useFakeTimers();
     try {

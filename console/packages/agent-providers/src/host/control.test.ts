@@ -36,8 +36,10 @@ const event = (sequence: number) => ({
 /** A session host child answering snapshots with its own name. */
 function host() {
   const child = new EventEmitter() as EventEmitter & {
+    connected: boolean;
     send: (message: unknown, callback: (error: Error | null) => void) => boolean;
   };
+  child.connected = true;
   child.send = (message, callback) => {
     callback(null);
     const { id } = message as { id: number };

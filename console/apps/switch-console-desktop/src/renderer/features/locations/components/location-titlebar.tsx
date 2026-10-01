@@ -19,7 +19,7 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -38,7 +38,7 @@ import type { Agent } from '@shared/core/agents/agents';
  */
 const AgentCrumb = observer(function AgentCrumb({ agent }: { agent: Agent | null }) {
   const label = agent?.name ?? 'Agent';
-  const iconUrl = useAgentIconUrl(agent?.serverId ?? null, agent?.switchAgentId ?? null);
+  const iconUrl = useAgentIconUrl(agent?.workspaceId ?? null, agent?.switchAgentId ?? null);
   return (
     <TitlebarBreadcrumb
       crumbs={[

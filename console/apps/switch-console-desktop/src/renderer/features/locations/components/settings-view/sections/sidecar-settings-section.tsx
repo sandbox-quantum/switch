@@ -62,17 +62,16 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
         (deployed ? (
           <p className="text-sm text-foreground-muted">
             The sidecar is a background service on the SSH host that holds this agent’s room
-            connection while Console is closed, and starts sessions for it when “Auto-create a
-            session on notify” is on. Manage conversations in Sessions below. Update and Restart
-            reload the service. Stop takes the agent off the air until you press Start; existing
-            sessions continue running.
+            connection while Console is closed, and starts a session for it whenever it is
+            addressed. Manage conversations in Sessions below. Update and Restart reload the
+            service. Stop takes the agent off the air until you press Start; existing sessions
+            continue running.
           </p>
         ) : (
           <p className="text-sm text-foreground-muted">
             Console holds this agent’s room connection itself, and starts a session when the agent
-            is addressed with none running if “Auto-create a session on notify” is on. It runs
-            inside Console, so quitting Console takes the agent off the air along with the sessions
-            it started.
+            is addressed with none running. It runs inside Console, so quitting Console takes the
+            agent off the air along with the sessions it started.
           </p>
         ))}
       {query.isPending && <p className="text-sm">Checking the watcher…</p>}

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,16 +9,53 @@ import type { IExecutionContext } from '@main/core/execution-context/types';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { ensureHostBundle } from './host-bundle';
 import { MAKE_LAUNCH_DIR, RESOLVE_STATE_ROOT, STALE_LAUNCH_MS } from './state-roots';
 
 /**
- * Every deployment leaves a bundle named after its own hash, so without this
- * an upgraded host accumulates one file per build it has ever run. A bundle a
- * process still names on its command line is kept: it belongs to a host this
- * deployment has not replaced yet.
+ * Prints the path of a shared host bundle already on the host: this build's
+ * when it is there, otherwise the newest one an earlier deployment left, and
+ * nothing when there is none. Arguments: this build's bundle file name.
  */
-const PRUNE_SUPERSEDED_BUNDLES =
-  "const fs=require('node:fs');const [dir,keep]=process.argv.slice(1);const running=require('node:child_process').execFileSync('ps',['-eo','args='],{encoding:'utf8'});for(const name of fs.readdirSync(dir)){if(name===keep||!/^shared-host-[a-f0-9]{64}\\.mjs$/.test(name)||running.includes(name))continue;fs.rmSync(dir+'/'+name,{force:true})}";
+export const LOCATE_BUNDLE = String.raw`
+const fs = require('node:fs'), path = require('node:path');
+const [wanted] = process.argv.slice(1);
+const dir = path.join(require('node:os').homedir(), '.local', 'state', 'switch', 'sdk-host');
+let names;
+try { names = fs.readdirSync(dir); }
+catch (e) { if (e.code === 'ENOENT') { console.log(''); process.exit(0); } throw e; }
+const bundles = names.filter((name) => /^shared-host-[a-f0-9]{64}\.mjs$/.test(name));
+if (bundles.includes(wanted)) console.log(path.join(dir, wanted));
+else if (!bundles.length) console.log('');
+else console.log(path.join(dir, bundles
+  .map((name) => ({ name, at: fs.statSync(path.join(dir, name)).mtimeMs }))
+  .sort((a, b) => b.at - a.at)[0].name));
+`;
+
+/**
+ * A shared host to run a one-off command with, without deploying one: this
+ * machine's own bundle, or a bundle already on the SSH host. Reading a host —
+ * what its provider offers, whether it is signed in — must not change what is
+ * installed there; only a launch, or somebody pressing Update, deploys. Null
+ * when the host has no bundle yet.
+ */
+export async function locateSharedHost(
+  transport: LocationTransport,
+  dir: string
+): Promise<{ ctx: IExecutionContext; entrypoint: string } | null> {
+  const bundle = resolveSharedHostBundlePath();
+  if (transport.kind !== 'ssh') return { ctx: new LocalExecutionContext(), entrypoint: bundle };
+  const hash = createHash('sha256')
+    .update(await readFile(bundle))
+    .digest('hex');
+  const proxy = await ensureSshConnected(transport.connectionId, transport.host);
+  const ctx = new SshExecutionContext(proxy, { root: dir });
+  const { stdout } = await ctx.exec('node', ['-e', LOCATE_BUNDLE, `shared-host-${hash}.mjs`]);
+  const entrypoint = stdout.trim();
+  if (entrypoint) return { ctx, entrypoint };
+  ctx.dispose();
+  return null;
+}
 
 export async function deploySharedHost(
   transport: LocationTransport,
@@ -27,53 +64,13 @@ export async function deploySharedHost(
   watcher: boolean
 ) {
   let ctx: IExecutionContext;
-  const bundle = resolveSharedHostBundlePath();
-  const hash = createHash('sha256')
-    .update(await readFile(bundle))
-    .digest('hex');
   const key = createHash('sha256').update(identity).digest('hex');
-  let entrypoint = bundle;
+  let entrypoint = resolveSharedHostBundlePath();
   if (transport.kind === 'ssh') {
+    // Checked, and uploaded if missing, once per host rather than per agent.
+    entrypoint = (await ensureHostBundle(transport)).entrypoint;
     const proxy = await ensureSshConnected(transport.connectionId, transport.host);
     ctx = new SshExecutionContext(proxy, { root: sessionPath });
-    const { stdout } = await ctx.exec('node', [
-      '-e',
-      "console.log(require('node:path').join(require('node:os').homedir(),'.local','state','switch','sdk-host'))",
-    ]);
-    const directory = stdout.trim();
-    await ctx.exec('node', [
-      '-e',
-      "require('node:fs').mkdirSync(process.argv[1],{recursive:true,mode:0o700})",
-      directory,
-    ]);
-    const fs = new SshFileSystem(proxy, directory);
-    entrypoint = `${directory}/shared-host-${hash}.mjs`;
-    const existing = await ctx.exec('node', [
-      '-e',
-      "const fs=require('node:fs');try{console.log(require('node:crypto').createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex')===process.argv[2])}catch(e){if(e.code!=='ENOENT')throw e;console.log(false)}",
-      entrypoint,
-      hash,
-    ]);
-    const temporary = `shared-host-${hash}.${randomUUID()}.tmp`;
-    try {
-      if (existing.stdout.trim() !== 'true') {
-        await fs.copyLocalFile(bundle, temporary);
-        await ctx.exec('node', [
-          '-e',
-          "require('node:fs').renameSync(process.argv[1],process.argv[2])",
-          `${directory}/${temporary}`,
-          entrypoint,
-        ]);
-      }
-    } finally {
-      fs.close();
-      await ctx.exec('node', [
-        '-e',
-        "require('node:fs').rmSync(process.argv[1],{force:true})",
-        `${directory}/${temporary}`,
-      ]);
-    }
-    await ctx.exec('node', ['-e', PRUNE_SUPERSEDED_BUNDLES, directory, `shared-host-${hash}.mjs`]);
   } else ctx = new LocalExecutionContext();
   const { stdout } = await ctx.exec('node', [
     '-e',
@@ -84,6 +81,26 @@ export async function deploySharedHost(
   ]);
   const root = stdout.trim();
   return { ctx, root, entrypoint };
+}
+
+/** The state root of `identity`'s watcher on an SSH host, and a context to act
+ * in it, without deploying the host bundle. */
+export async function resolveWatcherRoot(
+  transport: Extract<LocationTransport, { kind: 'ssh' }>,
+  sessionPath: string,
+  identity: string
+): Promise<{ ctx: IExecutionContext; root: string }> {
+  const proxy = await ensureSshConnected(transport.connectionId, transport.host);
+  const ctx = new SshExecutionContext(proxy, { root: sessionPath });
+  const key = createHash('sha256').update(identity).digest('hex');
+  const { stdout } = await ctx.exec('node', [
+    '-e',
+    RESOLVE_STATE_ROOT,
+    key,
+    'sdk-watchers',
+    identity,
+  ]);
+  return { ctx, root: stdout.trim() };
 }
 
 export async function runSharedHostCommand(

@@ -12,7 +12,6 @@ const ensureRemoteWatcher = vi.hoisted(() => vi.fn(async (_agentId: string) => {
 const state = vi.hoisted(() => ({
   providerId: 'codex',
   providerConfig: null as unknown,
-  autoSession: [] as string[],
   files: new Map<string, string>(),
   writes: [] as string[],
 }));
@@ -44,8 +43,8 @@ vi.mock('./getAgentById', () => ({
 vi.mock('./agent-location', () => ({
   getAgentLocation: async () => ({ id: 'loc-1', dir: '/repo', sshHost: 'vm-1' }),
 }));
-vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: async () => ({ fs: fakeFs(), close: () => {} }),
+vi.mock('./agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: async () => ({ fs: fakeFs(), close: () => {} }),
 }));
 vi.mock('./setAgentProviderConfig', () => ({
   setAgentProviderConfig: (params: unknown) => setAgentProviderConfig(params),
@@ -55,9 +54,6 @@ vi.mock('./remote-watcher', () => ({
 }));
 vi.mock('@main/lib/logger', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
-  listAutoSessionAgentIds: async () => state.autoSession,
 }));
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: (id: string) => ({
@@ -83,7 +79,6 @@ beforeEach(() => {
   ensureRemoteWatcher.mockClear();
   state.files.clear();
   state.writes = [];
-  state.autoSession = [];
   state.providerId = 'codex';
   state.providerConfig = null;
   state.files.set(CONFIG_PATH, '{}\n');
@@ -214,20 +209,11 @@ describe('saving', () => {
     // Claude Code gets its definition in the launch spec now, so an automatic
     // session would otherwise start on the previous one.
     state.providerId = 'claude';
-    state.autoSession = ['agent-1'];
 
     await setAgentSettings({ agentId: 'agent-1', settings: { model: 'opus' } });
 
     expect(ensureRemoteWatcher).toHaveBeenCalledWith('agent-1');
     expect(setAgentProviderConfig).not.toHaveBeenCalled();
-  });
-
-  it('leaves the controller alone when automatic sessions are off', async () => {
-    state.providerId = 'claude';
-
-    await setAgentSettings({ agentId: 'agent-1', settings: { model: 'opus' } });
-
-    expect(ensureRemoteWatcher).not.toHaveBeenCalled();
   });
 });
 

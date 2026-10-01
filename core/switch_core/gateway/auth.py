@@ -4,7 +4,7 @@ import datetime
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 
 import bcrypt
 import jwt
@@ -17,14 +17,23 @@ from switch_core.db.models import Room, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import tenant_of_invitation, tenants_of_user
+from switch_core.db.tenant_lookup import (
+    tenant_of_invitation,
+    tenants_inviting_email,
+    tenants_of_user,
+    tenants_open_to_domain,
+)
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
     get_session_factory,
     get_user_store,
 )
-from switch_core.gateway.schemas import TenantMembershipResponse
+from switch_core.gateway.schemas import (
+    SessionStateResponse,
+    SessionStateUser,
+    TenantMembershipResponse,
+)
 from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
@@ -164,6 +173,36 @@ async def get_authenticated_user_id(
 
 
 @dataclass(frozen=True)
+class AuthenticatedSession:
+    """An authenticated caller's id and the tenant their session selects, if
+    any — the claim as minted, not yet checked against a membership."""
+
+    user_id: str
+    tenant_claim: str | None
+
+
+async def get_authenticated_session(
+    request: Request,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AuthenticatedSession:
+    """Like `get_authenticated_user_id`, plus the session's tenant claim.
+
+    Backs `GET /auth/session`, which reports what tenant resolution *would*
+    do with this session rather than doing it — so it needs the claim that
+    `get_current_user` would resolve, without the 403 or 409 that resolving
+    it can raise.
+    """
+    payload = await _authenticate(request, session_factory, user_store, config)
+    return AuthenticatedSession(
+        user_id=payload["sub"], tenant_claim=payload.get("tenant_id")
+    )
+
+
+@dataclass(frozen=True)
 class AuthenticatedCaller:
     """An authenticated caller with no tenant bound — read from `users`, which
     carries neither a tenant nor a policy.
@@ -224,6 +263,31 @@ async def tenant_of_invitation_token(
     than being called from the gateway directly.
     """
     return await tenant_of_invitation(session_factory, token_hash)
+
+
+async def tenants_with_invitations_for(
+    session_factory: async_sessionmaker[AsyncSession], email: str
+) -> list[str]:
+    """Which tenants hold a live invitation addressed to `email`.
+
+    A thin wrapper around `db.tenant_lookup.tenants_inviting_email`, here for
+    the same reason as `tenant_of_invitation_token` above: the exemption is
+    reached through this one module. The only caller passes the signed-in
+    caller's own address, never one taken from a request.
+    """
+    return await tenants_inviting_email(session_factory, email)
+
+
+async def tenants_open_to(
+    session_factory: async_sessionmaker[AsyncSession], domain: str
+) -> list[str]:
+    """Which tenants let anyone at `domain` join them without an invitation.
+
+    A thin wrapper around `db.tenant_lookup.tenants_open_to_domain`, for the
+    same reason as the wrappers above. The only caller passes the domain of
+    the signed-in caller's own address.
+    """
+    return await tenants_open_to_domain(session_factory, domain)
 
 
 async def is_tenant_member(
@@ -305,6 +369,105 @@ async def list_tenant_memberships(
     )
 
 
+async def initial_tenant_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user: User,
+) -> str | None:
+    """The tenant a freshly signed-in session should select, if one is
+    unambiguous: the workspace the user last selected, while they still
+    belong to it; otherwise their only workspace; otherwise none.
+
+    A null claim would ask a person with two workspaces to choose again on
+    every visit. This stays a selection, not a
+    grant — `_resolve_tenant_id` re-checks the claim on every request — and it
+    is checked against current memberships here too, so signing in again is
+    still how a session whose workspace was taken away recovers.
+    """
+    memberships = await tenants_of_user(session_factory, user.id)
+    last = user_store.last_tenant_id(user)
+    if last is not None and last in memberships:
+        return last
+    if len(memberships) == 1:
+        return memberships[0]
+    return None
+
+
+def workspace_creation_refusal(
+    config: SwitchConfig, *, is_operator: bool, workspaces_created: int
+) -> str | None:
+    """Why this caller may not create a workspace, or None if they may.
+
+    Operators always may. Otherwise `invite_only` sign-up refuses outright,
+    and every other mode allows `gateway_max_workspaces_per_user` creations
+    over a person's lifetime — each workspace is work for every per-tenant
+    sweep (`docs/old/multi-tenancy-phase2-tenants.md`, §5). Returned as a
+    message rather than raised so `GET /auth/session` can report the same
+    answer `POST /tenants` enforces.
+    """
+    if is_operator:
+        return None
+    if config.gateway_signup_mode == "invite_only":
+        return (
+            "Creating workspaces is turned off on this server. Ask a "
+            "workspace admin for an invitation."
+        )
+    limit = config.gateway_max_workspaces_per_user
+    if limit == 0:
+        return "Workspace creation is disabled on this deployment"
+    if workspaces_created >= limit:
+        return (
+            f"You have created {workspaces_created} workspaces, and "
+            f"this deployment allows {limit}"
+        )
+    return None
+
+
+def describe_session_state(
+    config: SwitchConfig,
+    user: User,
+    tenant_claim: str | None,
+    tenants: list[TenantMembershipResponse],
+) -> SessionStateResponse:
+    """What `_resolve_tenant_id` would make of this session, as data.
+
+    Follows its order exactly — a claim is honoured only if it names one of
+    `tenants`, and a bad claim is *not* rescued by a sole membership — so a
+    client told "ready" is never refused by the next request, and one told
+    otherwise knows which of `/tenants/{id}/switch`, `POST /tenants` or
+    `/invitations/accept` gets it unstuck.
+    """
+    tenant: TenantMembershipResponse | None = None
+    if tenant_claim is not None:
+        tenant = next((t for t in tenants if t.id == tenant_claim), None)
+    elif len(tenants) == 1:
+        tenant = tenants[0]
+
+    if tenant is not None:
+        state: Literal["ready", "needs_selection", "needs_workspace"] = "ready"
+    elif tenants:
+        state = "needs_selection"
+    else:
+        state = "needs_workspace"
+
+    is_operator = user.role == "admin"
+    return SessionStateResponse(
+        user=SessionStateUser(
+            id=user.id, name=user.name, email=user.email, is_operator=is_operator
+        ),
+        tenant=tenant,
+        tenants=tenants,
+        state=state,
+        can_create_workspace=workspace_creation_refusal(
+            config,
+            is_operator=is_operator,
+            workspaces_created=user.workspaces_created,
+        )
+        is None,
+        invite_email_enabled=config.invite_email_enabled,
+    )
+
+
 async def _resolve_tenant_id(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
@@ -319,10 +482,10 @@ async def _resolve_tenant_id(
     2. A claim naming a tenant the caller does not belong to → 403
        `tenant_selection_invalid`. The caller can fix this unaided — `GET
        /tenants` and `POST /tenants/{id}/switch` both authenticate without
-       binding a tenant, and signing in again mints a null claim — so the
-       message says so rather than sending them to an administrator. It is
-       not a rare state either: removing a member puts everyone it touches
-       here on their next request.
+       binding a tenant, and signing in again selects only from current
+       memberships — so the message says so rather than sending them to an
+       administrator. It is not a rare state either: removing a member puts
+       everyone it touches here on their next request.
 
        The cookie is not cleared here: it is `lax`, so a cross-site
        navigation can reach this path, and any page resetting someone's

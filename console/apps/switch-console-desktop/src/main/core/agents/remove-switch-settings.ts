@@ -10,9 +10,12 @@ import { removeSwitchSettings } from './write-switch-settings';
  * directory and works byte-identically for a local directory and a remote SSH
  * host, so one call covers both.
  */
-export async function removeSwitchCredentials(fs: PluginFs): Promise<void> {
+export async function removeSwitchCredentials(
+  fs: PluginFs,
+  switchAgentId: string | null
+): Promise<void> {
   const existing = await fs.read(SWITCH_SETTINGS_RELATIVE_PATH);
-  const result = removeSwitchSettings(existing);
+  const result = removeSwitchSettings(existing, switchAgentId);
   if (result.kind === 'skip') return;
   if (result.kind === 'delete') {
     await fs.delete(SWITCH_SETTINGS_RELATIVE_PATH);

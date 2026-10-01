@@ -14,7 +14,6 @@ import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer
 import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migration-ready';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
-import { resolveAgentServers } from './core/agents/resolve-servers';
 import { appService } from './core/app/service';
 import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
@@ -37,6 +36,7 @@ import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners
 import { trackEvent } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
+import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
 import { initializeDatabase } from './db/initialize';
 import { logAppExit, logAppStart, registerAppDiagnostics } from './lib/app-diagnostics';
 import {
@@ -145,12 +145,6 @@ void app.whenReady().then(async () => {
   registerTelemetryListeners();
   trackEvent('app_launched', {});
 
-  try {
-    await resolveAgentServers();
-  } catch (e) {
-    log.warn('switch-agents: failed to reconcile agent → server links at boot', { error: e });
-  }
-
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below
   // waits on it (it needs each agent's definitionName); nothing else does.
@@ -169,10 +163,23 @@ void app.whenReady().then(async () => {
 
   // Reflect a managed local Switch stack that survived the last quit, so the UI
   // shows it running without the user restarting it.
-  void localServerService.initialize();
+  const localServerReady = localServerService.initialize();
   // Re-establish desktop-side forwards for remote-managed stacks that survived
   // the last quit, restoring their reachability from this machine.
-  void remoteServerService.initialize();
+  const remoteServerReady = remoteServerService.initialize();
+
+  // A server registered before its account's memberships were known carries one
+  // tenant-less workspace; this is what gives it its tenant, and what notices a
+  // membership added or withdrawn since the last launch. It runs after the two
+  // services above because they are what make a stack that survived the last
+  // quit report itself as running — before them every managed server still
+  // looks stopped and would be passed over. Unawaited: it talks to every
+  // signed-in server, and the window must not wait on any of them.
+  void Promise.allSettled([localServerReady, remoteServerReady])
+    .then(reconcileAllWorkspaces)
+    .catch((error: unknown) => {
+      log.error('Workspace reconcile could not run; every server was left as it was:', error);
+    });
 
   const dependenciesReady = localDependencyManager.probeAll().catch((e: unknown) => {
     log.error('Failed to probe dependencies:', e);

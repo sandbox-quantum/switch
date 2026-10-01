@@ -128,6 +128,16 @@ pnpm run dev
 pnpm run d
 ```
 
+Switch Cloud, the hosted deployment the first-run page and the Add server dialog
+offer, has no URL in source. Point a run at one with `SWITCH_CLOUD_URL`, or bake
+one into a build with `MAIN_VITE_SWITCH_CLOUD_URL` (inlined into the main
+process by electron-vite). Either must be a bare https origin; with neither set
+the Cloud choice reads "Coming soon".
+
+```bash
+SWITCH_CLOUD_URL=https://cloud.example.com pnpm run dev
+```
+
 Run main-process or renderer-only dev watches:
 
 ```bash

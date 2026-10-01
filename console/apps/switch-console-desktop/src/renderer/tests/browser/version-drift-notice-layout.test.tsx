@@ -32,6 +32,7 @@ async function renderNotice(deployed: string, expected: string): Promise<HTMLDiv
         upgrade={{ state: 'pending', from: deployed, to: expected }}
         progress={null}
         disabled={false}
+        affected={null}
         onRestart={() => {}}
       />
     )

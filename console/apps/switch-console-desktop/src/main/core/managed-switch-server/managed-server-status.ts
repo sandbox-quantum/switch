@@ -69,3 +69,13 @@ export function managedServerStoppedPhase(server: SwitchServer): LocalServerPhas
   }
   return phase === 'stopped' || phase === 'error' ? phase : null;
 }
+
+/**
+ * A call to a managed server got no answer. A remote stack is shared, so the
+ * likeliest cause is another Console stopping or resetting it: re-read the host
+ * (throttled) so that shows as a status rather than a string of failed calls.
+ */
+export function noteManagedServerUnanswered(server: SwitchServer): void {
+  if (!server.managed || server.managementKind !== 'remote' || server.sshHost === null) return;
+  remoteServerService.recheck(server.sshHost);
+}

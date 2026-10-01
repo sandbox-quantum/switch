@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Iterable
 from typing import Annotated, Literal
 
@@ -8,12 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeInstallLink,
+    BridgeStartRefused,
     DirectoryUser,
 )
 from switch_core.db.models import CollaborationBridge, ExternalUser, User
@@ -173,6 +176,18 @@ async def create_bridge(
     # whose authz is owner-or-admin) — registering one is an admin action.
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
+    # A shared bridge runs on this deployment's own app, which is in every
+    # tenant's workspaces, so it is made only by installing the app — the one
+    # path that proves the workspace is the caller's. Registered here, it
+    # would reach whichever workspace its config named.
+    if req.connection_config.get("event_delivery") == "shared":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A shared connection is created by installing the app, not "
+                "registered here."
+            ),
+        )
     try:
         bridge = await collab_lifecycle.register(
             bridge_type=req.bridge_type,
@@ -293,10 +308,30 @@ async def update_bridge(
             session, bridge_id, payload.preconfigured
         )
     if payload.connection_config is not None:
-        merged = {**(bridge.connection_config or {}), **payload.connection_config}
+        current = bridge.connection_config or {}
+        merged = {**current, **payload.connection_config}
+        # How a bridge receives its events is decided by where it came from —
+        # an install, or someone's own bot — and changing it on the edit form
+        # would turn one into the other with none of what that takes.
+        if merged.get("event_delivery") != current.get("event_delivery"):
+            raise HTTPException(
+                status_code=422,
+                detail="event_delivery cannot be changed on an existing connection.",
+            )
         try:
             collab_lifecycle.validate_connection_config(bridge.type, merged)
+            # Asked now rather than at the restart below, so an edit that would
+            # point a shared bridge at a workspace this tenant never installed
+            # into is refused instead of stored and then failing to start.
+            await collab_lifecycle.check_start_guards(
+                bridge_id=bridge_id,
+                tenant_id=bridge.tenant_id,
+                bridge_type=bridge.type,
+                connection_config=merged,
+            )
         except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except BridgeStartRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         bridge = await bridge_store.merge_connection_config(
             session, bridge_id, dict(payload.connection_config)
@@ -423,6 +458,8 @@ async def search_bridge_directory(
         source = "known"
         note = str(e)
         found = _known_as_directory_users(known.values(), query)
+    except DirectorySearchBusy as e:
+        raise _search_busy(e) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
@@ -483,6 +520,15 @@ def _known_as_directory_users(
     )
 
 
+def _search_busy(e: DirectorySearchBusy) -> HTTPException:
+    """A directory refusing more searches for now, as a 429 saying when to retry."""
+    return HTTPException(
+        status_code=429,
+        detail=str(e),
+        headers={"Retry-After": str(math.ceil(e.retry_after))},
+    )
+
+
 async def _require_directory_account(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     *,
@@ -518,6 +564,8 @@ async def _require_directory_account(
                 "seen. Send one message in the workspace, then link it."
             ),
         ) from e
+    except DirectorySearchBusy as e:
+        raise _search_busy(e) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 

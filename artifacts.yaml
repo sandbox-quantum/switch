@@ -66,7 +66,7 @@ artifacts:
 
   switch-console:
     description: The desktop app.
-    version: 0.37.3
+    version: 0.38.1
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -84,7 +84,7 @@ artifacts:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.7.0
+    version: 0.7.2
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -92,7 +92,7 @@ artifacts:
       The remote runtime Switch Console deploys to an agent host. Deployed rather
       than published, so nothing else declares its version — this file is its
       only source and the constant is generated from it.
-    version: 1.9.10
+    version: 1.9.12
 
   # ── Published under the switch-core release ────────────────────────────────
   # No version of their own: `helm package` and the image build stamp them with

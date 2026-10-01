@@ -1,4 +1,3 @@
-import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import { getAgentLocation, getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
@@ -29,9 +28,7 @@ export type AgentProviderConfigParams = {
  *   is specialized again under the same name and directory.
  * - A remote agent bakes the specialization into its on-VM watcher's launch
  *   spec, so the watcher is re-ensured to rewrite it; the running sidecar
- *   re-reads the spec and applies it to the next auto-started session. When
- *   auto_session is off there is no watcher to refresh and the next
- *   `ensureRemoteWatcher` picks the value up.
+ *   re-reads the spec and applies it to the next auto-started session.
  *
  * The re-ensure is allowed to throw: if the VM is unreachable the change cannot
  * reach auto-started sessions, and the caller should surface that rather than
@@ -53,6 +50,5 @@ export async function setAgentProviderConfig(params: AgentProviderConfigParams):
   }
 
   if ((await getRemoteAgentLocation(agent)) === null) return;
-  if (!(await listAutoSessionAgentIds()).includes(agent.id)) return;
   await ensureRemoteWatcher(agent.id);
 }

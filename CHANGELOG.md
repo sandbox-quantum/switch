@@ -1357,6 +1357,53 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.38.1] - 2026-10-01
+
+#### Fixed
+- **Clean recovery after the machine sleeps.** On wake, a watcher no longer
+  takes itself over, a silently-dropped SSH connection is detected rather than
+  trusted until it says it closed, and an agent shows a single status row
+  instead of duplicates (#621).
+
+### [0.38.0] - 2026-09-30
+
+#### Changed
+- **Updating the sidecars on a host with many agents takes a fraction of the
+  SSH round trips.** Each agent's bring-up used to check the host's shared
+  bundle for itself — half a dozen commands asking the same question — and
+  then stop an old sidecar, write its flags, stage its configuration and
+  launch it in as many more. The bundle is now checked, and uploaded if
+  needed, once per host, and each agent is brought up in one command after
+  its configuration is staged: about two round trips instead of thirteen.
+  Agents are still brought up one after another, so their reconnects to
+  Switch stay spread out.
+- **Every agent starts a session when it is addressed; the "Auto-create a
+  session on notify" setting is gone.** Its switch is removed from the agent
+  page and the create form, and new agents register as `auto_session`.
+- **Opening an agent's page only reads.** Reading the auto-session setting used
+  to re-launch the agent's controller as a side effect, which on a remote host
+  uploaded the sidecar bundle and replaced an outdated sidecar, and checking a
+  provider's sign-in or models uploaded the bundle too. The provider check now
+  uses the bundle already on the host, and says so when there is none. The
+  bundle is uploaded only when an agent is started, restarted or updated.
+
+#### Fixed
+- **A remote agent's status can no longer go stale.** Console used to learn
+  whether a remote agent was connected only from what its sidecar pushed down a
+  long-lived connection, and trusted that connection until it said it had
+  closed. One that died without saying so, as when every sidecar is replaced
+  while its host's SSH connection is rebuilt, left the last thing it carried
+  on screen for good: agents that were answering in Slack showed "Connection
+  failed" and "The agent's room watcher is not running". Console now reads each
+  host every five seconds, in one command for every agent on it, and the
+  sidebar and the agent's page are both built from that one read.
+- **Agents come up after Console starts without their page being opened.**
+  Console now brings each host's agents up side by side, so a slow or wedged
+  SSH connection holds back only that host, never local agents or other hosts,
+  and it keeps retrying an agent whose controller could not start, backing off
+  from 30 seconds to 5 minutes. Before, an agent that failed once stayed off
+  until its host reconnected or its page was opened.
+
 ### [0.37.3] - 2026-09-29
 
 #### Changed
@@ -2962,6 +3009,23 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.7.2] - 2026-10-01
+
+#### Fixed
+- Event-stream handling hardened against a self-takeover and a silently
+  dropped stream when a connection resumes after the machine sleeps (#621).
+
+### [0.7.1] - 2026-09-30
+
+#### Fixed
+- **A connection no longer gives itself up to itself.** A placements or room
+  subscribe request sent under one incarnation and answered after this client
+  had reopened its own stream was refused as "taken over", naming this client
+  as the new holder, and the client stood down for good with nobody else
+  anywhere near the connection. Such a refusal now only fails the request,
+  which is stated again on the next change or reconnect; a real takeover is
+  still caught by the next heartbeat.
+
 ### [0.7.0] - 2026-09-25
 
 #### Changed
@@ -3129,6 +3193,37 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+### [1.9.12] - 2026-10-01
+
+#### Changed
+- Picks up the agent-runtime 0.7.2 event-stream fix it bundles (#621).
+
+### [1.9.11] - 2026-09-30
+
+#### Added
+- **The room watcher records its connection to Switch in `health.json`** beside
+  its other state, each time it changes, so Console can read it from the host
+  instead of relying on a live connection to the sidecar.
+
+#### Fixed
+- **A stuck process can no longer block replacing a watcher.** Stopping a
+  watcher or session host sent SIGTERM and waited; one waiting on a child that
+  would never finish — a session host that hung up and stayed alive — never
+  exited, so every update to that agent failed with "The SDK host has not
+  stopped". A host asked to stop is now killed, with every process it started,
+  if it has not gone after 10 s (a supervised host) or 20 s (one being
+  replaced).
+- **A session whose host hung up no longer blocks its room for good.** After a
+  reset, a session host could finish and close its link to the watcher while a
+  provider process it had started kept it alive. The watcher still saw it as
+  running, so every room message failed and it was "started again" every five
+  seconds, forever, without anyone being told. Now the host exits within five
+  seconds of finishing whatever it left running; the watcher treats a host that
+  hung up as gone, and stops it and what it started if it has not exited
+  fifteen seconds later; and a session that still will not take a message after
+  five starts in a row is left alone with its messages queued, and the room is
+  told.
 
 #### Changed
 - Claude Code sessions accept their agent definition in the launch spec and pass

@@ -36,7 +36,7 @@ def _adapter() -> DiscordAdapter:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
-    adapter._bot_user_id = BOT_USER_ID
+    adapter._connection._bot_user_id = BOT_USER_ID
     return adapter
 
 
@@ -493,7 +493,7 @@ def _adapter_with_roles(
     roles: dict[int, str] | None = None, members: dict[int, str] | None = None
 ) -> DiscordAdapter:
     adapter = _adapter()
-    adapter._client = _RoleClient(_RoleGuild(roles or {}, members or {}))  # type: ignore[assignment]
+    adapter._connection._client = _RoleClient(_RoleGuild(roles or {}, members or {}))  # type: ignore[assignment]
     return adapter
 
 

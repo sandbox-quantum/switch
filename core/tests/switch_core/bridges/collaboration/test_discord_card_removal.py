@@ -262,8 +262,8 @@ async def test_a_channel_that_cannot_be_resolved_is_not_a_card_that_is_gone() ->
     nothing about the card. Reading it as success would retire a card still on
     the screen."""
     adapter, _channel, _thread, _publication = _guild_setup()
-    adapter._client.fetch_errors[CHANNEL_ID] = _unknown_message()  # type: ignore[union-attr]
-    adapter._client._channels.pop(CHANNEL_ID)  # type: ignore[union-attr]
+    adapter._connection._client.fetch_errors[CHANNEL_ID] = _unknown_message()  # type: ignore[union-attr]
+    adapter._connection._client._channels.pop(CHANNEL_ID)  # type: ignore[union-attr]
 
     with pytest.raises(RemovalFailed):
         await adapter.remove_publication(str(CHANNEL_ID), CARD)
@@ -275,7 +275,7 @@ async def test_an_unparseable_reference_never_reaches_discord() -> None:
     resolved, by an `int()` that happens to raise."""
     adapter, channel, _thread, publication = _guild_setup()
     looked_up: list[int] = []
-    client = adapter._client
+    client = adapter._connection._client
     client.get_channel = _recording(client.get_channel, looked_up)  # type: ignore[union-attr]
 
     for reference in ("nonsense", f"{CHANNEL_ID}:", ":999", "abc:def"):

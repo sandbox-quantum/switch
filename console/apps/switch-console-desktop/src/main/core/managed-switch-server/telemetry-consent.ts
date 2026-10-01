@@ -1,8 +1,9 @@
 import { appSettingsService } from '@main/core/settings/settings-service';
 import type { DeployedTelemetry } from '@shared/core/managed-switch-server/managed-switch-server';
 import { runningServiceEnv } from './compose';
-import { ENV_FILE_NAME } from './constants';
-import { readEnvValue, TELEMETRY_ENABLED_KEY } from './env-file';
+import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
+import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from './env-file';
+import { errorText } from './error-text';
 import type { ServerHost } from './host/types';
 
 /**
@@ -20,22 +21,6 @@ import type { ServerHost } from './host/types';
  */
 export async function telemetryConsent(): Promise<boolean> {
   return (await appSettingsService.get('telemetry')).enabled;
-}
-
-/** The compose service whose environment carries the server's telemetry gate. */
-const CORE_SERVICE = 'switch';
-
-/**
- * How pydantic-settings reads a boolean, narrowed to the forms that can reach
- * this variable.
- *
- * Absent means off, and that is a reading rather than a fallback: switch-core's
- * own default for the gate is off, so a stack started before this existed — or
- * by an operator who never set it — is genuinely not reporting.
- */
-function envFlag(value: string | null | undefined): boolean {
-  if (value === null || value === undefined) return false;
-  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
 /**
@@ -71,8 +56,4 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
   }
 
   return { known: false, reason: failures.join('; ') };
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -2,7 +2,9 @@ import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
   managedServerStoppedPhase,
+  noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
+import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
@@ -26,8 +28,17 @@ import type {
   SwitchServerDeclaration,
   SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
-import { reauthenticateManagedServer, refreshSession } from './auth';
-import { getSessionCookie } from './servers-store';
+import type {
+  Invitation,
+  InvitationEmailDelivery,
+  JoinableWorkspaces,
+  PendingInvitations,
+  WorkspaceJoinDomains,
+} from '@shared/core/workspaces/invitations';
+import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
+import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
+import { consoleIdentityHeaders } from './console-identity';
+import { getSessionCookie, setSessionCookie } from './servers-store';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
 function gatewayUrl(server: SwitchServer, path: string): string {
@@ -53,6 +64,30 @@ function decodeJwtExpMs(jwt: string): number | null {
       exp?: unknown;
     };
     return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the `tenant_id` claim out of a JWT without verifying it. Returns null
+ * for a malformed token, and for a session that has selected no tenant — the
+ * gateway mints the claim as null until `/tenants/{id}/switch` is called.
+ *
+ * Unverified is the right level here: the claim only ever *selects* which
+ * workspace a call is scoped to, and the gateway re-checks membership against
+ * a live row on every request, so nothing this reads can grant access. It is
+ * read to know whether the selection already matches the workspace being
+ * addressed, or whether a switch has to happen first.
+ */
+export function decodeJwtTenantId(jwt: string): string | null {
+  const parts = jwt.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as {
+      tenant_id?: unknown;
+    };
+    return typeof payload.tenant_id === 'string' ? payload.tenant_id : null;
   } catch {
     return null;
   }
@@ -139,10 +174,40 @@ async function resolveAuthCookie(server: SwitchServer): Promise<string> {
     return renewIfExpiring(server, stored);
   }
   if (server.managed) {
-    const minted = await reauthenticateManagedServer(server);
+    const minted = await silentLogin(server);
     if (minted) return minted;
   }
   throw new GatewayError('unauthorized', 'Not signed in to this Switch server.');
+}
+
+/**
+ * Servers whose silent re-login is putting a tenant back, so the switch it makes
+ * does not try to re-login its way out of its own 401.
+ */
+const restoringTenant = new Set<string>();
+
+/**
+ * Log a managed server back in silently, and re-select the workspace the calls
+ * in flight on it were addressing.
+ *
+ * A login cookie names no tenant. Handed back on its own it would answer the
+ * rest of a workspace-scoped call with the account's default workspace —
+ * succeeding, and looking exactly like the answer that was asked for.
+ */
+async function silentLogin(server: SwitchServer): Promise<string | null> {
+  const minted = await reauthenticateManagedServer(server);
+  if (!minted) return null;
+  const tenantId = assertedTenant(server.id);
+  if (tenantId === null || restoringTenant.has(server.id)) return minted;
+  restoringTenant.add(server.id);
+  try {
+    await switchTenant(server, tenantId);
+  } finally {
+    restoringTenant.delete(server.id);
+  }
+  // `switchTenant` stores the scoped cookie; the minted one it replaced would
+  // send this very call to the wrong workspace.
+  return (await getSessionCookie(server.id)) ?? minted;
 }
 
 async function gatewayFetch(
@@ -166,8 +231,9 @@ async function gatewayFetch(
   const stopped = managedServerStoppedPhase(server);
   if (stopped) throw new ManagedServerStoppedError(server, stopped);
 
+  const identity = await consoleIdentityHeaders(server);
   const sendOnce = async (cookie: string | null): Promise<Response> => {
-    const headers: Record<string, string> = { Accept: 'application/json' };
+    const headers: Record<string, string> = { Accept: 'application/json', ...identity };
     if (options.body !== undefined) {
       headers['Content-Type'] = 'application/json';
     }
@@ -184,6 +250,7 @@ async function gatewayFetch(
         signal: AbortSignal.timeout(30_000),
       });
     } catch (cause) {
+      noteManagedServerUnanswered(server);
       throw new GatewayError(
         'network',
         `Could not reach ${server.gatewayUrl}: ${cause instanceof Error ? cause.message : String(cause)}`
@@ -199,7 +266,7 @@ async function gatewayFetch(
   // We hold its admin creds, so re-login and retry the call once rather than
   // bouncing the user to a sign-in screen for a password they never saw.
   if (response.status === 401 && options.authenticated && server.managed) {
-    const renewed = await reauthenticateManagedServer(server);
+    const renewed = await silentLogin(server);
     if (renewed) {
       response = await sendOnce(renewed);
     }
@@ -275,6 +342,396 @@ function mapUser(json: UserResponseJson): SwitchUser {
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
   const res = await gatewayFetch(server, '/auth/me', { authenticated: true });
   return mapUser((await res.json()) as UserResponseJson);
+}
+
+/** A tenant the signed-in user belongs to, as `GET /tenants` reports it. */
+export type RemoteTenant = {
+  id: string;
+  slug: string;
+  name: string;
+  role: WorkspaceRole;
+};
+
+function mapRole(raw: unknown): WorkspaceRole {
+  if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
+  throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
+}
+
+/**
+ * The tenants the signed-in user belongs to. Answered without a tenant being
+ * selected on the session, which is what makes it the entry point: a user with
+ * several memberships has none selected until they pick one.
+ */
+export async function fetchTenants(server: SwitchServer): Promise<RemoteTenant[]> {
+  const res = await gatewayFetch(server, '/tenants', { authenticated: true });
+  const json = (await res.json()) as Array<{
+    id: string;
+    slug: string;
+    name: string;
+    role: string;
+  }>;
+  return json.map((t) => ({ id: t.id, slug: t.slug, name: t.name, role: mapRole(t.role) }));
+}
+
+/**
+ * Create a workspace on this server, owned by the signed-in user.
+ *
+ * The gateway derives the slug from the name and refuses a name whose slug is
+ * already taken, so the caller shows that refusal rather than retrying under a
+ * name the user did not choose.
+ */
+export async function createTenant(server: SwitchServer, name: string): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/tenants', {
+    authenticated: true,
+    method: 'POST',
+    body: { name },
+  });
+  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
+  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+}
+
+/**
+ * Select a tenant for this server's session, persisting the re-minted cookie.
+ *
+ * One session holds one selected tenant, so this is what makes a call scoped to
+ * a particular workspace rather than to whichever one was picked last. The
+ * gateway verifies membership before it mints, so a refusal here is a real
+ * answer — it is raised rather than swallowed, because the alternative is
+ * issuing the caller's next request against somebody else's workspace.
+ */
+export async function switchTenant(server: SwitchServer, tenantId: string): Promise<void> {
+  const res = await gatewayFetch(server, `/tenants/${encodeURIComponent(tenantId)}/switch`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) {
+    throw new GatewayError(
+      'http',
+      `${server.name} accepted the workspace selection but returned no session cookie.`
+    );
+  }
+  await setSessionCookie(server.id, cookie);
+}
+
+/**
+ * Accept an invitation to a workspace, joining it.
+ *
+ * The token goes in the body, never the path: it is a bearer credential. The
+ * gateway answers with a session cookie scoped to the workspace joined, which
+ * is kept for the same reason `switchTenant` keeps its own — the next call made
+ * for that workspace has to reach it, not whichever one was selected before.
+ *
+ * Accepting an invitation to a workspace the account is already in is not an
+ * error: the gateway returns the existing membership and spends nothing.
+ */
+export async function acceptInvitation(server: SwitchServer, token: string): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/invitations/accept', {
+    authenticated: true,
+    method: 'POST',
+    body: { token },
+  });
+  return joinedTenant(server, res);
+}
+
+/**
+ * Accept an invitation addressed to the signed-in account, by id.
+ *
+ * Answers exactly as {@link acceptInvitation} does, session cookie included:
+ * the server switches the session into the workspace it joined.
+ */
+export async function acceptPendingInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  invitationId: string
+): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/invitations/mine/accept', {
+    authenticated: true,
+    method: 'POST',
+    body: { tenant_id: tenantId, invitation_id: invitationId },
+  });
+  return joinedTenant(server, res);
+}
+
+type PendingInvitationJson = {
+  id: string;
+  tenant_id: string;
+  tenant_slug: string;
+  tenant_name: string;
+  role: string;
+  expires_at: string;
+  invited_by: string;
+  created_at: string;
+};
+
+/**
+ * The invitations addressed to the signed-in account, in workspaces it is not in.
+ *
+ * A 404 is a server from before the route existed, and is answered as
+ * `unsupported` rather than raised: the account is signed in and the rest of
+ * the server works, so it is a feature the server lacks, not a failure. Every
+ * other refusal is raised.
+ */
+export async function fetchPendingInvitations(server: SwitchServer): Promise<PendingInvitations> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/invitations/mine', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as PendingInvitationJson[];
+  return {
+    kind: 'listed',
+    invitations: json.map((i) => ({
+      id: i.id,
+      tenantId: i.tenant_id,
+      workspaceName: i.tenant_name,
+      role: mapRole(i.role),
+      expiresAt: isoTimestamp(i.expires_at),
+      invitedBy: i.invited_by,
+    })),
+  };
+}
+
+async function joinedTenant(server: SwitchServer, res: Response): Promise<RemoteTenant> {
+  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) {
+    throw new GatewayError(
+      'http',
+      `${server.name} accepted the invitation but returned no session cookie.`
+    );
+  }
+  await setSessionCookie(server.id, cookie);
+  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+}
+
+type InvitationJson = {
+  id: string;
+  role: string;
+  email: string | null;
+  expires_at: string;
+  uses_remaining: number;
+  revoked_at: string | null;
+  created_at: string;
+};
+
+/**
+ * A gateway timestamp as ISO 8601.
+ *
+ * The invitation routes write Python's `str(datetime)`, with a space where ISO
+ * has a `T`. Normalised here so every reader downstream can hand it to `Date`;
+ * one that still does not parse is raised, since showing an expiry of "Invalid
+ * Date" would leave an admin unable to tell a live invitation from a dead one.
+ */
+function isoTimestamp(raw: string): string {
+  const parsed = new Date(raw.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) {
+    throw new GatewayError('http', `Switch server reported an unreadable timestamp: ${raw}`);
+  }
+  return parsed.toISOString();
+}
+
+function mapInvitation(json: InvitationJson): Invitation {
+  return {
+    id: json.id,
+    role: mapRole(json.role),
+    email: json.email,
+    expiresAt: isoTimestamp(json.expires_at),
+    usesRemaining: json.uses_remaining,
+    revokedAt: json.revoked_at === null ? null : isoTimestamp(json.revoked_at),
+    createdAt: isoTimestamp(json.created_at),
+  };
+}
+
+function mapDelivery(raw: unknown): InvitationEmailDelivery {
+  // A server older than e-mailed invitations leaves the field out. Refusing it
+  // would lose the link of an invitation the server has already made.
+  if (raw === undefined) return 'unsupported';
+  if (raw === 'sent' || raw === 'not_configured' || raw === 'failed' || raw === 'not_requested') {
+    return raw;
+  }
+  throw new GatewayError('http', `Switch server reported an unknown e-mail delivery: ${raw}`);
+}
+
+/**
+ * The workspaces open to the domain of the signed-in account's address.
+ *
+ * A server without the route answers 404, which is read as unable to say
+ * rather than as none.
+ */
+export async function fetchJoinableWorkspaces(server: SwitchServer): Promise<JoinableWorkspaces> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/joinable-tenants', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as { tenant_id: string; tenant_name: string; domain: string }[];
+  return {
+    kind: 'listed',
+    workspaces: json.map((w) => ({
+      tenantId: w.tenant_id,
+      workspaceName: w.tenant_name,
+      domain: w.domain,
+    })),
+  };
+}
+
+/**
+ * Join a workspace open to the account's domain, and switch the session into
+ * it — the same scoped cookie accepting an invitation stores.
+ */
+export async function joinWorkspaceByDomain(
+  server: SwitchServer,
+  tenantId: string
+): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, `/joinable-tenants/${encodeURIComponent(tenantId)}/join`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  return joinedTenant(server, res);
+}
+
+function joinDomainsPath(tenantId: string): string {
+  return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
+}
+
+/** The domains a workspace is open to. Admins and owners only. */
+export async function fetchJoinDomains(
+  server: SwitchServer,
+  tenantId: string
+): Promise<WorkspaceJoinDomains> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, joinDomainsPath(tenantId), { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return { kind: 'unsupported' };
+    throw cause;
+  }
+  const json = (await res.json()) as {
+    domains: { domain: string }[];
+    own_domain: string;
+    own_domain_refusal: string | null;
+  };
+  return {
+    kind: 'listed',
+    domains: json.domains.map((d) => d.domain),
+    ownDomain: json.own_domain,
+    ownDomainRefusal: json.own_domain_refusal,
+  };
+}
+
+export async function addJoinDomain(
+  server: SwitchServer,
+  tenantId: string,
+  domain: string
+): Promise<void> {
+  await gatewayFetch(server, joinDomainsPath(tenantId), {
+    authenticated: true,
+    method: 'POST',
+    body: { domain },
+  });
+}
+
+export async function removeJoinDomain(
+  server: SwitchServer,
+  tenantId: string,
+  domain: string
+): Promise<void> {
+  await gatewayFetch(server, `${joinDomainsPath(tenantId)}/${encodeURIComponent(domain)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+function invitationsPath(tenantId: string): string {
+  return `/tenants/${encodeURIComponent(tenantId)}/invitations`;
+}
+
+/** Every invitation to a workspace, revoked and spent ones included. Admins and owners only. */
+export async function fetchInvitations(
+  server: SwitchServer,
+  tenantId: string
+): Promise<Invitation[]> {
+  const res = await gatewayFetch(server, invitationsPath(tenantId), { authenticated: true });
+  return ((await res.json()) as InvitationJson[]).map(mapInvitation);
+}
+
+/**
+ * Mint an invitation to a workspace, and e-mail it when it names an address
+ * and the server has mail set up.
+ *
+ * The token comes back once, here, and never again: the server stores a hash.
+ */
+export async function createInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  params: {
+    role: WorkspaceRole;
+    email: string | null;
+    expiresInHours: number;
+    usesRemaining: number;
+  }
+): Promise<{ invitation: Invitation; token: string; emailDelivery: InvitationEmailDelivery }> {
+  const res = await gatewayFetch(server, invitationsPath(tenantId), {
+    authenticated: true,
+    method: 'POST',
+    body: {
+      role: params.role,
+      email: params.email,
+      expires_in_hours: params.expiresInHours,
+      uses_remaining: params.usesRemaining,
+    },
+  });
+  const json = (await res.json()) as InvitationJson & { token: string; email_delivery?: string };
+  return {
+    invitation: mapInvitation(json),
+    token: json.token,
+    emailDelivery: mapDelivery(json.email_delivery),
+  };
+}
+
+export async function revokeInvitation(
+  server: SwitchServer,
+  tenantId: string,
+  invitationId: string
+): Promise<Invitation> {
+  const res = await gatewayFetch(
+    server,
+    `${invitationsPath(tenantId)}/${encodeURIComponent(invitationId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return mapInvitation((await res.json()) as InvitationJson);
+}
+
+/**
+ * Whether this server e-mails an invitation that names an address, or only
+ * mints the link for the admin to send.
+ *
+ * Null on a server older than e-mailed invitations: one without the session
+ * route answers 404, and one with it but without the field predates the
+ * feature. Neither sends an e-mail.
+ */
+export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boolean | null> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  const json = (await res.json()) as { invite_email_enabled?: unknown };
+  if (json.invite_email_enabled === undefined) return null;
+  if (typeof json.invite_email_enabled !== 'boolean') {
+    throw new GatewayError(
+      'http',
+      `${server.name} reported an unreadable invite_email_enabled: ${String(json.invite_email_enabled)}`
+    );
+  }
+  return json.invite_email_enabled;
 }
 
 /** Options for `registerKnownAgent`, matching the gateway's
@@ -444,67 +901,6 @@ export async function fetchAgentRooms(
   }));
 }
 
-/** The agent's current known-agent options (the last validated payload) and
- * its derived connection model, from `GET /agents/{id}`. */
-export type RemoteAgentOptions = {
-  options: Record<string, unknown>;
-  connectionModel: string | null;
-};
-
-/**
- * Fetch the agent's current known-agent options and connection model. Returns
- * empty options for agents with no known-agent type. Used to read-modify-write
- * the options payload (the PATCH endpoint is a full replace, not a merge).
- */
-export async function fetchAgentOptions(
-  server: SwitchServer,
-  agentId: string
-): Promise<RemoteAgentOptions> {
-  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
-    authenticated: true,
-  });
-  const json = (await res.json()) as {
-    known_agent_options?: Record<string, unknown> | null;
-    connection_model?: string | null;
-  };
-  return {
-    options: json.known_agent_options ?? {},
-    connectionModel: json.connection_model ?? null,
-  };
-}
-
-/**
- * Replace a known-agent's options (`PATCH /agents/{id}/options`). The gateway
- * re-derives the `integration_profile` from the new options, so this is the one
- * write path that keeps options and connection model in sync. The body must be
- * the FULL options payload — callers read current options first and merge.
- */
-export async function updateKnownAgentOptions(
-  server: SwitchServer,
-  agentId: string,
-  options: Record<string, unknown>
-): Promise<void> {
-  await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/options`, {
-    authenticated: true,
-    method: 'PATCH',
-    body: { options },
-  });
-}
-
-/**
- * Toggle the agent's `auto_session` option, preserving all other options.
- * Read-modify-writes through `updateKnownAgentOptions` so the gateway rebuilds
- * the connection model (`auto_session` ⇄ `session_addressable`).
- */
-export async function setAutoSession(
-  server: SwitchServer,
-  agentId: string,
-  enabled: boolean
-): Promise<void> {
-  const { options } = await fetchAgentOptions(server, agentId);
-  await updateKnownAgentOptions(server, agentId, { ...options, auto_session: enabled });
-}
-
 /**
  * Fetch an agent's scoped addressing policy (CHOO-1585) from `GET /agents/{id}`.
  * Returns null when the agent is open (no policy set).
@@ -634,6 +1030,47 @@ export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]
   const res = await gatewayFetch(server, '/collaborations', { authenticated: true });
   const json = (await res.json()) as BridgeJson[];
   return json.map(mapBridge);
+}
+
+/**
+ * The messaging platforms this deployment has its own app for, which a
+ * workspace can install with the platform's OAuth consent screen instead of
+ * registering an app and pasting its tokens. Empty on a deployment that
+ * registered none.
+ *
+ * A 404 is a server from before the route existed; it has no app to install
+ * either, so it answers empty rather than failing the connect dialog.
+ */
+export async function fetchInstallablePlatforms(server: SwitchServer): Promise<string[]> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/messaging-apps', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return [];
+    throw cause;
+  }
+  const json = (await res.json()) as { platforms: string[] };
+  return json.platforms;
+}
+
+/**
+ * Start installing the deployment's app for `platform` into the workspace the
+ * session is bound to. Returns the platform's consent URL, which must be
+ * opened in a real browser: the platform refuses to render it in a frame, and
+ * the server finishes the install on its own public callback, so nothing comes
+ * back to Switch Console but the new bridge.
+ */
+export async function beginMessagingAppInstall(
+  server: SwitchServer,
+  platform: string
+): Promise<string> {
+  const res = await gatewayFetch(
+    server,
+    `/messaging-apps/${encodeURIComponent(platform)}/install`,
+    { authenticated: true, method: 'POST' }
+  );
+  const json = (await res.json()) as { authorize_url: string };
+  return json.authorize_url;
 }
 
 /** Field names that hold a credential and must be masked on input. Mirrors the

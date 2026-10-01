@@ -29,5 +29,5 @@ export async function manageAgentSidecar(
   // else took. Update and Restart stop first so the new bundle is what starts.
   if (action !== 'start')
     await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'explicit');
-  await applyControllerState(agentId, 'explicit');
+  await applyControllerState(agentId, 'explicit', 'host');
 }

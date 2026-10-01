@@ -2,15 +2,15 @@ import { useQuery } from '@tanstack/react-query';
 import { Check, Link2, MessageSquare, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import { DialogContentArea, DialogFooter } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { BridgeIdentitySearch } from './bridge-identity-search';
 import { connectedAppsSummary, LINK_ACCOUNTS_LATER } from './link-accounts-prose';
@@ -28,14 +28,10 @@ import { useMyIdentities } from './use-my-identities';
 export const LinkAccountsStep = observer(function LinkAccountsStep({
   serverId,
   serverName,
-  step,
-  of,
   onDone,
 }: {
   serverId: string;
   serverName: string;
-  step: number;
-  of: number;
   onDone: () => void;
 }) {
   // Which app's directory is open, or null while the list is. Linking happens
@@ -43,63 +39,81 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
   // to and give the user two Backs meaning different things.
   const [linking, setLinking] = useState<RemoteBridge | null>(null);
 
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', serverId],
-    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
+    queryKey: ['remote-bridges', workspaceId],
+    queryFn: () => rpc.workspaces.listBridges(workspaceId as string),
+    enabled: workspaceId !== null,
   });
-  const { identities } = useMyIdentities(serverId);
+  // A disabled query never leaves its pending state, so without this the page
+  // would spin on "reading the apps" forever and never say that it is not
+  // reading anything. Messaging apps hang off a workspace; with none in scope
+  // there is nothing to list and nothing to link an account to.
+  const noWorkspace =
+    workspaceId === null
+      ? new Error(`Your account has no workspace on ${serverName} to link accounts in.`)
+      : null;
+  const { identities } = useMyIdentities(workspaceId);
 
-  if (linking) {
+  // The footer's Back and the pager's back arrow are the same move, so they
+  // read one const.
+  const goBack = () => setLinking(null);
+
+  if (linking && workspaceId !== null) {
     return (
-      <>
-        <WizardStepHeader
-          title={`Link your ${bridgePlatformLabel(linking.type)} account`}
-          step={step}
-          of={of}
-        />
-        <DialogContentArea className="pt-0">
-          <div className="flex w-full flex-col gap-4">
-            <p className="text-sm text-foreground-muted">
-              Find yourself in {linking.displayName} and tell Switch that account is you.
-            </p>
-            <BridgeIdentitySearch
-              serverId={serverId}
-              bridgeId={linking.id}
-              bridgeDisplayName={linking.displayName}
-              platform={bridgePlatformLabel(linking.type)}
-              directorySearchSupported={linking.directorySearchSupported}
-              autoFocus
-              onClaimed={() => setLinking(null)}
-            />
-          </div>
-        </DialogContentArea>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setLinking(null)}>
+      <WizardFrame
+        title={`Link your ${bridgePlatformLabel(linking.type)} account`}
+        subtitle={null}
+        pager={{
+          pageName: `Link ${bridgePlatformLabel(linking.type)}`,
+          onBack: goBack,
+          onNext: null,
+        }}
+        footer={
+          <Button variant="outline" onClick={goBack}>
             Back
           </Button>
-        </DialogFooter>
-      </>
+        }
+      >
+        <div className="flex w-full flex-col gap-4">
+          <p className="text-sm text-foreground-muted">
+            Find yourself in {linking.displayName} and tell Switch that account is you.
+          </p>
+          <BridgeIdentitySearch
+            workspaceId={workspaceId}
+            bridgeId={linking.id}
+            bridgeDisplayName={linking.displayName}
+            platform={bridgePlatformLabel(linking.type)}
+            directorySearchSupported={linking.directorySearchSupported}
+            autoFocus
+            onClaimed={() => setLinking(null)}
+          />
+        </div>
+      </WizardFrame>
     );
   }
 
   return (
-    <>
-      <WizardStepHeader title="Link your messaging accounts" step={step} of={of} />
-      <DialogContentArea className="pt-0">
-        <BridgeList
-          serverName={serverName}
-          bridges={bridgesQuery.isSuccess ? orderBridges(bridgesQuery.data) : null}
-          identities={identities}
-          isPending={bridgesQuery.isPending}
-          error={bridgesQuery.isError ? bridgesQuery.error : null}
-          onRetry={() => void bridgesQuery.refetch()}
-          onLink={setLinking}
-        />
-      </DialogContentArea>
-      <DialogFooter>
-        <ConfirmButton onClick={onDone}>Done</ConfirmButton>
-      </DialogFooter>
-    </>
+    <WizardFrame
+      title="Link your messaging accounts"
+      subtitle={null}
+      /* The last page of the flow, and signing in cannot be undone by walking
+         backwards, so there is nowhere for either arrow to go. */
+      pager={{ pageName: 'Link accounts', onBack: null, onNext: null }}
+      footer={<ConfirmButton onClick={onDone}>Done</ConfirmButton>}
+    >
+      <BridgeList
+        serverName={serverName}
+        bridges={bridgesQuery.isSuccess ? orderBridges(bridgesQuery.data) : null}
+        identities={identities}
+        isPending={noWorkspace === null && bridgesQuery.isPending}
+        error={noWorkspace ?? (bridgesQuery.isError ? bridgesQuery.error : null)}
+        onRetry={() =>
+          void (noWorkspace === null ? bridgesQuery.refetch() : workspacesStore.refresh())
+        }
+        onLink={setLinking}
+      />
+    </WizardFrame>
   );
 });
 

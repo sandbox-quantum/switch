@@ -13,6 +13,7 @@ import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
   roomCommand,
+  roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
@@ -549,6 +550,40 @@ export async function runSharedHost(
       }
     };
 
+    /**
+     * A room message reached a conversation that cannot continue as it was —
+     * its provider lost it, or a reset was cut off. Nobody in the room can
+     * press "Start a fresh conversation" for it, so the session does: the
+     * message would otherwise wait unseen for someone at the Console. The
+     * transcript keeps everything said before.
+     */
+    const startFreshFor = async (event: { roomId: string; messageId: string }): Promise<void> => {
+      await host!.startingFreshForRoom();
+      const outcome = await run(
+        {
+          contractVersion: 1,
+          commandId: roomFreshStartCommandId(agentId, event.roomId, event.messageId),
+          sessionId: options.session.sessionId,
+          epoch: host!.snapshot().session.epoch,
+          origin: {
+            surface: 'switch-web',
+            actorId: agentId,
+            roomId: null,
+            threadId: null,
+            messageId: null,
+          },
+          body: { type: 'session.reset' },
+        },
+        null
+      );
+      if (typeof outcome === 'string')
+        throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
+      if (outcome.status === 'rejected' || outcome.status === 'unknown')
+        throw new Error(
+          `Could not start a fresh conversation for a room message: ${outcome.message ?? outcome.code ?? outcome.status}`
+        );
+    };
+
     identify(host.snapshot().session);
     // A parent that started this host talks to it over IPC: commands and room
     // messages come down the pipe, and every recorded event goes up it.
@@ -666,8 +701,11 @@ export async function runSharedHost(
         throw new Error(
           'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
         );
-      if (host.resetDecisionPending) heldForDecision = true;
-      else if (heldForDecision) {
+      if (host.resetDecisionPending) {
+        heldForDecision = true;
+        const first = rooms?.pending()[0];
+        if (first) await startFreshFor(first);
+      } else if (heldForDecision) {
         heldForDecision = false;
         const held = rooms?.pending().length ?? 0;
         if (held) await host.roomBacklogDelivered(held);

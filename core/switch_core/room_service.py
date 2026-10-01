@@ -127,7 +127,9 @@ class RoomCreateConfig(BaseModel):
     acting_user_id: str | None = None
     acting_is_admin: bool = False
     # Not derivable from `created_by`, which holds the *agent's owner* on the
-    # agent path. Stamped into the room's metadata so it survives.
+    # agent path. Stamped into the room's metadata so it survives. `system` is
+    # a channel the platform delivered to the bridge, so it is the one kind
+    # whose `external_channel_id` the bridge is not asked to vouch for.
     created_by_kind: Literal["user", "agent", "system"] = "user"
     # Provisioned from a room template rather than created directly.
     from_template: bool = False
@@ -373,6 +375,20 @@ class RoomService:
             )
         return default.id
 
+    async def _require_tenant_bridge(self, bridge_id: str) -> None:
+        """Refuse a bridge id that is not one of the bound tenant's bridges.
+
+        The collaboration lifecycle's registry of running bridges is
+        process-wide and holds every tenant's, so finding a bridge there says
+        nothing about whether this caller may use it. The bridge's row, read
+        under the tenant's row-level security, does. Checked before anything
+        is provisioned on the platform behind it.
+        """
+        async with self._session_factory() as session:
+            bridge = await self._collab_bridge_store.get(session, bridge_id)
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+
     async def _require_channel_creation(self, bridge_id: str) -> None:
         """Refuse to make a channel on a connection an operator has withheld it
         from, before anything is provisioned.
@@ -384,7 +400,9 @@ class RoomService:
         """
         async with self._session_factory() as session:
             bridge = await self._collab_bridge_store.get(session, bridge_id)
-        if bridge is None or bridge.channel_creation_enabled:
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        if bridge.channel_creation_enabled:
             return
         raise ChannelCreationUnsupported(
             f"Creating channels is turned off for the '{bridge.display_name}' "
@@ -471,9 +489,19 @@ class RoomService:
         bridge_id = await self._resolve_bridge_id(config)
         bridge_core = None
         if bridge_id:
+            await self._require_tenant_bridge(bridge_id)
             bridge_core = self._collab_lifecycle.get(bridge_id)
             if bridge_core is None:
                 raise ValueError(f"Bridge not running: {bridge_id}")
+
+        # A channel the platform delivered to this bridge is its own by
+        # construction; one named by the caller has to be shown to be.
+        if (
+            bridge_core
+            and external_channel_id is not None
+            and config.created_by_kind != "system"
+        ):
+            await bridge_core.adapter.require_bindable_channel(external_channel_id)
 
         if bridge_core and external_channel_id is not None and channel_type is None:
             channel_type = await bridge_core.adapter.get_channel_type(
@@ -1133,6 +1161,7 @@ class RoomService:
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
 
+        await self._require_tenant_bridge(bridge_id)
         bridge_core = self._collab_lifecycle.get(bridge_id)
 
         if external_channel_id is None and bridge_core is not None:
@@ -1199,7 +1228,8 @@ class RoomService:
         back onto a channel it previously used (channels are left in place on
         bridge change, so the old one still exists). The caller is responsible
         for the id being a real channel on that bridge whose bridge bot is a
-        member; agents are still (re-)added to it.
+        member, and the bridge refuses one that is not its own to bind
+        (`require_bindable_channel`); agents are still (re-)added to it.
 
         Human users are **not** carried over. A user's identity is
         bridge-specific (a Mattermost account is not the same as a Slack
@@ -1229,6 +1259,7 @@ class RoomService:
         if old_bridge_id == bridge_id:
             raise ValueError(f"Room {room_id} is already bound to bridge {bridge_id}")
 
+        await self._require_tenant_bridge(bridge_id)
         new_bridge = self._collab_lifecycle.get(bridge_id)
         if new_bridge is None:
             raise ValueError(f"Bridge not running: {bridge_id}")
@@ -1246,6 +1277,8 @@ class RoomService:
                 room.description,
                 channel_type=resolved_channel_type,
             )
+        else:
+            await new_bridge.adapter.require_bindable_channel(external_channel_id)
 
         # One binding for everything from here on: the bridge-column update,
         # and the invite/kick below, both write rows scoped to this room's
@@ -1444,6 +1477,7 @@ class RoomService:
         Raises when the bridge is not running, since nothing can be looked up
         on it then.
         """
+        await self._require_tenant_bridge(bridge_id)
         bridge_core = self._collab_lifecycle.get(bridge_id)
         if bridge_core is None:
             raise ValueError("the room's messaging app is not running")

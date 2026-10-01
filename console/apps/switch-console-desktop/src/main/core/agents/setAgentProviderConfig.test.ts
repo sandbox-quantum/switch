@@ -15,7 +15,6 @@ const getAgentLocation = vi.fn(async (_agent: unknown) => ({
   sshHost: null,
 }));
 const getRemoteAgentLocation = vi.fn();
-const listAutoSessionAgentIds = vi.fn();
 const ensureRemoteWatcher = vi.fn(async (_id: string) => {});
 const removeAgentLaunchProfile = vi.fn(
   async (_agent: unknown, _location: unknown, _slug: string) => {}
@@ -33,9 +32,6 @@ vi.mock('./updateAgent', () => ({ updateAgent: (p: unknown) => updateAgent(p) })
 vi.mock('./agent-location', () => ({
   getAgentLocation: (a: unknown) => getAgentLocation(a),
   getRemoteAgentLocation: (a: unknown) => getRemoteAgentLocation(a),
-}));
-vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
-  listAutoSessionAgentIds: () => listAutoSessionAgentIds(),
 }));
 vi.mock('./remote-watcher', () => ({
   ensureRemoteWatcher: (id: string) => ensureRemoteWatcher(id),
@@ -60,7 +56,6 @@ describe('setAgentProviderConfig', () => {
     getAgentById.mockResolvedValue({ id: 'agent-1', name: 'codex.yak', locationId: 'loc-1' });
     getAgentLocation.mockClear();
     getRemoteAgentLocation.mockReset();
-    listAutoSessionAgentIds.mockReset();
     ensureRemoteWatcher.mockClear();
     removeAgentLaunchProfile.mockClear();
   });
@@ -95,27 +90,16 @@ describe('setAgentProviderConfig', () => {
     );
   });
 
-  it('re-pushes the spec to a remote agent whose watcher is running (auto_session on)', async () => {
+  it('re-pushes the spec to a remote agent’s watcher', async () => {
     getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1', sshHost: 'vm' });
-    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
 
     await setAgentProviderConfig({ agentId: 'agent-1', config: CONFIG });
 
     expect(ensureRemoteWatcher).toHaveBeenCalledWith('agent-1');
   });
 
-  it('skips the re-push for a remote agent with auto_session off (nothing running to refresh)', async () => {
-    getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1', sshHost: 'vm' });
-    listAutoSessionAgentIds.mockResolvedValue([]);
-
-    await setAgentProviderConfig({ agentId: 'agent-1', config: CONFIG });
-
-    expect(ensureRemoteWatcher).not.toHaveBeenCalled();
-  });
-
   it('surfaces an unreachable VM rather than reporting a save that only half landed', async () => {
     getRemoteAgentLocation.mockResolvedValue({ id: 'loc-1', sshHost: 'vm' });
-    listAutoSessionAgentIds.mockResolvedValue(['agent-1']);
     ensureRemoteWatcher.mockRejectedValueOnce(new Error('ssh: connect failed'));
 
     await expect(setAgentProviderConfig({ agentId: 'agent-1', config: CONFIG })).rejects.toThrow(

@@ -1,5 +1,6 @@
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
 import { getAgentById } from './getAgentById';
 import { updateAgent } from './updateAgent';
@@ -22,14 +23,19 @@ export async function assignAgentServer(params: {
   if (!agent.switchAgentId) {
     throw new Error(`Agent ${params.agentId} has no Switch agent id to verify`);
   }
-  const server = await getServer(params.serverId);
-  if (!server) {
-    throw new Error(`No Switch server with id ${params.serverId}`);
-  }
+  // Resolved before the call, not after it: the workspace the agent would be
+  // written into is the one the question has to be asked of, or a `found` here
+  // means found somewhere else.
+  const workspace = await requireWorkspaceForServer(params.serverId);
+  const switchAgentId = agent.switchAgentId;
 
   let result: AgentVerifyResult;
   try {
-    result = (await agentExistsOnServer(server, agent.switchAgentId)) ? 'found' : 'not-found';
+    result = (await withWorkspaceSession(workspace.id, (server) =>
+      agentExistsOnServer(server, switchAgentId)
+    ))
+      ? 'found'
+      : 'not-found';
   } catch (cause) {
     if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
       return 'unauthenticated';
@@ -38,7 +44,7 @@ export async function assignAgentServer(params: {
   }
 
   if (result === 'found') {
-    await updateAgent({ agentId: params.agentId, serverId: params.serverId });
+    await updateAgent({ agentId: params.agentId, workspaceId: workspace.id });
   }
   return result;
 }

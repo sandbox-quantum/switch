@@ -443,7 +443,16 @@ export class HostedSession {
       type: 'notice',
       level: 'info',
       code: 'ROOM_BACKLOG_DELIVERED',
-      message: `${count} room message(s) received while the conversation needed an explicit reset are now being delivered to the fresh conversation.`,
+      message: `${count} room message(s) received while the conversation could not continue are now being delivered to the fresh conversation.`,
+    });
+  }
+
+  startingFreshForRoom(): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'warning',
+      code: 'FRESH_START_FOR_ROOM',
+      message: `A room message arrived while the conversation could not continue (${this.decisionCode}). Starting a fresh conversation to answer it; earlier messages stay in the transcript.`,
     });
   }
 

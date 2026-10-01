@@ -175,6 +175,14 @@ class InstallGrant:
     where the alternative is a row of opaque platform ids. It is the customer's
     own text and is never matched on.
 
+    `bot_token` is `None` for a platform whose credential is not per-install.
+    A Discord install grants no per-guild token — the bot authenticates to
+    every guild with the one deployment-level application token — so its grant
+    is a guild id and a name and nothing to store. A Slack grant always carries
+    one; the requirement lives on that platform's `connection_config` validator,
+    not here (`SlackConnectionConfig.bot_token` is required), so an optional
+    field here does not weaken it.
+
     `scopes` is the platform's own spelling, kept verbatim. A scope string that
     means nothing to us is still the thing to show an operator asking why a
     call was refused, and parsing it into a list here would be a parser to keep
@@ -183,7 +191,7 @@ class InstallGrant:
 
     external_workspace_id: str
     workspace_name: str
-    bot_token: str
+    bot_token: str | None
     scopes: str
 
 
@@ -307,6 +315,20 @@ class MessagingAppInstaller(ABC):
         Runs on a payload that has been authenticated and not yet routed, so
         like :meth:`workspace_of_event` it must not touch the database.
         """
+
+    def workspace_of_bridge(
+        self, connection_config: Mapping[str, object]
+    ) -> str | None:
+        """The workspace a bridge on the deployment's own credential serves.
+
+        Set by a platform whose installed bridges all run on one credential
+        the deployment holds (Discord's one bot), so a bridge naming a
+        workspace is a bridge that can reach it. Such a bridge may only start
+        for the tenant whose live install that workspace is, and this is what
+        names the workspace to check. None for every other bridge, which
+        reaches only what its own credential reaches.
+        """
+        return None
 
     @abstractmethod
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:

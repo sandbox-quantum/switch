@@ -25,6 +25,10 @@ const journalTags = journal.entries.map((entry) => entry.tag);
 const sqlTags = readdirSync(drizzleDir)
   .filter((name) => name.endsWith('.sql'))
   .map((name) => name.replace(/\.sql$/, ''));
+const snapshotIndices = readdirSync(`${drizzleDir}/meta`)
+  .map((name) => /^(\d+)_snapshot\.json$/.exec(name))
+  .filter((match) => match !== null)
+  .map((match) => Number(match[1]));
 
 describe('migration journal registration', () => {
   it('finds the migration files at all, so the checks below are not vacuous', () => {
@@ -40,6 +44,23 @@ describe('migration journal registration', () => {
     // set at once rather than whichever entry the loop reached first.
     const missing = journalTags.filter((tag) => !sqlTags.includes(tag));
     expect(missing).toEqual([]);
+  });
+
+  /**
+   * A hand-written migration is easy to commit without one, and nothing at
+   * runtime notices: the runner reads the journal and the `.sql`, never `meta/`.
+   *
+   * drizzle-kit does, and it takes the *highest-numbered snapshot file* as the
+   * state to diff against rather than the last journal entry — a gap is not an
+   * error it reports. So the next `db:generate` diffs the schema against the
+   * last snapshot before the gap and re-emits everything since as one new
+   * migration. On any machine that already ran the missing one, that lands as
+   * `table workspaces already exists`, and it takes `db:fixtures` with it.
+   */
+  it('has a meta snapshot for every journal entry', () => {
+    const missing = journal.entries.filter((entry) => !snapshotIndices.includes(entry.idx));
+
+    expect(missing.map((entry) => entry.tag)).toEqual([]);
   });
 
   it('numbers journal entries contiguously from zero', () => {

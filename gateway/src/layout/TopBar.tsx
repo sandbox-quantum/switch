@@ -1,6 +1,7 @@
 import MenuBookOutlined from "@mui/icons-material/MenuBookOutlined";
 import { Box, Button, Stack, Tooltip, Typography } from "@mui/material";
 import { useLocation } from "react-router";
+import { useAuth } from "../data/AuthContext";
 
 const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/ecosystem", "Ecosystem"],
@@ -10,13 +11,18 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/collaborations", "Messaging Apps"],
   ["/registration-keys", "API Keys"],
   ["/users", "Users"],
+  ["/workspace", "Workspace"],
 ];
 
 const DOCS_URL = "https://docs.flintai.dev/flintai/switch/getting-started";
 
 export default function TopBar() {
   const { pathname } = useLocation();
+  const { session } = useAuth();
   const section = SECTION_LABELS.find(([prefix]) => pathname.startsWith(prefix))?.[1];
+  const crumbs = [session?.tenant?.name, section].filter(
+    (crumb): crumb is string => Boolean(crumb),
+  );
 
   return (
     <Stack
@@ -31,16 +37,16 @@ export default function TopBar() {
     >
       <Typography sx={{ fontSize: "0.9375rem", fontWeight: 500, letterSpacing: "-0.02em", px: 2 }}>
         Switch
-        {section && (
-          <>
+        {crumbs.map((crumb, i) => (
+          <Box component="span" key={i}>
             <Box component="span" sx={{ opacity: 0.4, mx: 1 }}>
               /
             </Box>
-            <Box component="span" sx={{ fontWeight: 700 }}>
-              {section}
+            <Box component="span" sx={{ fontWeight: i === crumbs.length - 1 ? 700 : 500 }}>
+              {crumb}
             </Box>
-          </>
-        )}
+          </Box>
+        ))}
       </Typography>
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>

@@ -7,12 +7,11 @@ import { redactSecrets } from '@main/lib/file-logger';
 import { log } from '@main/lib/logger';
 import { roomHealthChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { ConnectionHealthMonitor } from './connection-health-monitor';
-import { remoteWatcherStatus } from './diagnostics';
+import { hostWatcherStatus } from './host-watcher-snapshot';
 import { localWatcherControl } from './local-host';
-import { sidecarControl } from './sidecar-control';
 
-/** How often a sidecar that could not be reached is tried again. */
-const SIDECAR_RETRY_MS = 10_000;
+/** How often each remote agent's host is read for its watchers' state. */
+const REMOTE_POLL_MS = 5_000;
 
 const monitor = new ConnectionHealthMonitor({
   linkedAgents: async (serverId) => {
@@ -33,13 +32,12 @@ const monitor = new ConnectionHealthMonitor({
   isRemote: async (agent) => !!(await getAgentLocation(agent)).sshHost,
   stoppedAgentIds: listStoppedControllerAgentIds,
   local: localWatcherControl,
-  remote: sidecarControl,
-  remoteStatus: remoteWatcherStatus,
+  remoteWatcher: hostWatcherStatus,
   emit: (serverId, snapshot) => events.emit(roomHealthChangedChannel, snapshot, serverId),
   redact: redactSecrets,
   logError: (message, context) => log.error(message, context),
   now: () => Date.now(),
-  retryMs: SIDECAR_RETRY_MS,
+  pollMs: REMOTE_POLL_MS,
 });
 
 /**

@@ -4,12 +4,15 @@ import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import { readSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type {
   OnboardAgentError,
@@ -20,12 +23,11 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { createAgent } from './createAgent';
 import { detectSwitchAgent } from './detect';
 import { detectSwitchAgentRemote } from './detect-remote';
 import { importAgentConfig } from './import-agent-config';
-import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeAgentNeutralSettings } from './write-switch-settings';
 
 /**
@@ -87,33 +89,32 @@ async function verifyAgentOnServer(
   agentId: string,
   dir: string
 ): Promise<OnboardAgentError | null> {
-  const server = await getServer(serverId);
-  if (!server) {
-    throw new Error(`No Switch server with id ${serverId}`);
-  }
-  try {
-    const exists = await agentExistsOnServer(server, agentId);
-    if (!exists) {
-      return {
-        type: 'switch-agent-not-on-server',
-        dir,
-        serverId: server.id,
-        serverName: server.name,
-        agentId,
-      };
+  const workspace = await requireWorkspaceForServer(serverId);
+  return withWorkspaceSession(workspace.id, async (server) => {
+    try {
+      const exists = await agentExistsOnServer(server, agentId);
+      if (!exists) {
+        return {
+          type: 'switch-agent-not-on-server',
+          dir,
+          serverId: server.id,
+          serverName: server.name,
+          agentId,
+        };
+      }
+      return null;
+    } catch (cause) {
+      if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
+        return {
+          type: 'switch-server-unauthenticated',
+          dir,
+          serverId: server.id,
+          serverName: server.name,
+        };
+      }
+      throw cause;
     }
-    return null;
-  } catch (cause) {
-    if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
-      return {
-        type: 'switch-server-unauthenticated',
-        dir,
-        serverId: server.id,
-        serverName: server.name,
-      };
-    }
-    throw cause;
-  }
+  });
 }
 
 /**
@@ -188,22 +189,24 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     }
   }
 
+  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
+
   const name = basenameFromAnyPath(params.dir) || params.providerId;
 
   // Every agent has a config file. This directory was set up outside this
   // Console, so whatever its Claude Code definition holds becomes the config.
   // Written before the agent row, so a failure here leaves no agent behind that
   // has none.
-  const workspace = await resolveWorkspaceFsFor(sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(sshHost, params.dir);
   try {
     await importAgentConfig({
-      workspaceFs: workspace.fs,
+      workdirFs: workdir.fs,
       repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
       name,
       providerConfig: null,
     });
   } finally {
-    workspace.close();
+    workdir.close();
   }
 
   const location = await ensureLocation({ sshHost, dir: params.dir, name: params.name });
@@ -215,7 +218,7 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     providerId: params.providerId,
     switchAgentId: switchAgent.agentId,
     apiEndpoint: switchAgent.apiEndpoint,
-    serverId: params.serverId,
+    workspaceId: targetWorkspace.id,
     // Honor an explicit choice from the add-agent modal; otherwise default by
     // run location — remote agents run unattended on their VM with no operator
     // to answer permission prompts, so default them to bypass, local off.
@@ -247,16 +250,9 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     }
   }
 
-  // Seed the local auto_session mirror + start the watcher from the gateway
-  // profile so an agent registered with auto_session on starts watching now,
-  // without the operator toggling it off→on (CHOO-1185). Best-effort: a gateway
-  // hiccup must not fail onboarding — the settings panel reconciles later.
-  await reconcileAgentAutoSessionFromGateway(agent.id).catch((error) => {
-    log.warn('onboardAgent: failed to reconcile auto_session for new agent', {
-      agentId: agent.id,
-      error: String(error),
-    });
-  });
+  // Creating the agent is the ask for its controller. It does not fail
+  // onboarding when the controller cannot come up yet; it is retried.
+  await autoSessionWatcher.bringUp(agent.id, 'explicit');
 
   await locationManager.openLocation(location);
   agentEvents._emit('agent:created', agent, ONBOARD_ENTRY_POINT);

@@ -4,9 +4,12 @@ import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reac
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import type {
+  ConnectRemoteServerResult,
   DeployedTelemetry,
   DockerAvailability,
   ManagedServerUpgrade,
+  RemoteStackProbe,
+  StackRegister,
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -37,6 +40,9 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
     deployedTelemetry: null,
     message: null,
     error: null,
+    notice: null,
+    recordWarning: null,
+    waitingFor: null,
   };
 }
 
@@ -51,6 +57,13 @@ export class RemoteServerStore {
   private readonly logsByHost = new Map<string, string[]>();
   private readonly dockerByHost = new Map<string, DockerAvailability>();
   private readonly busyHosts = new Set<string>();
+  private readonly probes = new Map<string, RemoteStackProbe>();
+  private readonly probingHosts = new Set<string>();
+  /** Who uses each host's stack, as recorded on the host. */
+  private readonly registers = new Map<string, StackRegister>();
+  /** Why a register could not be read, kept apart from `error`: a record that
+   * failed to load says nothing about whether the server works. */
+  private readonly registerErrors = new Map<string, string>();
   /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
   /** Diagnostics for the same failure, rendered under `error` rather than in it. */
@@ -122,8 +135,35 @@ export class RemoteServerStore {
   }
 
   isTransitioning(sshHost: string): boolean {
-    const phase = this.phaseFor(sshHost);
-    return this.busyHosts.has(sshHost) || phase === 'starting' || phase === 'stopping';
+    const status = this.statusFor(sshHost);
+    return (
+      this.busyHosts.has(sshHost) ||
+      status.phase === 'starting' ||
+      status.phase === 'stopping' ||
+      status.waitingFor !== null
+    );
+  }
+
+  /** Have the main process look at a stack shown as stopped again, since a
+   * stopped one is sent nothing that would notice another Console starting it.
+   * What it finds arrives as a status. */
+  async refresh(sshHost: string): Promise<void> {
+    if (this.isHostBlocked(sshHost)) return;
+    try {
+      await rpc.remoteSwitchServer.refresh(sshHost);
+    } catch (cause) {
+      this.setError(cause, 'Could not check the server again.');
+    }
+  }
+
+  /** Stop waiting for another Console's hold on the host's stack. Whatever was
+   * waiting ends having changed nothing, and says so itself. */
+  async cancelWait(sshHost: string): Promise<void> {
+    try {
+      await rpc.remoteSwitchServer.cancelWait(sshHost);
+    } catch (cause) {
+      this.setError(cause, 'Could not stop waiting for the server.');
+    }
   }
 
   /** Set when the host's switch-core differs from the version this build pins. */
@@ -148,6 +188,24 @@ export class RemoteServerStore {
 
   dockerFor(sshHost: string): DockerAvailability | null {
     return this.dockerByHost.get(sshHost) ?? null;
+  }
+
+  /** What the host was last found to have of a stack, or null before it has
+   * been looked at. */
+  probeFor(sshHost: string): RemoteStackProbe | null {
+    return this.probes.get(sshHost) ?? null;
+  }
+
+  isProbing(sshHost: string): boolean {
+    return this.probingHosts.has(sshHost);
+  }
+
+  registerFor(sshHost: string): StackRegister | null {
+    return this.registers.get(sshHost) ?? null;
+  }
+
+  registerErrorFor(sshHost: string): string | null {
+    return this.registerErrors.get(sshHost) ?? null;
   }
 
   async init(): Promise<void> {
@@ -192,6 +250,151 @@ export class RemoteServerStore {
     }
   }
 
+  /**
+   * Look at what `sshHost` has of a stack, so the setup step can offer the one
+   * action that is safe there — Connect to a running stack, Start a stopped or
+   * absent one, neither for one this account cannot read.
+   */
+  async probe(sshHost: string): Promise<void> {
+    if (this.isHostBlocked(sshHost)) return;
+    runInAction(() => this.probingHosts.add(sshHost));
+    try {
+      const probe = await rpc.remoteSwitchServer.probe(sshHost);
+      runInAction(() => {
+        this.probes.set(sshHost, probe);
+        if (probe.kind === 'docker-unavailable') {
+          this.dockerByHost.set(sshHost, {
+            available: false,
+            reason: probe.reason,
+            detail: probe.detail,
+          });
+        }
+      });
+    } catch (cause) {
+      // Kept as the host's answer rather than as a page error: the setup step
+      // must stop saying it is looking, and offer to look again.
+      const { headline } = describeFailure(cause, 'Could not check the host for a Switch server.');
+      runInAction(() => this.probes.set(sshHost, { kind: 'unreadable', reason: headline }));
+    } finally {
+      runInAction(() => this.probingHosts.delete(sshHost));
+    }
+  }
+
+  /**
+   * Join the stack already running on `sshHost`. Anything short of joining it,
+   * a cancelled wait included, re-reads the host so the step shows what is
+   * there now — a stack found stopped offers Start instead.
+   */
+  async connect(sshHost: string, name: string): Promise<ConnectRemoteServerResult | null> {
+    runInAction(() => {
+      this.busyHosts.add(sshHost);
+      this.error = null;
+      this.errorDetail = null;
+      this.logsByHost.set(sshHost, []);
+    });
+    try {
+      const result = await rpc.remoteSwitchServer.connect({ sshHost, name });
+      if (result.kind === 'connected') {
+        await switchServersStore.init();
+        void this.loadRegister(sshHost);
+      } else if (result.kind === 'docker-unavailable') {
+        runInAction(() => {
+          this.dockerByHost.set(sshHost, {
+            available: false,
+            reason: result.reason,
+            detail: result.detail,
+          });
+          this.error = result.detail;
+        });
+      } else if (result.kind === 'unshared' || result.kind === 'error') {
+        runInAction(() => {
+          this.error = result.message;
+        });
+      }
+      if (result.kind !== 'connected') void this.probe(sshHost);
+      return result;
+    } catch (cause) {
+      this.setError(cause, 'Could not connect to the server.');
+      return null;
+    } finally {
+      runInAction(() => this.busyHosts.delete(sshHost));
+    }
+  }
+
+  /** Read who uses the stack on `sshHost` and what they last did. */
+  async loadRegister(sshHost: string): Promise<void> {
+    if (this.isHostBlocked(sshHost)) return;
+    try {
+      const register = await rpc.remoteSwitchServer.register(sshHost);
+      runInAction(() => {
+        this.registers.set(sshHost, register);
+        this.registerErrors.delete(sshHost);
+      });
+    } catch (cause) {
+      const { headline } = describeFailure(cause, 'Could not read who uses this server.');
+      runInAction(() => this.registerErrors.set(sshHost, headline));
+    }
+  }
+
+  /**
+   * Stop using the server on `sshHost` from this Console, leaving it running
+   * for everyone else. Agents are unlinked and kept, as for any removal.
+   * Returns false when it failed, with `error` saying why.
+   */
+  async disconnect(sshHost: string, serverId: string): Promise<boolean> {
+    runInAction(() => {
+      this.busyHosts.add(sshHost);
+      this.error = null;
+      this.errorDetail = null;
+    });
+    try {
+      await rpc.remoteSwitchServer.disconnect(sshHost);
+      this.forget(sshHost);
+      await switchServersStore.forgetRemovedServer(serverId);
+      await agentsStore.load();
+      return true;
+    } catch (cause) {
+      this.setError(cause, 'Could not disconnect from the server.');
+      return false;
+    } finally {
+      runInAction(() => this.busyHosts.delete(sshHost));
+    }
+  }
+
+  /**
+   * Delete the server on `sshHost` for everyone: reset its stack, then
+   * disconnect so this Console stops counting as one of its users. Returns
+   * false when it failed, with `error` saying why; a server whose stack could
+   * not be reset is kept.
+   */
+  async deleteForEveryone(sshHost: string, serverId: string): Promise<boolean> {
+    runInAction(() => {
+      this.busyHosts.add(sshHost);
+      this.error = null;
+      this.errorDetail = null;
+    });
+    try {
+      await rpc.remoteSwitchServer.reset(sshHost);
+    } catch (cause) {
+      this.setError(cause, 'Could not shut down the server’s stack, so it was not deleted.');
+      return false;
+    } finally {
+      runInAction(() => this.busyHosts.delete(sshHost));
+    }
+    return this.disconnect(sshHost, serverId);
+  }
+
+  /** Forget what was read about a host this Console no longer uses. */
+  forget(sshHost: string): void {
+    runInAction(() => {
+      this.statuses.delete(sshHost);
+      this.probes.delete(sshHost);
+      this.registers.delete(sshHost);
+      this.registerErrors.delete(sshHost);
+      this.logsByHost.delete(sshHost);
+    });
+  }
+
   async start(sshHost: string, name: string): Promise<void> {
     runInAction(() => {
       this.busyHosts.add(sshHost);
@@ -218,8 +421,11 @@ export class RemoteServerStore {
         runInAction(() => {
           this.error = result.message;
         });
+      } else if (result.kind === 'cancelled') {
+        // The user stopped waiting for another Console; nothing was changed.
       } else {
         await switchServersStore.init();
+        void this.loadRegister(sshHost);
       }
     } catch (cause) {
       this.setError(cause, 'Could not start the server.');
@@ -236,6 +442,7 @@ export class RemoteServerStore {
     });
     try {
       await rpc.remoteSwitchServer.stop(sshHost);
+      void this.loadRegister(sshHost);
     } catch (cause) {
       this.setError(cause, 'Could not stop the server.');
     } finally {
