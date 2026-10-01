@@ -115,7 +115,10 @@ Who may connect one:
 - **The first chat is an admin's.** It creates the organisation's Telegram
   connection, which is what turns Telegram on for it.
 - **After that, any member** may connect more chats and disconnect any one of
-  them, the last included. A chat is a room, and rooms are members'.
+  them, the last included. A chat is a room, and rooms are members'. A room
+  made private takes its chat with it: a member who cannot read the room does
+  not see the chat in the Telegram card, and one who cannot write to it cannot
+  disconnect it. Its owner and admins still can.
 - **Turning Telegram off is an admin's**: it is deleting the connection, and
   connections are admins'.
 

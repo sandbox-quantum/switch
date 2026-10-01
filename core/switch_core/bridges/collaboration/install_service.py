@@ -107,6 +107,7 @@ from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     MessagingInstall,
     MessagingInstallState,
+    Room,
     Tenant,
     User,
 )
@@ -937,6 +938,11 @@ class MessagingInstallService:
             if name:
                 names[install_id] = name
         return names
+
+    async def chat_rooms(self, session: AsyncSession) -> dict[str, Room]:
+        """The room each of the bound tenant's claimed chats still has, by
+        install id. An ended chat has let go of its room and is absent."""
+        return await self._store.rooms_for_tenant(session)
 
     def _installs_by_claim(self, platform: str) -> bool:
         try:
