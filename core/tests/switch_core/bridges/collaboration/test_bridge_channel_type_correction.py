@@ -12,9 +12,13 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.tenant_context import current_tenant_id, tenant_scope
 
 
 class _FakeSession:
+    def __init__(self) -> None:
+        self.commits = 0
+
     async def __aenter__(self) -> _FakeSession:
         return self
 
@@ -22,7 +26,7 @@ class _FakeSession:
         return None
 
     async def commit(self) -> None:
-        return None
+        self.commits += 1
 
 
 class _RoomStore:
@@ -30,9 +34,11 @@ class _RoomStore:
         self._rooms = rooms
         self._corrected = corrected
         self.corrections: list[tuple[str, str, str]] = []
+        self.tenants: list[str | None] = []
 
     async def get_by_bridge(self, session: Any, bridge_id: str) -> list[Any]:
         assert bridge_id == "bridge-1"
+        self.tenants.append(current_tenant_id())
         return self._rooms
 
     async def correct_channel_type(
@@ -44,6 +50,7 @@ class _RoomStore:
         channel_type: str,
     ) -> list[str]:
         self.corrections.append((bridge_id, external_channel_id, channel_type))
+        self.tenants.append(current_tenant_id())
         return self._corrected
 
 
@@ -66,8 +73,10 @@ class _Adapter:
 
 
 def _bridge(store: _RoomStore, adapter: _Adapter) -> SimpleNamespace:
+    session = _FakeSession()
     return SimpleNamespace(
-        _session_factory=_FakeSession,
+        session=session,
+        _session_factory=lambda: session,
         _room_store=store,
         _adapter=adapter,
         _bridge_id="bridge-1",
@@ -95,16 +104,20 @@ async def test_a_learned_type_corrects_this_bridges_rooms(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     store = _RoomStore([], corrected)
+    bridge = _bridge(store, _Adapter())
 
     with caplog.at_level(logging.WARNING):
         await BridgeCore._record_channel_type(
-            _bridge(store, _Adapter()),  # type: ignore[arg-type]
+            bridge,  # type: ignore[arg-type]
             "19:p@thread.tacv2",
             channel_type,  # type: ignore[arg-type]
         )
 
     expected = [("bridge-1", "19:p@thread.tacv2", channel_type)]
     assert store.corrections == (expected if asked else [])
+    # Written and committed under the bridge's tenant.
+    assert store.tenants == (["tenant-1"] if asked else [])
+    assert bridge.session.commits == (1 if asked else 0)
     # One warning per room actually changed, naming it.
     assert len(caplog.records) == (len(corrected) if asked else 0)
     assert all("room-1" in r.getMessage() for r in caplog.records)
@@ -137,17 +150,17 @@ async def test_startup_rereads_every_live_channel_room(
     rooms: list[SimpleNamespace], refreshed: list[list[str]]
 ) -> None:
     adapter = _Adapter()
+    store = _RoomStore(rooms, [])
 
-    await BridgeCore._refresh_channel_types(_bridge(_RoomStore(rooms, []), adapter))  # type: ignore[arg-type]
+    await BridgeCore._refresh_channel_types(_bridge(store, adapter))  # type: ignore[arg-type]
 
     assert adapter.refreshed == refreshed
+    assert store.tenants == ["tenant-1"]
 
 
 async def test_adapters_have_nothing_to_refresh_by_default() -> None:
-    assert (
-        await CollaborationAdapter.refresh_channel_types(SimpleNamespace(), ["C1"])
-        is None
-    )  # type: ignore[arg-type,func-returns-value]
+    adapter: Any = SimpleNamespace()
+    await CollaborationAdapter.refresh_channel_types(adapter, ["C1"])
 
 
 # ── Wiring in start() and stop() ─────────────────────────────────────────────
@@ -206,27 +219,34 @@ def _startable_core(refresh: Any) -> tuple[BridgeCore, _StartableAdapter]:
     return core, adapter
 
 
-async def test_start_installs_the_correction_and_stop_cancels_the_refresh() -> None:
+async def test_start_installs_the_correction_and_stop_cancels_the_refresh(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # Without the handler, a type learned at runtime corrects nothing until the
-    # next start.
+    # next start. The refresh must not inherit the tenant of whoever started it.
     running = asyncio.Event()
+    tenants: list[str | None] = []
 
     async def _slow() -> None:
+        tenants.append(current_tenant_id())
         running.set()
         await asyncio.sleep(30)
 
     core, adapter = _startable_core(_slow)
 
-    await core.start()
-    task = core._channel_type_refresh_task
-    await asyncio.wait_for(running.wait(), timeout=1)
-    await core.stop()
-    await asyncio.sleep(0)
+    with caplog.at_level(logging.INFO), tenant_scope("request-tenant"):
+        await core.start()
+        task = core._channel_type_refresh_task
+        await asyncio.wait_for(running.wait(), timeout=1)
+        await core.stop()
+        await asyncio.sleep(0)
 
     assert adapter.channel_type_handler == core._record_channel_type
     assert adapter.handler_set_before_start
     assert task is not None and task.cancelled()
     assert core._channel_type_refresh_task is None
+    assert "channel type refresh cancelled before finishing" in caplog.text
+    assert tenants == [None]
 
 
 async def test_a_failed_refresh_is_logged_rather_than_swallowed(

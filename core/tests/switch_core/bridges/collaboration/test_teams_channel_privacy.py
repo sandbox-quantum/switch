@@ -167,19 +167,26 @@ async def test_after_a_restart_teams_is_asked_before_adding(
     ids=["teams-cannot-say", "no-team-known", "group-chat"],
 )
 async def test_nobody_is_added_unless_the_channel_is_known(
-    membership_type: str | None, team_id: str, channel_id: str, known: str | None
+    membership_type: str | None,
+    team_id: str,
+    channel_id: str,
+    known: str | None,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     adapter, graph = _adapter(membership_type)
     adapter._config.team_id = team_id
     if known:
         adapter._channel_type[channel_id] = known
 
-    failed = await adapter.add_users_to_channel(
-        channel_id, ["bob", "eve"], ["aad-bob", "aad-eve"]
-    )
+    with caplog.at_level(logging.ERROR):
+        failed = await adapter.add_users_to_channel(
+            channel_id, ["bob", "eve"], ["aad-bob", "aad-eve"]
+        )
 
     assert failed == ["aad-bob", "aad-eve"]
     assert (graph.channel_members, graph.team_members) == ([], [])
+    errors = [r for r in caplog.records if channel_id in r.getMessage()]
+    assert [r.levelno for r in errors] == [logging.ERROR]
 
 
 async def test_reading_a_channel_needs_a_started_adapter() -> None:
@@ -261,26 +268,34 @@ async def test_a_channel_is_read_and_warned_about_at_most_once(
 
 
 @pytest.mark.parametrize(
-    "conversation",
-    [{"id": CHAT, "conversationType": "groupChat"}, {"id": CHAT}],
-    ids=["said-by-activity", "already-known"],
+    ("conversation_type", "service_url", "known"),
+    [
+        ("groupChat", "https://smba.example/amer/", None),
+        ("groupChat", "", None),
+        ("", "https://smba.example/amer/", "group"),
+    ],
+    ids=["said-by-activity", "said-without-service-url", "already-known"],
 )
 async def test_a_chat_is_not_mistaken_for_a_channel(
-    conversation: dict[str, str],
+    conversation_type: str, service_url: str, known: str | None
 ) -> None:
     # An activity with no conversation type is channel-shaped by default, so a
-    # chat already known to be one must stay one.
+    # chat's type is remembered once there is a way to reply to it. Graph has no
+    # channel by a chat's id.
     adapter, graph = _adapter("standard")
-    adapter._channel_type[CHAT] = "group"
+    graph.by_channel[CHAT] = None
+    if known:
+        adapter._channel_type[CHAT] = known
     captured = _capture(adapter, "_on_message")
     activity = _message("m1")
-    activity["conversation"] = conversation
+    activity["serviceUrl"] = service_url
+    activity["conversation"] = {"id": CHAT, "conversationType": conversation_type}
     activity["channelData"] = {}
 
     await adapter._dispatch_activity(activity)
 
     assert [m.channel_type for m in captured] == ["group"]
-    assert graph.channel_reads == 0
+    assert adapter._channel_type.get(CHAT) == ("group" if service_url else None)
 
 
 async def test_a_conversation_update_adding_nobody_does_not_read_the_channel() -> None:
@@ -297,31 +312,40 @@ async def test_a_conversation_update_adding_nobody_does_not_read_the_channel() -
 # ── Reporting learned types, so saved rooms are corrected ────────────────────
 
 
-async def test_refresh_reports_what_teams_says_and_skips_failures() -> None:
+async def test_refresh_reports_what_teams_says_and_warns_on_failures(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     adapter, graph = _adapter("standard")
     graph.by_channel = {"19:prv@thread.tacv2": "private", "19:bad@thread.tacv2": None}
     learned = _capture_learned(adapter, fail=False)
 
-    await adapter.refresh_channel_types(
-        ["19:std@thread.tacv2", "19:prv@thread.tacv2", "19:bad@thread.tacv2"]
-    )
+    with caplog.at_level(logging.WARNING):
+        await adapter.refresh_channel_types(
+            ["19:std@thread.tacv2", "19:prv@thread.tacv2", "19:bad@thread.tacv2"]
+        )
 
     assert learned == [
         ("19:std@thread.tacv2", "channel_public"),
         ("19:prv@thread.tacv2", "channel_private"),
     ]
+    assert [r.getMessage() for r in caplog.records if "19:bad" in r.getMessage()]
 
 
 @pytest.mark.parametrize("recording_fails", [False, True])
-async def test_a_type_learned_at_runtime_is_reported(recording_fails: bool) -> None:
+async def test_a_type_learned_at_runtime_is_reported(
+    recording_fails: bool, caplog: pytest.LogCaptureFixture
+) -> None:
     # The first successful read after startup corrects the saved room too, and
-    # failing to record it must not stop the adapter acting on what it learned.
+    # failing to record it is logged but must not stop the adapter acting on it.
     adapter, graph = _adapter("private")
     learned = _capture_learned(adapter, fail=recording_fails)
 
-    assert await _add_bob(adapter) == []
+    with caplog.at_level(logging.WARNING):
+        assert await _add_bob(adapter) == []
+
     assert learned == [(CHANNEL, "channel_private")]
     assert (graph.channel_members, graph.team_members) == (["aad-bob"], [])
+    assert ("Could not record" in caplog.text) == recording_fails
 
 
 async def test_a_successful_read_lifts_the_retry_wait_for_every_path() -> None:

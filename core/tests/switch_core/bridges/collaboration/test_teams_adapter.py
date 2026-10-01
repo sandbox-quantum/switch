@@ -117,7 +117,7 @@ def _capture_commands(adapter: TeamsAdapter) -> list[InboundCommand]:
 def test_channel_from_channel_activity_uses_channel_data_id() -> None:
     activity = {
         "conversation": {
-            "id": "19:abc@thread.tacv2;messageid=100",
+            "id": "19:reply@thread.tacv2;messageid=100",
             "conversationType": "channel",
         },
         "channelData": {"channel": {"id": "19:abc@thread.tacv2"}},
