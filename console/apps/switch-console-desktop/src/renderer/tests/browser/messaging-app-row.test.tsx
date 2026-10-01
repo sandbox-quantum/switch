@@ -56,6 +56,8 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    attention: null,
+    teamPlacementSupported: false,
     ...patch,
   };
 }

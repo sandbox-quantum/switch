@@ -15,11 +15,16 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import type { DeleteBridgeResult } from '@shared/core/switch-servers/switch-servers';
+import { disconnectMessagingAppParagraphs } from './disconnect-messaging-app-copy';
 
 type DisconnectMessagingAppModalArgs = {
   workspaceId: string;
   bridgeId: string;
   bridgeDisplayName: string;
+  /** Whether this is a running bridge on Switch's distributed Microsoft Teams
+   * app, which disconnects differently from every other bridge — see
+   * `disconnect-messaging-app-copy.ts`. */
+  teamPlacementSupported: boolean;
 };
 
 type Props = BaseModalProps<void> & DisconnectMessagingAppModalArgs;
@@ -41,9 +46,14 @@ export const DisconnectMessagingAppModal = observer(function DisconnectMessaging
   bridgeDisplayName,
   bridgeId,
   workspaceId,
+  teamPlacementSupported,
   onSuccess,
   onClose,
 }: Props) {
+  const paragraphs = disconnectMessagingAppParagraphs({
+    bridgeDisplayName,
+    teamPlacementSupported,
+  });
   const [confirmText, setConfirmText] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,14 +87,11 @@ export const DisconnectMessagingAppModal = observer(function DisconnectMessaging
         </div>
       </DialogHeader>
       <DialogContentArea className="space-y-3 pt-0">
-        <p className="text-sm text-foreground-muted">
-          This deletes <strong className="text-foreground">every Switch room on this app</strong>,
-          along with their history, and then removes the connection. This can’t be undone.
-        </p>
-        <p className="text-sm text-foreground-muted">
-          The channels in {bridgeDisplayName} are not deleted — they stay where they are, with
-          nothing bridging them to Switch.
-        </p>
+        {paragraphs.map((p) => (
+          <p key={p} className="text-sm text-foreground-muted">
+            {p}
+          </p>
+        ))}
 
         <FieldGroup>
           <Field>

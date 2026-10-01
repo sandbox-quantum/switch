@@ -4,7 +4,7 @@ import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
 const trackEvent = vi.hoisted(() => vi.fn());
 const createRoomOnServer = vi.hoisted(() => vi.fn());
-const deleteBridge = vi.hoisted(() => vi.fn());
+const disconnectBridgeOnServer = vi.hoisted(() => vi.fn());
 const deleteRoom = vi.hoisted(() => vi.fn());
 const fetchBridges = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
@@ -46,17 +46,19 @@ vi.mock('@main/core/switch-servers/backfill-agent-icons', () => ({ backfillAgent
 vi.mock('@main/core/switch-servers/bridge-home-url', () => ({ withResolvedHomeUrls: vi.fn() }));
 vi.mock('@main/core/switch-servers/create-bridge', () => ({ createBridgeOnServer: vi.fn() }));
 vi.mock('@main/core/switch-servers/create-room', () => ({ createRoomOnServer }));
+vi.mock('@main/core/switch-servers/disconnect-bridge', () => ({ disconnectBridgeOnServer }));
 vi.mock('@main/core/switch-servers/identities', () => ({
   claimIdentityOnServer: vi.fn(),
   searchDirectoryOnServer: vi.fn(),
 }));
+vi.mock('@main/core/switch-servers/teams-package', () => ({ saveTeamsPackage: vi.fn() }));
 vi.mock('@main/core/switch-servers/update-bridge', () => ({ updateBridgeOnServer: vi.fn() }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
+  addBridgeTeam: vi.fn(),
   addRoomAgents: vi.fn(),
   agentExistsOnServer: vi.fn(),
   createRoomFromTemplate: vi.fn(),
   decodeJwtTenantId: vi.fn(() => null),
-  deleteBridge,
   deleteRoom,
   fetchAddressingPolicy: vi.fn(),
   fetchAgentDetail: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchAgents: vi.fn(),
   fetchAllExternalUsers: vi.fn(),
   fetchBridges,
+  fetchBridgeTeams: vi.fn(),
   fetchBridgeTypes: vi.fn(),
   fetchMyIdentities: vi.fn(),
   fetchRoomAgentIds: vi.fn(),
@@ -75,6 +78,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: class GatewayError extends Error {},
   ownsOwnerAddressedAgent: vi.fn(),
   releaseBridgeIdentity: vi.fn(),
+  removeBridgeTeam: vi.fn(),
   removeRoomAgent: vi.fn(),
   switchTenant,
   updateAddressingPolicy: vi.fn(),
@@ -126,7 +130,7 @@ describe('disconnecting a bridge', () => {
   });
 
   it('reports a disconnection the gateway carried out', async () => {
-    deleteBridge.mockResolvedValue({ kind: 'deleted' });
+    disconnectBridgeOnServer.mockResolvedValue({ kind: 'deleted' });
 
     await workspacesController.deleteBridge({ workspaceId: 'ws', bridgeId: 'b1' });
 
@@ -141,7 +145,7 @@ describe('disconnecting a bridge', () => {
   it('reports a refusal as a failure rather than as a disconnection', async () => {
     // Admin-only, and the gateway hands back the refusal instead of throwing
     // it — so the await returns exactly as it does for a bridge that went.
-    deleteBridge.mockResolvedValue({ kind: 'forbidden' });
+    disconnectBridgeOnServer.mockResolvedValue({ kind: 'forbidden' });
 
     await workspacesController.deleteBridge({ workspaceId: 'ws', bridgeId: 'b1' });
 

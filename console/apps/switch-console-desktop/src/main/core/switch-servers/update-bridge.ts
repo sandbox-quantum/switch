@@ -20,6 +20,7 @@ export async function updateBridgeOnServer(
   try {
     const bridge = await updateBridge(server, params.bridgeId, {
       channelCreationEnabled: params.channelCreationEnabled,
+      connectionConfig: params.connectionConfig,
     });
     return { kind: 'updated', bridge };
   } catch (cause) {

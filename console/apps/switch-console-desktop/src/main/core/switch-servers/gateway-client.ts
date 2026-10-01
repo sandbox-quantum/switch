@@ -10,10 +10,12 @@ import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import type {
   AddressingPolicy,
+  AddTeamsTeamResult,
   BridgeConfigField,
   BridgeDirectoryUser,
   DeleteBridgeResult,
   LinkedIdentity,
+  MessagingAppInstall,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -23,10 +25,13 @@ import type {
   RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
+  RemoveTeamsTeamResult,
   SwitchAuthConfig,
   SwitchServer,
   SwitchServerDeclaration,
   SwitchUser,
+  TeamsTeam,
+  TeamsTeamsResult,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -1002,6 +1007,11 @@ type BridgeJson = {
   channel_creation_enabled?: boolean;
   // Absent on a server predating Telegram, where every bridge had a directory.
   directory_search_supported?: boolean;
+  // Both absent on a server predating this pair of fields — read as "nothing
+  // to warn about" and "not the distributed Teams app", which is how every
+  // bridge behaved before either existed.
+  attention?: string | null;
+  team_placement_supported?: boolean;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1017,6 +1027,8 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
     directorySearchSupported: b.directory_search_supported ?? true,
+    attention: b.attention ?? null,
+    teamPlacementSupported: b.team_placement_supported ?? false,
   };
 }
 
@@ -1206,16 +1218,26 @@ export async function createBridge(
  * create channels at all returns 400 with a message naming the platform;
  * callers map that like any other rejected edit rather than a bridge-specific
  * case.
+ *
+ * `connectionConfig`, when given, merges into the bridge's stored config —
+ * today only the distributed Teams app's `{ team_id }` default-team choice.
+ * Left unset, the field is omitted from the request and the gateway leaves the
+ * stored config untouched, same as any other field here.
  */
 export async function updateBridge(
   server: SwitchServer,
   bridgeId: string,
-  params: { channelCreationEnabled?: boolean }
+  params: { channelCreationEnabled?: boolean; connectionConfig?: Record<string, string> }
 ): Promise<RemoteBridge> {
   const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}`, {
     authenticated: true,
     method: 'PATCH',
-    body: { channel_creation_enabled: params.channelCreationEnabled },
+    body: {
+      channel_creation_enabled: params.channelCreationEnabled,
+      ...(params.connectionConfig !== undefined
+        ? { connection_config: params.connectionConfig }
+        : {}),
+    },
   });
   return mapBridge((await res.json()) as BridgeJson);
 }
@@ -1254,6 +1276,212 @@ export async function deleteBridge(
     }
     throw cause;
   }
+}
+
+// ── Microsoft Teams team placement ──────────────────────────────────────────
+
+/** The gateway `TeamsTeamSummary` wire shape. */
+type TeamsTeamJson = {
+  team_id: string;
+  name: string;
+  has_switch: boolean;
+  is_default: boolean;
+};
+
+function mapTeamsTeam(t: TeamsTeamJson): TeamsTeam {
+  return { teamId: t.team_id, name: t.name, hasSwitch: t.has_switch, isDefault: t.is_default };
+}
+
+/**
+ * Read a distributed Teams bridge's team placement
+ * (`GET /collaborations/{id}/teams`, admin-only).
+ *
+ * Every failure this call can report is recoverable and bridge-specific, so
+ * each becomes a typed result instead of a raw throw: 404 means this bridge is
+ * not (or is no longer) a running distributed Teams connection, 409 means it
+ * exists but is not running right now, and 502 is Microsoft Graph itself
+ * refusing the request — its `detail` is already written for a human.
+ */
+export async function fetchBridgeTeams(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<TeamsTeamsResult> {
+  try {
+    const res = await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridgeId)}/teams`,
+      { authenticated: true }
+    );
+    const json = (await res.json()) as {
+      teams: TeamsTeamJson[];
+      default_team_id: string | null;
+      in_catalog: boolean;
+      catalog_problem: string | null;
+    };
+    return {
+      kind: 'listed',
+      teams: json.teams.map(mapTeamsTeam),
+      defaultTeamId: json.default_team_id,
+      inCatalog: json.in_catalog,
+      catalogProblem: json.catalog_problem,
+    };
+  } catch (cause) {
+    if (cause instanceof GatewayError) {
+      if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
+      if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
+      if (cause.kind === 'http' && cause.status === 404) return { kind: 'not-distributed-teams' };
+      if (cause.kind === 'http' && cause.status === 409) {
+        return { kind: 'not-running', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'http' && cause.status === 502) {
+        return { kind: 'microsoft-refused', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'network') return { kind: 'error', message: cause.message };
+    }
+    throw cause;
+  }
+}
+
+/**
+ * Add Switch's distributed app to a team (`POST /collaborations/{id}/teams/{teamId}`,
+ * admin-only). A 409 means the app is not in the organisation's catalogue yet —
+ * the one failure here with a next step, so it carries the gateway's own
+ * explanation rather than being folded into a generic error.
+ */
+export async function addBridgeTeam(
+  server: SwitchServer,
+  bridgeId: string,
+  teamId: string
+): Promise<AddTeamsTeamResult> {
+  try {
+    await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridgeId)}/teams/${encodeURIComponent(teamId)}`,
+      { authenticated: true, method: 'POST' }
+    );
+    return { kind: 'added' };
+  } catch (cause) {
+    if (cause instanceof GatewayError) {
+      if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
+      if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
+      if (cause.kind === 'http' && cause.status === 409) {
+        return { kind: 'not-in-catalog', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'network') return { kind: 'error', message: cause.message };
+    }
+    throw cause;
+  }
+}
+
+/** Remove Switch's distributed app from a team
+ * (`DELETE /collaborations/{id}/teams/{teamId}`, admin-only). */
+export async function removeBridgeTeam(
+  server: SwitchServer,
+  bridgeId: string,
+  teamId: string
+): Promise<RemoveTeamsTeamResult> {
+  try {
+    await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridgeId)}/teams/${encodeURIComponent(teamId)}`,
+      { authenticated: true, method: 'DELETE' }
+    );
+    return { kind: 'removed' };
+  } catch (cause) {
+    if (cause instanceof GatewayError) {
+      if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
+      if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
+      if (cause.kind === 'network') return { kind: 'error', message: cause.message };
+    }
+    throw cause;
+  }
+}
+
+/**
+ * The distributed Teams app's install package, as raw bytes
+ * (`GET /collaborations/{id}/teams-package`, admin-only) — for a Teams admin to
+ * upload by hand, in the Teams admin center, when the app is not yet in the
+ * organisation's catalogue. Unmapped: a bridge this does not apply to still
+ * raises, since there is no form here for a recoverable failure to improve.
+ */
+export async function fetchTeamsPackage(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<ArrayBuffer> {
+  const res = await gatewayFetch(
+    server,
+    `/collaborations/${encodeURIComponent(bridgeId)}/teams-package`,
+    { authenticated: true }
+  );
+  return res.arrayBuffer();
+}
+
+// ── Messaging-app installs ──────────────────────────────────────────────────
+
+/** The gateway `MessagingAppInstallSummary` wire shape. */
+type MessagingAppInstallJson = {
+  id: string;
+  platform: string;
+  external_workspace_id: string;
+  status: string;
+  scopes: string[];
+  bridge_id: string | null;
+  installed_at: string;
+  ended_at: string | null;
+};
+
+function mapMessagingAppInstall(i: MessagingAppInstallJson): MessagingAppInstall {
+  return {
+    id: i.id,
+    platform: i.platform,
+    externalWorkspaceId: i.external_workspace_id,
+    status: i.status,
+    scopes: i.scopes,
+    bridgeId: i.bridge_id,
+    installedAt: i.installed_at,
+    endedAt: i.ended_at,
+  };
+}
+
+/**
+ * Every messaging-app install recorded for this workspace
+ * (`GET /messaging-apps/installs`), active and ended alike.
+ *
+ * A 404 is a server from before installs were tracked this way; it answers
+ * empty rather than failing, since the one caller today
+ * ({@link disconnectBridgeOnServer} in `disconnect-bridge.ts`) falls back to
+ * deleting the bridge directly when it finds no matching install.
+ */
+export async function fetchMessagingAppInstalls(
+  server: SwitchServer
+): Promise<MessagingAppInstall[]> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/messaging-apps/installs', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return [];
+    throw cause;
+  }
+  const json = (await res.json()) as { installs: MessagingAppInstallJson[] };
+  return json.installs.map(mapMessagingAppInstall);
+}
+
+/**
+ * End a messaging-app install (`DELETE /messaging-apps/installs/{id}`).
+ *
+ * This is what actually removes Switch's standing registration from the
+ * platform organisation it was approved into — plain `DELETE
+ * /collaborations/{id}` on an install-backed bridge is refused (409) because
+ * the server has no way to tell, from a bridge id alone, which install to end.
+ */
+export async function deleteMessagingAppInstall(
+  server: SwitchServer,
+  installId: string
+): Promise<void> {
+  await gatewayFetch(server, `/messaging-apps/installs/${encodeURIComponent(installId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /** The gateway `IdentityClaimant` wire shape. */

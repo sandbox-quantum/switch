@@ -339,6 +339,22 @@ export type RemoteBridge = {
    * before Telegram had one.
    */
   directorySearchSupported: boolean;
+  /**
+   * Plain-text description of something only the platform's side can fix —
+   * the organisation's admin withdrew approval, or blocked the app outright.
+   * Shown as a visible warning on the connection regardless of its type. Null
+   * when there is nothing to say, which is also what a server predating the
+   * field reports.
+   */
+  attention: string | null;
+  /**
+   * True only for a running bridge on Switch's distributed Microsoft Teams
+   * app — the one installed by a Microsoft admin approving Switch's own app,
+   * rather than a workspace pasting in its own bot credentials. Drives
+   * whether the Teams team-placement panel is offered for this connection.
+   * False for every other bridge, and for a server predating the field.
+   */
+  teamPlacementSupported: boolean;
 };
 
 /**
@@ -453,6 +469,10 @@ export type UpdateBridgeParams = {
   workspaceId: string;
   bridgeId: string;
   channelCreationEnabled?: boolean;
+  /** Connection-config fields to merge into the bridge's stored config — today
+   * only the distributed Teams app's default-team choice (`{ team_id }`).
+   * Left unset, the gateway leaves the stored config untouched. */
+  connectionConfig?: Record<string, string>;
 };
 
 /** Outcome of editing a bridge. Mirrors {@link CreateBridgeResult}'s recoverable
@@ -780,4 +800,97 @@ export type RemoteRoomRole = {
   exclusive: boolean;
   /** Display names of agents currently holding the role (empty if free). */
   heldBy: string[];
+};
+
+// ── Microsoft Teams team placement ──────────────────────────────────────────
+
+/**
+ * One Microsoft Teams team, from the distributed Teams app's own view of the
+ * organisation (mirrors the gateway `TeamsTeamSummary`).
+ */
+export type TeamsTeam = {
+  teamId: string;
+  name: string;
+  /** Whether Switch's app is already added to this team. */
+  hasSwitch: boolean;
+  /** Whether this is the bridge's default team — the one a channel lands in
+   * when a room is created without naming one. At most one team is default,
+   * and only a team with `hasSwitch` can be. */
+  isDefault: boolean;
+};
+
+/**
+ * Outcome of reading a distributed Teams bridge's team placement
+ * (`GET /collaborations/{id}/teams`, admin-only).
+ *
+ * The failure cases mirror what only this call's host — a running distributed
+ * Teams bridge talking to Microsoft Graph — can refuse: `not-distributed-teams`
+ * is a bridge this never applies to (a server older than the feature, or a
+ * bridge `team_placement_supported` already said no about), `not-running` is
+ * the bridge being stopped right now, and `microsoft-refused` is Graph itself
+ * declining the request, in its own words.
+ */
+export type TeamsTeamsResult =
+  | {
+      kind: 'listed';
+      teams: TeamsTeam[];
+      /** Redundant with `teams[].isDefault`, carried separately so "no default
+       * chosen yet" (null) is distinguishable without scanning the list. */
+      defaultTeamId: string | null;
+      /** Whether Switch's distributed app is in this organisation's own app
+       * catalogue yet. False until a Teams admin uploads the package by hand. */
+      inCatalog: boolean;
+      /** Why the app is not catalogued yet, as a sentence — present only when
+       * `inCatalog` is false. */
+      catalogProblem: string | null;
+    }
+  | { kind: 'not-distributed-teams' }
+  | { kind: 'not-running'; message: string }
+  | { kind: 'microsoft-refused'; message: string }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Outcome of adding Switch's distributed app to a team
+ * (`POST /collaborations/{id}/teams/{teamId}`, admin-only). `not-in-catalog` is
+ * its own case because it is the one failure with a next step: save the
+ * package and have a Teams admin upload it by hand.
+ */
+export type AddTeamsTeamResult =
+  | { kind: 'added' }
+  | { kind: 'not-in-catalog'; message: string }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+/** Outcome of removing Switch's distributed app from a team
+ * (`DELETE /collaborations/{id}/teams/{teamId}`, admin-only). */
+export type RemoveTeamsTeamResult =
+  | { kind: 'removed' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+// ── Messaging-app installs ──────────────────────────────────────────────────
+
+/**
+ * One OAuth-consent install of a deployment's own messaging app into a
+ * workspace (mirrors the gateway `MessagingAppInstallSummary`). The bridge it
+ * backs is deleted the ordinary way; the install itself — the organisation-side
+ * registration that keeps Switch able to listen there at all — is only ended
+ * by name, which is what `endedAt === null` installs are for finding.
+ */
+export type MessagingAppInstall = {
+  id: string;
+  platform: string;
+  externalWorkspaceId: string;
+  status: string;
+  scopes: string[];
+  /** The bridge this install backs, or null if none was ever created (or it
+   * was deleted without ending the install, leaving the install orphaned). */
+  bridgeId: string | null;
+  installedAt: string;
+  /** Null while the install is still active. */
+  endedAt: string | null;
 };
