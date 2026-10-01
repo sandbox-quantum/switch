@@ -43,6 +43,7 @@ class TelemetryService:
         service_name: str,
         version: str | None,
         environment: str | None,
+        telemetry_environment: str,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         installed_at: datetime | None = None,
     ) -> None:
@@ -55,6 +56,10 @@ class TelemetryService:
         self._resource = {
             "service.name": service_name,
             "flint.client_id": client_id,
+            # The relay picks the Amplitude project from this. Sent even as
+            # `prod`, so an event says where it belongs rather than relying on
+            # what the relay does with silence.
+            "flint_env": telemetry_environment,
         }
         # Omitted rather than sent empty: an absent attribute reads as "not
         # configured", where `""` reads as a real environment named nothing.

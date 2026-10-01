@@ -79,6 +79,7 @@ def _service_with_telemetry(
         service_name="switch-core",
         version=None,
         environment=None,
+        telemetry_environment="prod",
         session_factory=session_factory,
         installed_at=installed_at,
     )

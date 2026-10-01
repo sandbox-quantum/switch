@@ -19,6 +19,7 @@ from switch_core.observability.otlp import (
     OtlpResource,
     OtlpSendError,
     build_logs_payload,
+    otlp_attributes,
 )
 from switch_core.telemetry.catalogue import PropertyValue
 
@@ -98,6 +99,7 @@ class OtlpRelaySink:
             _resource_from(record),
         )
         _add_event_name(payload, record.name)
+        _add_flint_env(payload, record.resource["flint_env"])
 
         try:
             await self._client.post("logs", payload)
@@ -128,6 +130,17 @@ def _resource_from(record: TelemetryRecord) -> OtlpResource:
         environment=record.resource.get("deployment.environment"),
         deployment_id=record.resource["flint.client_id"],
     )
+
+
+def _add_flint_env(payload: dict[str, Any], environment: str) -> None:
+    """Add `flint_env` to the resource, which the shared encoder's resource has
+    no field for: it describes the process to an operator's own collector,
+    where this means nothing. The relay sends each event to the Amplitude
+    project this names, and drops one it cannot place."""
+    for resource_log in payload["resourceLogs"]:
+        resource_log["resource"]["attributes"].extend(
+            otlp_attributes({"flint_env": environment})
+        )
 
 
 def _add_event_name(payload: dict[str, Any], name: str) -> None:

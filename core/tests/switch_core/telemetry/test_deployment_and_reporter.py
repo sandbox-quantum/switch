@@ -174,6 +174,7 @@ class TestEmitMilestone:
             service_name="switch-core",
             version="1.0.0",
             environment=None,
+            telemetry_environment="prod",
             session_factory=session_factory,
             installed_at=installed_at,
         )
@@ -235,6 +236,7 @@ class TestTheSnapshotSchedule:
             service_name="switch-core",
             version="1.0.0",
             environment=None,
+            telemetry_environment="prod",
             session_factory=session_factory,
             installed_at=datetime.now(UTC) - timedelta(days=1),
         )
