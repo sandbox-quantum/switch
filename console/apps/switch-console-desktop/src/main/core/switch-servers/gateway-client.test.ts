@@ -60,9 +60,12 @@ const {
   acceptInvitation,
   acceptPendingInvitation,
   addBridgeTeam,
+  beginChatClaim,
   beginMessagingAppInstall,
   deleteMessagingAppInstall,
-  fetchInstallablePlatforms,
+  disconnectChat,
+  fetchConnectedChats,
+  fetchMessagingApps,
   fetchPendingInvitations,
   fetchJoinableWorkspaces,
   fetchBridgeTeams,
@@ -470,6 +473,7 @@ describe('room creation', () => {
         directorySearchSupported: true,
         attention: null,
         teamPlacementSupported: false,
+        channelIdsRefused: null,
       },
       {
         id: 'b2',
@@ -486,6 +490,7 @@ describe('room creation', () => {
         directorySearchSupported: true,
         attention: null,
         teamPlacementSupported: false,
+        channelIdsRefused: null,
       },
     ]);
   });
@@ -510,6 +515,23 @@ describe('room creation', () => {
       attention: 'The organisation’s admin withdrew approval for this app.',
       teamPlacementSupported: true,
     });
+  });
+
+  it('carries why a connection binds no chat by id', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'telegram',
+          display_name: 'Telegram',
+          status: 'active',
+          channel_ids_refused: 'Rooms come from connecting a chat.',
+        },
+      ]) as never
+    );
+
+    const [bridge] = await fetchBridges(SERVER);
+    expect(bridge.channelIdsRefused).toBe('Rooms come from connecting a chat.');
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
@@ -1631,25 +1653,42 @@ describe("installing the deployment's own messaging app", () => {
     vi.unstubAllGlobals();
   });
 
-  it('lists the platforms the deployment has an app for', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ platforms: ['slack'] }) as never);
+  it('lists the platforms the deployment has an app for, of both kinds', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        platforms: ['slack'],
+        claimable: [{ platform: 'telegram', connected: true, can_add_chat: true }],
+      }) as never
+    );
 
-    await expect(fetchInstallablePlatforms(SERVER)).resolves.toEqual(['slack']);
+    await expect(fetchMessagingApps(SERVER)).resolves.toEqual({
+      installable: ['slack'],
+      claimable: [{ platform: 'telegram', connected: true, canAddChat: true }],
+    });
     expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
       'https://switch.example.com/gateway/messaging-apps'
     );
   });
 
+  it('reads a server from before claim-based apps as offering none', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ platforms: ['slack'] }) as never);
+
+    await expect(fetchMessagingApps(SERVER)).resolves.toEqual({
+      installable: ['slack'],
+      claimable: [],
+    });
+  });
+
   it('reads a server without the route as having no app to install', async () => {
     fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
 
-    await expect(fetchInstallablePlatforms(SERVER)).resolves.toEqual([]);
+    await expect(fetchMessagingApps(SERVER)).resolves.toEqual({ installable: [], claimable: [] });
   });
 
   it('raises on any other failure', async () => {
     fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Forbidden"}') as never);
 
-    await expect(fetchInstallablePlatforms(SERVER)).rejects.toMatchObject({ status: 403 });
+    await expect(fetchMessagingApps(SERVER)).rejects.toMatchObject({ status: 403 });
   });
 
   it('starts an install and returns the consent URL', async () => {
@@ -1669,6 +1708,81 @@ describe("installing the deployment's own messaging app", () => {
     fetchMock.mockResolvedValue(errorResponse(501, '{"detail":"no app"}') as never);
 
     await expect(beginMessagingAppInstall(SERVER, 'slack')).rejects.toMatchObject({ status: 501 });
+  });
+
+  it('starts connecting a chat and returns its link, code and bot handle', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        url: 'https://t.me/example_bot?startgroup=abc',
+        code: 'abc',
+        bot_handle: '@example_bot',
+      }) as never
+    );
+
+    await expect(beginChatClaim(SERVER, 'telegram')).resolves.toEqual({
+      url: 'https://t.me/example_bot?startgroup=abc',
+      code: 'abc',
+      botHandle: '@example_bot',
+    });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/messaging-apps/telegram/claim');
+    expect(init.method).toBe('POST');
+  });
+
+  it('raises when the server refuses the claim', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(403, '{"detail":"Only an admin can connect the first chat"}') as never
+    );
+
+    await expect(beginChatClaim(SERVER, 'telegram')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('lists the chats still connected to one connection', async () => {
+    const install = {
+      bridge_id: 'b-tg',
+      external_workspace_id: '-1001',
+      name: 'Ops',
+      status: 'active',
+      scopes: '',
+      installed_at: '2026-09-01T10:00:00Z',
+      ended_at: null,
+    };
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        installs: [
+          { ...install, id: 'i-1' },
+          { ...install, id: 'i-2', name: null, external_workspace_id: '-1002' },
+          { ...install, id: 'i-3', status: 'disconnected' },
+          { ...install, id: 'i-4', bridge_id: 'b-other' },
+        ],
+      }) as never
+    );
+
+    await expect(fetchConnectedChats(SERVER, 'b-tg')).resolves.toEqual([
+      { id: 'i-1', name: 'Ops', externalId: '-1001', connectedAt: '2026-09-01T10:00:00Z' },
+      { id: 'i-2', name: null, externalId: '-1002', connectedAt: '2026-09-01T10:00:00Z' },
+    ]);
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/messaging-apps/installs'
+    );
+  });
+
+  it('disconnects a chat by its install', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: 'i-1', status: 'disconnected' }) as never);
+
+    await disconnectChat(SERVER, 'i-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/messaging-apps/installs/i-1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('raises with the reason when the bot could not leave the chat', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(502, '{"detail":"Telegram would not let the bot leave; try again"}') as never
+    );
+
+    await expect(disconnectChat(SERVER, 'i-1')).rejects.toMatchObject({ status: 502 });
   });
 });
 

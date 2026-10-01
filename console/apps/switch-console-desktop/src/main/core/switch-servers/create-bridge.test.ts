@@ -99,6 +99,7 @@ describe('createBridgeOnServer', () => {
         directorySearchSupported: true,
         attention: null,
         teamPlacementSupported: false,
+        channelIdsRefused: null,
       },
     });
   });

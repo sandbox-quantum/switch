@@ -10,11 +10,13 @@ import {
   addBridgeTeam,
   addRoomAgents,
   agentExistsOnServer,
+  beginChatClaim,
   changeTemplateRun,
   createRoomFromTemplate,
   createTemplate,
   deleteRoom,
   deleteTemplate,
+  disconnectChat,
   exportRoomYaml,
   fetchAddressingPolicy,
   fetchAgentManagementAccess,
@@ -25,7 +27,8 @@ import {
   fetchBridgeTeams,
   beginMessagingAppInstall,
   fetchBridgeTypes,
-  fetchInstallablePlatforms,
+  fetchConnectedChats,
+  fetchMessagingApps,
   fetchMyIdentities,
   fetchRoomAgentIds,
   fetchRoomDetail,
@@ -80,7 +83,9 @@ import type {
   AgentIconBackfill,
   AgentVerifyResult,
   BridgeDirectorySearchResult,
+  ChatClaim,
   ClaimIdentityParams,
+  ConnectedChat,
   ClaimIdentityResult,
   CreateBridgeParams,
   CreateBridgeResult,
@@ -89,6 +94,7 @@ import type {
   DeleteBridgeParams,
   DeleteBridgeResult,
   LinkedIdentity,
+  MessagingApps,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -283,13 +289,33 @@ export const workspacesController = createRPCController({
   listBridgeTypes: (workspaceId: string): Promise<RemoteBridgeType[]> =>
     withReachableWorkspaceSession(workspaceId, fetchBridgeTypes),
 
-  listInstallablePlatforms: (workspaceId: string): Promise<string[]> =>
-    withReachableWorkspaceSession(workspaceId, fetchInstallablePlatforms),
+  listMessagingApps: (workspaceId: string): Promise<MessagingApps> =>
+    withReachableWorkspaceSession(workspaceId, fetchMessagingApps),
 
   /** Returns the platform's consent URL for the renderer to open in the browser. */
   beginMessagingAppInstall: (params: { workspaceId: string; platform: string }): Promise<string> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       beginMessagingAppInstall(server, params.platform)
+    ),
+
+  /** A one-time link and code that connect a chat; the chat itself is where it lands. */
+  beginChatClaim: (params: { workspaceId: string; platform: string }): Promise<ChatClaim> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      beginChatClaim(server, params.platform)
+    ),
+
+  listConnectedChats: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<ConnectedChat[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      fetchConnectedChats(server, params.bridgeId)
+    ),
+
+  /** Open to members: a chat is a room, and rooms are members'. */
+  disconnectChat: (params: { workspaceId: string; installId: string }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      disconnectChat(server, params.installId)
     ),
 
   /**

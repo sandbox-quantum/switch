@@ -35,9 +35,12 @@ import type {
   AddTeamsTeamResult,
   BridgeConfigField,
   BridgeDirectoryUser,
+  ChatClaim,
+  ConnectedChat,
   DeleteBridgeResult,
   LinkedIdentity,
   MessagingAppInstall,
+  MessagingApps,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -1163,6 +1166,7 @@ type BridgeJson = {
   // bridge behaved before either existed.
   attention?: string | null;
   team_placement_supported?: boolean;
+  channel_ids_refused?: string | null;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1180,6 +1184,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     directorySearchSupported: b.directory_search_supported ?? true,
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
+    channelIdsRefused: b.channel_ids_refused ?? null,
   };
 }
 
@@ -1196,24 +1201,94 @@ export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]
 }
 
 /**
- * The messaging platforms this deployment has its own app for, which a
- * workspace can install with the platform's OAuth consent screen instead of
- * registering an app and pasting its tokens. Empty on a deployment that
- * registered none.
+ * What this deployment's own messaging apps offer the signed-in user: the
+ * platforms a workspace admin can install with the platform's OAuth consent
+ * screen instead of registering an app and pasting its tokens, and the ones
+ * whose chats are connected one at a time with a link or code. Both empty on
+ * a deployment that registered no app.
  *
- * A 404 is a server from before the route existed; it has no app to install
- * either, so it answers empty rather than failing the connect dialog.
+ * A 404 is a server from before the route existed, and a missing `claimable`
+ * one from before claim-based apps; either has nothing of that kind to offer,
+ * so it answers empty rather than failing the connect dialog.
  */
-export async function fetchInstallablePlatforms(server: SwitchServer): Promise<string[]> {
+export async function fetchMessagingApps(server: SwitchServer): Promise<MessagingApps> {
   let res: Response;
   try {
     res = await gatewayFetch(server, '/messaging-apps', { authenticated: true });
   } catch (cause) {
-    if (cause instanceof GatewayError && cause.status === 404) return [];
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { installable: [], claimable: [] };
+    }
     throw cause;
   }
-  const json = (await res.json()) as { platforms: string[] };
-  return json.platforms;
+  const json = (await res.json()) as {
+    platforms: string[];
+    claimable?: { platform: string; connected: boolean; can_add_chat: boolean }[];
+  };
+  return {
+    installable: json.platforms,
+    claimable: (json.claimable ?? []).map((c) => ({
+      platform: c.platform,
+      connected: c.connected,
+      canAddChat: c.can_add_chat,
+    })),
+  };
+}
+
+/**
+ * Start connecting a chat to the deployment's claim-based app for `platform`,
+ * in the workspace the session is bound to. Nothing comes back when the chat
+ * connects: the claim lands in the chat, and the server creates its room.
+ */
+export async function beginChatClaim(server: SwitchServer, platform: string): Promise<ChatClaim> {
+  const res = await gatewayFetch(server, `/messaging-apps/${encodeURIComponent(platform)}/claim`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  const json = (await res.json()) as { url: string; code: string; bot_handle: string };
+  return { url: json.url, code: json.code, botHandle: json.bot_handle };
+}
+
+/**
+ * The chats connected to a claim-based connection, from the server's list of
+ * this workspace's installs. Ended ones are left out: they are history, and
+ * nothing here can be done to them.
+ */
+export async function fetchConnectedChats(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<ConnectedChat[]> {
+  const res = await gatewayFetch(server, '/messaging-apps/installs', { authenticated: true });
+  const json = (await res.json()) as {
+    installs: {
+      id: string;
+      bridge_id: string | null;
+      external_workspace_id: string;
+      name: string | null;
+      status: string;
+      installed_at: string;
+    }[];
+  };
+  return json.installs
+    .filter((i) => i.bridge_id === bridgeId && i.status === 'active')
+    .map((i) => ({
+      id: i.id,
+      name: i.name,
+      externalId: i.external_workspace_id,
+      connectedAt: i.installed_at,
+    }));
+}
+
+/**
+ * Disconnect one chat: the bot leaves it and its room stays, bridged to
+ * nothing. Raises with the server's reason when it refuses, including when
+ * the platform would not let the bot leave, which changes nothing.
+ */
+export async function disconnectChat(server: SwitchServer, installId: string): Promise<void> {
+  await gatewayFetch(server, `/messaging-apps/installs/${encodeURIComponent(installId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /**
