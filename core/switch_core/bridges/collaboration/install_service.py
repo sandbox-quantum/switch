@@ -54,6 +54,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -62,6 +63,7 @@ from switch_core.bridges.collaboration.install import (
     InboundWebhook,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
+    MessagingInstallError,
     WebhookEndpoint,
     oauth_callback_path,
     public_url,
@@ -249,24 +251,51 @@ class MessagingInstallService:
                         else None
                     ),
                     scopes=grant.scopes,
+                    platform_data=grant.platform_data,
                     user_id=burnt.created_by_user_id,
                 )
                 install_id = install.id
                 await session.commit()
 
-            bridge = await self._lifecycle.register(
-                bridge_type=platform,
-                display_name=grant.workspace_name,
-                connection_config=installer.connection_config(grant),
-                # Off, though the granted scopes would allow it. Nobody was
-                # asked: an install has no registration form, and letting an
-                # app create channels in a customer's workspace is a decision
-                # someone should make rather than inherit.
-                channel_creation_enabled=False,
-                # A person installed the app: this is them connecting their
-                # platform, which is exactly what onboarding measures.
-                preconfigured=False,
-            )
+            try:
+                bridge = await self._lifecycle.register(
+                    bridge_type=platform,
+                    display_name=grant.workspace_name,
+                    connection_config=installer.connection_config(grant),
+                    # Off, though the granted scopes would allow it. Nobody was
+                    # asked: an install has no registration form, and letting an
+                    # app create channels in a customer's workspace is a decision
+                    # someone should make rather than inherit.
+                    channel_creation_enabled=False,
+                    # A person installed the app: this is them connecting their
+                    # platform, which is exactly what onboarding measures.
+                    preconfigured=False,
+                )
+            except Exception as failure:
+                # The workspace is claimed and nothing serves it. Left so, every
+                # event from it is refused as undeliverable and every attempt
+                # to install it again — by the same customer, a minute later —
+                # is told someone else holds it. Releasing the claim is what
+                # makes trying again possible.
+                async with tenant_session(
+                    self._session_factory, state.tenant_id
+                ) as session:
+                    await self._store.end(
+                        session, install_id=install_id, status=INSTALL_DISCONNECTED
+                    )
+                    await session.commit()
+                logger.exception(
+                    "Could not build the bridge for %s workspace %s (tenant %s); "
+                    "released the workspace so the install can be tried again",
+                    platform,
+                    grant.external_workspace_id,
+                    state.tenant_id,
+                )
+                raise MessagingInstallError(
+                    f"Switch could not finish connecting the {platform} "
+                    f"workspace ({failure}). Nothing is left connected; try the "
+                    "install again from Switch."
+                ) from failure
 
             async with tenant_session(
                 self._session_factory, state.tenant_id
@@ -468,23 +497,59 @@ class MessagingInstallService:
     # messages. Everything up to and including `resolve` is fast enough to
     # answer inside, and `deliver` runs after the response has gone.
 
-    def authenticate(
+    def _webhook_installer(
+        self, platform: str, endpoint: WebhookEndpoint
+    ) -> MessagingAppInstaller:
+        """The installer for a webhook request, or the same refusal as no app.
+
+        An endpoint the platform's app does not post to does not exist, and is
+        answered exactly as a platform with no app registered is — before
+        anything reads the request.
+        """
+        installer = self._installers.get(platform)
+        if endpoint not in installer.webhook_endpoints:
+            raise MessagingInstallError(
+                f"the {platform} app does not post to {endpoint}"
+            )
+        return installer
+
+    def unsigned_handshake(
+        self,
+        *,
+        platform: str,
+        endpoint: WebhookEndpoint,
+        query: Mapping[str, str],
+    ) -> str | None:
+        """The answer to a platform's unsigned URL check, if this request is one.
+
+        The one thing answered before verification, and only because it cannot
+        be verified by design; see `MessagingAppInstaller.unsigned_handshake`.
+        """
+        installer = self._webhook_installer(platform, endpoint)
+        return installer.unsigned_handshake(endpoint=endpoint, query=query)
+
+    async def authenticate(
         self,
         *,
         platform: str,
         endpoint: WebhookEndpoint,
         headers: Mapping[str, str],
+        query: Mapping[str, str],
         body: bytes,
-    ) -> InboundWebhook:
+    ) -> list[InboundWebhook]:
         """Prove an inbound request came from the platform, and read it.
 
         Verification is first and unconditional. Nothing above it inspects the
         body, so an unsigned request cannot pick which parser runs, and nothing
         is logged from it either — it is a stranger's bytes until this passes.
         """
-        installer = self._installers.get(platform)
-        installer.verify_webhook(headers=headers, body=body)
-        return installer.parse_webhook(endpoint=endpoint, headers=headers, body=body)
+        installer = self._webhook_installer(platform, endpoint)
+        await installer.verify_webhook(
+            endpoint=endpoint, headers=headers, query=query, body=body
+        )
+        return installer.parse_webhook(
+            endpoint=endpoint, headers=headers, query=query, body=body
+        )
 
     def revocation(self, *, platform: str, event: InboundWebhook) -> Revocation | None:
         """Whether this event is the platform ending the install, and for whom.
@@ -631,8 +696,22 @@ class MessagingInstallService:
                 target.tenant_id,
             )
 
-    async def _dispatch(self, target: WebhookTarget, event: InboundWebhook) -> None:
+    async def answer(
+        self, target: WebhookTarget, event: InboundWebhook
+    ) -> dict[str, Any] | None:
+        """Handle an event the platform waits on, and return its answer.
+
+        No receipt, unlike `deliver`: a platform that retries one of these
+        does so because it never saw the answer, and the retry has to be given
+        one rather than dropped as a duplicate. Handling the same press twice
+        is the adapter's to make harmless, and on Teams it already is.
+        """
+        return await self._dispatch(target, event)
+
+    async def _dispatch(
+        self, target: WebhookTarget, event: InboundWebhook
+    ) -> dict[str, Any] | None:
         with no_tenant():
-            await target.adapter.dispatch_event(
+            return await target.adapter.dispatch_event(
                 envelope_type=event.envelope_type, payload=event.payload
             )

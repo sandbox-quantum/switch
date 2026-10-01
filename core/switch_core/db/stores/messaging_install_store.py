@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
@@ -120,6 +121,7 @@ class MessagingInstallStore:
         external_workspace_id: str,
         encrypted_bot_token: str | None,
         scopes: str,
+        platform_data: Mapping[str, object],
         user_id: str,
     ) -> MessagingInstall:
         """Claim a workspace for the bound tenant.
@@ -144,6 +146,7 @@ class MessagingInstallStore:
             external_workspace_id=external_workspace_id,
             encrypted_bot_token=encrypted_bot_token,
             scopes=scopes,
+            platform_data=dict(platform_data),
             status=INSTALL_ACTIVE,
             installed_by_user_id=user_id,
         )

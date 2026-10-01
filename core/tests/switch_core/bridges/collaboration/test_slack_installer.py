@@ -85,31 +85,46 @@ class TestAuthorizeUrl:
 
 
 class TestWebhookVerification:
-    def test_a_correctly_signed_body_passes(self, installer: SlackAppInstaller) -> None:
+    async def test_a_correctly_signed_body_passes(
+        self, installer: SlackAppInstaller
+    ) -> None:
         body = b'{"type":"event_callback","team_id":"T1"}'
-        installer.verify_webhook(headers=_signed_headers(body), body=body)
+        await installer.verify_webhook(
+            endpoint="events", query={}, headers=_signed_headers(body), body=body
+        )
 
-    def test_a_tampered_body_is_refused(self, installer: SlackAppInstaller) -> None:
+    async def test_a_tampered_body_is_refused(
+        self, installer: SlackAppInstaller
+    ) -> None:
         body = b'{"type":"event_callback","team_id":"T1"}'
         headers = _signed_headers(body)
         with pytest.raises(WebhookAuthenticityError):
-            installer.verify_webhook(headers=headers, body=body + b" ")
+            await installer.verify_webhook(
+                endpoint="events", query={}, headers=headers, body=body + b" "
+            )
 
-    def test_an_old_signature_is_refused(self, installer: SlackAppInstaller) -> None:
+    async def test_an_old_signature_is_refused(
+        self, installer: SlackAppInstaller
+    ) -> None:
         """Replay window. A capture stays valid forever without it."""
         body = b'{"team_id":"T1"}'
         with pytest.raises(WebhookAuthenticityError):
-            installer.verify_webhook(
-                headers=_signed_headers(body, age_seconds=60 * 10), body=body
+            await installer.verify_webhook(
+                endpoint="events",
+                query={},
+                headers=_signed_headers(body, age_seconds=60 * 10),
+                body=body,
             )
 
-    def test_missing_headers_are_refused_rather_than_skipped(
+    async def test_missing_headers_are_refused_rather_than_skipped(
         self, installer: SlackAppInstaller
     ) -> None:
         with pytest.raises(WebhookAuthenticityError):
-            installer.verify_webhook(headers={}, body=b"{}")
+            await installer.verify_webhook(
+                endpoint="events", query={}, headers={}, body=b"{}"
+            )
 
-    def test_a_nonnumeric_timestamp_is_a_bad_signature_not_a_crash(
+    async def test_a_nonnumeric_timestamp_is_a_bad_signature_not_a_crash(
         self, installer: SlackAppInstaller
     ) -> None:
         """Reachable by anyone who finds the URL.
@@ -120,7 +135,9 @@ class TestWebhookVerification:
         """
         body = b"{}"
         with pytest.raises(WebhookAuthenticityError):
-            installer.verify_webhook(
+            await installer.verify_webhook(
+                endpoint="events",
+                query={},
                 headers={
                     "X-Slack-Request-Timestamp": "not-a-number",
                     "X-Slack-Signature": "v0=deadbeef",
@@ -128,10 +145,14 @@ class TestWebhookVerification:
                 body=body,
             )
 
-    def test_header_case_does_not_matter(self, installer: SlackAppInstaller) -> None:
+    async def test_header_case_does_not_matter(
+        self, installer: SlackAppInstaller
+    ) -> None:
         body = b'{"team_id":"T1"}'
         headers = {k.lower(): v for k, v in _signed_headers(body).items()}
-        installer.verify_webhook(headers=headers, body=body)
+        await installer.verify_webhook(
+            endpoint="events", query={}, headers=headers, body=body
+        )
 
 
 class TestRedeem:
@@ -162,6 +183,7 @@ class TestRedeem:
             workspace_name="Acme",
             bot_token="xoxb-granted",
             scopes="chat:write,commands",
+            platform_data={},
         )
 
     async def test_a_workspace_with_no_name_falls_back_to_its_id(
@@ -235,7 +257,9 @@ class TestParsingAWebhook:
             }
         ).encode()
 
-        parsed = installer.parse_webhook(endpoint="events", headers={}, body=body)
+        parsed = installer.parse_webhook(
+            endpoint="events", headers={}, body=body, query={}
+        )[0]
 
         assert parsed.envelope_type == "events_api"
         assert parsed.handshake is None
@@ -255,7 +279,9 @@ class TestParsingAWebhook:
         """
         body = json.dumps({"type": "url_verification", "challenge": "abc123"}).encode()
 
-        parsed = installer.parse_webhook(endpoint="events", headers={}, body=body)
+        parsed = installer.parse_webhook(
+            endpoint="events", headers={}, body=body, query={}
+        )[0]
 
         assert parsed.handshake == "abc123"
 
@@ -264,7 +290,10 @@ class TestParsingAWebhook:
     ) -> None:
         with pytest.raises(WebhookPayloadError, match="challenge"):
             installer.parse_webhook(
-                endpoint="events", headers={}, body=b'{"type":"url_verification"}'
+                endpoint="events",
+                headers={},
+                body=b'{"type":"url_verification"}',
+                query={},
             )
 
     def test_a_slash_command_is_its_form_fields(
@@ -274,7 +303,9 @@ class TestParsingAWebhook:
             {"command": "/agents-status", "text": "", "team_id": "T1", "user_id": "U1"}
         ).encode()
 
-        parsed = installer.parse_webhook(endpoint="commands", headers={}, body=body)
+        parsed = installer.parse_webhook(
+            endpoint="commands", headers={}, body=body, query={}
+        )[0]
 
         assert parsed.envelope_type == "slash_commands"
         assert parsed.payload["command"] == "/agents-status"
@@ -288,7 +319,9 @@ class TestParsingAWebhook:
         inner = {"type": "block_actions", "team": {"id": "T1"}}
         body = urlencode({"payload": json.dumps(inner)}).encode()
 
-        parsed = installer.parse_webhook(endpoint="interactive", headers={}, body=body)
+        parsed = installer.parse_webhook(
+            endpoint="interactive", headers={}, body=body, query={}
+        )[0]
 
         assert parsed.envelope_type == "interactive"
         assert parsed.payload == inner
@@ -297,7 +330,9 @@ class TestParsingAWebhook:
         self, installer: SlackAppInstaller
     ) -> None:
         with pytest.raises(WebhookPayloadError, match="payload"):
-            installer.parse_webhook(endpoint="interactive", headers={}, body=b"other=1")
+            installer.parse_webhook(
+                endpoint="interactive", headers={}, body=b"other=1", query={}
+            )
 
     def test_an_event_callback_carries_slacks_own_event_id(
         self, installer: SlackAppInstaller
@@ -312,7 +347,9 @@ class TestParsingAWebhook:
             {"type": "event_callback", "team_id": "T1", "event_id": "Ev123"}
         ).encode()
 
-        parsed = installer.parse_webhook(endpoint="events", headers={}, body=body)
+        parsed = installer.parse_webhook(
+            endpoint="events", headers={}, body=body, query={}
+        )[0]
 
         assert parsed.external_event_id == "Ev123"
 
@@ -340,8 +377,11 @@ class TestParsingAWebhook:
         receipt on, so the event is handled the way an unnumbered one is.
         """
         parsed = installer.parse_webhook(
-            endpoint="events", headers={}, body=json.dumps(envelope).encode()
-        )
+            endpoint="events",
+            headers={},
+            query={},
+            body=json.dumps(envelope).encode(),
+        )[0]
 
         assert parsed.external_event_id is None
 
@@ -366,7 +406,9 @@ class TestParsingAWebhook:
         A command and an interaction are a person waiting on a dialog. Slack
         sends each exactly once and puts no id on it.
         """
-        parsed = installer.parse_webhook(endpoint=endpoint, headers={}, body=body)
+        parsed = installer.parse_webhook(
+            endpoint=endpoint, headers={}, body=body, query={}
+        )[0]
 
         assert parsed.external_event_id is None
 
@@ -394,7 +436,9 @@ class TestParsingAWebhook:
             {"type": "event_callback", "team_id": "T1", "event_id": "Ev1"}
         ).encode()
 
-        parsed = installer.parse_webhook(endpoint="events", headers=headers, body=body)
+        parsed = installer.parse_webhook(
+            endpoint="events", headers=headers, body=body, query={}
+        )[0]
 
         assert parsed.delivery_attempt == expected
 
@@ -416,7 +460,7 @@ class TestParsingAWebhook:
         rather than a shrug.
         """
         with pytest.raises(WebhookPayloadError):
-            installer.parse_webhook(endpoint="events", headers={}, body=body)
+            installer.parse_webhook(endpoint="events", headers={}, body=body, query={})
 
 
 class TestWhichWorkspaceSentIt:
@@ -461,6 +505,7 @@ class TestConnectionConfig:
                 workspace_name="Acme",
                 bot_token="xoxb-granted",
                 scopes="chat:write",
+                platform_data={},
             )
         )
         config = SlackConnectionConfig.model_validate(rendered)

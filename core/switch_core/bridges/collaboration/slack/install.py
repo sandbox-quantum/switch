@@ -139,6 +139,9 @@ BOT_SCOPES: tuple[str, ...] = (
 
 class SlackAppInstaller(MessagingAppInstaller):
     platform: ClassVar[str] = "slack"
+    webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]] = frozenset(
+        {"events", "interactive", "commands"}
+    )
 
     def __init__(
         self, *, client_id: str, client_secret: str, signing_secret: str
@@ -200,6 +203,7 @@ class SlackAppInstaller(MessagingAppInstaller):
             workspace_name=team.get("name") or workspace_id,
             bot_token=access_token,
             scopes=response.get("scope") or "",
+            platform_data={},
         )
 
     async def revoke(self, *, bot_token: str) -> None:
@@ -227,7 +231,16 @@ class SlackAppInstaller(MessagingAppInstaller):
                 "was not revoked, so it is still valid."
             )
 
-    def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
+    async def verify_webhook(
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> None:
+        # Every Slack endpoint is signed the same way, with the signing secret
+        # over the timestamp and the raw body — no network, nothing to fetch.
         try:
             valid = self._verifier.is_valid_request(body, dict(headers))
         except ValueError as error:
@@ -239,6 +252,17 @@ class SlackAppInstaller(MessagingAppInstaller):
             raise WebhookAuthenticityError("bad Slack signature")
 
     def parse_webhook(
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> list[InboundWebhook]:
+        # One event per request, always: Slack does not batch.
+        return [self._parse_one(endpoint=endpoint, headers=headers, body=body)]
+
+    def _parse_one(
         self, *, endpoint: WebhookEndpoint, headers: Mapping[str, str], body: bytes
     ) -> InboundWebhook:
         attempt = _retry_number(headers)
@@ -258,6 +282,7 @@ class SlackAppInstaller(MessagingAppInstaller):
                 # deduplicate by.
                 external_event_id=None,
                 delivery_attempt=attempt,
+                answers_inline=False,
             )
 
         if endpoint == "interactive":
@@ -274,6 +299,7 @@ class SlackAppInstaller(MessagingAppInstaller):
                 handshake=None,
                 external_event_id=None,
                 delivery_attempt=attempt,
+                answers_inline=False,
             )
 
         envelope = _json_object(body)
@@ -293,6 +319,7 @@ class SlackAppInstaller(MessagingAppInstaller):
                 handshake=challenge,
                 external_event_id=None,
                 delivery_attempt=attempt,
+                answers_inline=False,
             )
 
         event_id = envelope.get("event_id")
@@ -307,6 +334,7 @@ class SlackAppInstaller(MessagingAppInstaller):
             if isinstance(event_id, str) and event_id
             else None,
             delivery_attempt=attempt,
+            answers_inline=False,
         )
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:

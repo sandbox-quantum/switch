@@ -610,8 +610,13 @@ class CollaborationAdapter(ABC):
 
     async def dispatch_event(
         self, *, envelope_type: str, payload: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Handle one event that arrived over the public webhook.
+
+        Returns the body to answer with for an event the platform waits on in
+        the response itself (`InboundWebhook.answers_inline`), and None for
+        every other — which is every event on a platform that acknowledges
+        first and handles after.
 
         Concrete on the base and raising, rather than abstract, because
         receiving events over HTTP is a property of a platform and of which app

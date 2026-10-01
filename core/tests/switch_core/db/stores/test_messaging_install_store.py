@@ -226,6 +226,7 @@ class TestRecordingAnInstall:
                 external_workspace_id=fixture.workspace,
                 encrypted_bot_token="ciphertext",
                 scopes="chat:write",
+                platform_data={},
                 user_id=fixture.user_id,
             )
             await session.commit()
@@ -238,6 +239,7 @@ class TestRecordingAnInstall:
                     external_workspace_id=fixture.workspace,
                     encrypted_bot_token="ciphertext",
                     scopes="chat:write",
+                    platform_data={},
                     user_id=fixture.user_id,
                 )
 
@@ -254,6 +256,7 @@ class TestRecordingAnInstall:
                 external_workspace_id=fixture.workspace,
                 encrypted_bot_token="ciphertext",
                 scopes="chat:write",
+                platform_data={},
                 user_id=fixture.user_id,
             )
             await session.commit()
@@ -286,6 +289,7 @@ class TestRecordingAnInstall:
                 external_workspace_id=fixture.workspace,
                 encrypted_bot_token=None,
                 scopes="bot applications.commands",
+                platform_data={},
                 user_id=fixture.user_id,
             )
             assert recorded.encrypted_bot_token is None

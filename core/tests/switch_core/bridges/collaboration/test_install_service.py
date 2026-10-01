@@ -69,6 +69,9 @@ class _FakeInstaller(MessagingAppInstaller):
     """A platform that always says yes, and counts how often it was asked."""
 
     platform: ClassVar[str] = "slack"
+    webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]] = frozenset(
+        {"events", "interactive", "commands"}
+    )
 
     def __init__(self, workspace_id: str, *, tokenless: bool = False) -> None:
         self.workspace_id = workspace_id
@@ -90,6 +93,7 @@ class _FakeInstaller(MessagingAppInstaller):
             # store no token for it and revoke nothing on disconnect.
             bot_token=None if self.tokenless else "xoxb-granted",
             scopes="chat:write",
+            platform_data={"kept": "for later"},
         )
 
     async def revoke(self, *, bot_token: str) -> None:
@@ -105,19 +109,34 @@ class _FakeInstaller(MessagingAppInstaller):
             return "the app was removed"
         return None
 
-    def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
+    async def verify_webhook(
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> None:
         return None
 
     def parse_webhook(
-        self, *, endpoint: WebhookEndpoint, headers: Mapping[str, str], body: bytes
-    ) -> InboundWebhook:
-        return InboundWebhook(
-            envelope_type=endpoint,
-            payload={},
-            handshake=None,
-            external_event_id=None,
-            delivery_attempt=0,
-        )
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> list[InboundWebhook]:
+        return [
+            InboundWebhook(
+                envelope_type=endpoint,
+                payload={},
+                handshake=None,
+                external_event_id=None,
+                delivery_attempt=0,
+                answers_inline=False,
+            )
+        ]
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
         return self.workspace_id
@@ -675,3 +694,45 @@ class TestATokenlessGrant:
         assert ended.ended_at is not None
         assert ended.bridge_id is None
         assert fixture.lifecycle.removed == [bridge_id]
+
+
+class TestASetupThatFailsHalfway:
+    async def test_a_bridge_that_cannot_be_built_releases_the_workspace(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Left claimed with nothing serving it, every event from the workspace
+        is refused as undeliverable and every retry of the install is told
+        somebody else holds it — the customer, a minute later, included."""
+        fixture = await _fixture(rls_harness)
+        registered = fixture.lifecycle.register
+
+        async def refuse(**kwargs: object) -> CollaborationBridge:
+            raise ValueError("the platform refused the credentials")
+
+        fixture.lifecycle.register = refuse  # type: ignore[method-assign]
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        with pytest.raises(MessagingInstallError, match="refused the credentials"):
+            await fixture.service.complete(
+                platform="slack", code="the-code", state_token=state
+            )
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            installs = await MessagingInstallStore().list_for_tenant(session)
+        assert [install.status for install in installs] == [INSTALL_DISCONNECTED]
+
+        fixture.lifecycle.register = registered  # type: ignore[method-assign]
+        again = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        assert again.status == INSTALL_ACTIVE
+
+
+class TestWhatAnInstallRemembers:
+    async def test_what_the_platform_keeps_is_recorded_with_the_install(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+
+        install = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        reread = await _reread(rls_harness.restricted, fixture.tenant_a, install.id)
+        assert reread.platform_data == {"kept": "for later"}

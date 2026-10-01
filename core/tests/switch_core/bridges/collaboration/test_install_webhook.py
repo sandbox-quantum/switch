@@ -612,10 +612,11 @@ class TestABridgeThatCannotTakeEvents:
         adapter = _SocketOnlyAdapter()
         fixture.lifecycle.adapters[fixture.a.bridge_id] = adapter
 
-        event = fixture.service.authenticate(
+        [event] = await fixture.service.authenticate(
             platform="slack",
             endpoint="events",
             headers=_signed(_event(fixture.a.workspace_id, "x")),
+            query={},
             body=_event(fixture.a.workspace_id, "x"),
         )
         target = await fixture.service.resolve(platform="slack", event=event)
@@ -660,8 +661,12 @@ class TestAnEventIsHandledOnce:
         gated = _GatedAdapter()
         fixture.lifecycle.adapters[fixture.a.bridge_id] = gated
         body = _numbered_event(fixture.a.workspace_id, "hello", "Ev1")
-        event = fixture.service.authenticate(
-            platform="slack", endpoint="events", headers=_signed(body), body=body
+        [event] = await fixture.service.authenticate(
+            platform="slack",
+            endpoint="events",
+            headers=_signed(body),
+            query={},
+            body=body,
         )
         target = await fixture.service.resolve(platform="slack", event=event)
 
