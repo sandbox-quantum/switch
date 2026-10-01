@@ -147,6 +147,9 @@ gateway-dev:
 gateway-build:
     cd gateway && npm run build
 
+gateway-test:
+    cd gateway && npm test
+
 # ── Standalone deployment (all-in-one Docker, no host toolchain) ──────────────
 # Repo users build from source: the build override re-adds the `build:` blocks
 # so images come from the working tree, not GHCR. All profiles are enabled to

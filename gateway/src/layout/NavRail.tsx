@@ -1,3 +1,4 @@
+import AddOutlined from "@mui/icons-material/AddOutlined";
 import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
@@ -7,11 +8,26 @@ import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
 import PeopleOutlined from "@mui/icons-material/PeopleOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import VpnKeyOutlined from "@mui/icons-material/VpnKeyOutlined";
-import { Box, Divider, Menu, MenuItem, Stack, Tooltip, Typography } from "@mui/material";
+import WorkspacesOutlined from "@mui/icons-material/WorkspacesOutlined";
+import {
+  Alert,
+  Box,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  Menu,
+  MenuItem,
+  Snackbar,
+  Stack,
+  Tooltip,
+  Typography,
+} from "@mui/material";
 import { memo, useState } from "react";
 import { NavLink, useLocation } from "react-router";
 import type { ComponentType, MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
+import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import ThemeModeToggle from "./ThemeModeToggle";
 
@@ -28,6 +44,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Agents", path: "/agents", icon: SmartToyOutlined },
   { label: "Apps", path: "/collaborations", icon: ChatBubbleOutlineOutlined },
   { label: "API Keys", path: "/registration-keys", icon: VpnKeyOutlined },
+  { label: "Workspace", path: "/workspace", icon: WorkspacesOutlined },
 ];
 
 const ADMIN_ITEMS: NavItem[] = [{ label: "Users", path: "/users", icon: PeopleOutlined }];
@@ -87,11 +104,24 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
 
 export default memo(function NavRail() {
   const location = useLocation();
-  const { user, logout } = useAuth();
+  const { user, session, isOperator, logout, switchTo } = useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
-  const items = user?.role === "admin" ? [...NAV_ITEMS, ...ADMIN_ITEMS] : NAV_ITEMS;
+  const switchWorkspace = async (tenantId: string) => {
+    setAnchor(null);
+    try {
+      await switchTo(tenantId);
+    } catch (err) {
+      setSwitchError(err instanceof Error ? err.message : "Could not switch workspace");
+    }
+  };
+
+  const items = isOperator ? [...NAV_ITEMS, ...ADMIN_ITEMS] : NAV_ITEMS;
+  const current = session?.tenant ?? null;
+  const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);
   const initial = (user?.email ?? "?").charAt(0).toUpperCase();
 
   return (
@@ -192,12 +222,43 @@ export default memo(function NavRail() {
           <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
             {user?.email}
           </Typography>
-          {user?.role === "admin" && (
+          {isOperator && (
             <Typography variant="caption" sx={{ color: "text.secondary" }}>
-              Admin
+              Operator
             </Typography>
           )}
         </Box>
+        <Divider sx={{ my: 0.5 }} />
+        <Box sx={{ px: 1.5, pt: 0.5, pb: 0.25 }}>
+          <Typography variant="caption" sx={{ color: "text.secondary" }}>
+            Workspace
+          </Typography>
+          <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
+            {current?.name}
+          </Typography>
+        </Box>
+        {others.map((tenant) => (
+          <MenuItem
+            key={tenant.id}
+            onClick={() => switchWorkspace(tenant.id)}
+          >
+            <Typography variant="body2" noWrap>
+              Switch to {tenant.name}
+            </Typography>
+          </MenuItem>
+        ))}
+        {session?.can_create_workspace && (
+          <MenuItem
+            onClick={() => {
+              setAnchor(null);
+              setCreateOpen(true);
+            }}
+            sx={{ gap: 1 }}
+          >
+            <AddOutlined sx={{ fontSize: 16 }} />
+            Create workspace
+          </MenuItem>
+        )}
         <Divider sx={{ my: 0.5 }} />
         <Box
           sx={{
@@ -227,6 +288,23 @@ export default memo(function NavRail() {
           Sign out
         </MenuItem>
       </Menu>
+
+      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Create a workspace</DialogTitle>
+        <DialogContent sx={{ pt: "8px !important" }}>
+          <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
+        </DialogContent>
+      </Dialog>
+
+      <Snackbar
+        open={switchError !== null}
+        onClose={() => setSwitchError(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        <Alert severity="error" onClose={() => setSwitchError(null)}>
+          {switchError}
+        </Alert>
+      </Snackbar>
 
       <ChangePasswordDialog
         open={passwordDialogOpen}
