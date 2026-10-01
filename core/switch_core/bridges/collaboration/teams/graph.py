@@ -57,6 +57,15 @@ def _graph_error(operation: str, resp: httpx.Response) -> GraphError:
     )
 
 
+def _segment(value: str) -> str:
+    """One identifier as a single URL path segment.
+
+    A team id can arrive from a request, and an unescaped `?`, `#` or `/` in
+    it would move the rest of the URL somewhere else.
+    """
+    return quote(value, safe="")
+
+
 @dataclass(frozen=True)
 class AppInstallation:
     installation_id: str
@@ -159,7 +168,7 @@ class GraphClient:
     ) -> None:
         resp = await self._send(
             "PATCH",
-            f"{GRAPH_BASE}/subscriptions/{subscription_id}",
+            f"{GRAPH_BASE}/subscriptions/{_segment(subscription_id)}",
             json={"expirationDateTime": expiration_iso},
         )
         if resp.status_code >= 300:
@@ -167,17 +176,32 @@ class GraphClient:
 
     async def delete_subscription(self, *, subscription_id: str) -> None:
         resp = await self._send(
-            "DELETE", f"{GRAPH_BASE}/subscriptions/{subscription_id}"
+            "DELETE", f"{GRAPH_BASE}/subscriptions/{_segment(subscription_id)}"
         )
         if resp.status_code >= 300 and resp.status_code != 404:
             raise _graph_error(f"delete subscription {subscription_id}", resp)
 
     async def list_subscriptions(self) -> list[dict[str, Any]]:
-        resp = await self._send("GET", f"{GRAPH_BASE}/subscriptions")
-        if resp.status_code >= 300:
-            raise _graph_error("list subscriptions", resp)
-        value: list[dict[str, Any]] = resp.json().get("value", [])
-        return value
+        """Every subscription this app holds in the directory, across Graph's pages."""
+        return await self._all_pages(
+            f"{GRAPH_BASE}/subscriptions", params=None, what="list subscriptions"
+        )
+
+    async def _all_pages(
+        self, url: str, *, params: dict[str, str] | None, what: str
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        next_url: str | None = url
+        while next_url is not None:
+            resp = await self._send("GET", next_url, params=params)
+            if resp.status_code >= 300:
+                raise _graph_error(what, resp)
+            page = resp.json()
+            items.extend(page.get("value", []) or [])
+            # The next link already carries the query.
+            next_url = page.get("@odata.nextLink")
+            params = None
+        return items
 
     # ── Provisioning ─────────────────────────────────────────────────────────
 
@@ -197,7 +221,7 @@ class GraphClient:
             "membershipType": membership_type,
         }
         resp = await self._send(
-            "POST", f"{GRAPH_BASE}/teams/{team_id}/channels", json=body
+            "POST", f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels", json=body
         )
         if resp.status_code >= 300:
             raise _graph_error(
@@ -217,7 +241,7 @@ class GraphClient:
         """
         resp = await self._send(
             "GET",
-            f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{channel_id}",
             params={"$select": "id,displayName,description,membershipType,layoutType"},
         )
         if resp.status_code >= 300:
@@ -265,7 +289,7 @@ class GraphClient:
         """
         resp = await self._send(
             "GET",
-            f"{GRAPH_BASE}/users/{quote(user_id, safe='')}",
+            f"{GRAPH_BASE}/users/{_segment(user_id)}",
             params={"$select": "id,displayName,userPrincipalName,mail"},
         )
         if resp.status_code >= 300:
@@ -284,7 +308,7 @@ class GraphClient:
         }
         resp = await self._send(
             "POST",
-            f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/members",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{channel_id}/members",
             json=body,
         )
         if resp.status_code >= 300 and resp.status_code != 409:
@@ -300,7 +324,7 @@ class GraphClient:
             "user@odata.bind": (f"{GRAPH_BASE}/users('{user_aad_id}')"),
         }
         resp = await self._send(
-            "POST", f"{GRAPH_BASE}/teams/{team_id}/members", json=body
+            "POST", f"{GRAPH_BASE}/teams/{_segment(team_id)}/members", json=body
         )
         if resp.status_code >= 300 and resp.status_code != 409:
             raise _graph_error(f"add member {user_aad_id} to team {team_id}", resp)
@@ -309,28 +333,20 @@ class GraphClient:
 
     async def list_teams(self) -> list[dict[str, Any]]:
         """Every team in the organisation, by id and name, across Graph's pages."""
-        teams: list[dict[str, Any]] = []
-        url: str | None = f"{GRAPH_BASE}/teams"
-        params: dict[str, str] | None = {"$select": "id,displayName"}
-        while url is not None:
-            resp = await self._send("GET", url, params=params)
-            if resp.status_code >= 300:
-                raise _graph_error("list the organisation's teams", resp)
-            page = resp.json()
-            teams.extend(page.get("value", []) or [])
-            # The next link already carries the query.
-            url = page.get("@odata.nextLink")
-            params = None
-        return teams
+        return await self._all_pages(
+            f"{GRAPH_BASE}/teams",
+            params={"$select": "id,displayName"},
+            what="list the organisation's teams",
+        )
 
     async def install_app(self, *, team_id: str, catalog_app_id: str) -> None:
         """Add the app, by its id in the organisation's catalogue, to a team."""
         resp = await self._send(
             "POST",
-            f"{GRAPH_BASE}/teams/{team_id}/installedApps",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/installedApps",
             json={
                 "teamsApp@odata.bind": (
-                    f"{GRAPH_BASE}/appCatalogs/teamsApps/{catalog_app_id}"
+                    f"{GRAPH_BASE}/appCatalogs/teamsApps/{_segment(catalog_app_id)}"
                 )
             },
         )
@@ -351,7 +367,7 @@ class GraphClient:
         """
         resp = await self._send(
             "GET",
-            f"{GRAPH_BASE}/teams/{team_id}/installedApps",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/installedApps",
             params={
                 "$expand": "teamsApp",
                 "$filter": f"teamsApp/externalId eq '{external_id}'",
@@ -373,7 +389,7 @@ class GraphClient:
     async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
         resp = await self._send(
             "DELETE",
-            f"{GRAPH_BASE}/teams/{team_id}/installedApps/{installation_id}",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/installedApps/{installation_id}",
         )
         if resp.status_code >= 300 and resp.status_code != 404:
             raise _graph_error(f"remove the app from team {team_id}", resp)

@@ -495,3 +495,75 @@ def test_a_validation_token_whose_directory_its_issuer_does_not_name_is_refused(
     )
     with pytest.raises(PermissionError, match="directory"):
         _run(_notification_authenticator(key).vouched_tenants([token]))
+
+
+# ── Signing keys: what a key set can go wrong with ───────────────────────────
+
+
+def test_no_keys_to_verify_with_is_a_refusal_not_an_acceptance() -> None:
+    """Microsoft's key endpoint down at the first request leaves nothing to
+    check a signature against; the activity is refused."""
+    key = _rsa_key()
+    server = _KeyServer([_jwk(key, "k1", ["msteams"])])
+    server.fail = True
+    authenticator = BotFrameworkAuthenticator(
+        app_id="app-1", keys=_signing_keys(server)
+    )
+
+    with pytest.raises(PermissionError, match="could not fetch signing keys"):
+        _verify(authenticator, f"Bearer {_bot_token(key)}")
+
+
+def test_entries_that_are_not_usable_keys_are_skipped() -> None:
+    key = _rsa_key()
+    server = _KeyServer(
+        [
+            {"kty": "RSA", "n": "AQAB", "e": "AQAB"},  # no kid
+            {"kid": "broken", "kty": "RSA", "n": "not base64!", "e": "x"},
+            _jwk(key, "k1", ["msteams"]),
+        ]
+    )
+    authenticator = BotFrameworkAuthenticator(
+        app_id="app-1", keys=_signing_keys(server)
+    )
+
+    _verify(authenticator, f"Bearer {_bot_token(key)}")
+
+
+def test_a_key_set_with_nothing_usable_is_a_refusal() -> None:
+    key = _rsa_key()
+    server = _KeyServer([{"kid": "broken", "kty": "RSA", "n": "!", "e": "!"}])
+    authenticator = BotFrameworkAuthenticator(
+        app_id="app-1", keys=_signing_keys(server)
+    )
+
+    with pytest.raises(PermissionError, match="no usable signing keys"):
+        _verify(authenticator, f"Bearer {_bot_token(key)}")
+
+
+def test_keys_already_held_survive_a_key_set_with_nothing_usable() -> None:
+    key = _rsa_key()
+    server = _KeyServer([_jwk(key, "k1", ["msteams"])])
+    keys = _signing_keys(server)
+    authenticator = BotFrameworkAuthenticator(app_id="app-1", keys=keys)
+    _verify(authenticator, f"Bearer {_bot_token(key)}")
+
+    server.keys = [{"kid": "broken", "kty": "RSA", "n": "!", "e": "!"}]
+    keys._fetched_at = 0.0
+    keys._attempted_at = 0.0
+    _verify(authenticator, f"Bearer {_bot_token(key)}")
+
+
+def test_a_bearer_that_is_not_a_jwt_is_refused() -> None:
+    with pytest.raises(PermissionError, match="not a JWT"):
+        _verify(_authenticator(_rsa_key()), "Bearer not-a-jwt")
+
+
+def test_a_token_naming_no_signing_key_is_refused() -> None:
+    key = _rsa_key()
+    unnamed = jwt.encode(
+        {"aud": "app-1", "iss": BOTFRAMEWORK_ISSUER}, key, algorithm="RS256"
+    )
+
+    with pytest.raises(PermissionError, match="names no signing key"):
+        _verify(_authenticator(key), f"Bearer {unnamed}")

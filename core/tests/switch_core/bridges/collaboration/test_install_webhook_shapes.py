@@ -32,6 +32,7 @@ from switch_core.bridges.collaboration.install import (
     MessagingInstallerRegistry,
     WebhookAuthenticityError,
     WebhookEndpoint,
+    WebhookPayloadError,
 )
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
@@ -118,6 +119,8 @@ class _RelayInstaller(MessagingAppInstaller):
         ]
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
+        if "workspace" not in payload:
+            raise WebhookPayloadError("an event named no workspace")
         return str(payload["workspace"])
 
     def revocation_of_event(self, payload: Mapping[str, object]) -> str | None:
@@ -342,6 +345,56 @@ async def test_an_unknown_organisation_does_not_hold_back_the_rest(
 
     assert response.status_code == 200
     assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-a"]
+
+
+async def test_an_unreadable_item_does_not_hold_back_the_rest(
+    rls_harness: RLSHarness,
+) -> None:
+    """One item naming no workspace, in a batch every workspace shares, is
+    skipped; answering the whole batch with a 400 would drop everyone else's
+    events in it for good."""
+    fixture = await _fixture(rls_harness)
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch({"id": "n-x"}, {"workspace": "org-a", "id": "n-a"}),
+        headers=_SIGNED,
+    )
+
+    assert response.status_code == 200
+    assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-a"]
+
+
+async def test_a_batch_nothing_in_which_can_be_read_is_refused(
+    rls_harness: RLSHarness,
+) -> None:
+    fixture = await _fixture(rls_harness)
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch({"id": "n-x"}, {"id": "n-y"}),
+        headers=_SIGNED,
+    )
+
+    assert response.status_code == 400
+    assert _adapter(fixture, "a").dispatched == []
+
+
+async def test_undeliverable_and_unreadable_alone_is_asked_for_again(
+    rls_harness: RLSHarness,
+) -> None:
+    """Nothing in it was delivered, and some of it can be once the bridge is
+    back; the unreadable item is skipped again on the retry."""
+    fixture = await _fixture(rls_harness)
+    del fixture.lifecycle.adapters[fixture.bridges["b"]]
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch({"id": "n-x"}, {"workspace": "org-b", "id": "n-b"}),
+        headers=_SIGNED,
+    )
+
+    assert response.status_code == 503
 
 
 async def test_a_bridge_that_is_down_asks_for_its_events_again(

@@ -21,7 +21,10 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 from pydantic import ValidationError
 
-from switch_core.bridges.collaboration.adapter import ChannelNotBindable
+from switch_core.bridges.collaboration.adapter import (
+    ChannelNotBindable,
+    ConfigEditRefused,
+)
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     InboundMessage,
@@ -1045,3 +1048,292 @@ async def test_an_organisation_whose_bridge_is_not_running_is_still_left() -> No
     assert deleted == ["S1"]
     assert uninstalled == [("team-1", "I1")]
     assert ORG not in app._org_tokens
+
+
+# ── Channel ids offered for binding ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "channel_id",
+    [
+        "19:x/../../../teams/team-1?@thread.tacv2",
+        "19:x?@thread.tacv2",
+        "19:x#@thread.tacv2",
+        "19:x%2F@thread.tacv2",
+        "19:x y@thread.tacv2",
+        "19:x@y@thread.tacv2",
+        "19:@thread.tacv2",
+    ],
+)
+async def test_a_channel_id_that_could_reshape_the_check_is_refused(
+    channel_id: str,
+) -> None:
+    """The id goes into the Graph call that proves the channel is this
+    organisation's; one that moved that call elsewhere could pass it."""
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _ChannelGraph(fail=False)
+    adapter._graph = graph  # type: ignore[assignment]
+
+    with pytest.raises(ChannelNotBindable, match="not a Teams channel"):
+        await adapter.require_bindable_channel(channel_id)
+
+    assert graph.reads == []
+
+
+async def test_an_older_teams_channel_id_can_be_bound() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _ChannelGraph(fail=False)
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter.require_bindable_channel("19:a1b2-c3_d4@thread.skype")
+
+    assert graph.reads == [("team-1", "19:a1b2-c3_d4@thread.skype")]
+
+
+# ── Never a second subscription ──────────────────────────────────────────────
+
+
+class _SubscribingGraph:
+    """Lists what it holds (or fails to), and makes subscriptions on request."""
+
+    def __init__(self, *, list_failures: int, held: list[dict[str, Any]]) -> None:
+        self.list_failures = list_failures
+        self.held = held
+        self.created: list[str] = []
+        self.deleted: list[str] = []
+        self.create_started = asyncio.Event()
+        self.let_create_finish: asyncio.Event | None = None
+
+    async def list_subscriptions(self) -> list[dict[str, Any]]:
+        if self.list_failures:
+            self.list_failures -= 1
+            raise GraphError("list subscriptions failed (503)", status=503)
+        return list(self.held)
+
+    async def create_subscription(self, **kwargs: Any) -> dict[str, Any]:
+        self.create_started.set()
+        if self.let_create_finish is not None:
+            await self.let_create_finish.wait()
+        sub_id = f"NEW-{len(self.created) + 1}"
+        self.created.append(sub_id)
+        self.held.append(
+            {
+                "id": sub_id,
+                "resource": kwargs["resource"],
+                "notificationUrl": kwargs["notification_url"],
+            }
+        )
+        return {"id": sub_id}
+
+    async def delete_subscription(self, *, subscription_id: str) -> None:
+        self.deleted.append(subscription_id)
+        self.held = [s for s in self.held if s["id"] != subscription_id]
+
+    async def find_app_installations(
+        self, *, team_id: str, external_id: str
+    ) -> list[AppInstallation]:
+        return []
+
+
+async def test_capture_waits_until_the_existing_subscriptions_can_be_read() -> None:
+    """A channel whose live subscription could not be seen at start would be
+    given a second, and every message delivered twice."""
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(list_failures=2, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+
+    assert graph.created == []
+    assert CHANNEL in adapter._capture_wanted
+    assert CHANNEL in adapter._capture_failures
+
+
+async def test_a_subscription_seen_once_listing_works_is_adopted_not_remade() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(
+        list_failures=1,
+        held=[
+            {
+                "id": "LIVE",
+                "resource": f"teams/team-1/channels/{CHANNEL}/messages",
+                "notificationUrl": adapter._me.notification_url,
+            }
+        ],
+    )
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+
+    assert graph.created == []
+    assert adapter._subscriptions == {CHANNEL: "LIVE"}
+
+
+async def test_a_channel_with_none_is_subscribed_once_listing_works() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(list_failures=1, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+
+    assert graph.created == ["NEW-1"]
+    assert adapter._subscriptions == {CHANNEL: "NEW-1"}
+
+
+async def test_nothing_is_subscribed_once_the_bridge_is_withdrawing() -> None:
+    """A `subscriptionRemoved` arriving while the bridge is being removed must
+    not make a subscription nothing will renew or delete."""
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+    adapter._adopted = True
+    adapter._subscriptions = {CHANNEL: "SUB-1"}
+
+    await adapter.withdraw()
+    await adapter._recreate_removed_subscription("SUB-1")
+    adapter._subscriptions = {}
+    await adapter._ensure_channel_subscription(CHANNEL)
+
+    assert graph.created == []
+
+
+async def test_a_subscription_being_made_as_withdrawal_starts_is_deleted() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    graph.let_create_finish = asyncio.Event()
+    adapter._graph = graph  # type: ignore[assignment]
+    adapter._adopted = True
+
+    making = asyncio.create_task(adapter._ensure_channel_subscription(CHANNEL))
+    await graph.create_started.wait()
+    withdrawing = asyncio.create_task(adapter.withdraw())
+    await asyncio.sleep(0)
+    graph.let_create_finish.set()
+    await making
+    await withdrawing
+
+    assert graph.created == ["NEW-1"]
+    assert graph.deleted == ["NEW-1"]
+
+
+# ── The default team ─────────────────────────────────────────────────────────
+
+
+class _DefaultTeamGraph:
+    def __init__(self, *, installed_in: set[str], failure: Exception | None) -> None:
+        self.installed_in = installed_in
+        self.failure = failure
+        self.asked: list[str] = []
+
+    async def find_app_installations(
+        self, *, team_id: str, external_id: str
+    ) -> list[AppInstallation]:
+        self.asked.append(team_id)
+        if self.failure is not None:
+            raise self.failure
+        if team_id in self.installed_in:
+            return [AppInstallation(installation_id="I", catalog_app_id="c")]
+        return []
+
+
+async def test_a_team_switch_is_in_can_be_the_default() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _DefaultTeamGraph(installed_in={"team-2"}, failure=None)
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter.check_config_edit({"tenant_id": ORG, "team_id": "team-2"})
+
+    assert graph.asked == ["team-2"]
+
+
+async def test_a_team_switch_is_not_in_cannot_be_the_default() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    adapter._graph = _DefaultTeamGraph(installed_in=set(), failure=None)  # type: ignore[assignment]
+
+    with pytest.raises(ConfigEditRefused, match="Add it to the team first"):
+        await adapter.check_config_edit({"tenant_id": ORG, "team_id": "team-2"})
+
+
+async def test_a_team_that_does_not_exist_cannot_be_the_default() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    adapter._graph = _DefaultTeamGraph(  # type: ignore[assignment]
+        installed_in=set(), failure=GraphError("not found (404)", status=404)
+    )
+
+    with pytest.raises(ConfigEditRefused, match="no team"):
+        await adapter.check_config_edit({"tenant_id": ORG, "team_id": "nope"})
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        GraphError("busy (503)", status=503),
+        TokenRequestRefused("AADSTS700016", error_codes=frozenset({700016})),
+        httpx.ConnectError("unreachable"),
+    ],
+)
+async def test_a_default_team_microsoft_cannot_be_asked_about_is_not_accepted(
+    failure: Exception,
+) -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    adapter._graph = _DefaultTeamGraph(installed_in=set(), failure=failure)  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError):
+        await adapter.check_config_edit({"tenant_id": ORG, "team_id": "team-2"})
+
+
+@pytest.mark.parametrize("team_id", [None, "team-1"])
+async def test_an_unchanged_or_cleared_default_is_not_checked(
+    team_id: str | None,
+) -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _DefaultTeamGraph(installed_in=set(), failure=None)
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter.check_config_edit({"tenant_id": ORG, "team_id": team_id})
+
+    assert graph.asked == []
+
+
+async def test_a_bring_your_own_bridges_default_team_is_its_operators() -> None:
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="a",
+            app_password="p",
+            tenant_id="t",
+            team_id="team",
+            public_base_url="https://x.example",
+            client_state="s",
+        )
+    )
+    graph = _DefaultTeamGraph(installed_in=set(), failure=None)
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter.check_config_edit({"team_id": "anything"})
+
+    assert graph.asked == []
+
+
+async def test_two_catalogue_ids_for_the_app_are_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = _shared_adapter()
+
+    class _TwoCopies(_PlacementGraph):
+        async def find_app_installations(
+            self, *, team_id: str, external_id: str
+        ) -> list[AppInstallation]:
+            return [
+                AppInstallation(installation_id="I", catalog_app_id=f"cat-{team_id}")
+            ]
+
+    adapter._graph = _TwoCopies()  # type: ignore[assignment]
+
+    with caplog.at_level("WARNING"):
+        placements = await adapter.list_team_placements()
+
+    assert placements.catalog_app_id is not None
+    assert "more than one catalogue id" in caplog.text

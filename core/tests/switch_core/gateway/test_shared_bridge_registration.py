@@ -16,7 +16,12 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.models import BridgeStartRefused
+from switch_core.bridges.collaboration.adapter import ConfigEditRefused
+from switch_core.bridges.collaboration.models import (
+    BridgeNotRunning,
+    BridgeOperationError,
+    BridgeStartRefused,
+)
 from switch_core.db.models import Client, CollaborationBridge, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
@@ -30,12 +35,18 @@ class _Lifecycle:
     """Records what reached it; refuses any start when told to."""
 
     def __init__(
-        self, *, refuse: bool = False, editable: frozenset[str] | None = None
+        self,
+        *,
+        refuse: bool = False,
+        editable: frozenset[str] | None = None,
+        edit_refusal: Exception | None = None,
     ) -> None:
         self.refuse = refuse
         self.editable = editable
+        self.edit_refusal = edit_refusal
         self.registered: list[dict[str, object]] = []
         self.checked: list[dict[str, Any]] = []
+        self.edits_checked: list[dict[str, Any]] = []
         self.restarted: list[str] = []
 
     def editable_config_keys(
@@ -66,6 +77,11 @@ class _Lifecycle:
         self.checked.append(kwargs)
         if self.refuse:
             raise BridgeStartRefused("not installed for this tenant")
+
+    async def check_config_edit(self, **kwargs: Any) -> None:
+        self.edits_checked.append(kwargs)
+        if self.edit_refusal is not None:
+            raise self.edit_refusal
 
 
 def _admin() -> User:
@@ -245,3 +261,62 @@ async def test_an_editable_setting_and_unchanged_ones_go_through(
 
     assert (await _stored_config(session_factory, bridge_id))["team_id"] == "team-9"
     assert lifecycle.restarted == [bridge_id]
+
+
+async def test_the_running_bridge_is_asked_about_the_edit_as_it_would_be(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        bridge_id = await _shared_bridge(
+            session, bridge_type="teams", connection_config=dict(_TEAMS_SHARED)
+        )
+        await session.commit()
+    lifecycle = _Lifecycle(editable=frozenset({"team_id"}))
+
+    async with session_factory() as session:
+        await update_bridge(
+            bridge_id=bridge_id,
+            payload=BridgeUpdateRequest(connection_config={"team_id": "team-9"}),
+            session=session,
+            bridge_store=_BRIDGE_STORE,
+            room_store=RoomStore(),
+            collab_lifecycle=lifecycle,  # type: ignore[arg-type]
+            _user=_admin(),
+        )
+
+    [checked] = lifecycle.edits_checked
+    assert checked["bridge_id"] == bridge_id
+    assert checked["current"] == _TEAMS_SHARED
+    assert checked["connection_config"] == {**_TEAMS_SHARED, "team_id": "team-9"}
+
+
+@pytest.mark.parametrize(
+    ("refusal", "status"),
+    [
+        (ConfigEditRefused("Switch is not in that team."), 422),
+        (BridgeNotRunning("The connection is not running."), 409),
+        (BridgeOperationError("Microsoft could not be asked."), 502),
+    ],
+)
+async def test_an_edit_the_platform_refuses_is_not_stored(
+    session_factory: async_sessionmaker[AsyncSession],
+    refusal: Exception,
+    status: int,
+) -> None:
+    """A default team Switch is not in would fail at the first new channel,
+    long after the edit; refused here, nothing is stored or restarted."""
+    async with session_factory() as session:
+        bridge_id = await _shared_bridge(
+            session, bridge_type="teams", connection_config=dict(_TEAMS_SHARED)
+        )
+        await session.commit()
+    lifecycle = _Lifecycle(editable=frozenset({"team_id"}), edit_refusal=refusal)
+
+    refused = await _update(
+        session_factory, bridge_id, lifecycle, {"team_id": "team-9"}
+    )
+
+    assert refused.status_code == status
+    assert str(refusal) in str(refused.detail)
+    assert "team_id" not in await _stored_config(session_factory, bridge_id)
+    assert lifecycle.restarted == []

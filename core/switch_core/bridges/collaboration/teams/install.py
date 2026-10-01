@@ -370,8 +370,14 @@ class TeamsAppInstaller(MessagingAppInstaller):
 
         The same as the bridge's own `withdraw`, from outside it: delete the
         subscriptions this app holds there and take the app out of every team
-        it is in. Best effort; what is left behind is logged, since the
-        customer asked to disconnect and nothing here can be retried later.
+        it is in.
+
+        Best effort, and never a refusal, unlike what the base class allows:
+        Graph refuses these calls exactly when the organisation has blocked
+        the app or withdrawn its approval, and a customer who has done that
+        must still be able to disconnect. What is left behind is logged as an
+        error. A subscription left behind runs out within the hour, since
+        nothing renews it.
         """
         await self._app.withdraw_from_org(external_workspace_id)
 

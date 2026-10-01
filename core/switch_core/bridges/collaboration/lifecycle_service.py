@@ -18,6 +18,7 @@ from switch_core.bridges.collaboration.ingress import CallbackEndpoint, Callback
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeNotRunning,
     BridgeOperationError,
 )
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
@@ -476,6 +477,32 @@ class CollaborationBridgeLifecycleService:
                 bridge_type=bridge_type,
                 connection_config=connection_config,
             )
+
+    async def check_config_edit(
+        self,
+        *,
+        bridge_id: str,
+        bridge_type: str,
+        current: Mapping[str, object],
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Ask the running bridge whether an edit of its settings is sound.
+
+        See `CollaborationAdapter.check_config_edit`. A bridge on an app the
+        deployment owns (one whose adapter limits what is editable) checks
+        with the platform, and cannot while it is not running, so the edit is
+        refused with `BridgeNotRunning` rather than stored unchecked. Any other
+        bridge's edit goes through on its validation alone.
+        """
+        adapter = self.get_adapter(bridge_id)
+        if adapter is None:
+            if self.editable_config_keys(bridge_type, current) is not None:
+                raise BridgeNotRunning(
+                    "The connection is not running, so Switch cannot check this "
+                    "change with the platform; try again in a moment."
+                )
+            return
+        await adapter.check_config_edit(connection_config)
 
     def iter_adapters(self) -> Iterator[CollaborationAdapter]:
         """The live adapter of every running bridge, as a snapshot.

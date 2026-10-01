@@ -25,6 +25,7 @@ from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
     ChannelNotBindable,
     CollaborationAdapter,
+    ConfigEditRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -513,15 +514,19 @@ def activity_tenant(activity: dict[str, Any]) -> str | None:
     return named.pop() if len(named) == 1 else None
 
 
+_CHANNEL_ID = re.compile(r"19:[^\s/?#%@]+@thread\.(?:tacv2|skype)")
+
+
 def _is_channel_id(channel_id: str) -> bool:
     """Whether an id is a Teams channel's, as opposed to a chat's.
 
     Channels are `19:…@thread.tacv2` (or the older `@thread.skype`); group
     chats are `@thread.v2` and one-to-one chats have other shapes entirely.
+    Nothing that could change the shape of a URL is allowed in between, since
+    a channel id offered for binding goes into the Graph call that proves the
+    channel is this organisation's.
     """
-    return channel_id.startswith("19:") and channel_id.endswith(
-        ("@thread.tacv2", "@thread.skype")
-    )
+    return _CHANNEL_ID.fullmatch(channel_id) is not None
 
 
 def _parse_graph_time(value: object) -> datetime | None:
@@ -968,6 +973,12 @@ class TeamsAdapter(CollaborationAdapter):
         # Installed by the bridge to persist a newly-learned channel/team pair.
         self._persist_channel_team: Callable[[str, str], Awaitable[None]] | None = None
         self._sub_lock = asyncio.Lock()
+        # Whether the subscriptions Graph already holds for this bridge have
+        # been read since it started; see `_adopt_existing_subscriptions`.
+        self._adopted = False
+        # Set once the bridge starts letting go of the organisation for good,
+        # after which nothing may make a new subscription there.
+        self._withdrawing = False
         self._renewal_task: asyncio.Task[None] | None = None
         self._repair_task: asyncio.Task[None] | None = None
 
@@ -1144,13 +1155,22 @@ class TeamsAdapter(CollaborationAdapter):
         URL.
 
         This is also why one Entra app must never serve two environments: each
-        would read the other's subscriptions as stale and delete them."""
+        would read the other's subscriptions as stale and delete them.
+
+        Until this has succeeded once, no subscription is made: one made for a
+        channel whose live subscription could not be seen would be a second,
+        delivering every message twice until the first runs out. A failure here
+        leaves the channels to the repair loop, which tries this again first."""
         if self._graph is None:
             return
         try:
             existing = await self._graph.list_subscriptions()
-        except Exception:
-            logger.warning("Could not list existing Graph subscriptions on start")
+        except Exception as error:
+            logger.warning(
+                "Could not list this Teams bridge's Graph subscriptions (%s); "
+                "capture waits until they can be read, so none is made twice",
+                error,
+            )
             return
         notification_url = self._me.notification_url
         for sub in existing:
@@ -1178,6 +1198,7 @@ class TeamsAdapter(CollaborationAdapter):
                 )
             except Exception:
                 logger.warning("Failed to delete stale Teams subscription %s", stale_id)
+        self._adopted = True
         if self._subscriptions:
             logger.info(
                 "Re-attached to %d existing Teams subscriptions",
@@ -1375,9 +1396,11 @@ class TeamsAdapter(CollaborationAdapter):
         """Stop listening in the organisation, because the bridge is being removed.
 
         Graph keeps delivering a subscription until it runs out, and a removed
-        bridge would leave every channel's still running. The repair and
-        renewal loops are stopped first, so neither can make a new one between
-        these being deleted and the bridge being stopped. Subscriptions are
+        bridge would leave every channel's still running. From the start of
+        this nothing may make a new one — not the repair loop, and not a
+        `subscriptionRemoved` notification arriving while the bridge is still
+        routable — so none is made between these being deleted and the bridge
+        being stopped. Subscriptions are
         found by asking Graph rather than from memory, so one this process
         failed to adopt goes too.
 
@@ -1386,6 +1409,7 @@ class TeamsAdapter(CollaborationAdapter):
         and the bot would otherwise stay in their channels unable to answer.
         A bring-your-own bridge leaves its operator's app where they put it.
         """
+        self._withdrawing = True
         await self._cancel(self._renewal_task)
         self._renewal_task = None
         await self._cancel(self._repair_task)
@@ -1394,6 +1418,10 @@ class TeamsAdapter(CollaborationAdapter):
             return
         identity = self._me
         left_behind: list[str] = []
+        # Taken so a subscription being made as this starts is finished, and
+        # found and deleted below, rather than made just after.
+        async with self._sub_lock:
+            pass
 
         subscription_ids = set(self._subscriptions.values())
         try:
@@ -3125,6 +3153,15 @@ class TeamsAdapter(CollaborationAdapter):
         placements = await asyncio.gather(
             *(placed(team) for team in teams if team.get("id"))
         )
+        if len(seen_catalog_ids) > 1:
+            # A copy uploaded to one team on its own (sideloaded) carries an id
+            # of its own; which one the catalogue holds cannot be told from here.
+            logger.warning(
+                "The Switch app is in Microsoft organisation %s's teams under "
+                "more than one catalogue id (%s); using the first",
+                self._config.tenant_id,
+                ", ".join(sorted(seen_catalog_ids)),
+            )
         return TeamPlacements(
             teams=sorted(placements, key=lambda p: p.name.casefold()),
             catalog_app_id=next(iter(sorted(seen_catalog_ids)), None),
@@ -3146,6 +3183,38 @@ class TeamsAdapter(CollaborationAdapter):
             )
         for channel_id in [c for c, t in self._team_of_channel.items() if t == team_id]:
             await self._stop_capture(channel_id)
+
+    async def check_config_edit(self, connection_config: Mapping[str, object]) -> None:
+        """On the distributed app, a default team must be one Switch is in.
+
+        New channels are made in it, which fails in a team the app is not in —
+        and fails at the first room, long after the edit that caused it.
+        """
+        if not self._me.shared:
+            return
+        team_id = connection_config.get("team_id")
+        if not team_id or team_id == self._config.team_id:
+            return
+        try:
+            installations = await self._require_shared().find_app_installations(
+                team_id=str(team_id), external_id=self._me.app_id
+            )
+        except GraphError as error:
+            if error.status in (400, 404):
+                raise ConfigEditRefused(
+                    f"There is no team {team_id} in this organisation."
+                ) from error
+            raise
+        except (TokenRequestRefused, httpx.HTTPError) as error:
+            raise BridgeOperationError(
+                f"Microsoft could not be asked whether Switch is in team {team_id}: "
+                f"{error}"
+            ) from error
+        if not installations:
+            raise ConfigEditRefused(
+                "Switch is not in that team. Add it to the team first, then "
+                "make it the default."
+            )
 
     async def require_bindable_channel(self, channel_id: str) -> None:
         """On the distributed app, bind only a channel in this organisation.
@@ -3727,6 +3796,8 @@ class TeamsAdapter(CollaborationAdapter):
         self._capture_wanted.add(channel_id)
         if channel_id in self._subscriptions or self._graph is None:
             return
+        if self._withdrawing:
+            return
         identity = self._me
         keyring = identity.keyring
         if keyring is None:
@@ -3741,7 +3812,15 @@ class TeamsAdapter(CollaborationAdapter):
             return
 
         async with self._sub_lock:
-            if channel_id in self._subscriptions:
+            if not self._adopted:
+                await self._adopt_existing_subscriptions()
+                if not self._adopted:
+                    self._note_capture_failure(
+                        channel_id,
+                        "the subscriptions Graph already holds could not be read",
+                    )
+                    return
+            if channel_id in self._subscriptions or self._withdrawing:
                 return
             try:
                 sub = await self._graph.create_subscription(

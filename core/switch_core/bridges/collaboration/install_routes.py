@@ -305,6 +305,7 @@ def create_messaging_install_router(
             return PlainTextResponse(handshake)
 
         unavailable = 0
+        unreadable = 0
         for event in events:
             if event.delivery_attempt > 0:
                 # The only signal this deployment gets that its own
@@ -331,10 +332,14 @@ def create_messaging_install_router(
 
                 target = await service.resolve(platform=platform, event=event)
             except WebhookPayloadError as failure:
+                # Skipped rather than answered: on an endpoint every workspace
+                # shares, one unreadable item in a batch must not take the rest
+                # of it down with it.
                 logger.error(
                     "A verified %s event named no workspace: %s", platform, failure
                 )
-                return Response(status_code=400)
+                unreadable += 1
+                continue
             except WebhookWorkspaceUnknown as failure:
                 # A 200 for an event that reached nobody, which is the one place
                 # this file answers something other than what happened. The app
@@ -367,7 +372,11 @@ def create_messaging_install_router(
         # endpoint every workspace shares is otherwise one workspace's restart
         # failing, and the platform backing off from, everyone else's delivery.
         # What was undeliverable in a partly delivered batch is logged above.
-        if unavailable and unavailable == len(events):
+        # A batch nothing in which could be read is the platform's payload
+        # changing under this build, and says so with a 400 that is not retried.
+        if events and unreadable == len(events):
+            return Response(status_code=400)
+        if unavailable and unavailable + unreadable == len(events):
             return Response(status_code=503)
         return Response(status_code=200)
 

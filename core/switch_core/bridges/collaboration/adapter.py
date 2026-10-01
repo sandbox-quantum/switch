@@ -201,6 +201,14 @@ class ChannelNotBindable(ValueError):
     """
 
 
+class ConfigEditRefused(ValueError):
+    """An edit of a connection's settings that the platform says is wrong.
+
+    A `ValueError` for the same reason as `ChannelNotBindable`: it is the
+    caller's input, answered as a bad request.
+    """
+
+
 class DirectorySearchBusy(RuntimeError):
     """The platform's directory is being searched too often to take one more.
 
@@ -1205,6 +1213,16 @@ class CollaborationAdapter(ABC):
         whoever owns it, and the dashboard offers nothing to choose.
         """
         return False
+
+    async def check_config_edit(self, connection_config: Mapping[str, object]) -> None:
+        """Raise `ConfigEditRefused` for an edit only the platform can tell is wrong.
+
+        Asked of the running bridge before an edit of its settings is stored,
+        with the settings as they would be after it. For what validating the
+        config cannot know by itself — whether a team it names is one the app
+        is in, say. Nothing, by default.
+        """
+        return None
 
     async def attention(self) -> str | None:
         """What a workspace admin has to do for this bridge to keep working.

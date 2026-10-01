@@ -1080,7 +1080,7 @@ class SwitchConfig(BaseSettings):
                 "The distributed Teams app needs exactly one credential: "
                 "TEAMS_APP_CLIENT_SECRET, TEAMS_APP_CERTIFICATE (with its private "
                 "key), or TEAMS_APP_FEDERATED_TOKEN_FILE. "
-                + (f"Got {' and '.join(kinds)}." if kinds else "Got none.")
+                + (f"Got {', '.join(kinds)}." if kinds else "Got none.")
             )
 
         if self.teams_app_certificate:

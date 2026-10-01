@@ -9,13 +9,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
+from switch_core.bridges.collaboration.adapter import (
+    ConfigEditRefused,
+    DirectorySearchBusy,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeInstallLink,
+    BridgeNotRunning,
+    BridgeOperationError,
     BridgeStartRefused,
     DirectoryUser,
 )
@@ -377,6 +382,19 @@ async def update_bridge(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except BridgeStartRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            await collab_lifecycle.check_config_edit(
+                bridge_id=bridge_id,
+                bridge_type=bridge.type,
+                current=current,
+                connection_config=merged,
+            )
+        except ConfigEditRefused as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except BridgeNotRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except BridgeOperationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         bridge = await bridge_store.merge_connection_config(
             session, bridge_id, dict(payload.connection_config)
         )

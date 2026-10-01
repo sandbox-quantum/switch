@@ -712,3 +712,147 @@ def test_a_blocked_app_is_reported() -> None:
         )
 
     assert told == [True]
+
+
+# ── Paging, and the app's own installation in a team ─────────────────────────
+
+
+class _PagedRecorder(_Recorder):
+    """Answers each request with the next of a list of pages."""
+
+    def __init__(self, pages: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._pages = list(pages)
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(200, json=self._pages.pop(0))
+
+
+def test_every_page_of_subscriptions_is_read() -> None:
+    """An organisation with many captured channels has more subscriptions than
+    one page holds; one left unread at start would be made a second time."""
+    recorder = _PagedRecorder(
+        [
+            {
+                "value": [{"id": "S1"}],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/subscriptions?$skiptoken=2",
+            },
+            {"value": [{"id": "S2"}]},
+        ]
+    )
+
+    subs = _run(_graph(recorder).list_subscriptions())
+
+    assert [s["id"] for s in subs] == ["S1", "S2"]
+    assert str(recorder.requests[1].url).endswith("$skiptoken=2")
+
+
+def test_every_page_of_teams_is_read_and_the_query_is_sent_once() -> None:
+    recorder = _PagedRecorder(
+        [
+            {
+                "value": [{"id": "T1", "displayName": "One"}],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/teams?$skiptoken=2",
+            },
+            {"value": [{"id": "T2", "displayName": "Two"}]},
+        ]
+    )
+
+    teams = _run(_graph(recorder).list_teams())
+
+    assert [t["id"] for t in teams] == ["T1", "T2"]
+    assert recorder.requests[0].url.params["$select"] == "id,displayName"
+    assert "$select" not in recorder.requests[1].url.params
+
+
+def test_a_failed_page_raises() -> None:
+    with pytest.raises(GraphError) as failed:
+        _run(_graph(_Recorder(503, {"error": {"message": "busy"}})).list_teams())
+    assert failed.value.status == 503
+
+
+def test_the_app_is_added_to_a_team_by_its_catalogue_id() -> None:
+    recorder = _Recorder(201)
+
+    _run(_graph(recorder).install_app(team_id="team-1", catalog_app_id="cat-1"))
+
+    assert recorder.last.method == "POST"
+    assert recorder.last.url.path == "/v1.0/teams/team-1/installedApps"
+    assert recorder.last_json() == {
+        "teamsApp@odata.bind": "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/cat-1"
+    }
+
+
+def test_adding_the_app_where_it_already_is_is_not_an_error() -> None:
+    _run(_graph(_Recorder(409)).install_app(team_id="team-1", catalog_app_id="cat-1"))
+
+
+def test_a_refused_addition_raises() -> None:
+    with pytest.raises(GraphError):
+        _run(_graph(_Recorder(403)).install_app(team_id="team-1", catalog_app_id="c"))
+
+
+def test_the_apps_installations_are_found_by_its_manifest_id() -> None:
+    recorder = _Recorder(
+        200,
+        {
+            "value": [
+                {"id": "INST-1", "teamsApp": {"id": "cat-1"}},
+                {"id": "INST-2", "teamsApp": None},
+                {"teamsApp": {"id": "no-installation-id"}},
+            ]
+        },
+    )
+
+    found = _run(
+        _graph(recorder).find_app_installations(team_id="team-1", external_id="app-1")
+    )
+
+    assert [(i.installation_id, i.catalog_app_id) for i in found] == [
+        ("INST-1", "cat-1"),
+        ("INST-2", None),
+    ]
+    assert recorder.last.url.params["$filter"] == "teamsApp/externalId eq 'app-1'"
+    assert recorder.last.url.params["$expand"] == "teamsApp"
+
+
+def test_a_team_whose_apps_cannot_be_read_raises() -> None:
+    with pytest.raises(GraphError) as failed:
+        _run(
+            _graph(_Recorder(404)).find_app_installations(
+                team_id="team-1", external_id="app-1"
+            )
+        )
+    assert failed.value.status == 404
+
+
+def test_removing_the_app_from_a_team_it_has_left_is_not_an_error() -> None:
+    recorder = _Recorder(404)
+
+    _run(_graph(recorder).uninstall_app(team_id="team-1", installation_id="INST-1"))
+
+    assert recorder.last.method == "DELETE"
+    assert recorder.last.url.path == "/v1.0/teams/team-1/installedApps/INST-1"
+
+
+def test_a_refused_removal_raises() -> None:
+    with pytest.raises(GraphError):
+        _run(
+            _graph(_Recorder(500)).uninstall_app(
+                team_id="team-1", installation_id="INST-1"
+            )
+        )
+
+
+def test_a_team_id_cannot_move_the_rest_of_the_url() -> None:
+    """A team id comes from a request; a `?` or `/` in it must not turn the
+    path after it into a query, or into somewhere else."""
+    recorder = _Recorder(201)
+
+    _run(_graph(recorder).install_app(team_id="x?y=1/../../users", catalog_app_id="c"))
+
+    assert recorder.last.url.raw_path.startswith(
+        b"/v1.0/teams/x%3Fy%3D1%2F..%2F..%2Fusers/installedApps"
+    )
+    assert recorder.last.url.query == b""

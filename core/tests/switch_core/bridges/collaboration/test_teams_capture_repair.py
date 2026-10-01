@@ -92,6 +92,10 @@ class _Graph:
             raise self._error
         return {"id": "sub-1"}
 
+    async def list_subscriptions(self) -> list[dict[str, Any]]:
+        # None yet: what the bridge reads before making its first.
+        return []
+
 
 def _adapter(graph: _Graph) -> TeamsAdapter:
     adapter = TeamsAdapter(config=_config())

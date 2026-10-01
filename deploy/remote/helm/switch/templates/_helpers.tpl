@@ -831,7 +831,7 @@ from switchCore.messagingPublicUrl, falling back to the per-app values earlier
 releases took, so an existing Slack or Discord deployment keeps working.
 */}}
 {{- define "switch.messagingPublicUrl" -}}
-{{- coalesce .Values.switchCore.messagingPublicUrl .Values.switchCore.slackApp.messagingPublicUrl .Values.switchCore.discordApp.messagingPublicUrl "" -}}
+{{- coalesce .Values.switchCore.messagingPublicUrl .Values.switchCore.slackApp.messagingPublicUrl .Values.switchCore.discordApp.messagingPublicUrl | default "" -}}
 {{- end }}
 
 {{/*

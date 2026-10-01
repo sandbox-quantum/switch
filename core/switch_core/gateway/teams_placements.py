@@ -231,6 +231,16 @@ async def remove_from_team(
         await adapter.remove_from_team(team_id)
     except _MICROSOFT_FAILURES as error:
         raise _microsoft_failed(error) from error
+    if adapter.default_team_id == team_id:
+        # New channels are made in the default team, and cannot be in one the
+        # app has left: channel creation goes off with the default, until
+        # another team is chosen, rather than failing at the next room.
+        await bridge_store.merge_connection_config(
+            session, bridge_id, {"team_id": None}
+        )
+        await bridge_store.set_channel_creation_enabled(session, bridge_id, False)
+        await session.commit()
+        await collab_lifecycle.restart(bridge_id)
     return Response(status_code=204)
 
 
