@@ -591,6 +591,23 @@ class CollaborationAdapter(ABC):
     @abstractmethod
     async def stop(self) -> None: ...
 
+    async def withdraw(self) -> None:
+        """Let go of what this bridge holds on the platform, because it is being
+        removed for good.
+
+        Called once, while the bridge is still running, just before it is
+        stopped for the last time — never on a restart, which is what `stop`
+        alone is for. Most adapters hold nothing on the platform that outlives
+        them and have nothing to do; one that registered something there (a
+        subscription that keeps delivering, an app installed into a team) undoes
+        it here, so the platform stops sending traffic nobody will read.
+
+        Best effort: a removal is what someone asked for, and it goes ahead
+        whatever this manages. Raise to say what was left behind; the caller
+        logs it.
+        """
+        return None
+
     async def dispatch_event(
         self, *, envelope_type: str, payload: dict[str, Any]
     ) -> None:

@@ -381,3 +381,65 @@ async def test_removing_a_bridge_forgets_that_it_was_preconfigured(
     await service.remove(bridge_id)
 
     assert bridge_id not in service._preconfigured
+
+
+class _WithdrawingAdapter:
+    def __init__(self, events: list[str], *, fail: bool = False) -> None:
+        self._events = events
+        self._fail = fail
+
+    async def withdraw(self) -> None:
+        self._events.append("withdraw")
+        if self._fail:
+            raise RuntimeError("the platform would not let go")
+
+
+class _RunningBridge:
+    def __init__(self, adapter: _WithdrawingAdapter, events: list[str]) -> None:
+        self.adapter = adapter
+        self._events = events
+
+    async def stop(self) -> None:
+        self._events.append("stop")
+
+
+@pytest.mark.asyncio
+async def test_a_removed_bridge_withdraws_from_its_platform_before_it_stops(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Withdrawing needs the bridge still running — its clients and its
+    platform credential — and only a removal does it, never a restart."""
+    service = _service(session_factory, _ClientLifecycle())
+    async with session_factory() as session:
+        bridge_id, _ = await _make_bridge(session)
+        await session.commit()
+    events: list[str] = []
+    service._bridges[bridge_id] = _RunningBridge(  # type: ignore[assignment]
+        _WithdrawingAdapter(events), events
+    )
+
+    await service.remove(bridge_id)
+
+    assert events == ["withdraw", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_a_bridge_that_cannot_withdraw_is_still_removed(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The removal is what someone asked for; what was left behind is logged."""
+    service = _service(session_factory, _ClientLifecycle())
+    async with session_factory() as session:
+        bridge_id, _ = await _make_bridge(session)
+        await session.commit()
+    events: list[str] = []
+    service._bridges[bridge_id] = _RunningBridge(  # type: ignore[assignment]
+        _WithdrawingAdapter(events, fail=True), events
+    )
+
+    await service.remove(bridge_id)
+
+    async with session_factory() as session:
+        assert await CollaborationBridgeStore().get(session, bridge_id) is None
+    assert "could not let go" in caplog.text

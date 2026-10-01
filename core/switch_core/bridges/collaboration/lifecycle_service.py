@@ -1320,6 +1320,17 @@ class CollaborationBridgeLifecycleService:
         was_connected = await milestone_claimed(
             self._session_factory, f"connector_added:{bridge_id}"
         )
+        running = self._bridges.get(bridge_id)
+        if running is not None:
+            try:
+                await running.adapter.withdraw()
+            except Exception:
+                logger.error(
+                    "Collaboration bridge %s could not let go of everything it "
+                    "held on its platform; removing it anyway",
+                    bridge_id,
+                    exc_info=True,
+                )
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)

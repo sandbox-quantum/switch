@@ -1327,6 +1327,68 @@ class TeamsAdapter(CollaborationAdapter):
             )
         return " ".join(notes) or None
 
+    async def withdraw(self) -> None:
+        """Stop listening in the organisation, because the bridge is being removed.
+
+        Graph keeps delivering a subscription until it runs out, and a removed
+        bridge would leave every channel's still running. The repair and
+        renewal loops are stopped first, so neither can make a new one between
+        these being deleted and the bridge being stopped. Subscriptions are
+        found by asking Graph rather than from memory, so one this process
+        failed to adopt goes too.
+
+        On the distributed app the bridge also takes the app out of the teams
+        it knows, since nothing else will: the customer asked to disconnect,
+        and the bot would otherwise stay in their channels unable to answer.
+        A bring-your-own bridge leaves its operator's app where they put it.
+        """
+        await self._cancel(self._renewal_task)
+        self._renewal_task = None
+        await self._cancel(self._repair_task)
+        self._repair_task = None
+        if self._graph is None:
+            return
+        identity = self._me
+        left_behind: list[str] = []
+
+        subscription_ids = set(self._subscriptions.values())
+        try:
+            for sub in await self._graph.list_subscriptions():
+                if sub.get("notificationUrl") == identity.notification_url:
+                    subscription_ids.add(str(sub.get("id", "")))
+        except Exception as error:
+            left_behind.append(f"listing subscriptions failed ({error})")
+        for subscription_id in sorted(s for s in subscription_ids if s):
+            try:
+                await self._graph.delete_subscription(subscription_id=subscription_id)
+            except Exception as error:
+                left_behind.append(f"subscription {subscription_id} ({error})")
+        self._subscriptions.clear()
+        self._subscription_expiry.clear()
+        self._capture_wanted.clear()
+
+        if identity.shared:
+            teams = set(self._team_of_channel.values())
+            if self._config.team_id:
+                teams.add(self._config.team_id)
+            for team_id in sorted(teams):
+                try:
+                    for installation in await self._graph.find_app_installations(
+                        team_id=team_id, external_id=identity.app_id
+                    ):
+                        await self._graph.uninstall_app(
+                            team_id=team_id, installation_id=installation
+                        )
+                except Exception as error:
+                    left_behind.append(f"the app in team {team_id} ({error})")
+
+        if left_behind:
+            raise BridgeOperationError(
+                "Removing the Teams connection left behind: "
+                + "; ".join(left_behind)
+                + ". Subscriptions run out on their own within the hour."
+            )
+
     @staticmethod
     async def _cancel(task: asyncio.Task[None] | None) -> None:
         if task is None:

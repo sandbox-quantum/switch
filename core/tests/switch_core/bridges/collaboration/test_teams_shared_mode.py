@@ -629,3 +629,92 @@ async def test_an_upgrade_is_not_a_removal() -> None:
     )
 
     assert adapter._subscriptions == {CHANNEL: "SUB-1"}
+
+
+# ── Removal ──────────────────────────────────────────────────────────────────
+
+
+class _WithdrawGraph:
+    def __init__(
+        self, *, listed: list[dict[str, Any]], installations: list[str]
+    ) -> None:
+        self._listed = listed
+        self._installations = installations
+        self.deleted: list[str] = []
+        self.uninstalled: list[tuple[str, str]] = []
+
+    async def list_subscriptions(self) -> list[dict[str, Any]]:
+        return self._listed
+
+    async def delete_subscription(self, *, subscription_id: str) -> None:
+        self.deleted.append(subscription_id)
+
+    async def find_app_installations(
+        self, *, team_id: str, external_id: str
+    ) -> list[str]:
+        return list(self._installations)
+
+    async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
+        self.uninstalled.append((team_id, installation_id))
+
+
+async def test_removing_a_shared_bridge_stops_listening_and_leaves_its_teams() -> None:
+    adapter = _shared_adapter(team_id="team-default")
+    url = adapter._me.notification_url
+    adapter._subscriptions = {CHANNEL: "SUB-KNOWN"}
+    adapter._team_of_channel = {CHANNEL: "team-1"}
+    graph = _WithdrawGraph(
+        listed=[
+            {"id": "SUB-KNOWN", "notificationUrl": url},
+            {"id": "SUB-UNADOPTED", "notificationUrl": url},
+            {"id": "SUB-ELSEWHERE", "notificationUrl": "https://other.example/x"},
+        ],
+        installations=["INST-1"],
+    )
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter.withdraw()
+
+    assert sorted(graph.deleted) == ["SUB-KNOWN", "SUB-UNADOPTED"]
+    assert sorted(graph.uninstalled) == [
+        ("team-1", "INST-1"),
+        ("team-default", "INST-1"),
+    ]
+    assert adapter._capture_wanted == set()
+
+
+async def test_removing_a_bring_your_own_bridge_leaves_the_operators_app_in_place() -> (
+    None
+):
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="a",
+            app_password="p",
+            tenant_id="t",
+            team_id="team",
+            public_base_url="https://x.example",
+            client_state="s",
+        )
+    )
+    adapter._subscriptions = {CHANNEL: "SUB-1"}
+    graph = _WithdrawGraph(listed=[], installations=["INST-1"])
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter.withdraw()
+
+    assert graph.deleted == ["SUB-1"]
+    assert graph.uninstalled == []
+
+
+async def test_what_could_not_be_withdrawn_is_said() -> None:
+    adapter = _shared_adapter()
+    adapter._subscriptions = {CHANNEL: "SUB-1"}
+
+    class _Failing(_WithdrawGraph):
+        async def delete_subscription(self, *, subscription_id: str) -> None:
+            raise GraphError("delete failed (503)", status=503)
+
+    adapter._graph = _Failing(listed=[], installations=[])  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="SUB-1"):
+        await adapter.withdraw()

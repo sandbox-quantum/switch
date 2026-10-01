@@ -295,3 +295,35 @@ class GraphClient:
         )
         if resp.status_code >= 300 and resp.status_code != 409:
             raise _graph_error(f"add member {user_aad_id} to team {team_id}", resp)
+
+    # ── The app's own installation in a team ─────────────────────────────────
+
+    async def find_app_installations(
+        self, *, team_id: str, external_id: str
+    ) -> list[str]:
+        """The ids of this app's installations in a team, if it is installed.
+
+        Matched on the app's manifest id (`externalId`), which is the same in
+        every organisation's catalogue, rather than the id the catalogue
+        assigned, which differs per organisation.
+        """
+        resp = await self._send(
+            "GET",
+            f"{GRAPH_BASE}/teams/{team_id}/installedApps",
+            params={
+                "$expand": "teamsApp",
+                "$filter": f"teamsApp/externalId eq '{external_id}'",
+            },
+        )
+        if resp.status_code >= 300:
+            raise _graph_error(f"list app installations in team {team_id}", resp)
+        installations: list[dict[str, Any]] = resp.json().get("value", []) or []
+        return [str(item["id"]) for item in installations if item.get("id")]
+
+    async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
+        resp = await self._send(
+            "DELETE",
+            f"{GRAPH_BASE}/teams/{team_id}/installedApps/{installation_id}",
+        )
+        if resp.status_code >= 300 and resp.status_code != 404:
+            raise _graph_error(f"remove the app from team {team_id}", resp)
