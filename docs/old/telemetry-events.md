@@ -430,11 +430,14 @@ onboarding. A bundled connector registered before the flag existed is marked
 on the setup step's next run; if it first connects before that, its one
 `connector_added` reports `false`.
 
-**`seconds_since_configured` is not setup time for an old connector.** The
-event fires on the first connect *seen with telemetry on*. A connector that
-already existed when telemetry was switched on reports its whole age on its
-first connect afterwards. Deployments that predate telemetry send `-1` in
-`seconds_since_install`, so filtering to `>= 0` drops most of them.
+**`connector_added` fires only for a first connect that was seen.** A
+connector's first connect is recorded whether telemetry is on or not, so one
+that first connected while telemetry was off never reports `connector_added`:
+its setup went unmeasured, and reporting it later would report its whole age.
+Connectors that already existed when this tracking arrived are recorded by a
+migration and never report either. Servers released before it reported an old
+connector's age instead, often millions of seconds; filtering to
+`seconds_since_install >= 0` drops most of those.
 
 `seconds_since_configured` and `failed_attempts_before_success` are what answer
 "is one platform too hard". Elapsed time from install mostly measures when

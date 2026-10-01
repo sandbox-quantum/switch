@@ -1272,17 +1272,21 @@ class CollaborationBridgeLifecycleService:
             },
         )
 
-        # `enabled`, not just `is not None`: off is a real service with a
-        # discarding sink, so testing for None alone spends the claim below on
-        # a deployment reporting nothing.
-        if self._telemetry is None or not self._telemetry.enabled:
-            return
         # The first successful connect for this bridge, ever. Claimed against
         # the bridge id so restarting a working bridge does not re-report a
-        # setup that happened months ago.
-        if not await claim_milestone(
+        # setup that happened months ago — and claimed whether or not telemetry
+        # is on, unlike the milestones. `connector_added` measures setup time,
+        # configuration saved to first connect; a first connect nobody was told
+        # about is setup that went unmeasured, and reporting it the day
+        # telemetry is switched on would report the connector's whole age.
+        first_connect = await claim_milestone(
             self._session_factory, f"connector_added:{bridge_id}"
-        ):
+        )
+        # `enabled`, not just `is not None`: off is a real service with a
+        # discarding sink.
+        if self._telemetry is None or not self._telemetry.enabled:
+            return
+        if not first_connect:
             # This bridge has reported, but the deployment-wide milestone may
             # not have. `emit_milestone` is itself once-ever.
             if not preconfigured:
