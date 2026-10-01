@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
@@ -949,6 +950,29 @@ def test_translate_inbound_unknown_piped_mention_falls_back_to_id() -> None:
     # raw id (its room-alias key) rather than being dropped, so alias routing
     # still resolves for an aliased app mention.
     assert adapter.translate_inbound("<@U0B1BF0JP6H|agent switch>") == "@U0B1BF0JP6H"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("<!channel> deploy at five", "@channel deploy at five"),
+        ("<!here> anyone?", "@here anyone?"),
+        ("<!everyone> heads up", "@everyone heads up"),
+        ("<!channel|@channel> labelled", "@channel labelled"),
+        ("<!here|here> labelled", "@here labelled"),
+        ("<!group> legacy private channel", "@channel legacy private channel"),
+        ("<!CHANNEL> any case", "@channel any case"),
+    ],
+)
+def test_translate_inbound_shows_a_channel_wide_mention_as_the_word(
+    raw: str, expected: str
+) -> None:
+    assert _adapter().translate_inbound(raw) == expected
+
+
+def test_translate_inbound_leaves_a_user_group_to_its_own_rule() -> None:
+    # `<!subteam^…>` shares the `<!` prefix and must not be read as a page.
+    assert _adapter().translate_inbound("<!subteam^S123|@ops> hi") == "@ops hi"
 
 
 def test_slash_command_without_channel_is_ignored() -> None:

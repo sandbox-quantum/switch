@@ -28,6 +28,10 @@ from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
     RoomWideMentionStatus,
 )
+from switch_core.bridges.collaboration.slack.adapter import (
+    SlackAdapter,
+    SlackConnectionConfig,
+)
 from switch_core.db.models import Agent, ApiKey, Client, Room, RoomRole, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
@@ -238,6 +242,37 @@ async def test_a_room_wide_mention_still_addresses_who_it_names(
     assert await _woken(session_factory, room, _as_received(sent[0], room.sender)) == {
         "scout"
     }
+
+
+def _from_a_person(body: str) -> IncomingMessage:
+    """A person's message from Slack, as the bridge puts it on the bus."""
+    text = SlackAdapter(
+        config=SlackConnectionConfig(
+            bot_token="xoxb-test", app_token="xapp-test", workspace_id="T123"
+        )
+    ).translate_inbound(body)
+    return IncomingMessage(
+        sender="@person:test",
+        body=text,
+        content=message_content(text, sender_name="person", extra_content=None),
+    )
+
+
+async def test_a_persons_own_page_wakes_no_agent(
+    session_factory: async_sessionmaker[AsyncSession], room: _Room
+) -> None:
+    message = _from_a_person("<!channel> <!here> <!everyone> deploy at five")
+
+    assert message.body == "@channel @here @everyone deploy at five"
+    assert await _woken(session_factory, room, message) == set()
+
+
+async def test_the_same_harness_sees_a_person_wake_an_agent(
+    session_factory: async_sessionmaker[AsyncSession], room: _Room
+) -> None:
+    message = _from_a_person("@scout <!channel> over to you")
+
+    assert await _woken(session_factory, room, message) == {"scout"}
 
 
 class TestSomethingAlreadyAnswersToEveryone:

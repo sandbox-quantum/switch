@@ -76,6 +76,13 @@ _SLACK_MASS_MENTION = re.compile(
     r"<(!(?:channel|here|everyone|group)(?:\|[^>]*)?)>", re.IGNORECASE
 )
 
+# The same mention as it arrives, read back to the word a person typed. A raw
+# `<!channel>` in delivered text is always a real mention: Slack escapes a `<`
+# a person types, so nobody can write one by hand.
+_SLACK_MASS_MENTION_WORD = re.compile(
+    r"<!(channel|here|everyone|group)(?:\|[^>]*)?>", re.IGNORECASE
+)
+
 # Stamped on the description of every user group we mint for an agent, so a
 # reload can tell ours apart from the workspace's own groups.
 _AGENT_GROUP_MARKER = "Switch agent — "
@@ -2536,8 +2543,25 @@ class SlackAdapter(CollaborationAdapter):
 
     def translate_inbound(self, raw_message: str) -> str:
         return self._translate_links_to_markdown(
-            self._translate_mentions_to_markdown(raw_message)
+            self._translate_mass_mentions_to_markdown(
+                self._translate_mentions_to_markdown(raw_message)
+            )
         )
+
+    @staticmethod
+    def _translate_mass_mentions_to_markdown(message: str) -> str:
+        """Show a person's `<!channel>`, `<!here>` or `<!everyone>` as the word.
+
+        Agents read the room's history as text, and the raw code says nothing to
+        them. The word wakes no agent, because these names are reserved and
+        none can carry them. `group` is the legacy spelling of `channel`.
+        """
+
+        def _replace(match: re.Match[str]) -> str:
+            word = match.group(1).lower()
+            return "@channel" if word == "group" else f"@{word}"
+
+        return _SLACK_MASS_MENTION_WORD.sub(_replace, message)
 
     @staticmethod
     def _translate_links_to_markdown(message: str) -> str:
