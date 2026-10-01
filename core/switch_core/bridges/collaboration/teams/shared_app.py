@@ -231,6 +231,13 @@ class TeamsSharedApp:
             self._org_tokens[org_tenant_id] = provider
         return provider
 
+    def forget_org(self, org_tenant_id: str) -> None:
+        """Drop an organisation's token provider, its bridge having been removed.
+
+        Built again on demand if the organisation approves the app once more.
+        """
+        self._org_tokens.pop(org_tenant_id, None)
+
     def tokens_for(self, org_tenant_id: str) -> OrgTokens:
         return OrgTokens(home=self._home_tokens, org=self.org_tokens(org_tenant_id))
 

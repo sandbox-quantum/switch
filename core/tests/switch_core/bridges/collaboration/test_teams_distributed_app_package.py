@@ -72,3 +72,17 @@ def test_its_commands_match_the_bring_your_own_apps() -> None:
     byo = json.loads(_BYO_MANIFEST.read_text())
     assert manifest["bots"][0]["commandLists"] == byo["bots"][0]["commandLists"]
     assert manifest["bots"][0]["scopes"] == byo["bots"][0]["scopes"]
+
+
+def test_a_value_with_json_syntax_in_it_stays_a_string() -> None:
+    package = build_distributed_app_package(
+        app_id=APP_ID,
+        messaging_public_url="https://switch.example",
+        privacy_url='https://switch.example/privacy?a="b"',
+        terms_url="https://switch.example/terms\\x",
+    )
+    manifest = json.loads(
+        zipfile.ZipFile(io.BytesIO(package.archive)).read("manifest.json")
+    )
+    assert manifest["developer"]["privacyUrl"] == 'https://switch.example/privacy?a="b"'
+    assert manifest["developer"]["termsOfUseUrl"] == "https://switch.example/terms\\x"

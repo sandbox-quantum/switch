@@ -856,3 +856,30 @@ def test_a_bring_your_own_bridge_still_waits_to_learn_its_endpoint() -> None:
     )
     with pytest.raises(RuntimeError, match="serviceUrl"):
         adapter._service_url_for(CHANNEL)
+
+
+async def test_a_chat_is_never_mapped_to_a_team() -> None:
+    adapter = _shared_adapter(team_id="team-default")
+    _capture(adapter)
+    chat = "19:chat@thread.v2"
+
+    await adapter.receive_activity(
+        _activity(
+            conversation={"id": chat, "conversationType": "groupChat", "tenantId": ORG},
+            channelData={"tenant": {"id": ORG}},
+        )
+    )
+
+    assert chat not in adapter._team_of_channel
+
+
+async def test_removing_a_shared_bridge_lets_go_of_its_organisations_tokens() -> None:
+    app = _app()
+    adapter = TeamsAdapter(config=_shared_config())
+    app.attach_if_teams(adapter)
+    app.org_tokens(ORG)
+    adapter._graph = _WithdrawGraph(listed=[], installations=[])  # type: ignore[assignment]
+
+    await adapter.withdraw()
+
+    assert ORG not in app._org_tokens

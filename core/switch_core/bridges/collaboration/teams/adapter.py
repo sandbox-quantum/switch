@@ -1405,6 +1405,9 @@ class TeamsAdapter(CollaborationAdapter):
                 except Exception as error:
                     left_behind.append(f"the app in team {team_id} ({error})")
 
+        if self._shared_app is not None:
+            self._shared_app.forget_org(identity.org_tenant_id)
+
         if left_behind:
             raise BridgeOperationError(
                 "Removing the Teams connection left behind: "
@@ -2986,7 +2989,8 @@ class TeamsAdapter(CollaborationAdapter):
         # thread id and Graph rejects it ("TeamGroupId must be ... a valid
         # GUID"). Fall back to the configured team_id, which is also that GUID.
         group_id = team.get("aadGroupId") or self._config.team_id
-        if group_id and channel_id:
+        is_channel = channel_type in ("channel_public", "channel_private")
+        if group_id and channel_id and is_channel:
             await self._learn_channel_team(channel_id, str(group_id))
 
         if activity_type == "message":
@@ -3821,6 +3825,11 @@ class TeamsAdapter(CollaborationAdapter):
         # unverified lifecycle event (e.g. a forged reauthorizationRequired)
         # must not be honoured.
         identity = self._me
+        # Load-bearing on the distributed app: a batch of lifecycle
+        # notifications carries no validation tokens, so the deployment's
+        # route lets it through on the organisation it names, and these two
+        # checks are all that stand between a forged one and a renewal or a
+        # recreated subscription.
         if not identity.accepts_client_state(item.get("clientState")):
             logger.warning("Rejected Graph notification: clientState mismatch")
             return

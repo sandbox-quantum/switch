@@ -48,15 +48,17 @@ def build_distributed_app_package(
     privacy_url: str,
     terms_url: str,
 ) -> DistributedAppPackage:
-    template = (_TEMPLATE_DIR / "manifest.json").read_text(encoding="utf-8")
-    filled = (
-        template.replace("{{APP_ID}}", app_id)
-        .replace("{{MESSAGING_HOST}}", str(urlsplit(messaging_public_url).hostname))
-        .replace("{{PRIVACY_URL}}", privacy_url)
-        .replace("{{TERMS_URL}}", terms_url)
+    manifest: dict[str, Any] = json.loads(
+        (_TEMPLATE_DIR / "manifest.json").read_text(encoding="utf-8")
     )
-    manifest: dict[str, Any] = json.loads(filled)
-    if "{{" in filled:
+    # Set on the parsed manifest rather than substituted into its text, so a
+    # value is always a JSON string whatever characters it holds.
+    manifest["id"] = app_id
+    manifest["bots"][0]["botId"] = app_id
+    manifest["validDomains"] = [str(urlsplit(messaging_public_url).hostname)]
+    manifest["developer"]["privacyUrl"] = privacy_url
+    manifest["developer"]["termsOfUseUrl"] = terms_url
+    if "{{" in json.dumps(manifest):
         raise ValueError(
             "the distributed Teams app manifest names a value this build does "
             "not fill in"
