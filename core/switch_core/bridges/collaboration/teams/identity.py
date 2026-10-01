@@ -16,6 +16,7 @@ from __future__ import annotations
 import hmac
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -161,6 +162,21 @@ class TeamsIdentity:
     #: checked against every token. Empty for a bring-your-own bridge, whose
     #: operator decides what their own app is granted.
     required_graph_roles: frozenset[str]
+
+    def delivers_here(self, notification_url: str) -> bool:
+        """Whether a subscription's notification URL is this deployment's own.
+
+        Compared without the query, which carries the clientState key's
+        fingerprint: a subscription made under an earlier key still delivers
+        here, and is this deployment's to clean up.
+        """
+        theirs = urlsplit(notification_url)
+        ours = urlsplit(self.notification_url)
+        return (theirs.scheme, theirs.netloc, theirs.path) == (
+            ours.scheme,
+            ours.netloc,
+            ours.path,
+        )
 
     def accepts_client_state(self, value: object) -> bool:
         # Constant time: this is an authentication check, and a `!=` on a

@@ -52,6 +52,7 @@ from switch_core.bridges.collaboration.teams.crypto import (
     load_certificate_der_b64,
     load_private_key,
 )
+from switch_core.bridges.collaboration.teams.graph import GraphClient
 from switch_core.bridges.collaboration.teams.identity import (
     BOT_CONNECTOR_HOSTS,
     REQUIRED_GRAPH_ROLES,
@@ -76,6 +77,10 @@ def notifications_path() -> str:
     return f"{PUBLIC_PATH_PREFIX}/{PLATFORM}/notifications"
 
 
+def _client_state_key(secret: str) -> bytes:
+    return hmac.new(secret.encode(), _CLIENT_STATE_KEY_INFO, hashlib.sha256).digest()
+
+
 def client_state_for(secret: str, org_tenant_id: str) -> str:
     """The `clientState` Graph echoes on an organisation's notifications.
 
@@ -83,7 +88,7 @@ def client_state_for(secret: str, org_tenant_id: str) -> str:
     stored and a value learned for one organisation is useless for any other.
     Graph caps it at 128 characters; this is 43.
     """
-    key = hmac.new(secret.encode(), _CLIENT_STATE_KEY_INFO, hashlib.sha256).digest()
+    key = _client_state_key(secret)
     digest = hmac.new(key, org_tenant_id.encode(), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
@@ -130,7 +135,16 @@ class TeamsSharedApp:
         self._app_id = app_id
         self._credential = credential
         self._keyring = keyring
-        self._notification_url = public_url(messaging_public_url, notifications_path())
+        # The clientState key's fingerprint rides on the notification URL, so
+        # rotating JWT_SECRET_KEY changes the URL too: every subscription made
+        # under the old key then reads as stale at the next start and is
+        # remade, instead of being kept, renewed and failing every origin check
+        # with nothing to point at why.
+        fingerprint = hashlib.sha256(_client_state_key(client_state_secret)).hexdigest()
+        self._notification_url = (
+            public_url(messaging_public_url, notifications_path())
+            + f"?v={fingerprint[:12]}"
+        )
         self._client_state_secret = client_state_secret
         self._http = http
         self._home_tokens = TeamsTokenProvider(
@@ -252,6 +266,44 @@ class TeamsSharedApp:
             allowed_service_hosts=BOT_CONNECTOR_HOSTS,
             required_graph_roles=REQUIRED_GRAPH_ROLES,
         )
+
+    async def withdraw_from_org(self, org_tenant_id: str) -> None:
+        """Delete this app's subscriptions in an organisation and leave its teams.
+
+        For an organisation whose bridge is not running to do it itself
+        (`TeamsAdapter.withdraw`). Every subscription the app holds there that
+        delivers to this deployment goes — whichever clientState key it was
+        made under — and the app is taken out of every team it is in, which
+        has to be found by asking each team, since nothing else answers it.
+        Best effort: what could not be undone is logged.
+        """
+        graph = GraphClient(tokens=self.tokens_for(org_tenant_id), http=self._http)
+        identity = self.identity_for(org_tenant_id)
+        left_behind: list[str] = []
+        try:
+            for sub in await graph.list_subscriptions():
+                if identity.delivers_here(str(sub.get("notificationUrl") or "")):
+                    await graph.delete_subscription(subscription_id=str(sub["id"]))
+        except Exception as error:
+            left_behind.append(f"subscriptions ({error})")
+        try:
+            for team in await graph.list_teams():
+                team_id = str(team.get("id") or "")
+                for installation in await graph.find_app_installations(
+                    team_id=team_id, external_id=self._app_id
+                ):
+                    await graph.uninstall_app(
+                        team_id=team_id, installation_id=installation.installation_id
+                    )
+        except Exception as error:
+            left_behind.append(f"the app in its teams ({error})")
+        self.forget_org(org_tenant_id)
+        if left_behind:
+            logger.error(
+                "Leaving Microsoft organisation %s left behind: %s",
+                org_tenant_id,
+                "; ".join(left_behind),
+            )
 
     def attach_if_teams(self, adapter: CollaborationAdapter) -> None:
         """Hand a starting Teams bridge on the distributed app this app.

@@ -30,8 +30,10 @@ Three things differ from Slack's installer, and all three are Microsoft's:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any, ClassVar
 from urllib.parse import urlencode
@@ -91,6 +93,11 @@ _GOVERNMENT_SUB_SCOPES = frozenset({"GCC", "DOD", "DODCON"})
 _APPROVAL_PROPAGATION_ATTEMPTS = 5
 _APPROVAL_PROPAGATION_DELAY_SECONDS = 2.0
 
+#: How many batches' vouched organisations are held between their check and
+#: their parse. Both happen within one request, so this only bounds what a
+#: request that failed between the two could leave behind.
+_VOUCHED_KEPT = 256
+
 
 class TeamsAppInstaller(MessagingAppInstaller):
     platform: ClassVar[str] = PLATFORM
@@ -101,6 +108,7 @@ class TeamsAppInstaller(MessagingAppInstaller):
     def __init__(self, *, app: TeamsSharedApp, package: DistributedAppPackage) -> None:
         self._app = app
         self._package = package
+        self._vouched: OrderedDict[bytes, frozenset[str]] = OrderedDict()
 
     @property
     def package(self) -> DistributedAppPackage:
@@ -126,6 +134,17 @@ class TeamsAppInstaller(MessagingAppInstaller):
         )
 
     async def redeem(self, *, code: str, redirect_uri: str) -> InstallGrant:
+        try:
+            return await self._redeem(code=code, redirect_uri=redirect_uri)
+        except (httpx.HTTPError, OSError) as error:
+            # The install link is spent by now, so the person is told plainly
+            # rather than shown a server error, and starts again.
+            raise MessagingInstallError(
+                f"Switch could not reach Microsoft to finish connecting ({error}). "
+                "Nothing was saved; start again from Switch."
+            ) from error
+
+    async def _redeem(self, *, code: str, redirect_uri: str) -> InstallGrant:
         tokens = await self._exchange(code=code, redirect_uri=redirect_uri)
         claims = await self._verified_identity(tokens.get("id_token"))
         tenant_id = str(claims["tid"])
@@ -283,6 +302,7 @@ class TeamsAppInstaller(MessagingAppInstaller):
         is done — and is recorded for the connection to show.
         """
         headers = {"Authorization": f"Bearer {delegated}"}
+        catalog_app_id: str | None = None
         try:
             existing = await http.get(
                 f"{_GRAPH}/appCatalogs/teamsApps",
@@ -322,10 +342,16 @@ class TeamsAppInstaller(MessagingAppInstaller):
                 tenant_id,
                 reason,
             )
-            return {"catalog_app_id": None, "publish_problem": reason}
+            # What was found is kept even when giving it the newer version
+            # failed: the organisation still has the app, and an id that works
+            # must not be lost to an update that did not.
+            if catalog_app_id is not None:
+                return {"catalog_app_id": catalog_app_id, "publish_problem": reason}
+            return {"publish_problem": reason}
         return {
             "catalog_app_id": catalog_app_id,
             "manifest_version": self._package.version,
+            "publish_problem": None,
         }
 
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
@@ -338,6 +364,16 @@ class TeamsAppInstaller(MessagingAppInstaller):
             return None
         tenant_id = connection_config.get("tenant_id")
         return str(tenant_id) if tenant_id is not None else None
+
+    async def release(self, *, external_workspace_id: str) -> None:
+        """Leave an organisation whose bridge is not running to leave it itself.
+
+        The same as the bridge's own `withdraw`, from outside it: delete the
+        subscriptions this app holds there and take the app out of every team
+        it is in. Best effort; what is left behind is logged, since the
+        customer asked to disconnect and nothing here can be retried later.
+        """
+        await self._app.withdraw_from_org(external_workspace_id)
 
     async def revoke(self, *, bot_token: str) -> None:
         raise NotImplementedError(
@@ -388,14 +424,18 @@ class TeamsAppInstaller(MessagingAppInstaller):
         await self._verify_notifications(payload)
 
     async def _verify_notifications(self, payload: Mapping[str, Any]) -> None:
-        """Every notification carrying data must be vouched for by Graph.
+        """Check every validation token the batch carries.
 
-        The tokens vouch for the organisations their notifications belong to;
-        a notification naming any other is refused, so a body cannot claim an
-        organisation the tokens did not. Lifecycle notifications carry no data
-        and usually no tokens; they reach the bridge they name, which checks
-        that organisation's own `clientState` and that the subscription is its
-        own before acting.
+        A forged token refuses the whole request. The tokens vouch for the
+        organisations their notifications belong to; parsing then drops any
+        notification carrying data for an organisation they did not vouch for,
+        rather than refusing the batch — one organisation's missing token (it
+        set "assignment required" on the Switch enterprise app, and Microsoft
+        stops sending one) must not cost every other organisation in the same
+        batch its messages. Lifecycle notifications carry no data and usually
+        no tokens; they reach the bridge they name, which checks that
+        organisation's own `clientState` and that the subscription is its own
+        before acting.
         """
         items = payload.get("value")
         if not isinstance(items, list):
@@ -407,25 +447,14 @@ class TeamsAppInstaller(MessagingAppInstaller):
         ]
         if not carrying_data:
             return
-        tokens = payload.get("validationTokens")
-        if not tokens:
-            raise WebhookAuthenticityError(
-                "Graph notifications carrying data arrived with no validation "
-                "tokens. Microsoft sends none when an organisation has set "
-                "“assignment required” on the Switch enterprise app."
-            )
+        tokens = payload.get("validationTokens") or []
         try:
             vouched = await self._app.notification_authenticator.vouched_tenants(
                 list(tokens)
             )
         except PermissionError as error:
             raise WebhookAuthenticityError(str(error)) from error
-        for item in carrying_data:
-            if str(item.get("tenantId") or "") not in vouched:
-                raise WebhookAuthenticityError(
-                    "a notification names an organisation its validation tokens "
-                    "do not vouch for"
-                )
+        self._remember_vouched(_digest(payload), vouched)
 
     def parse_webhook(
         self,
@@ -441,7 +470,34 @@ class TeamsAppInstaller(MessagingAppInstaller):
         items = payload.get("value")
         if not isinstance(items, list):
             raise WebhookPayloadError("a Graph notification collection had no value")
-        return [_notification_event(item) for item in items if isinstance(item, dict)]
+        vouched = self._vouched.pop(_digest(payload), frozenset())
+        events: list[InboundWebhook] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            tenant = str(item.get("tenantId") or "")
+            if not item.get("lifecycleEvent") and tenant not in vouched:
+                logger.error(
+                    "Dropped a Graph notification for organisation %s: no "
+                    "validation token vouched for it. Microsoft sends none when "
+                    "the organisation has set “assignment required” on the Switch "
+                    "enterprise app.",
+                    tenant,
+                )
+                continue
+            events.append(_notification_event(item))
+        return events
+
+    def _remember_vouched(self, digest: bytes, vouched: frozenset[str]) -> None:
+        """Hand the organisations a batch's tokens vouched for to its parse.
+
+        Keyed by the body, so the parse of these bytes reads what the check of
+        the same bytes found, and bounded, so a parse that never comes leaves
+        nothing behind for long.
+        """
+        self._vouched[digest] = vouched
+        while len(self._vouched) > _VOUCHED_KEPT:
+            self._vouched.popitem(last=False)
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
         if "subscriptionId" in payload:
@@ -458,6 +514,12 @@ class TeamsAppInstaller(MessagingAppInstaller):
         # Microsoft announces no organisation-wide uninstall: removal from a
         # team is per team, and goes to the bridge like any other activity.
         return None
+
+
+def _digest(payload: Mapping[str, Any]) -> bytes:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).digest()
 
 
 def _json(body: bytes, error: type[Exception]) -> dict[str, Any]:

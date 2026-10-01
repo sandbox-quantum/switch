@@ -137,7 +137,8 @@ startup. Setting `TEAMS_APP_CLIENT_ID` is what enables the button.
    not a Teams administrator, the install still succeeds and the connection
    says the app is not in the list yet, with the package to download for a
    Teams admin to upload (Teams admin center → Teams apps → Manage apps →
-   Upload new app).
+   Upload new app). Once it has been added to any one team from Teams, Switch
+   learns where it is in the list and can add it to the rest itself.
 5. The connection's **Microsoft Teams** panel lists the organisation's teams.
    The workspace's admins add Switch to the teams they want and choose the
    default team new channels go in; choosing one turns channel creation on.
@@ -172,7 +173,12 @@ validation tokens and may only name organisations those tokens vouch for; each
 organisation's `clientState` is derived from `JWT_SECRET_KEY`, so a value
 learned for one forges nothing for another. An organisation that sets
 **assignment required** on the Switch enterprise app stops Microsoft sending
-validation tokens, and its captured messages are refused until it is unset.
+validation tokens, and its captured messages are dropped until it is unset;
+other organisations' messages in the same batch are unaffected.
+
+Rotating `JWT_SECRET_KEY` changes every organisation's `clientState`. The
+notification URL carries a fingerprint of the key, so at the next start every
+subscription made under the old key reads as stale and is remade.
 
 ## When something goes wrong on Microsoft's side
 

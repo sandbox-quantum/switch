@@ -8,6 +8,7 @@ deployment's token anywhere but Microsoft.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import functools
 from typing import Any
@@ -16,7 +17,7 @@ import httpx
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 from pydantic import ValidationError
 
@@ -25,6 +26,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     InboundMessage,
 )
+from switch_core.bridges.collaboration.teams import shared_app as shared_app_module
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -34,7 +36,7 @@ from switch_core.bridges.collaboration.teams.auth import (
     TokenRequestRefused,
 )
 from switch_core.bridges.collaboration.teams.crypto import load_certificate_der_b64
-from switch_core.bridges.collaboration.teams.graph import GraphError
+from switch_core.bridges.collaboration.teams.graph import AppInstallation, GraphError
 from switch_core.bridges.collaboration.teams.identity import (
     REQUIRED_GRAPH_ROLES,
     NotificationKey,
@@ -185,8 +187,8 @@ def test_the_identity_points_the_deployments_app_at_one_organisation() -> None:
     assert identity.shared
     assert identity.org_tenant_id == ORG
     assert identity.app_id == "switch-app"
-    assert identity.notification_url == (
-        "https://switch.example/messaging/teams/notifications"
+    assert identity.notification_url.startswith(
+        "https://switch.example/messaging/teams/notifications?v="
     )
     assert identity.client_state == client_state_for("jwt-secret", ORG)
     assert identity.allowed_service_hosts == frozenset({"smba.trafficmanager.net"})
@@ -651,8 +653,11 @@ class _WithdrawGraph:
 
     async def find_app_installations(
         self, *, team_id: str, external_id: str
-    ) -> list[str]:
-        return list(self._installations)
+    ) -> list[AppInstallation]:
+        return [
+            AppInstallation(installation_id=i, catalog_app_id="catalog-1")
+            for i in self._installations
+        ]
 
     async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
         self.uninstalled.append((team_id, installation_id))
@@ -764,13 +769,19 @@ class _PlacementGraph:
         return [
             {"id": "team-b", "displayName": "beta"},
             {"id": "team-a", "displayName": "Alpha"},
+            {"id": "team-unreadable", "displayName": "gamma (archived)"},
         ]
 
     async def find_app_installations(
         self, *, team_id: str, external_id: str
-    ) -> list[str]:
+    ) -> list[AppInstallation]:
         assert external_id == "switch-app"
-        return self.installed.get(team_id, [])
+        if team_id == "team-unreadable":
+            raise GraphError("forbidden", status=403)
+        return [
+            AppInstallation(installation_id=i, catalog_app_id="catalog-b")
+            for i in self.installed.get(team_id, [])
+        ]
 
     async def install_app(self, *, team_id: str, catalog_app_id: str) -> None:
         self.added.append((team_id, catalog_app_id))
@@ -788,10 +799,14 @@ async def test_the_organisations_teams_are_listed_with_where_switch_is() -> None
 
     placements = await adapter.list_team_placements()
 
-    assert [(p.name, p.has_switch) for p in placements] == [
+    assert [(p.name, p.has_switch) for p in placements.teams] == [
         ("Alpha", False),
         ("beta", True),
+        ("gamma (archived)", None),
     ]
+    # An installation reports the app's id in the catalogue, which is how it
+    # is learned after a Teams admin uploaded the app by hand.
+    assert placements.catalog_app_id == "catalog-b"
     assert adapter.places_app_in_teams
 
 
@@ -882,4 +897,151 @@ async def test_removing_a_shared_bridge_lets_go_of_its_organisations_tokens() ->
 
     await adapter.withdraw()
 
+    assert ORG not in app._org_tokens
+
+
+# ── Review fixes ─────────────────────────────────────────────────────────────
+
+
+async def test_a_renewal_round_that_fails_does_not_end_renewal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loop is what keeps every subscription alive; an error escaping it
+    would end renewal silently and for good."""
+    adapter = _shared_adapter()
+    rounds: list[int] = []
+
+    async def failing_check() -> None:
+        rounds.append(1)
+        raise OSError("the projected token file is being rotated")
+
+    async def fast_sleep(seconds: float) -> None:
+        if len(rounds) >= 3:
+            raise asyncio.CancelledError
+
+    adapter._check_approval = failing_check  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.teams.adapter.asyncio.sleep", fast_sleep
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._renewal_loop()
+
+    assert len(rounds) == 3
+
+
+def test_an_unusable_encryption_key_only_turns_capture_off() -> None:
+    """A bring-your-own bridge with a key Graph cannot use still posts and
+    hears mentions; it just does not capture channel messages."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    certificate, _ = _keypair()
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="a",
+            app_password="p",
+            tenant_id="t",
+            team_id="team",
+            public_base_url="https://x.example",
+            client_state="s",
+            encryption_certificate_id="c",
+            encryption_public_certificate=certificate,
+            encryption_private_key=pem,
+        )
+    )
+    assert adapter._me.keyring is None
+
+
+async def test_rotating_the_secret_remakes_subscriptions_made_under_the_old_one() -> (
+    None
+):
+    """The clientState key rides on the notification URL, so a subscription
+    made under an earlier key points somewhere else and is replaced at start
+    rather than kept and failing every origin check."""
+    adapter = _shared_adapter()
+    current = adapter._me.notification_url
+    stale = current.split("?")[0] + "?v=0123456789ab"
+
+    class _Graph:
+        deleted: list[str] = []
+
+        async def list_subscriptions(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": "OLD-KEY",
+                    "resource": f"teams/t/channels/{CHANNEL}/messages",
+                    "notificationUrl": stale,
+                },
+                {
+                    "id": "CURRENT",
+                    "resource": "teams/t/channels/19:other@thread.tacv2/messages",
+                    "notificationUrl": current,
+                },
+            ]
+
+        async def delete_subscription(self, *, subscription_id: str) -> None:
+            self.deleted.append(subscription_id)
+
+    graph = _Graph()
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter._adopt_existing_subscriptions()
+
+    assert graph.deleted == ["OLD-KEY"]
+    assert adapter._subscriptions == {"19:other@thread.tacv2": "CURRENT"}
+
+
+def test_a_subscription_made_under_an_earlier_key_still_delivers_here() -> None:
+    """For cleaning up: it is this deployment's, whichever key made it."""
+    identity = _app().identity_for(ORG)
+    base = identity.notification_url.split("?")[0]
+    assert identity.delivers_here(base + "?v=0123456789ab")
+    assert not identity.delivers_here(
+        "https://elsewhere.example/messaging/teams/notifications"
+    )
+
+
+async def test_an_organisation_whose_bridge_is_not_running_is_still_left() -> None:
+    app = _app()
+    url = app.identity_for(ORG).notification_url.split("?")[0] + "?v=old"
+    deleted: list[str] = []
+    uninstalled: list[tuple[str, str]] = []
+
+    class _Graph:
+        async def list_subscriptions(self) -> list[dict[str, Any]]:
+            return [
+                {"id": "S1", "notificationUrl": url},
+                {"id": "S2", "notificationUrl": "https://elsewhere.example/x"},
+            ]
+
+        async def delete_subscription(self, *, subscription_id: str) -> None:
+            deleted.append(subscription_id)
+
+        async def list_teams(self) -> list[dict[str, Any]]:
+            return [{"id": "team-1"}, {"id": "team-2"}]
+
+        async def find_app_installations(
+            self, *, team_id: str, external_id: str
+        ) -> list[AppInstallation]:
+            if team_id == "team-1":
+                return [AppInstallation(installation_id="I1", catalog_app_id="c")]
+            return []
+
+        async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
+            uninstalled.append((team_id, installation_id))
+
+    original = shared_app_module.GraphClient
+    shared_app_module.GraphClient = lambda **_: _Graph()  # type: ignore[assignment,misc]
+    try:
+        app.org_tokens(ORG)
+        await app.withdraw_from_org(ORG)
+    finally:
+        shared_app_module.GraphClient = original  # type: ignore[misc]
+
+    assert deleted == ["S1"]
+    assert uninstalled == [("team-1", "I1")]
     assert ORG not in app._org_tokens

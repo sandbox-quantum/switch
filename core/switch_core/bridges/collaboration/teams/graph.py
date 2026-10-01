@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -54,6 +55,14 @@ def _graph_error(operation: str, resp: httpx.Response) -> GraphError:
     return GraphError(
         f"{operation} failed ({resp.status_code}): {detail}", status=resp.status_code
     )
+
+
+@dataclass(frozen=True)
+class AppInstallation:
+    installation_id: str
+    #: The app's id in the organisation's own catalogue, as the installation
+    #: reports it.
+    catalog_app_id: str | None
 
 
 class GraphClient:
@@ -331,12 +340,14 @@ class GraphClient:
 
     async def find_app_installations(
         self, *, team_id: str, external_id: str
-    ) -> list[str]:
-        """The ids of this app's installations in a team, if it is installed.
+    ) -> list[AppInstallation]:
+        """This app's installations in a team, if it is installed.
 
         Matched on the app's manifest id (`externalId`), which is the same in
         every organisation's catalogue, rather than the id the catalogue
-        assigned, which differs per organisation.
+        assigned, which differs per organisation — and which each installation
+        also reports, so finding one is how that id is learned without a
+        catalogue permission.
         """
         resp = await self._send(
             "GET",
@@ -349,7 +360,15 @@ class GraphClient:
         if resp.status_code >= 300:
             raise _graph_error(f"list app installations in team {team_id}", resp)
         installations: list[dict[str, Any]] = resp.json().get("value", []) or []
-        return [str(item["id"]) for item in installations if item.get("id")]
+        return [
+            AppInstallation(
+                installation_id=str(item["id"]),
+                catalog_app_id=str((item.get("teamsApp") or {}).get("id") or "")
+                or None,
+            )
+            for item in installations
+            if item.get("id")
+        ]
 
     async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
         resp = await self._send(

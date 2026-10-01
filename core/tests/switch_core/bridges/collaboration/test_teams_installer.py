@@ -207,6 +207,7 @@ async def test_an_approved_organisation_is_installed_and_given_the_app() -> None
     assert grant.platform_data == {
         "catalog_app_id": "catalog-app-1",
         "manifest_version": "1.0.0",
+        "publish_problem": None,
     }
     [published] = microsoft.posted("/appCatalogs/teamsApps")
     assert published.headers["Authorization"] == "Bearer delegated"
@@ -298,8 +299,41 @@ async def test_an_approver_who_is_not_a_teams_admin_still_installs_and_is_told()
     grant = await _redeem(microsoft)
 
     assert grant.external_workspace_id == ORG
-    assert grant.platform_data["catalog_app_id"] is None
+    assert "catalog_app_id" not in grant.platform_data
     assert "not a Teams administrator" in str(grant.platform_data["publish_problem"])
+
+
+async def test_an_update_that_fails_keeps_the_catalogue_id_it_found() -> None:
+    """An organisation that already has the app keeps an id that works, even
+    when giving it the newer version is refused."""
+    microsoft = _Microsoft()
+    microsoft.catalog = [{"id": "existing", "appDefinitions": [{"version": "0.9.0"}]}]
+
+    def refuse_update(request: httpx.Request) -> httpx.Response:
+        if "/appDefinitions" in str(request.url):
+            return httpx.Response(403, json={"error": {"message": "not allowed"}})
+        return microsoft.handler(request)
+
+    installer = _installer(microsoft)
+    installer._app._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(refuse_update)
+    )
+
+    grant = await installer.redeem(code="c", redirect_uri="https://switch.example/cb")
+
+    assert grant.platform_data["catalog_app_id"] == "existing"
+    assert grant.platform_data["publish_problem"]
+
+
+async def test_microsoft_unreachable_is_explained_not_a_server_error() -> None:
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route to host")
+
+    installer = _installer(_Microsoft())
+    installer._app._http = httpx.AsyncClient(transport=httpx.MockTransport(unreachable))
+
+    with pytest.raises(MessagingInstallError, match="could not reach Microsoft"):
+        await installer.redeem(code="c", redirect_uri="https://switch.example/cb")
 
 
 async def test_an_organisation_that_has_the_app_already_is_not_given_it_twice() -> None:
@@ -448,33 +482,48 @@ _DATA = {
 }
 
 
-async def test_notifications_carrying_data_need_graphs_tokens() -> None:
+async def _parsed(installer: TeamsAppInstaller, body: bytes) -> list[Any]:
+    await installer.verify_webhook(
+        endpoint="notifications", headers={}, query={}, body=body
+    )
+    return installer.parse_webhook(
+        endpoint="notifications", headers={}, query={}, body=body
+    )
+
+
+async def test_a_notification_no_token_vouches_for_is_dropped() -> None:
+    """Microsoft sends no token for an organisation that set "assignment
+    required"; its notifications cannot be trusted and are not delivered."""
     installer = _installer(_Microsoft())
-    installer._app.notification_authenticator = _Authenticator(vouched=frozenset({ORG}))  # type: ignore[assignment]
+    installer._app.notification_authenticator = _Authenticator(vouched=frozenset())  # type: ignore[assignment]
 
-    with pytest.raises(WebhookAuthenticityError, match="assignment required"):
-        await installer.verify_webhook(
-            endpoint="notifications",
-            headers={},
-            query={},
-            body=_notifications(_DATA, tokens=None),
-        )
+    assert await _parsed(installer, _notifications(_DATA, tokens=None)) == []
 
 
-async def test_a_notification_for_an_organisation_the_tokens_do_not_vouch_for_is_refused() -> (
+async def test_one_organisations_missing_token_does_not_cost_another_its_messages() -> (
     None
 ):
     installer = _installer(_Microsoft())
     installer._app.notification_authenticator = _Authenticator(  # type: ignore[assignment]
-        vouched=frozenset({"someone-else"})
+        vouched=frozenset({ORG})
     )
+    other = {**_DATA, "tenantId": "org-without-a-token"}
 
-    with pytest.raises(WebhookAuthenticityError, match="vouch"):
+    events = await _parsed(installer, _notifications(_DATA, other, tokens=["t"]))
+
+    assert [e.payload["tenantId"] for e in events] == [ORG]
+
+
+async def test_a_forged_token_refuses_the_whole_batch() -> None:
+    installer = _installer(_Microsoft())
+    installer._app.notification_authenticator = _Authenticator(refuse=True)  # type: ignore[assignment]
+
+    with pytest.raises(WebhookAuthenticityError):
         await installer.verify_webhook(
             endpoint="notifications",
             headers={},
             query={},
-            body=_notifications(_DATA, tokens=["t"]),
+            body=_notifications(_DATA, tokens=["forged"]),
         )
 
 
@@ -529,18 +578,17 @@ def test_a_press_is_answered_inline_and_never_keyed() -> None:
     assert event.external_event_id is None
 
 
-def test_a_batch_becomes_one_event_per_notification() -> None:
+async def test_a_batch_becomes_one_event_per_notification() -> None:
     other = {
         **_DATA,
         "tenantId": "org-2",
         "resource": "teams('t')/channels('c')/messages('n')",
     }
-    events = _installer(_Microsoft()).parse_webhook(
-        endpoint="notifications",
-        headers={},
-        query={},
-        body=_notifications(_DATA, other, tokens=["t"]),
+    installer = _installer(_Microsoft())
+    installer._app.notification_authenticator = _Authenticator(  # type: ignore[assignment]
+        vouched=frozenset({ORG, "org-2"})
     )
+    events = await _parsed(installer, _notifications(_DATA, other, tokens=["t"]))
     assert [e.envelope_type for e in events] == ["notification", "notification"]
     assert events[0].external_event_id == f"{ORG}|{_DATA['resource']}|created"
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,7 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 )
 from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
+from switch_core.bridges.collaboration.teams.auth import TokenRequestRefused
 from switch_core.bridges.collaboration.teams.install import TeamsAppInstaller
 from switch_core.db.models import MessagingInstall, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -48,7 +50,9 @@ router = APIRouter()
 class TeamPlacementOut(BaseModel):
     team_id: str
     name: str
-    has_switch: bool
+    # None when the team's apps could not be read (archived, being deleted,
+    # restricted); the rest of the list is still answered.
+    has_switch: bool | None
     is_default: bool
 
 
@@ -95,6 +99,40 @@ def _catalog_app_id(install: MessagingInstall) -> str | None:
     return str(value) if value else None
 
 
+#: What Microsoft can answer a placement request with that is its refusal or
+#: its absence rather than a fault here: shown to the admin, never a 500.
+_MICROSOFT_FAILURES = (BridgeOperationError, TokenRequestRefused, httpx.HTTPError)
+
+
+def _microsoft_failed(error: Exception) -> HTTPException:
+    return HTTPException(status_code=502, detail=f"Microsoft refused: {error}")
+
+
+async def _learn_catalog_app_id(
+    session: AsyncSession,
+    install_store: MessagingInstallStore,
+    install: MessagingInstall,
+    seen: str | None,
+) -> str | None:
+    """The app's catalogue id, recording it if an installation just revealed it.
+
+    Switch learns the id when it publishes the app itself. When a Teams admin
+    uploaded the package by hand instead, the first team the app is added to
+    — from Teams — reports it, and from then on Switch can add the app to the
+    rest.
+    """
+    known = _catalog_app_id(install)
+    if known is not None or seen is None:
+        return known
+    await install_store.remember(
+        session,
+        install_id=install.id,
+        platform_data={"catalog_app_id": seen, "publish_problem": None},
+    )
+    await session.commit()
+    return seen
+
+
 @router.get("/{bridge_id}/teams")
 async def list_team_placements(
     bridge_id: str,
@@ -111,10 +149,12 @@ async def list_team_placements(
     )
     try:
         placements = await adapter.list_team_placements()
-    except BridgeOperationError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
+    except _MICROSOFT_FAILURES as error:
+        raise _microsoft_failed(error) from error
+    catalog_app_id = await _learn_catalog_app_id(
+        session, install_store, install, placements.catalog_app_id
+    )
     default = adapter.default_team_id
-    catalog_app_id = _catalog_app_id(install)
     problem = install.platform_data.get("publish_problem")
     return TeamPlacements(
         teams=[
@@ -124,7 +164,7 @@ async def list_team_placements(
                 has_switch=p.has_switch,
                 is_default=p.team_id == default,
             )
-            for p in placements
+            for p in placements.teams
         ],
         default_team_id=default,
         in_catalog=catalog_app_id is not None,
@@ -148,19 +188,27 @@ async def add_to_team(
         bridge_id, session, bridge_store, install_store, collab_lifecycle
     )
     catalog_app_id = _catalog_app_id(install)
-    if catalog_app_id is None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Switch is not in your organisation's Teams app list yet, so it "
-                "cannot add itself to a team. Ask a Teams admin to upload the app "
-                "package, or approve Switch again as a Teams admin."
-            ),
-        )
     try:
+        if catalog_app_id is None:
+            placements = await adapter.list_team_placements()
+            catalog_app_id = await _learn_catalog_app_id(
+                session, install_store, install, placements.catalog_app_id
+            )
+        if catalog_app_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Switch cannot add itself to a team until it knows where the "
+                    "app is in your organisation's Teams app list. Once a Teams "
+                    "admin has uploaded it, add it to any one team from Teams "
+                    "(Apps, Built for your org, Agent Switch) and Switch can add "
+                    "it to the rest; or have a Global Administrator approve "
+                    "Switch again, so Switch puts it in the list itself."
+                ),
+            )
         await adapter.add_to_team(team_id, catalog_app_id=catalog_app_id)
-    except BridgeOperationError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
+    except _MICROSOFT_FAILURES as error:
+        raise _microsoft_failed(error) from error
     return Response(status_code=204)
 
 
@@ -181,8 +229,8 @@ async def remove_from_team(
     )
     try:
         await adapter.remove_from_team(team_id)
-    except BridgeOperationError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
+    except _MICROSOFT_FAILURES as error:
+        raise _microsoft_failed(error) from error
     return Response(status_code=204)
 
 

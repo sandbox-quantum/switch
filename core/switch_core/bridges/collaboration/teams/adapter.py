@@ -81,6 +81,7 @@ from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorThrottled,
 )
 from switch_core.bridges.collaboration.teams.crypto import (
+    ResourceDataError,
     generate_encryption_keypair,
     load_certificate_der_b64,
     load_private_key,
@@ -246,11 +247,22 @@ def _read_publication_ref(ref: str) -> tuple[str, str, str] | None:
 
 @dataclass(frozen=True)
 class TeamPlacement:
-    """One team in the organisation, and whether Switch is in it."""
+    """One team in the organisation, and whether Switch is in it.
+
+    `has_switch` is None when the team's apps could not be read.
+    """
 
     team_id: str
     name: str
-    has_switch: bool
+    has_switch: bool | None
+
+
+@dataclass(frozen=True)
+class TeamPlacements:
+    teams: list[TeamPlacement]
+    #: The app's id in the organisation's catalogue, as an installation in one
+    #: of these teams reported it; None when Switch is in none of them.
+    catalog_app_id: str | None
 
 
 @dataclass(frozen=True)
@@ -988,7 +1000,7 @@ class TeamsAdapter(CollaborationAdapter):
                     ),
                     retired=(),
                 )
-            except (ValueError, TypeError) as error:
+            except (ValueError, TypeError, ResourceDataError) as error:
                 logger.error(
                     "The Teams bridge's Graph encryption material cannot be read "
                     "(%s); channel capture stays off until it is replaced",
@@ -1198,8 +1210,17 @@ class TeamsAdapter(CollaborationAdapter):
         silently lapses even if a lifecycle notification is missed."""
         while True:
             await asyncio.sleep(_RENEWAL_CHECK_SECONDS)
-            await self._check_approval()
-            await self._renew_due_subscriptions()
+            # Caught here, in the loop, because the loop is what keeps every
+            # subscription alive: an error escaping it would end the task, and
+            # with it renewal, silently and for good.
+            try:
+                await self._check_approval()
+                await self._renew_due_subscriptions()
+            except Exception:
+                logger.exception(
+                    "Teams subscription renewal failed this round; trying again in %ss",
+                    _RENEWAL_CHECK_SECONDS,
+                )
 
     async def _renew_due_subscriptions(self) -> None:
         if self._graph is None:
@@ -1377,7 +1398,7 @@ class TeamsAdapter(CollaborationAdapter):
         subscription_ids = set(self._subscriptions.values())
         try:
             for sub in await self._graph.list_subscriptions():
-                if sub.get("notificationUrl") == identity.notification_url:
+                if identity.delivers_here(str(sub.get("notificationUrl") or "")):
                     subscription_ids.add(str(sub.get("id", "")))
         except Exception as error:
             left_behind.append(f"listing subscriptions failed ({error})")
@@ -1400,7 +1421,8 @@ class TeamsAdapter(CollaborationAdapter):
                         team_id=team_id, external_id=identity.app_id
                     ):
                         await self._graph.uninstall_app(
-                            team_id=team_id, installation_id=installation
+                            team_id=team_id,
+                            installation_id=installation.installation_id,
                         )
                 except Exception as error:
                     left_behind.append(f"the app in team {team_id} ({error})")
@@ -3062,33 +3084,51 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError("Teams adapter not started")
         return self._graph
 
-    async def list_team_placements(self) -> list[TeamPlacement]:
+    async def list_team_placements(self) -> TeamPlacements:
         """Every team in the organisation, and whether Switch is in each.
 
         One read per team for the second half, a handful at a time: Graph has
-        no call that answers it for the whole organisation at once.
+        no call that answers it for the whole organisation at once. A team
+        whose apps cannot be read — archived, being deleted, restricted — is
+        listed as unknown rather than failing the rest.
+
+        Each installation found also says the app's id in the organisation's
+        catalogue, so this is how Switch learns that id when a Teams admin
+        uploaded the app by hand rather than Switch publishing it.
         """
         graph = self._require_shared()
         app_id = self._me.app_id
         teams = await graph.list_teams()
         gate = asyncio.Semaphore(_TEAM_READS_AT_ONCE)
+        seen_catalog_ids: set[str] = set()
 
         async def placed(team: dict[str, Any]) -> TeamPlacement:
             team_id = str(team.get("id") or "")
-            async with gate:
-                installations = await graph.find_app_installations(
-                    team_id=team_id, external_id=app_id
+            name = str(team.get("displayName") or team_id)
+            try:
+                async with gate:
+                    installations = await graph.find_app_installations(
+                        team_id=team_id, external_id=app_id
+                    )
+            except GraphError as error:
+                logger.warning(
+                    "Could not read which apps are in Teams team %s: %s", team_id, error
                 )
+                return TeamPlacement(team_id=team_id, name=name, has_switch=None)
+            seen_catalog_ids.update(
+                i.catalog_app_id for i in installations if i.catalog_app_id
+            )
             return TeamPlacement(
-                team_id=team_id,
-                name=str(team.get("displayName") or team_id),
-                has_switch=bool(installations),
+                team_id=team_id, name=name, has_switch=bool(installations)
             )
 
         placements = await asyncio.gather(
             *(placed(team) for team in teams if team.get("id"))
         )
-        return sorted(placements, key=lambda p: p.name.casefold())
+        return TeamPlacements(
+            teams=sorted(placements, key=lambda p: p.name.casefold()),
+            catalog_app_id=next(iter(sorted(seen_catalog_ids)), None),
+        )
 
     async def add_to_team(self, team_id: str, *, catalog_app_id: str) -> None:
         """Add Switch to a team; its own join then makes the rooms, as today."""
@@ -3101,7 +3141,9 @@ class TeamsAdapter(CollaborationAdapter):
         for installation in await graph.find_app_installations(
             team_id=team_id, external_id=self._me.app_id
         ):
-            await graph.uninstall_app(team_id=team_id, installation_id=installation)
+            await graph.uninstall_app(
+                team_id=team_id, installation_id=installation.installation_id
+            )
         for channel_id in [c for c, t in self._team_of_channel.items() if t == team_id]:
             await self._stop_capture(channel_id)
 
@@ -3781,8 +3823,11 @@ class TeamsAdapter(CollaborationAdapter):
             if not missing:
                 delay = _REPAIR_MIN_INTERVAL_SECONDS
                 continue
-            for channel_id in missing:
-                await self._ensure_channel_subscription(channel_id)
+            try:
+                for channel_id in missing:
+                    await self._ensure_channel_subscription(channel_id)
+            except Exception:
+                logger.exception("Teams capture repair failed this round")
             if any(c not in self._subscriptions for c in missing):
                 delay = min(delay * 2, _REPAIR_MAX_INTERVAL_SECONDS)
             else:
