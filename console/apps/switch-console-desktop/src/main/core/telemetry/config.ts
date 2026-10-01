@@ -1,4 +1,4 @@
-import { IS_CANARY } from '@shared/app-identity';
+import { IS_CANARY, IS_RELEASE_BUILD } from '@shared/app-identity';
 
 type ImportMetaWithEnv = ImportMeta & { env?: { DEV?: boolean } };
 
@@ -29,6 +29,7 @@ export type TelemetryBuildChannel = 'dev' | 'canary' | 'stable';
 export type TelemetryConfig = {
   endpoint: string;
   build: TelemetryBuildChannel;
+  flintEnv: TelemetryFlintEnv;
 };
 
 /**
@@ -48,17 +49,29 @@ export type TelemetryResolution =
  * in production's numbers. `build` stays on every event besides, for slicing
  * within a project.
  */
-export type TelemetryFlintEnv = 'prod' | 'staging' | 'local';
+export type TelemetryFlintEnv = 'prod' | 'staging' | 'dev' | 'local';
 
-export function flintEnvFor(build: TelemetryBuildChannel): TelemetryFlintEnv {
-  switch (build) {
-    case 'stable':
-      return 'prod';
-    case 'canary':
-      return 'staging';
-    case 'dev':
-      return 'local';
-  }
+/**
+ * Running from source is `local`. A packaged build that is not a release — a
+ * workflow_dispatch test build, or one packaged on a laptop — is `dev`, whatever
+ * channel it was built as. Only a released canary is `staging`, and only a
+ * released stable build is `prod`.
+ */
+export function flintEnvFor({
+  build,
+  release,
+}: {
+  build: TelemetryBuildChannel;
+  release: boolean;
+}): TelemetryFlintEnv {
+  if (build === 'dev') return 'local';
+  if (!release) return 'dev';
+  return build === 'canary' ? 'staging' : 'prod';
+}
+
+/** The project for the build that is actually running. */
+export function currentFlintEnv(): TelemetryFlintEnv {
+  return flintEnvFor({ build: telemetryBuildChannel(), release: IS_RELEASE_BUILD });
 }
 
 export function telemetryBuildChannel(): TelemetryBuildChannel {
@@ -69,6 +82,8 @@ export function telemetryBuildChannel(): TelemetryBuildChannel {
 /** Everything the decision depends on, so that it depends on nothing else. */
 export type TelemetryEnvironment = {
   build: TelemetryBuildChannel;
+  /** Whether the release workflow stamped this build as a published release. */
+  release: boolean;
   env: NodeJS.ProcessEnv;
 };
 
@@ -89,6 +104,7 @@ export type TelemetryEnvironment = {
  */
 export function resolveTelemetryEnvironment({
   build,
+  release,
   env,
 }: TelemetryEnvironment): TelemetryResolution {
   const isDev = build === 'dev';
@@ -97,10 +113,21 @@ export function resolveTelemetryEnvironment({
   }
 
   const override = isDev ? env.SWITCHDASH_TELEMETRY_ENDPOINT?.trim() : undefined;
-  return { enabled: true, config: { endpoint: override || TELEMETRY_RELAY_ENDPOINT, build } };
+  return {
+    enabled: true,
+    config: {
+      endpoint: override || TELEMETRY_RELAY_ENDPOINT,
+      build,
+      flintEnv: flintEnvFor({ build, release }),
+    },
+  };
 }
 
 /** The same decision for the build that is actually running. */
 export function resolveTelemetryConfig(): TelemetryResolution {
-  return resolveTelemetryEnvironment({ build: telemetryBuildChannel(), env: process.env });
+  return resolveTelemetryEnvironment({
+    build: telemetryBuildChannel(),
+    release: IS_RELEASE_BUILD,
+    env: process.env,
+  });
 }

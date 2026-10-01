@@ -48,6 +48,7 @@ class TelemetryService {
       osType: OS_TYPES[process.platform] ?? 'other',
       osVersion: release(),
       build: resolution.config.build,
+      flintEnv: resolution.config.flintEnv,
       timeMs,
     });
 
