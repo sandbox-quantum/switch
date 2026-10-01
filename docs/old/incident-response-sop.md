@@ -17,7 +17,8 @@ rather than designed around. If you read only one section, read
 Written against `main` at `514d5ba4`, re-checked at `f4ada844` for how room
 events reach an agent, how Slack mentions are translated in each direction, how
 a role mention is routed, and the template format; and at `2aeeb80d` for the
-agent-facing template operations and inbound Slack reactions. The hosting,
+agent-facing template operations and inbound Slack reactions; and at `f9a295c1`
+for usage budgets. The hosting,
 ownership and credential claims were checked at `514d5ba4`. Every claim about
 how Switch behaves was checked against the code rather than recalled. Where a
 behaviour is surprising enough to be worth confirming, the file it lives in is
@@ -71,8 +72,9 @@ absence.
 
 ### The alert process
 
-A flow diagram, which the manual calls the source of truth, and a page written
-for agents that explains it. Compressed:
+A flow diagram on the manual's daily alert-handling page, which the manual
+calls the source of truth, and a page written for agents that explains it.
+Compressed:
 
 1. **An alert fires** and lands in the product's alert channel.
 2. **Critical?** A critical alert short-circuits every triage step: the agent
@@ -131,8 +133,11 @@ Everything after a declaration:
 - **Resolve:** recovery confirmed and resolved in PagerDuty, the RCA written in
   the team's template, and for Sev0 an RCA meeting within five business days.
 
-The manual also has pages for an agent's view of incidents. They exist as empty
-skeletons. Until they are written, the incident process page is the source.
+The incident process page now sits in the manual beside an incident
+prioritisation page and an incident page written for agents. Both are still
+empty. Until they are written, the incident process page is the source; the
+prioritisation page looks set to become the source for severity, and perhaps
+for what makes an alert critical.
 
 ### The rest of the manual: the on-caller's job
 
@@ -615,6 +620,12 @@ things follow:
   sidecar down must not be something the team discovers from a missed page.
 - **The start-of-shift check is how a dead agent gets noticed**: by a person
   who sees no answer, not by a customer.
+- **A usage budget can stop it too.** Switch now stops an agent that has
+  reached a budget covering it: messages addressed to it are refused and so are
+  its own posts, until the period resets. A workspace-wide budget covers every
+  agent, with no exemption, and an agent that also does other work spends
+  against the same budget. Switch posts a notice when it refuses, so this one
+  is visible, but alerts go untriaged until the reset. G31.
 - **Keep a backstop.** On-call should keep Slack notifications for the alert
   hub on during their hours, so a dead agent degrades to "on-call sees the raw
   alert". Whether critical monitors should also page PagerDuty directly, as a
@@ -1118,6 +1129,10 @@ deployment's `Admin` account. That changes the design in three places:
 3. **A role lease is held per agent, across the whole instance** (G16). The hub
    addresses the agent by an alias instead, so the incident design takes no
    lease from its other work.
+4. **Its other work spends its budget.** If the workspace sets usage budgets,
+   the agent's coding work and its on-call work draw on the same one, and
+   reaching it stops both (G31). That is the strongest argument yet for a
+   dedicated responder agent.
 
 ### What breaks
 
@@ -1185,6 +1200,7 @@ that meets every line except ownership, on the conditions in
 | handle | alias `responder`, in the hub and every war room | Always wakes an on-demand agent. |
 | procedure | a Switch document, not the host's `CLAUDE.md` | Follows the rooms; does not leak into its other work. |
 | scope | five jobs, the rest named as out | The agent can do the on-caller's other jobs, and must not. |
+| usage budget | none covering it | A budget that is reached stops the agent, and nothing exempts an on-call one. |
 
 ### The rule that makes it safe
 
@@ -1205,7 +1221,7 @@ hole.
 
 ## Gaps
 
-Thirty, one of them now closed, grouped by what they block. Each says what is missing, why it matters
+Thirty-one, one of them now closed, grouped by what they block. Each says what is missing, why it matters
 here, and a ticket to file. Sizes are rough: **S** is days, **M** is a sprint,
 **L** is a project. The numbers are stable identifiers, not an ordering.
 
@@ -1351,6 +1367,18 @@ enforcement.
 
 > **Proposed ticket:** *Human-holdable roles.* **L**
 
+**G31 — A usage budget can silence an on-call agent.** Once an agent reaches
+a budget covering it, Switch refuses messages addressed to it and its own
+posts until the period resets. A workspace-wide budget covers every agent, and
+there is no way to exempt one. Usage is counted after the fact, so the stop
+lands on the next piece of work, which for a responder may be the alert that
+mattered. Switch does post a notice when it refuses, which keeps it visible.
+
+> **Proposed ticket:** *Budget exemptions and warnings for agents on a paging
+> path* — let a budget exclude named agents (or let an agent be marked as
+> exempt from workspace-wide budgets), and warn the room and the workspace's
+> admins at a threshold before a budget stops an agent. **S**
+
 **G30 — A role mention does not wake an on-demand agent.** A role held by an
 `auto_session` agent routes to nobody whenever that agent is idle. The design
 sidesteps it with an alias, which gives up the role's failover.
@@ -1460,7 +1488,7 @@ The on-call manual runs on Switch today with no change to Switch:
 Standing it up is configuration: one template, two documents, and a few lines in
 the alerting tool. The deploy guide in the instruction set is the checklist.
 
-Five compromises in that, worth naming out loud rather than discovering:
+Six compromises in that, worth naming out loud rather than discovering:
 
 - **Identity.** The agent is admin-owned. Until G11 exists, neither that nor a
   personal owner is right.
@@ -1468,6 +1496,8 @@ Five compromises in that, worth naming out loud rather than discovering:
 - **Availability.** A reboot takes the responder offline until someone notices
   (G22), and a crashed session takes its clocks with it (G7). The agent is now on
   the paging path, so either means an unanswered alert that never pages.
+- **Budgets.** If the workspace sets usage budgets, reaching one stops the
+  responder, and nothing exempts it (G31).
 - **The write boundary is prose.** The agent's PagerDuty connector can resolve
   as easily as it can declare, and so can every other agent on its host (G19,
   G27).
@@ -1483,28 +1513,32 @@ Five compromises in that, worth naming out loud rather than discovering:
    decides whether anyone is paged, and it should not die with the agent.
    Large, so start the design now; the renotify and start-of-shift backstops
    carry it until then.
-3. **G29 — outbound user-group mentions, and a rule for raw markup.** Small.
+3. **G31 — budget exemptions and warnings.** Small, and on the paging path:
+   until it exists, the deploy guide's answer is "no budget covers the
+   responder".
+4. **G29 — outbound user-group mentions, and a rule for raw markup.** Small.
    Turns the ping from an accident into a contract.
-4. **G21 — extend what Switch keeps of an app's post.** Small. The agent stops
+5. **G21 — extend what Switch keeps of an app's post.** Small. The agent stops
    depending on a connector to find out what fired.
-5. **G11 — a service account.** The ownership compromise ends here.
-6. **G1 — cross-system identity mapping.** The response check depends on
+6. **G11 — a service account.** The ownership compromise ends here.
+7. **G1 — cross-system identity mapping.** The response check depends on
    recognising the on-caller.
-7. **G27 — a built-in `pagerduty` reference type.** Small. Puts the write
+8. **G27 — a built-in `pagerduty` reference type.** Small. Puts the write
    boundary under code review.
-8. **G28 — per-room message listeners.** Moves "observe all alerts" from the
+9. **G28 — per-room message listeners.** Moves "observe all alerts" from the
    alerting tool into one setting per room.
-9. **G30 — wake a role's agent when no one holds it.** Gives the responder
-   failover back.
-10. **G23 — detect a session that cannot receive events.** Small.
-11. **G9 — the remaining room fields in templates.**
-12. **G8 — mirror to a linked room.**
-13. **G25, then G24.** Together they turn "we run a responder" from a favour
+10. **G30 — wake a role's agent when no one holds it.** Gives the responder
+    failover back.
+11. **G23 — detect a session that cannot receive events.** Small.
+12. **G9 — the remaining room fields in templates.**
+13. **G8 — mirror to a linked room.**
+14. **G25, then G24.** Together they turn "we run a responder" from a favour
     someone is doing into infrastructure.
-14. Everything else, as it starts to hurt.
+15. Everything else, as it starts to hurt.
 
 The honest summary: **the design needs no Switch changes to run. Before anyone
-should depend on it, it needs one operational fix (a supervised sidecar) and
-one piece of design work started (a clock that does not die with the agent).**
+should depend on it, it needs one operational fix (a supervised sidecar), one
+setting (no usage budget covering the responder), and one piece of design work
+started (a clock that does not die with the agent).**
 Neither is specific to incident response. The same gaps will surface for every
 shared agent that sits on a path someone depends on.

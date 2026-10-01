@@ -27,20 +27,25 @@ supplied to the team separately.
 
 ## Where the rules come from
 
-The team's **on-call manual** is the source. Four parts of it matter here:
+The team's **on-call manual** is the source. It is one page tree, and three
+parts of it matter here:
 
-- **The alert process**: a flow diagram, which is the source of truth for
-  alerts, and a page written for agents that explains it. It covers what the
-  agent does from the moment an alert fires to the moment it becomes an
-  incident, or ends.
-- **The incident process**: severity, declaration, the war room,
-  communication cadence, the situation report, resolution and the RCA.
-- **The rest of the manual**: daily duties, releases, schedules, onboarding and
-  tools. These are the **on-caller's** duties. They are here only to draw the
-  agent's scope: the agent does none of them.
-- **The incident pages written for agents**, which exist as empty skeletons.
-  Until they are written, the incident process page is the source for
-  everything after a declaration.
+- **Alerts.** A daily alert-handling page carrying a flow diagram, which the
+  manual calls the source of truth for alerts, and a page written for agents
+  that explains it. Together they cover what the agent does from the moment an
+  alert fires to the moment it becomes an incident, or ends. The picture on the
+  alert-handling page is an older render than the diagram's source; the page
+  for agents follows the source, and so does this document.
+- **Incidents.** The incident response process page: severity, declaration,
+  the war room, communication cadence, the situation report, resolution and
+  the RCA. Beside it sit an incident prioritisation page and an incident page
+  written for agents, both still empty. Until they are written, the incident
+  response process page is the source for everything after a declaration.
+  When the prioritisation page is written, it is the source for severity, and
+  for "critical" if it defines it.
+- **Everything else**: daily duties, releases, schedules, onboarding, tools.
+  These are the **on-caller's** duties. They are here only to draw the agent's
+  scope: the agent does none of them.
 
 This instruction set restates those pages as explicit rules and adds the
 Switch mechanics the pages cannot know: which tool, which tag, which thread,
@@ -107,8 +112,8 @@ line and names who does it.
 | Any PagerDuty write other than declaring: acknowledge, resolve, snooze, reassign, merge, add notes, change a schedule or override, re-prioritise on its own judgment | The on-caller | Alert and incident processes |
 | Rota administration: schedules, shift swaps, overrides, the on-call Slack groups | The on-caller and rota owners, through PagerDuty; a sync service keeps the groups current | Schedules page |
 | Releases and promotions: Dev → Staging, Staging → Prod, the promotion tool, infrastructure applies, E2E runs, merging release PRs, release announcements | The on-caller, who gates them | Releases page: "never promote on the calendar alone" |
-| The daily checklist and the proactive reliability sweep | The on-caller, with their own tools | Daily activities page |
-| Improvement work: bug fixes, tech debt, tests, pull requests, code or configuration changes | The on-caller's improvement time, in rooms made for it | Daily activities page |
+| The daily checklist and the proactive reliability sweep | The on-caller, with their own tools | Rituals and daily activities page |
+| Improvement work: bug fixes, tech debt, tests, pull requests, code or configuration changes | The on-caller's improvement time, in rooms made for it | Rituals and daily activities page |
 | Production: roll back, roll forward, deploy, restart, scale, change configuration | The on-caller | This design's rule |
 | Deciding customer impact, or a severity | The on-caller | Incident process |
 | Escalating outside on-call hours | Nobody: the alert waits | Alert process |
@@ -239,6 +244,11 @@ The clock stops there.
 
 **Severity, acknowledgement and resolution live in PagerDuty.** If PagerDuty
 and this room disagree, PagerDuty is right. Fix it there and say so here.
+
+**If Switch says the responder has reached its budget**, the responder is
+stopped until the time Switch gives: it sees no alerts and declares nothing.
+On-call triages this room by hand until then, and tells whoever administers
+the workspace's budgets.
 
 ## The incident banner
 
@@ -384,7 +394,11 @@ alerting tool.
 
 - **The On-call SOP document** attached to your room restates the team's
   on-call manual: the alert process, the incident process, coverage, severity
-  and owners. Its source pages are attached as references.
+  and owners. Its source pages are attached as references: the alert page
+  written for agents, the alert-handling page with the diagram, and the
+  incident response process page. The manual's incident pages for agents and
+  its prioritisation page are empty; if one has been written since the SOP
+  document was, it is the source, and you say the document is out of date.
 - **This procedure** turns that into steps, and adds how to carry them out in
   Switch.
 - **On policy (what to do, when, who decides), the manual wins.** If this
@@ -970,6 +984,10 @@ later one from an earlier one.
 Say so, in the room, at the point it happens. Never substitute a plausible
 answer for a real one.
 
+- **Switch refuses your post because a usage budget is reached:** you cannot
+  tell the room, and retrying will not help. Stop. Switch tells people in the
+  room itself when it refuses a message addressed to you, and the hub's
+  instructions tell them what to do.
 - **A PagerDuty write fails, or you cannot confirm it:** say PagerDuty has not
   paged anyone, mention both regions' handles, and say what you tried. This is
   the one failure that must never be quiet.
@@ -1511,8 +1529,8 @@ The ids are in the Responder bindings in the alert hub's instructions.
 See this reference type's instructions for what you may never do.
 ```
 
-**Alert process** (type `confluence`, pointing at the manual's alert-process
-page written for agents, and at the page carrying the diagram):
+**Alert process** (type `confluence`, pointing at the manual's alert page
+written for agents, and at its alert-handling page carrying the diagram):
 
 ```
 The source of the alert process: what happens from the moment an alert fires
@@ -1525,8 +1543,8 @@ Reading it needs a Confluence connector on your host. Without one, work from
 the On-call SOP document and say you could not check the source.
 ```
 
-**Incident process** (type `confluence`, pointing at the incident process
-page):
+**Incident process** (type `confluence`, pointing at the manual's incident
+response process page; add its incident prioritisation page once written):
 
 ```
 The source of the incident process: severity, declaration, the war room,
@@ -1713,6 +1731,13 @@ invalidate a later phase.**
       channel is on.
 - [ ] **A Google Meet.** Can anything on the agent's host create one (a Google
       Calendar connector)? If not, it stays a person's step.
+- [ ] **No usage budget can stop the responder.** Switch stops an agent that
+      has reached a budget covering it: messages addressed to it are refused
+      and so are its own posts, until the period resets. A workspace-wide
+      budget covers every agent, and there is no exemption. Check the
+      workspace's budgets. If any could cover the responder, either remove it,
+      or run the responder as a dedicated agent with nothing else spending
+      against its budget, and decide who watches it.
 - [ ] **Ownership.** Decide who owns the agent. If it stays admin-owned or
       personally owned for now, write down who maintains it and when to
       revisit.
@@ -1889,6 +1914,9 @@ one that matters.
       each get a one-line decline naming who does it.
 - [ ] **PagerDuty refuses the write.** The agent says nobody was paged and
       mentions both handles.
+- [ ] **A budget refusal.** On a test agent with a small budget, confirm what the
+      room sees when Switch refuses it, and that the hub's instructions tell
+      on-call what to do.
 - [ ] **PagerDuty cannot be read.** The agent says so rather than inventing an
       on-call, and does not treat any reply as the on-caller's.
 - [ ] **Kill the agent's hub session with a deadline pending.** The next wake
