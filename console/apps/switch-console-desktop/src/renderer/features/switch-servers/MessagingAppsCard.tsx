@@ -8,12 +8,13 @@ import {
   MessageSquare,
   MoreVertical,
   Plus,
+  PlusCircle,
   Trash2,
   TriangleAlert,
   Unlink,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -36,6 +37,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import { ConnectedChatsList } from './ConnectedChatsList';
 import { orderBridges } from './messaging-apps-order';
 import {
   hasUnlinkedMessagingApp,
@@ -92,6 +94,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
   const showClaimIdentity = useShowModal('claimIdentityModal');
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
+  const showConnectChat = useShowModal('connectChatModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const isAdmin = administersWorkspaceInScope(serverId);
   // Only a stack Switch Console runs has a chat whose credentials it generated and
@@ -105,6 +108,19 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   });
 
   const bridges = useMemo(() => orderBridges(bridgesQuery.data ?? []), [bridgesQuery.data]);
+
+  // Which platforms the signed-in user may connect another chat on. Asked only
+  // once there is a connection whose chats arrive that way, which also keeps
+  // the question off servers that predate it.
+  const hasClaimedChats = bridges.some((b) => b.channelIdsRefused !== null);
+  const messagingAppsQuery = useQuery({
+    queryKey: ['messaging-apps', workspaceId],
+    queryFn: () => rpc.workspaces.listMessagingApps(workspaceId as string),
+    enabled: workspaceId !== null && hasClaimedChats,
+  });
+  const chatPlatforms = new Set(
+    (messagingAppsQuery.data?.claimable ?? []).filter((c) => c.canAddChat).map((c) => c.platform)
+  );
 
   const {
     identities,
@@ -152,6 +168,14 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   // connection that failed.
   const [savingBridgeId, setSavingBridgeId] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
+
+  // A chat connected from either dialog lands in the chat, on no signal
+  // Switch Console receives, so the sidebar and the chat list are looked at
+  // again when the dialog goes away rather than waited on.
+  const refreshChats = () => {
+    void switchRoomsStore.refreshRoomState();
+    void queryClient.invalidateQueries({ queryKey: ['connected-chats', workspaceId] });
+  };
 
   const handleToggleChannelCreation = async (bridge: RemoteBridge, enabled: boolean) => {
     if (workspaceId === null) return;
@@ -207,6 +231,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
             onClick={() =>
               showConnectMessagingApp({
                 serverId,
+                onClosed: refreshChats,
                 onSuccess: ({ bridgeId, displayName, directorySearchSupported }) => {
                   // Refresh the bridge list everywhere it is consumed — this
                   // card and the room-creation picker share the query key.
@@ -285,44 +310,74 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       ) : (
         <div className="mt-2 flex flex-col">
           {bridges.map((bridge) => (
-            <MessagingAppRow
-              key={bridge.id}
-              workspaceId={workspaceId}
-              serverId={serverId}
-              bridge={bridge}
-              /* Nothing is drawn in the identity column until the list
+            <Fragment key={bridge.id}>
+              <MessagingAppRow
+                workspaceId={workspaceId}
+                serverId={serverId}
+                bridge={bridge}
+                /* Nothing is drawn in the identity column until the list
                     arrives: "not linked" and "not known yet" look identical,
                     and offering to link an account the user already has is the
                     more confusing of the two. */
-              identities={identities}
-              currentUserId={currentUserId}
-              onReleased={refreshIdentities}
-              showBundledSignIn={isManaged && bridge.type === 'mattermost'}
-              isAdmin={isAdmin}
-              savingChannelCreation={savingBridgeId === bridge.id}
-              onToggleChannelCreation={(enabled) =>
-                void handleToggleChannelCreation(bridge, enabled)
-              }
-              onDisconnect={() => {
-                if (workspaceId === null) return;
-                showDisconnectMessagingApp({
-                  workspaceId,
-                  bridgeId: bridge.id,
-                  bridgeDisplayName: bridge.displayName,
-                  onSuccess: () => {
-                    void queryClient.invalidateQueries({
-                      queryKey: ['remote-bridges', workspaceId],
-                    });
-                    // The rooms on that bridge went with it, so the sidebar
-                    // is stale in a way the bridge list alone does not
-                    // repair.
-                    void switchRoomsStore.refreshRoomState();
-                  },
-                });
-              }}
-            />
+                identities={identities}
+                currentUserId={currentUserId}
+                onReleased={refreshIdentities}
+                showBundledSignIn={isManaged && bridge.type === 'mattermost'}
+                isAdmin={isAdmin}
+                savingChannelCreation={savingBridgeId === bridge.id}
+                onToggleChannelCreation={(enabled) =>
+                  void handleToggleChannelCreation(bridge, enabled)
+                }
+                onConnectChat={
+                  bridge.channelIdsRefused !== null &&
+                  chatPlatforms.has(bridge.type) &&
+                  workspaceId !== null
+                    ? () =>
+                        showConnectChat({
+                          workspaceId,
+                          platform: bridge.type,
+                          onClosed: refreshChats,
+                        })
+                    : null
+                }
+                onDisconnect={() => {
+                  if (workspaceId === null) return;
+                  showDisconnectMessagingApp({
+                    workspaceId,
+                    bridgeId: bridge.id,
+                    bridgeDisplayName: bridge.displayName,
+                    onSuccess: () => {
+                      void queryClient.invalidateQueries({
+                        queryKey: ['remote-bridges', workspaceId],
+                      });
+                      // The rooms on that bridge went with it, so the sidebar
+                      // is stale in a way the bridge list alone does not
+                      // repair.
+                      void switchRoomsStore.refreshRoomState();
+                    },
+                  });
+                }}
+              />
+              {bridge.channelIdsRefused !== null && workspaceId !== null && (
+                <ConnectedChatsList
+                  workspaceId={workspaceId}
+                  bridgeId={bridge.id}
+                  platformLabel={bridgePlatformLabel(bridge.type)}
+                  // The chat's room stays but is bridged to nothing now.
+                  onDisconnected={() => void switchRoomsStore.refreshRoomState()}
+                />
+              )}
+            </Fragment>
           ))}
         </div>
+      )}
+      {messagingAppsQuery.isError && (
+        <p className="mt-2 text-xs text-destructive">
+          {failureText(
+            messagingAppsQuery.error,
+            'Could not check whether you can add chats here, so adding one is not offered.'
+          )}
+        </p>
       )}
       {toggleError && <p className="mt-2 text-xs text-destructive">{toggleError}</p>}
     </div>
@@ -350,6 +405,7 @@ export function MessagingAppRow({
   isAdmin,
   savingChannelCreation,
   onToggleChannelCreation,
+  onConnectChat,
   onDisconnect,
 }: {
   /** Null while this install has not resolved the server's workspace; the
@@ -366,6 +422,9 @@ export function MessagingAppRow({
   isAdmin: boolean;
   savingChannelCreation: boolean;
   onToggleChannelCreation: (enabled: boolean) => void;
+  /** Set on a connection whose chats are connected one at a time, for a user
+   *  the server lets add one — members too, unlike every other change here. */
+  onConnectChat: (() => void) | null;
   onDisconnect: () => void;
 }) {
   const showClaimIdentity = useShowModal('claimIdentityModal');
@@ -505,6 +564,16 @@ export function MessagingAppRow({
               <Unlink className="size-4" />
               Unlink {handleOf(identity)}
             </DropdownMenuItem>
+          )}
+
+          {onConnectChat !== null && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={onConnectChat}>
+                <PlusCircle className="size-4" />
+                Add to {platform}…
+              </DropdownMenuItem>
+            </>
           )}
 
           <DropdownMenuSeparator />

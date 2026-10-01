@@ -6,6 +6,7 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useOnUnmount } from '@renderer/lib/hooks/use-on-unmount';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -29,6 +30,7 @@ import {
 } from '@renderer/lib/ui/select';
 import { cn } from '@renderer/utils/utils';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
+import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
 import { switchServersStore } from './switch-servers-store';
 import { administersWorkspaceInScope } from './workspace-admin';
@@ -36,6 +38,10 @@ import { administersWorkspaceInScope } from './workspace-admin';
 type ConnectMessagingAppModalArgs = {
   /** Attach to this server instead of the active one. */
   serverId?: string;
+  /** Run however the dialog goes away. A chat connected from it after the
+   *  first lands on no signal Switch Console receives, so this is when to
+   *  look for it. */
+  onClosed: () => void;
 };
 
 /** What the caller needs to decide what to do next. `directorySearchSupported`
@@ -52,9 +58,11 @@ type Props = BaseModalProps<ConnectedApp> & ConnectMessagingAppModalArgs;
 
 export const ConnectMessagingAppModal = observer(function ConnectMessagingAppModal({
   serverId: overrideServerId,
+  onClosed,
   onSuccess,
   onClose,
 }: Props) {
+  useOnUnmount(onClosed);
   const { setCloseGuard } = useModalContext();
 
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
@@ -85,13 +93,18 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   // Asked only of someone who may install: the route refuses everyone else, and
   // for them the dialog already says why nothing here will work.
   const installableQuery = useQuery({
-    queryKey: ['installable-messaging-apps', workspaceId],
-    queryFn: () => rpc.workspaces.listInstallablePlatforms(workspaceId as string),
+    queryKey: ['messaging-apps', workspaceId],
+    queryFn: () => rpc.workspaces.listMessagingApps(workspaceId as string),
     enabled: workspaceId !== null && isAdmin,
   });
-  const installable = installableQuery.data ?? [];
+  const installable = installableQuery.data?.installable ?? [];
+  const claimable = (installableQuery.data?.claimable ?? []).filter((c) => c.canAddChat);
   const [useOwnApp, setUseOwnApp] = useState(false);
-  const offerInstall = installable.length > 0 && !useOwnApp;
+  // The platform whose link and code are on screen. From then on the dialog is
+  // about that one chat: the other apps are a different errand, and for a
+  // workspace that already has the connection, closing is how it ends.
+  const [claimingPlatform, setClaimingPlatform] = useState<string | null>(null);
+  const offerInstall = (installable.length > 0 || claimable.length > 0) && !useOwnApp;
   const showForm = !offerInstall && !(isAdmin && installableQuery.isLoading);
 
   const types = useMemo(() => typesQuery.data ?? [], [typesQuery.data]);
@@ -214,7 +227,11 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   return (
     <>
       <DialogHeader showCloseButton={false}>
-        <DialogTitle>Connect a messaging app{server ? ` to ${server.name}` : ''}</DialogTitle>
+        <DialogTitle>
+          {claimingPlatform !== null
+            ? `Add to ${bridgePlatformLabel(claimingPlatform)}`
+            : `Connect a messaging app${server ? ` to ${server.name}` : ''}`}
+        </DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <div className="flex w-full flex-col gap-5">
@@ -246,21 +263,35 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
           {offerInstall && workspaceId !== null && (
             <>
-              {installable.map((platform) => (
-                <InstallMessagingAppPanel
-                  key={platform}
-                  workspaceId={workspaceId}
-                  platform={platform}
-                  onInstalled={(bridge) => handleInstalled(platform, bridge)}
-                />
-              ))}
-              <button
-                type="button"
-                className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-                onClick={() => setUseOwnApp(true)}
-              >
-                Use your own app instead
-              </button>
+              {claimingPlatform === null &&
+                installable.map((platform) => (
+                  <InstallMessagingAppPanel
+                    key={platform}
+                    workspaceId={workspaceId}
+                    platform={platform}
+                    onInstalled={(bridge) => handleInstalled(platform, bridge)}
+                  />
+                ))}
+              {claimable
+                .filter((c) => claimingPlatform === null || c.platform === claimingPlatform)
+                .map((c) => (
+                  <ConnectChatPanel
+                    key={c.platform}
+                    workspaceId={workspaceId}
+                    claimable={c}
+                    onShown={() => setClaimingPlatform(c.platform)}
+                    onConnected={(bridge) => handleInstalled(c.platform, bridge)}
+                  />
+                ))}
+              {claimingPlatform === null && (
+                <button
+                  type="button"
+                  className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
+                  onClick={() => setUseOwnApp(true)}
+                >
+                  Use your own app instead
+                </button>
+              )}
             </>
           )}
 
@@ -428,7 +459,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
       </DialogContentArea>
       <DialogFooter>
         <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
-          Cancel
+          {claimingPlatform !== null ? 'Close' : 'Cancel'}
         </Button>
         {showForm && (
           <ConfirmButton onClick={() => void handleSubmit()} disabled={!canSubmit}>

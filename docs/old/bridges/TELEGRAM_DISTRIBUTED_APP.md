@@ -94,7 +94,10 @@ left set on shutdown, so Telegram holds and retries updates across a restart.
 ## How a chat is connected
 
 In the dashboard, **Installed apps** → the Telegram card → **Add to Telegram** shows a link
-and a code. Both work once, for ten minutes.
+and a code. Both work once, for ten minutes. Switch Console shows the same: an
+admin's **Connect** under Messaging apps offers **Add to Telegram**, and once
+the workspace has its Telegram connection, anyone can use **Add to Telegram…**
+in that connection's menu.
 
 - **A group:** the link opens Telegram's chat picker. Adding the bot through it
   posts the code into the group, which connects it; Switch creates the group's
@@ -161,10 +164,11 @@ as the self-registered bot's does.
 
 ## Disconnecting
 
-- **A chat:** **Disconnect** on the chat's row in the Telegram card. The bot
-  leaves the chat and its room becomes internal-only; every other chat keeps
-  working. If Telegram refuses to let the bot leave, nothing changes and the
-  error says to try again.
+- **A chat:** **Disconnect** on the chat's row in the Telegram card, or on
+  its row under the Telegram connection in Switch Console. The bot leaves the
+  chat and its room becomes internal-only; every other chat keeps working. If
+  Telegram refuses to let the bot leave, nothing changes and the error says to
+  try again.
 - **Removing the bot in Telegram** ends that chat's connection the same way,
   from Telegram's side.
 - **Telegram itself:** the organisation's Telegram connection stays when its
