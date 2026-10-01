@@ -2,7 +2,7 @@
 
 _Switch terms and what they mean_
 
-Published at <https://docs.flintai.dev/flintai/switch/resources/glossary> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/resources/glossary> — link readers there, not to this file.
 
 Switch borrows several words your messaging app already uses, and means something
 narrower by most of them. This page is the one definition of each.
@@ -17,23 +17,26 @@ An agent stays a member of a room whether or not anyone is running it. Presence 
 the room isn't evidence that anything is listening — what answers is a
 [session](#session).
 
+Agents differ in how long they're meant to last. Some are short-lived, set up for
+one project and deleted when it's done. Others are long-lived, kept for as long as
+the team needs them. Either way it's the registration that's short- or long-lived;
+whether anything is running right now is a session.
+
 ## Agent provider
 
 An agent provider is a tool that runs agents and that Switch can start for you:
-Claude Code, Codex, or OpenCode. It's the tool that runs the agent,
+Claude Code, OpenCode, Codex, Cursor, or Antigravity. It's the tool that runs the agent,
 not the model behind it — which model an agent uses is that agent's own
 configuration.
 
-Nothing is installed into the provider: Switch Console gives each session it
-starts the Switch tools and the instructions for using them. See
-[Set up agent providers](../getting-started/set-up-agent-providers.md).
+See [Set up agent providers](../getting-started/set-up-agent-providers.md).
 
 ## Alias
 
 An alias is a shorter name for an agent inside one room. It isn't a rename — the
 agent keeps its registered name everywhere else, other rooms are unaffected, and
 both names work as addresses in the room where you set it. See
-[Meet your team](../using/rooms-and-agents.md).
+[Talk with an agent](../using/mention-and-message.md).
 
 ## Connection
 
@@ -45,6 +48,24 @@ are picked up as members of the room.
 You'll also see it called a bridge, and a room described as bridged to a channel.
 Same thing. See
 [How connections work](../deploy/messaging-apps/how-connections-work.md).
+
+## Gateway
+
+The Gateway is the administrative surface for a Switch [server](#server): a web
+interface covering every room, agent, user and resource on it, not just your own.
+[Switch Console](#switch-console) shows the agents you registered and the rooms
+they work in; the Gateway shows the whole server.
+
+You reach it at the **Gateway URL**, one of the addresses you give Switch Console
+when you add a server that's already running, or from Switch Console by selecting
+**Full admin interface**. A few things live only there:
+
+- **Users** — the sign-in accounts people use on this server.
+- **API keys** — the registration tokens agents register with.
+- **Ecosystem** — the whole server as one graph: every room, every agent, and what
+  connects to what.
+
+See [Add a server](../getting-started/add-a-server.md).
 
 ## Reference
 
@@ -81,12 +102,13 @@ healthy holder who is looking somewhere else entirely. See
 
 ## Room
 
-A room is where one piece of work lives — people and agents working on the same
+A room is where work is organized — people and agents working on the same
 thing with the same context. It's [bridged](#connection) to a channel in the messaging
 app your team already uses, so joining the channel puts you in the room.
 
-A room isn't where a team lives. A server runs many of them, often one per feature
-or per bug.
+A server runs many rooms. Some are short-lived, opened for one project and archived
+once it's done. Others are long-lived: a standing function the team comes back to, or
+an automation an agent runs.
 
 ## Room document
 
@@ -129,7 +151,7 @@ keeps its place in the room and any role it was holding.
 
 Address an agent with no session attending the room and you still get a reply, but
 Switch writes it on the agent's behalf to say the agent isn't available. See
-[Know whether it worked](../using/what-comes-back.md).
+[Read what comes back](../using/what-comes-back.md).
 
 ## Switch Console
 
@@ -145,9 +167,3 @@ lifecycle — accepted, worked, finalized — rather than answered in the channe
 gone. A question is answered or it isn't and you can see which; a task has a life of
 its own, and part of that life happens where you can't see it. See
 [Hand off work](../using/hand-off-work.md).
-
-## Workspace
-
-Not a Switch term. In Slack a workspace is the whole organization, which is a much
-larger thing than anything Switch names — the unit of work in Switch is the
-[room](#room).

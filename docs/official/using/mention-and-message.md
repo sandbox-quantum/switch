@@ -1,8 +1,8 @@
-# Work with your team
+# Talk with an agent
 
-_Address an agent so it acts, practice the ways an address misses, and send a command_
+_Address an agent so it acts, give it a short name in the room, practice the ways an address misses, and send a command_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/mention-and-message> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using/mention-and-message> — link readers there, not to this file.
 
 **Address an agent and it's the one that responds and acts. The others don't** — they don't respond, reply, or pick up any new work.
 
@@ -10,11 +10,7 @@ That's unique to Switch, and it's what lets a room hold several agents and stay 
 
 ## Your teammates see the whole exchange
 
-Addressing narrows who acts on a message, not who reads it. The people in the channel can read what you asked an agent and what came back, so the work happens in front of the team instead of in a private chat with a bot. That means:
-
-- **A colleague can pick up a thread you started** and address the same agent.
-- **Nobody has to be told what happened.** The exchange is the record.
-- **You can address an agent somebody else registered.** Agents work for everyone in the room, not only for whoever set them up.
+Addressing narrows who acts on a message, not who reads it. The people in the channel can read what you asked an agent and what came back, so the work happens in front of the team instead of in a private chat with a bot. [Work with your team](rooms-and-agents.md) covers what that changes for everybody else in the room.
 
 ## Address an agent with `@`
 
@@ -27,14 +23,26 @@ To wake an agent, you must enter an `@` in front of its name or alias:
 You can use any of these to address an agent:
 
 - **The registered name** — the full identifier given to the agent when it was [registered on the server](../getting-started/onboard-your-agents.md)
-- **An alias** — a shorter name someone set for it in the room you're in, as explained in [Meet your team](rooms-and-agents.md)
-- **A role it currently holds** — the [role](../resources/glossary.md#role) name addresses whichever session is holding it
+- **An [alias](../resources/glossary.md#alias)** — a shorter name someone set for it in the room you're in, covered below
+- **A role it currently holds** — the [role](../resources/glossary.md#role) name addresses whichever [session](../resources/glossary.md#session) is holding it
+
+## Give an agent a short name in this room
+
+A registered name has to be unique across the whole server, so it usually carries the name of whoever owns the agent to keep it that way. In a room where that's already obvious, you're typing it every time for nothing.
+
+An alias is a shorter name for an agent **inside one room**. It isn't a rename:
+
+- The agent keeps its registered name everywhere else.
+- Other rooms are unaffected.
+- Both the alias and the registered name work as addresses in the room where you set it.
+
+If a room's agents have no aliases, setting one is the highest-value thing you can do for everybody else in the channel. Anyone in the room can, and it takes one command — see [Create a room](../getting-started/create-a-room.md#give-an-agent-a-short-name).
 
 ### Try it: the practice loop
 
 **You're done when the same agent has answered you several ways, gone silent once, and come back.** This runs in a real channel, and one message misses on purpose: a missed address costs nothing here and plenty in the middle of real work.
 
-You need one agent's name, spelled exactly — a near miss looks identical to the agent not being in the room. [Meet your team](rooms-and-agents.md) has the names in yours. Send these in order:
+You need one agent's name, spelled exactly — a near miss looks identical to the agent not being in the room. [Work with your team](rooms-and-agents.md) has the names in yours. Send these in order:
 
 | # | Send | What to expect |
 |---|---|---|
@@ -61,7 +69,8 @@ Matching is looser than it looks in some ways, stricter in others:
 Whether the app finishes the name for you depends on the app.
 
 - **Slack** completes an agent's name, where the connection was made with agent name autocomplete on and the workspace is on a paid plan. See [Agent names and progress](../deploy/messaging-apps/slack.md#agent-names-and-progress).
-- **Microsoft Teams, Telegram and Discord** don't. On Telegram that's the design rather than a gap: one bot fronts every agent, and `@` completes only real members of the chat.
+- **Discord** completes an agent's name, where the connection was made with agent name autocomplete on and the bot can manage roles. See [Agent names and progress](../deploy/messaging-apps/discord.md#agent-names-and-progress).
+- **Microsoft Teams and Telegram** don't. On Telegram that's the design rather than a gap: one bot fronts every agent, and `@` completes only real members of the chat.
 
 Where the name isn't completed, the mention renders as plain text instead of a highlighted mention chip. It looks like it didn't work. It did.
 
@@ -81,9 +90,11 @@ The commands that act on a particular agent need a name. Send `!reset` with no n
 
 ## Rooms with one agent
 
-A room can be provisioned for one person and one agent — on Slack, as a private channel. It's a quiet place to work with a single agent, and nobody outside it sees the conversation.
+A room can be provisioned for one person and one agent — on Slack and Discord, as a private channel. It's a quiet place to work with a single agent, and nobody outside it sees the conversation.
 
 It's a real room rather than a direct message to a bot, so everything else on this page still applies — including the `@`. **Being the only agent in the room doesn't make a message address it.** Post without the mention and you'll get silence, exactly as you would in a room of ten.
+
+**A chat you opened yourself is the exception.** On Microsoft Teams and Mattermost, a one-to-one you start with the agent is picked up as a room where every message reaches it, with no `@` needed. See your app's page in [Connect a messaging app](../deploy/messaging-apps/index.md).
 
 ## Prompt an agent on a schedule
 
@@ -97,7 +108,7 @@ Give the agent something sensible to do when there's nothing waiting, because a 
 
 ## Next steps
 
-- [Know whether it worked](what-comes-back.md) — Read what comes back, including the reply that means nothing is running
+- [Read what comes back](what-comes-back.md) — Know whether it worked, and spot the reply that means nothing is running
 
 - [Share context](shared-context.md) — Brief every agent in the room once, so you stop repeating yourself to each one
 

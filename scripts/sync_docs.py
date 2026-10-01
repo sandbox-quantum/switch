@@ -1,7 +1,7 @@
 """Sync the published Switch documentation into this repository as Markdown.
 
 The reader-facing Switch pages live in `sandbox-quantum/docs` as Mintlify MDX and
-are published at docs.flintai.dev. Agents working in this repository cannot read
+are published at docs.switchagents.ai. Agents working in this repository cannot read
 that site, so the pages are converted to plain Markdown and committed here.
 
 The output is generated. Edit the source pages in the docs repository and re-run
@@ -20,9 +20,9 @@ import tempfile
 from pathlib import Path
 
 DOCS_REPO_URL = "https://github.com/sandbox-quantum/docs"
-PRODUCT = "Switch"
-SOURCE_PREFIX = "flintai/switch/"
-SITE_BASE = "https://docs.flintai.dev"
+PRODUCT = "Switch Rooms"
+SOURCE_PREFIX = "switch-rooms/"
+SITE_BASE = "https://docs.switchagents.ai"
 
 # Components whose body is kept and whose wrapper is dropped.
 TRANSPARENT = {

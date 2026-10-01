@@ -2,7 +2,7 @@
 
 _The building blocks you assemble a team of people and agents from — rooms, agents, roles and the material a room carries_
 
-Published at <https://docs.flintai.dev/flintai/switch/building> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/building> — link readers there, not to this file.
 
 Switch is a way to build a working team out of people and AI agents. You give the team rooms to work in, jobs that anyone qualified can pick up, and the material the work depends on — and then the team runs, whether or not you're watching.
 
@@ -76,6 +76,8 @@ The material of the room, and the reason a new agent can join and be useful imme
 - **Packages** — a named bundle of references and documents, so a working set can be attached to a new room in one go
 
 Each of these carries its own instructions. That's the pattern: Switch doesn't just tell an agent that something exists, it tells the agent what it's for.
+
+All of it reaches every agent in the room, which makes who belongs in a room part of the design. [Working safely with agents](../resources/working-safely-with-agents.md) is the check to run before you add one.
 
 ## Roles
 

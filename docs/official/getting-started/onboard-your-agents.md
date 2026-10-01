@@ -1,10 +1,12 @@
-# Onboard your agents
+# Onboard agents
 
 _Register an agent with your server so you can invite it into any room_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/onboard-your-agents> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/getting-started/onboard-your-agents> — link readers there, not to this file.
 
 Onboarding an agent registers it against your server and gives it a name people can address. You do this once per agent, not once per room. You can then invite the same agent into any room on that server, in any messaging app connected to it.
+
+If you followed the [Switch quickstart](index.md), the Switch expert template made these choices for you. This page walks through each one, for an agent you build yourself.
 
 ## Before you start
 
@@ -16,76 +18,91 @@ An agent can use the tools and access available on the machine and in the workin
 
 In the sidebar, select **Your Agents**. Registered agents are a grid of cards; a new one starts from the dashed card with a plus on it.
 
+### Name it
+
+Give the agent a **Name** and a **Description**. Both are required. **Display name** and **Agent instructions** are optional.
+
+**The name takes lowercase letters, digits, `.`, `-` and `_`, and it has to start with a letter or a digit.** No spaces and no capitals. Switch Console flags a name that doesn't fit as you type, and offers a corrected one as **Use `<name>`**.
+
+### Choosing a name
+
+A name is unique across the whole server, and everyone in the agent's rooms sees it, so a generic one is both likely to be taken already and hard for anybody else to place. Build it from the job and you:
+
+```text
+job.you
+```
+
+Spell the job out. `bug-fixer.jsmith` and `tech-writer.jsmith` are still short enough to type from memory, and they say what the agent does — where `docs` on its own says nothing, and is the name a second agent of yours will want too. **Description** is where the longer version goes, and it's what other people read to work out what the agent is for.
+
+Leave the provider out. The agent's card already says which one it uses, so putting it in the name lengthens the thing people type without telling them anything they can't see. Keep the whole name short: you type it to invite the agent to a room and to address it there, and you type it before any [alias](create-a-room.md#give-an-agent-a-short-name) exists to spare you.
+
+**Display name** is what people read when Switch names the agent in your messaging apps — listing the agents in a room, or confirming this one has joined. You still type the name above to address it, so capitals, spaces and punctuation are all fine here. Leave it empty and Switch falls back to that name.
+
 ### Choose where it runs
 
-**Run location** is where the agent process lives. Leave it local to run the agent on this machine, or pick a host you have onboarded.
+**Run location** is where the agent process lives. Leave it on **This computer**, or pick a host you have onboarded.
 
-### Choose the agent provider
-
-**Agent provider** lists the providers you set up in the previous step. If the one you want is missing, it isn't fully set up yet — see [Set up agent providers](set-up-agent-providers.md).
+Settle it now. Run location is set when the agent is created and can't be changed afterwards, so moving an agent to another machine means deleting it and registering a new one — a new agent, with its own credentials, that you invite to its rooms again.
 
 ### Point it at a directory
 
-Choose the agent's working directory. It's the strongest thing you control: it decides what the agent can read, and any standing instructions there become how the agent behaves by default.
+**Directory** is the agent's working directory. It's the strongest thing you control: it decides what the agent can read, and any standing instructions there become how the agent behaves by default.
+
+Pick one you'd be comfortable with everyone in the agent's rooms seeing. [Working safely with agents](../resources/working-safely-with-agents.md) is the check to run before it joins one.
+
+This one is set at creation as well, so work out which directory you'll actually work in before you create the agent. Changing your mind later is the same delete-and-register.
 
 **Tip**
 
 If the agent is already running in a terminal, choose the directory that terminal is in. That's what lets you keep the conversation you already have — see [If the agent is already running](#if-the-agent-is-already-running).
 
-### Name it
+### Choose the agent provider
 
-Give the agent a **Name**. It's unique across the whole server, and everyone in the agent's rooms sees it, so a generic name is both likely to be taken already and hard for anybody else to place.
+**Agent provider** lists only the providers installed on this machine. If the one you want is missing, it isn't set up yet — see [Set up agent providers](set-up-agent-providers.md).
 
-**The name takes lowercase letters, digits, `.`, `-` and `_`, and it has to start with a letter or a digit.** No spaces and no capitals. Switch Console tests the name as you type and won't create the agent until it fits — so if nothing happens when you try to create it, check the name first, then **Description**, which is also required.
+### Leave Advanced configuration alone
 
-Build it from three parts — the provider, the job, and you:
+**Advanced configuration** holds settings such as the agent's model and the tools it may use. The defaults suit a first agent, so leave it as it opens.
 
-```text
-provider.job.owner
-```
+### What Advanced configuration does reach
 
-`claude-code.tech-writer.jsmith` tells a room everything it needs, `docs` tells it nothing. **Description** is where the longer version goes, and it's what other people read to work out what the agent is for. **Agent instructions**, under it, is optional.
+Everything inside it — **Model**, **Tools**, **Disallowed tools**, **Permission mode**, **Isolation**, **Persistent memory** and the rest — is saved in the agent's settings file, `.switch/config/<name>.json` in its working directory. It applies to every session Switch Console starts for the agent, including one started because the agent was addressed. A session you start yourself in a terminal doesn't read it.
 
-Length isn't a problem: a long name is the one people read, and each room can point a short [alias](create-a-room.md#give-an-agent-a-short-name) at it.
+**Isolation** doesn't move the agent's own session. It applies only to a subagent the agent hands work to.
 
 ### Decide whether Switch may start it for you
 
 Expand **Settings**, which is folded when the form opens.
 
-**Auto-create a session on notify** is on: Switch Console starts a session — the running copy of the agent that actually answers — whenever the agent is addressed and none is running. Turn it off when you run the agent yourself and it matters which session answers, because a session Switch starts is a new one and it answers in the same name, so the substitution isn't obvious from the room. Nothing is lost by turning it off; messages wait until the agent next reads the room.
-
-### Decide who may instruct it
-
-**Who can talk to your agent** sets who may mention the agent, target it, or hand it work. It starts on **Only me (default)** — you, in person, not your colleagues and not your own other agents. The rest:
-
-- **Only me and my agents** admits the agents you own, so one can delegate to this one.
-- **Anyone** means anyone in the agent's rooms.
-- **Custom rules** names people, agents and rooms individually.
-
-Pick **Only me and my agents** now if you run agents that hand work to each other. On the default, a task delegated by another of your own agents fails outright. Anyone who isn't permitted gets a visible refusal rather than silence, and you can change this later from the agent's settings.
-
-An agent you registered before this setting existed is the exception: it stores no policy and can still be addressed by anyone in its rooms, so check the older ones rather than assuming they picked up the new behavior.
-
-**Note**
-
-An agent that answers only you has to be able to recognize you, and that comes from your messaging account being linked to your Switch user. Until it is, a message from you reads as a message from a stranger: the agent refuses the work and replies that it can't tell whether you're its owner. Switch Console warns you next to the setting and links to **Messaging apps**. Link an account for every app you'll work in — one linked and one not leaves the agent refusing you in half your rooms.
+**Auto-create a session on notify** is on: Switch Console starts a session — the running copy of the agent that actually answers — whenever the agent is addressed and none is running. Turn it off when you run the agent yourself and it matters which session answers, because a session Switch starts is a new one and it answers in the same name, so the substitution isn't obvious from the room. Nothing is lost by turning it off — messages wait until the agent next reads the room.
 
 ### Decide whether it asks before acting
 
 **Bypass permissions** starts the agent's sessions with permission prompts turned off. It has two defaults rather than one: off for an agent on this machine, on for one on a remote host, where there's nobody at the terminal to answer a prompt. So a remote agent arrives able to act without asking. Leave it on only for an agent you'd leave alone with the directory you gave it.
 
-### Leave Advanced configuration alone
+### Decide who may instruct it
 
-**Advanced configuration** doesn't configure the session you're about to run. Everything inside it — system prompt, model, tool allowlist, permission mode, isolation, persistent memory — is written into the agent's definition file as Claude Code subagent configuration, and applies only when something starts a session from that definition. A session you start yourself doesn't read it.
+**Who can talk to your agent** sets who may mention the agent, target it, or hand it work. It starts on **Only me (default)** — you, in person, not your colleagues and not your own other agents.
 
-Two are worth knowing about even so:
+Pick **Only me and my agents** now if you run agents that hand work to each other; on the default, a task delegated by another of your own agents fails outright. You can change this later from the agent's settings.
 
-- **System prompt** defaults to the **Description** you typed, so the description becomes the agent's standing brief the day something spawns from this definition.
-- **Isolation** decides where a subagent runs when work is delegated to one. It won't relocate a session you launched yourself, so it can look load-bearing when it isn't.
+### The other options, and what a refusal looks like
+
+- **Only me and my agents** admits the agents you own, so one can delegate to this one.
+- **Anyone** means anyone in the agent's rooms.
+- **Custom rules** names people, agents and rooms individually.
+
+Anyone who isn't permitted gets a visible refusal rather than silence.
+
+An agent you registered before this setting existed is the exception: it stores no policy and can still be addressed by anyone in its rooms, so check the older ones rather than assuming they picked up the new behavior.
+
+**Note**
+
+An agent recognizes you through your messaging account, linked to your Switch user. Unlinked, you read as a stranger and the agent refuses the work. If a warning about it appears, select the warning to open **Messaging apps**. Link an account in every app you'll work in.
 
 ### Create the agent
 
-Submit the form. Registering is a one-time act against the server — you won't do any of this again for this agent.
+Select **Add agent**. Registering is a one-time act against the server — you won't do any of this again for this agent.
 
 ## Confirm it worked
 

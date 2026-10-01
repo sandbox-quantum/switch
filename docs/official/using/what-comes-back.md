@@ -1,8 +1,8 @@
-# Know whether it worked
+# Read what comes back
 
-_Read what comes back — an answer, an unavailable reply, silence, or a refusal — and know what each one means_
+_An answer, an unavailable reply, silence, or a refusal — what each one means and what to do about it_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/what-comes-back> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using/what-comes-back> — link readers there, not to this file.
 
 import SwitchCommandForm from '/snippets/switch-command-form.mdx';
 
@@ -10,7 +10,7 @@ What comes back from an agent varies, and the differences carry information rath
 
 ## What can come back
 
-Address an agent and one of three things happens. Naming which one you got is the whole skill on this page: **a reply and an unavailable notice both mean the address landed**, and silence means it didn't.
+Address an agent and one of the following comes back. Naming which one you got is the whole skill on this page: **a reply and an unavailable notice both mean the address landed**, and silence means it didn't.
 
 **It answers.** The address worked and a session is running behind the agent. This is the case everything else on this page assumes.
 
@@ -18,7 +18,9 @@ Address an agent and one of three things happens. Naming which one you got is th
 
 **Nothing at all.** Your message reached nobody. The `@` is missing, the name is misspelled, or you replied in a thread without repeating the address.
 
-Only the third is a failure, and it's the one that arrives without an error, a warning, or any hint that something went wrong. Get used to reading silence as a missed address rather than as an agent ignoring you.
+An agent can also answer to say it won't act on your message. That's an outcome of its own, and it has a section further down.
+
+Only silence is a failure of address, and it's the one that arrives without an error, a warning, or any hint that something went wrong. Get used to reading silence as a missed address rather than as an agent ignoring you.
 
 ## Try it: is anything listening?
 
@@ -42,11 +44,11 @@ Address an agent with no session attending the room and Switch answers on its be
 
 Nothing you do in the channel needs an installation. Running an agent does, and that happens on somebody's own machine — which is why so many of these replies end by naming a person rather than something you can fix from here.
 
-**Where there's a command that would fix it, the reply carries one.** For Claude Code, Codex, and OpenCode agents, Switch builds the exact command that starts a session connected to this room, and `@`-mentions the agent's owner on this app so they're notified. They paste it into their terminal and run it as-is. You don't have to know what the command does, and they don't have to leave their terminal to get it.
+**Where there's a command that would fix it, the reply carries one.** For a Claude Code, Codex, or OpenCode agent, Switch builds the exact command that starts a session connected to this room, and `@`-mentions the agent's owner on this app so they're notified. They paste it into their terminal and run it as-is. You don't have to know what the command does, and they don't have to leave their terminal to get it.
 
 If the agent has no owner, or its owner hasn't linked an account on this app, the reply arrives with no `@`-mention on it. Nobody is notified, so someone has to pass it on manually.
 
-An agent registered any other way gets the same answer in words, with no command attached.
+Any other agent gets the same answer in words, with no command attached.
 
 When you already know nothing is running here — you got an unavailable reply, or a ⚪ beside the agent in `!agents-status` — you can ask for the command yourself instead of waiting for one:
 
@@ -62,7 +64,7 @@ Add a role to the request and the agent takes that role as it connects.
 
 _"Starting a session to handle this — one moment."_
 
-Switch Console, or the process it runs on the agent's host, is watching the room and spinning up a session for your message. Wait. No action needed.
+Wait for the reply. No action needed.
 
 ### No session is connected to this room
 
@@ -109,6 +111,6 @@ The unlinked-account refusal catches people out, because it happens to the perso
 
 ## Next steps
 
-- [Meet your team](rooms-and-agents.md) — Find out who's in the room, and give a long agent name a short one
+- [Work with your team](rooms-and-agents.md) — Find out who's in the room, add someone to it, and see what changes when the whole team can read the exchange
 
 - [Troubleshooting](../resources/troubleshooting.md) — Fixes for the things that go wrong most often, including agents that never answer

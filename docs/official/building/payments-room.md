@@ -2,7 +2,7 @@
 
 _Take one room from an empty channel to something a team can work in — instructions, material, jobs, and who's allowed to drive what_
 
-Published at <https://docs.flintai.dev/flintai/switch/building/payments-room> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/building/payments-room> — link readers there, not to this file.
 
 ## What we're building
 
@@ -135,11 +135,11 @@ Worth knowing before you rely on roles:
 
 To see the room's jobs and who's holding each, post `!roles` in the channel.
 
-**The problem this leaves you with:** a couple of small frictions. The agents have long registered names — `claude-code.payments.review` is nobody's idea of a handle — and the release agent you just added answers the person who registered it and nobody else on the team.
+**The problem this leaves you with:** a couple of small frictions. The agents are addressed by their registered names, which are the same in every room they're in — `release.jsmith` is a name, not what this team would call it — and the release agent you just added answers the person who registered it and nobody else on the team.
 
 ## Aliases
 
-An **alias** is a short handle for an agent, scoped to this room. An agent with a long qualified name can be `@releases` here and something else, or nothing, in another room.
+An **alias** is a short handle for an agent, scoped to this room. An agent registered as `release.jsmith` can be `@releases` here and something else, or nothing, in another room.
 
 An alias can't collide with another agent's name in the room, another agent's alias, or one of the room's job names — Switch refuses the clash rather than guessing.
 

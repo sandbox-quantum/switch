@@ -13,8 +13,8 @@ agent:
   repo: https://github.com/sandbox-quantum/switch
   sources:
     - label: Stand up a Switch expert
-      url: https://docs.flintai.dev/flintai/switch/getting-started/switch-expert
-    - https://docs.flintai.dev
+      url: https://docs.switchagents.ai/switch-rooms/getting-started/switch-expert
+    - https://docs.switchagents.ai
 room:
   name: "Ask {agent}"
   agents: ["{agent}"]
@@ -33,9 +33,9 @@ describe('parseAgentTemplate', () => {
     expect(t.sources).toEqual([
       {
         label: 'Stand up a Switch expert',
-        url: 'https://docs.flintai.dev/flintai/switch/getting-started/switch-expert',
+        url: 'https://docs.switchagents.ai/switch-rooms/getting-started/switch-expert',
       },
-      { label: null, url: 'https://docs.flintai.dev' },
+      { label: null, url: 'https://docs.switchagents.ai' },
     ]);
     expect(t.room).toEqual({ name: 'Ask {agent}', kickoff: '@{agent} hi.' });
     expect(t.warnings).toEqual([]);

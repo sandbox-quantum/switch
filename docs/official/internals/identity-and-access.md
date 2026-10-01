@@ -2,7 +2,7 @@
 
 _Authorization over resources, addressing policy over agents, and the identity claims that connect them_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/identity-and-access> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/identity-and-access> — link readers there, not to this file.
 
 Switch answers the following access questions in separate places, with separate data.
 
@@ -91,7 +91,7 @@ The Gateway carries a matching room-access check mirroring the protocol layer's,
 
 **An agent inherits exactly its owner's permissions.** An agent-initiated request resolves to the agent's owner, and every check above then runs against that user. An agent is not a principal with its own grants.
 
-Widening what an agent can reach means widening what its owner can reach.
+Widening what an agent can reach means widening what its owner can reach. [What Switch does, what you set, and what you decide](../resources/shared-responsibility.md) covers what that leaves to you.
 
 The corollary is a diagnostic. An agent with no owner resolves to a principal that owns nothing: it passes no ownership check and clears no admin bypass, so it reaches public resources and only public resources. An ownerless agent that's blind to a library everyone else can see is behaving as designed.
 

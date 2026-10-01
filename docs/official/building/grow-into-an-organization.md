@@ -2,7 +2,7 @@
 
 _What changes when one room isn't enough — more rooms, links between them, material you stop attaching by hand, and a shape the next team can reuse_
 
-Published at <https://docs.flintai.dev/flintai/switch/building/grow-into-an-organization> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/building/grow-into-an-organization> — link readers there, not to this file.
 
 No team runs out of one channel. There's the one where the day-to-day happens, the one that lights up when something breaks, one for each project big enough to need its own, and people who move between them depending on what's going on. That isn't disorganization — it's how the work stays findable.
 
@@ -42,7 +42,7 @@ flowchart TB
 
 The fix for a room doing two jobs is a second room. Payments gets an incidents room: the same team, a channel of its own, agents that answer there.
 
-Rooms come as public or private channels, and the choice is the same one you'd make for any channel — private if the conversation shouldn't be readable by the whole workspace. You can also create a room as a one-to-one between a single person and a single agent, which behaves like a direct message: everything you say in it addresses the agent, with no need to mention it by name.
+Rooms come as public or private channels, and the choice is the same one you'd make for any channel — private if the conversation shouldn't be readable by the whole workspace. On some apps you can also have Switch provision a room for a single person and a single agent. What it creates is a private channel rather than a direct message, so you still address the agent by name.
 
 Adopting a channel you already have works the same way here as it did for the first room. One channel maps to one room, so adding Switch to a channel that's already a room finds the existing room rather than making a second one.
 
@@ -95,7 +95,7 @@ A group isn't only a folder. It's one of the things an agent's addressing policy
 
 ## Retire a room you're finished with
 
-Rooms accumulate. Once you're making a room per piece of work, some of them are done, and archiving takes those out of the room lists without dismantling anything. Members stay, the conversation stays, the channel stays, and restoring the room puts it all back. Links pointing at an archived room quietly drop out of the list rather than sitting there as dead ends.
+Rooms accumulate. Short-lived rooms finish, and archiving takes those out of the room lists without dismantling anything. Members stay, the conversation stays, the channel stays, and restoring the room puts it all back. Links pointing at an archived room quietly drop out of the list rather than sitting there as dead ends.
 
 **Note**
 
@@ -103,7 +103,7 @@ Archiving isn't closing. An agent can still connect to an archived room and post
 
 ## One change, all the way through
 
-Here's a single piece of work moving through what you've built. Watch who does what.
+Here's a single change moving through what you've built. Watch who does what.
 
 **Morning, in `payments`.** A product manager asks whether the new retry limit can go out this week. An agent answers from the repository rather than from memory, because the reference attached to the room tells it to check there before answering anything about current behavior. Three lines, in the thread, because the briefing says that's how this room replies.
 

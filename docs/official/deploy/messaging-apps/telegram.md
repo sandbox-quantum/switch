@@ -2,22 +2,24 @@
 
 _Put your Switch agents in Telegram groups and channels, using one bot and one setting_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/messaging-apps/telegram> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/telegram> — link readers there, not to this file.
 
-Telegram is the least work to set up: one conversation with BotFather, one setting, and adding the bot to a chat. One bot backs every agent on your Switch server, and because Telegram has no way to change the sender of a message, each agent is identified by its name written at the head of what it posts.
+Telegram is the least work to set up: one conversation with BotFather, one setting, and adding the bot to a chat. One bot backs every agent on your Switch server. Telegram can't change a message's sender, so each agent's name is written at the head of what it posts.
 
 Telegram reaches Switch over a connection Switch opens outwards, so **nothing needs to be publicly reachable**.
 
 **Warning**
 
-Telegram can't create chats. A bot has no way to make a group or a channel, so on Telegram the chat always exists first and Switch adopts it. Switch says so rather than letting you find out from a failure: the connect form disables channel creation, the room forms don't offer it, and an agent asking for a channel is told what to do instead.
+Create the chat in Telegram, then add the bot, and Switch adopts the chat as a room. A Telegram bot can't make a group or a channel, so the connect form disables channel creation, the room forms don't offer it, and an agent that asks for a channel is told what to do instead.
 
 ## Before you begin
 
-- **A Telegram account**, to talk to BotFather.
-- **A username on that account**, not just a phone number. Switch identifies you by your `@username`, so you can't link yourself to it without one.
-- **A Telegram group or channel** you can add a bot to.
-- **An admin account on the Switch server** you're connecting to. If Switch Console set that server up for you, you have one.
+You'll need:
+
+- **A Telegram account, to talk to BotFather.**
+- **A username on that account:** a phone number isn't enough. Switch identifies you by your `@username`, so you can't link yourself without one.
+- **A Telegram group or channel you can add a bot to.**
+- **An admin account on the Switch server you're connecting to:** if Switch Console set up the server for you, you have one.
 
 ## Set up Telegram
 
@@ -29,7 +31,7 @@ Give it a display name — "Agent Switch" is a reasonable choice — and a usern
 
 **Warning**
 
-**Save the token before you do anything else.** BotFather's message is the only time you're shown it — nothing in Telegram displays an existing token again. Save it into your password manager or your deployment's secret store.
+**Save the token before you do anything else.** BotFather shows it once, in this message, and nothing in Telegram displays it again. Save it into your password manager or your deployment's secret store.
 
 The token grants complete control of the bot, so never share it in a chat, ticket, or Switch room.
 
@@ -39,7 +41,7 @@ If you lose it, or expose it, you don't need a new bot. Send `/revoke` to BotFat
 
 In BotFather, send `/mybots`, choose your bot, then **Bot Settings**, then **Group Privacy**, then **Turn off**.
 
-Turn it off so your agents can follow the conversation. Telegram starts every bot in privacy mode, which means the bot only sees messages aimed at it. Everything else said in the chat is invisible to your agents.
+Telegram starts every bot in privacy mode, where it sees only messages aimed at it. Turning it off lets your agents follow the whole conversation.
 
 **Warning**
 
@@ -59,20 +61,20 @@ If there's no **Connect** button, you're signed in to that server without admin 
 
 ### Name the connection
 
-**Name** is how this connection is labeled in Switch Console when you pick it for a room.
+**Name** labels this connection when you pick it for a room in Switch Console.
 
 ### Paste in what BotFather gave you
 
-- **Bot Token** — shaped `<bot id>:<hmac>`.
+- **Bot Token** — shaped `<bot id>:<secret>`.
 - **Bot Username** — with or without the leading `@`. Switch uses it to build links and to spot when the bot itself is tagged.
 
-**Allow creating channels from Switch** is off and can't be turned on, with Telegram named as the reason. That's the platform, not a setting.
+**Allow creating channels from Switch** is off for Telegram and can't be turned on, and the form says why.
 
 ### Connect
 
 Select **Connect**. Switch starts polling Telegram immediately, so a bad token is reported here.
 
-You won't be asked to link your account yet, and that's deliberate — [Link your Telegram account](#link-your-telegram-account-after-youve-posted) says when to come back to it.
+You won't be asked to link your account yet; that's deliberate. [Link your Telegram account](#link-your-telegram-account-after-posting) says when to come back to it.
 
 ## Add the bot to a chat
 
@@ -80,33 +82,31 @@ You won't be asked to link your account yet, and that's deliberate — [Link you
 
 In any Telegram client, open the group, select its title, then **Add Members**, and search for your bot's username.
 
-That's the whole of it. The bot needs no permissions and no admin status — it's a member like anyone else. Telegram tells Switch it was added, Switch creates the room, and the room appears in Switch Console on its own. If the bot can only see messages that tag it, it posts a notice in the group saying so, and how to fix it.
+The bot needs no permissions or admin status. Telegram tells Switch it was added, Switch creates the room, and the room appears in Switch Console on its own. If the bot can see only messages that tag it, it posts a notice in the group saying so and how to fix it.
 
 **Tip**
 
-The Gateway offers a shortcut for this. On the connection's row under **Messaging Apps**, the link icon opens **Add this app to a chat**, with **Add to a Telegram group** — pick a group and confirm. It's shown to admins while the connection is running.
+The Gateway, the server's browser dashboard, offers a shortcut for this. On the connection's row under **Messaging Apps**, the link icon opens **Add this app to a chat**. Select **Add to a Telegram group**, pick a group and confirm. Admins see it while the connection is running.
 
 ### A broadcast channel
 
 A channel isn't a group, and Telegram admits a bot to one as an administrator or not at all. In the channel, open **Administrators**, then **Add Admin**, find the bot, and grant **Post Messages**, **Edit Messages** and **Delete Messages**. Nothing else is needed.
 
-There's deliberately no ready-made link for this. Adding a bot to a channel needs a parameter that not every Telegram client understands, and the ones that don't just open a chat with the bot — which looks exactly like a link that does nothing.
+There's no ready-made link for this, on purpose. It would need a parameter some Telegram clients don't understand, and those just open a chat with the bot, which looks like a link that does nothing.
 
 ### Not a private chat with the bot
 
-Messaging the bot directly never makes a room. Switch replies with guidance on linking a real one and stops there — nothing is provisioned and no agent sees the message.
-
-That's structural, not unfinished. One bot fronts every agent on your server, so a private chat has no way to say which agent you mean — every agent you own would share the one conversation. A group has the handle a private chat lacks: messages are labeled with the agent's name, and typing a name picks out who you're addressing.
+Work with agents in a group or channel. If you message the bot directly, Switch replies with guidance on linking a chat, and no agent sees the message: a private chat with the bot never becomes a room. One bot fronts every agent on your server, so a private chat can't say which agent you mean, while in a group you pick an agent by typing its name.
 
 **For a quiet one-to-one, make a group holding just you and the bot**, and invite the one agent you want. It behaves like a direct message, and the agent is addressable by name.
 
-## Link your Telegram account, after you've posted
+## Link your Telegram account after posting
 
-Switch has to know which Telegram account is you, or an agent set to answer only its owner reads your messages as a stranger's.
+Switch has to know which Telegram account is you, or an agent set to answer only its owner reads your messages as a stranger's. For how linking works in every connected app, see [Link your account, and why it matters](how-connections-work.md#link-your-account-and-why-it-matters).
 
-Telegram gives a bot no directory to search, so Switch can only offer you people it has already seen speak. That's why Switch Console skips the step when you connect and tells you to come back to it.
+Telegram gives a bot no directory to search, so Switch can offer only people it has already seen post. That's why Switch Console skips this step when you connect and tells you to come back to it.
 
-The order that works:
+Do it in this order:
 
 ### Add the bot to a chat
 
@@ -114,20 +114,20 @@ A group or a channel, as above.
 
 ### Send a message in that chat
 
-This is the step that makes you someone Switch has seen. Nothing before it puts you within reach.
+This is what makes you someone Switch has seen.
 
-If the chat is still in mention-only mode, tag the bot in that first message — otherwise it won't reach Switch at all.
+If the chat is still in mention-only mode, tag the bot in that first message, or it won't reach Switch at all.
 
 ### Link yourself in Switch Console
 
 On the server's **Home** page, find the connection under **Messaging apps** and select **Link my account…**. Search for yourself and select **This is me**.
 
-Only people who've posted in a chat the bot can see are listed. The following aren't linked:
+To appear in the search, you need:
 
-- A member who's never spoken.
-- Anyone whose Telegram account has no username, because that's what Switch identifies them by.
+- A message you've posted in a chat the bot can see
+- A username on your Telegram account, which is what Switch identifies you by
 
-In both cases the search comes back empty and doesn't say why.
+If either is missing, the search comes back empty and doesn't say why.
 
 ## Confirm it worked
 
@@ -140,7 +140,7 @@ In both cases the search comes back empty and doesn't say why.
 
 ### Commands
 
-Switch publishes its commands to Telegram every time the connection starts, so typing `/` lists them. There's nothing to set in BotFather — anything set there by hand is overwritten.
+Switch publishes its commands to Telegram every time the connection starts, so typing `/` lists them. There's nothing to set in BotFather; anything set there by hand is overwritten.
 
 Telegram won't accept a hyphen in a registered command, so hyphenated names are published with underscores. All of these reach the same command:
 
@@ -150,9 +150,9 @@ Telegram won't accept a hyphen in a registered command, so hyphenated names are 
 !invite-agent @agent-name
 ```
 
-Only the underscore form appears in the command menu, or renders as something you can tap.
+Only the underscore form appears in the command menu or renders as something you can tap.
 
-Telegram also sends a command the instant you tap it, with no chance to type an argument. So tapping a command that needs one sends it bare, and the bot replies asking for what's missing with the composer already open — answer with just the value and it runs. Typing the whole command at once skips the prompt.
+Telegram sends a command the instant you tap it, so a command that needs an argument goes without one. The bot replies asking for what's missing, with the composer open; answer with just the value and it runs. Typing the whole command at once skips the prompt.
 
 ### Formatting and message length
 
@@ -170,23 +170,21 @@ Incoming files are capped at 20MB. That's a Telegram limit, not a Switch one, an
 
 In forum-enabled supergroups, messages carry a real topic id and threading works properly. Elsewhere Telegram has only reply chains, so a threaded reply is anchored to the message it replies to.
 
-A group that Telegram converts to a supergroup gets a brand new chat id, silently — adding members is enough to trigger it. Switch follows the change, re-points the room, and says so in the chat.
+A group that Telegram converts to a supergroup silently gets a new chat id, and adding members is enough to trigger it. Switch follows the change, re-points the room, and says so in the chat.
 
 A chat with a public username gets an **Open in Telegram** link. A private supergroup uses an address only its members can open, and a basic group has no address at all, so no link is shown for one.
 
 ### Open in Switch Console links
 
-Telegram renders only `http`, `https` and `tg:` addresses, so the link Switch posts is only a real link once the server has a public address configured. Without one, the address is posted as tap-to-copy text instead. The public address is set on the Switch server by the server administrator.
+Telegram renders only `http`, `https` and `tg:` addresses as links, so the link Switch posts works only once the Switch server administrator sets a public address for the server. Without one, the address is posted as tap-to-copy text.
 
 ## Agent names and progress
 
-Agents aren't registered as Telegram users — one bot fronts all of them. So an agent's name is text that happens to be a name: Telegram doesn't complete it, doesn't turn it into a link, and a typo looks exactly like an agent ignoring you. The addressing works; the confirmation you'd expect doesn't, and no setting on the connection changes that.
+To address an agent, type its name. One bot fronts every agent, so Telegram treats the name as plain text: no completion and no link, and a typo looks like an agent ignoring you. No setting on the connection changes that.
 
 ### Agent names don't autocomplete
 
-Telegram's `@` autocomplete offers only real members of the chat, and an agent isn't one. There's no user group or alias a bot can register names in, so this isn't something configuration can fix.
-
-Address an agent by typing its name, and post `!list-agents` to see which names the chat has. The `/` menu is the only autocompleting thing Telegram offers a bot, and it lists commands rather than agents.
+Post `!list-agents` to see which names the chat has, and type the name in full. Telegram's `@` autocomplete offers only real members of the chat, and a bot has nowhere to register agent names. The `/` menu does autocomplete, but it lists commands rather than agents.
 
 ### Knowing an agent is working
 
@@ -198,26 +196,34 @@ Where a chat has reactions switched off, the mark is lost and the turn carries o
 
 **Alongside it, the bot posts a "⚙️ Working on it…" message** and edits it in place as the agent's activity changes, removing it when the turn ends.
 
-## Mention-only chats, and how to repair one
+## Troubleshooting
 
-You'll land here if the bot was added to a chat before Group Privacy was turned off, because Telegram reads that setting when the bot joins.
+### Agents see only messages that tag them
 
-The bot still works, in a reduced way Telegram enforces before anything reaches Switch. What still reaches it: messages that tag it or an agent, replies to something it posted, and `/` commands. Nothing else does, so agents won't follow a discussion nobody addresses them in.
+A chat is mention-only if the bot was added before Group Privacy was turned off, because Telegram reads that setting when the bot joins.
 
-This is disclosed rather than left to be discovered: the bot posts a notice in the chat saying what it can see. Some groups prefer running this way, so it's a supported state rather than a fault.
+The bot still works, in a reduced way Telegram enforces before anything reaches Switch. What still reaches it:
 
-Repair every chat once, or just this one:
+- Messages that tag it or an agent
+- Replies to something it posted
+- `/` commands
+
+Nothing else does, so agents won't follow a discussion nobody addresses them in.
+
+The bot posts a notice in the chat saying what it can see. Some groups prefer running this way, so it's a supported state, not a fault.
+
+To repair it:
 
 - **Fix every chat, once.** Turn Group Privacy off in BotFather, then remove the bot from each affected chat and add it back.
-- **Fix this chat, now.** Make the bot an administrator of it. No particular right is needed — admin status alone is the exemption. If it's a basic group, Telegram converts it to a supergroup and issues a new chat id at that moment. That's expected and there's nothing to do: the room follows the new id and says so in the chat.
+- **Fix this chat, now.** Make the bot an administrator of it. No particular right is needed; admin status alone exempts it. If it's a basic group, Telegram converts it to a supergroup with a new chat id. There's nothing to do: the room follows the new id and says so in the chat.
 
 Either way the bot confirms in the chat that it can now see the conversation.
 
-## Run one bridge per bot
+### Messages from people arrive intermittently or not at all
 
-Telegram hands each message to **one** polling caller and rejects the rest. Two processes sharing a bot token therefore split the incoming messages between them at random, and the symptom is confusing: agents still post fine, but messages from people arrive intermittently or not at all.
+Telegram hands each message to **one** polling caller and rejects the rest. Two processes sharing a bot token split incoming messages between them at random. Agents still post fine; only incoming messages are affected.
 
-So:
+To fix it:
 
 - **Don't run the Switch server with more than one replica** while a Telegram connection is configured on it.
 - **Give each environment its own bot.** A development deployment and a production deployment on one token steal each other's messages. Make a second bot in BotFather.
@@ -229,4 +235,4 @@ Switch logs an error naming this when Telegram reports the conflict, so check th
 
 - [Create a room](../../getting-started/create-a-room.md) — Make the chat in Telegram, add the bot, and it becomes a room
 
-- [Onboard your agents](../../getting-started/onboard-your-agents.md) — Register an agent with the server so you can invite it into the room
+- [Onboard agents](../../getting-started/onboard-your-agents.md) — Register an agent with the server so you can invite it into the room

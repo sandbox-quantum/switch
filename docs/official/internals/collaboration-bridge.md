@@ -1,14 +1,14 @@
 # The collaboration bridge
 
-_How Switch relays a messaging app into a Matrix room, and the contract you implement to add one it doesn't support_
+_How Switch relays a messaging app into a Switch room, and the contract you implement to add one it doesn't support_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/collaboration-bridge> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/collaboration-bridge> — link readers there, not to this file.
 
-The collaboration bridge relays an external chat platform into a Matrix room, in both directions. One adapter per platform.
+The collaboration bridge relays an external chat platform into a Switch room, in both directions. One adapter per platform.
 
 A Switch room maps to one channel on the far side. The mapping is a database row, not a runtime association, so it survives a restart.
 
-The bridge is itself a Matrix participant: it has a client, it joins rooms, and it sees only what happens after it joins.
+The bridge is itself a participant: it has a client, it joins rooms, and it sees only what happens after it joins.
 
 ## Adapters that exist
 
@@ -65,7 +65,7 @@ async def delete_message(self, channel_id: str, message_ref: str) -> None: ...
 async def send_typing(self, channel_id: str, sender_name: str, is_typing: bool) -> None: ...
 ```
 
-`send_message` returns the platform's own id for the post. Return it — the bridge core stores it against the Matrix event id, and threading, edits and deletes all resolve through that pair.
+`send_message` returns the platform's own id for the post. Return it — the bridge core stores it against the Switch event id, and threading, edits and deletes all resolve through that pair.
 
 `sender_name` is the agent whose voice the message goes out in. Render it however the platform allows: a per-agent identity, a display-name override, a prefix.
 
@@ -145,13 +145,13 @@ Everything an adapter hands back through the callbacks is a platform-neutral Pyd
 
 Supporting models: `Attachment`, `OutboundAttachment`, `AttachmentFailure`, `DirectoryUser`.
 
-**There is no outbound message model.** Outbound is a Matrix event handed to the bridge core, which passes primitives to `send_message`.
+**There is no outbound message model.** Outbound is a room event handed to the bridge core, which passes primitives to `send_message`.
 
 ## Puppeting
 
-A **puppet** is a Matrix account that stands in for one external person. The bridge core keeps a map from external user id to puppet client id.
+A **puppet** is a client that stands in for one external person. The bridge core keeps a map from external user id to puppet client id.
 
-On an inbound message the core looks up or creates the puppet, waits for it to be ready, invites it to the Matrix room, waits for the join to land, and only then sends.
+On an inbound message the core looks up or creates the puppet, waits for it to be ready, invites it to the Switch room, waits for the join to land, and only then sends.
 
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '13px'}}}%%
@@ -161,16 +161,16 @@ sequenceDiagram
   participant A as Adapter
   participant B as Bridge core
   participant P as Puppet client
-  participant M as Matrix room
+  participant R as Switch room
   U->>A: platform message event
   A->>A: normalize into InboundMessage
   A->>B: on_message
   B->>B: resolve channel to room
   B->>P: look up or create puppet
-  B->>M: invite puppet
-  M-->>B: join lands
-  Note over B,M: a client ignores events predating its own join — an early send is dropped silently
-  P->>M: post message
+  B->>R: invite puppet
+  R-->>B: join lands
+  Note over B,R: a client ignores events predating its own join — an early send is dropped silently
+  P->>R: post message
 ```
 
 Puppet creation is guarded by a per-user lock with a double-check inside it, because two messages from the same new person can arrive close together.
@@ -179,15 +179,15 @@ The core refuses to puppet a name belonging to a registered bridged agent, so an
 
 ## Loop prevention
 
-The outbound path skips any Matrix event whose sender is a known puppet.
+The outbound path skips any event whose sender is a known puppet.
 
 A message that arrived from Slack entered the room as a puppet, so it is never relayed back to Slack. Agents and other Switch participants have non-puppet senders and go out normally.
 
 ## Threads, edits and deletes
 
-A durable table maps Matrix event ids to external post ids. It is written in both directions, with a uniqueness constraint on each side, so either id resolves the other.
+A durable table maps Switch event ids to external post ids. It is written in both directions, with a uniqueness constraint on each side, so either id resolves the other.
 
-- **Threading.** A Matrix reply carries the event id it replies to. The map turns that into the platform's thread root, and the reply lands in the thread.
+- **Threading.** A reply carries the event id it replies to. The map turns that into the platform's thread root, and the reply lands in the thread.
 - **Edits and deletes.** The bridge looks up the external post id and calls `update_message` or `delete_message` against it, however long after the fact.
 
 ```mermaid
@@ -195,12 +195,12 @@ A durable table maps Matrix event ids to external post ids. It is written in bot
 sequenceDiagram
   autonumber
   participant G as Agent
-  participant M as Matrix room
+  participant R as Switch room
   participant C as Bridge client
   participant B as Bridge core
   participant A as Adapter
-  G->>M: post message
-  M->>C: room event
+  G->>R: post message
+  R->>C: room event
   C->>B: hand off event
   B->>B: sender is not a known puppet
   B->>B: look up external post id in the message map
@@ -221,7 +221,7 @@ What differs per platform is only how a person reaches them.
 
 | Front door | Mechanism |
 |---|---|
-| Bang form, `!help` | Recognized inbound and bridged into Matrix as a `com.switch.command` event |
+| Bang form, `!help` | Recognized inbound and bridged into the room as a `com.switch.command` event |
 | Discord slash commands | Generated from the registry; each declared argument becomes a Discord option, reassembled into the positional form the handlers already parse |
 | Telegram command menu | Published from the registry, so the menu can't drift from what's implemented |
 
@@ -234,5 +234,3 @@ The bang form works with no adapter effort. Generating a native command surface 
 ## Next steps
 
 - [Life of a message](life-of-a-message.md) — One message from a channel to an agent and back, hop by hop
-
-- [The Matrix substrate](matrix-substrate.md) — Participants as clients, sync and resume, and the custom events Switch layers on

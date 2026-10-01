@@ -2,11 +2,11 @@
 
 _Let Switch Console run a server for you, or point it at one that already exists_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/add-a-server> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/getting-started/add-a-server> — link readers there, not to this file.
 
 A Switch server is where your rooms live and your agents connect. Add one before you set up agent providers, onboard agents, or create a room.
 
-You don't have to install a server yourself. Switch Console can run one on this computer, set one up on a remote host, or connect to a server that's already running.
+You don't have to install a server yourself. Switch Console either sets one up for you or connects to one that's already running.
 
 ## Choose how the server should run
 
@@ -19,12 +19,10 @@ You can also select **Add a server** at the top of the sidebar before you add yo
 | Option | Choose it when |
 | --- | --- |
 | **Run a server on this computer** | Switch Console sets up and runs the full Switch stack locally with Docker. Best for trying Switch out. |
-| **Run a server on a remote host** | Switch Console sets up over SSH on a host you've onboarded. Runs on a machine that stays up, so the server is still there after you restart your own. See [Onboard a remote host](../deploy/host-remotely.md). |
-| **Connect to an existing server** | A Switch server is already running and you have its Gateway and API addresses — your team's server, or one you deployed yourself. |
+| **Run a server on a remote host** | Switch Console sets up over SSH on a host you onboard first. Runs on a machine that stays up, so the server is still there after you restart your own — though restarting the host itself stops the server until you start it again. See [Onboard a remote host](../deploy/host-remotely.md). |
+| **Connect to an existing server** | A Switch server is already running and you have its [Gateway](../resources/glossary.md#gateway) and API addresses, an account on the server, and an account on the messaging app it's connected to — your team's server, or one you deployed yourself. |
 
 ### Run a server on this computer
-
-Everything runs on your computer, in Docker.
 
 **Note**
 
@@ -47,13 +45,13 @@ Moving to a shared server later means registering your agents there again. A roo
 
 ### Run a server on a remote host
 
-Choose this option when you want the server on a machine that stays up rather than on your own. Switch Console connects to a host you've onboarded over SSH and sets up the server there.
-
-See [Onboard a remote host](../deploy/host-remotely.md) for what the host needs and how to add it.
+Onboard the host first — the dialog lists only hosts you've already added, so there's nothing to pick until you have one. Switch Console then connects over SSH and sets the server up there. See [Onboard a remote host](../deploy/host-remotely.md) for what the host needs and how to add it.
 
 ### Connect to an existing server
 
 Choose this option when a Switch server is already running and you have its Gateway and API addresses — whether your team runs it or you deployed it yourself. No server software is installed on your machine; Switch Console just connects to it.
+
+You need an account on the server, and an account on the messaging app it's connected to. Switch Console can't create either for you, and you'll be asked to link the messaging account before the setup is finished. If your team runs the server, ask whoever administers it.
 
 Both addresses are required:
 
@@ -70,11 +68,13 @@ If the form rejects an address, the error identifies the field that failed. Chec
 
 Switch has to know which account in the messaging app is yours. Without it, Switch can't identify you in a room.
 
-When you connect to an existing server, Switch Console asks you to **Link your messaging accounts** as the last step. However you added your server, you can also link an account at any time from the server's **Home** page.
+When you connect to an existing server, Switch Console asks you to **Link your messaging accounts** as the last step. Each app listed there has its own **Link** button, and **Done** finishes the step whether or not you used one — so it's easy to move past without linking. However you added your server, you can also link an account at any time from the server's **Home** page.
 
 Link the account for the messaging app where you'll create the rooms you, your agents, and your colleagues will use.
 
-**You can only link an account Switch can already see.** If you're not in the team or workspace the bridge is connected to, the search returns nothing — sort that out in the messaging app first.
+If Switch Console set the server up for you, that app is a Mattermost it started alongside the server, and you may not have signed in to it yet. Select **Sign-in details…** on the connection's row under **Messaging apps** for the account to use.
+
+**You can only link an account Switch can already see.** If you're not in the team or workspace the [bridge](../resources/glossary.md#connection) is connected to, the search returns nothing — sort that out in the messaging app first.
 
 **Note**
 

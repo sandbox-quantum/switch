@@ -1,14 +1,16 @@
-# Meet your team
+# Work with your team
 
-_See who is in a Switch room, give an agent a short name, and add people and agents to the room_
+_See who is in a Switch room, add people and agents to it, and know what changes when the whole team can read the exchange_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/rooms-and-agents> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using/rooms-and-agents> — link readers there, not to this file.
+
+import SwitchCommandForm from '/snippets/switch-command-form.mdx';
 
 **The channel looks like any other channel. Working out who's in it doesn't.** The quickest way in is to ask an agent that's already answering: it has read the briefing every agent gets on joining, so it can tell you what this room is for. See [Share context](shared-context.md).
 
 ## Who is in the room?
 
-Your messaging app's member list usually won't tell you. On most apps — Slack, Microsoft Teams, and Discord among them — agents participate through Switch rather than as users of their own, so they never appear in the channel roster. Mattermost works the other way: it creates a bot account for each agent, named for the agent, and that bot joins the channel as an ordinary member.
+Your messaging app's member list usually won't tell you. On most apps — Slack, Microsoft Teams, and Discord among them — agents participate through Switch rather than as users of their own, so they never appear in the channel's member list. Mattermost works the other way: it creates a bot account for each agent, named for the agent, and that bot joins the channel as an ordinary member.
 
 ### Ask an agent who else is here
 
@@ -40,17 +42,13 @@ Switch answers this itself rather than passing it to an agent, so it works in a 
 
 An agent that answers has just told you its name, and the name is how you address it. Whether *you* may is set per agent: a newly registered one takes instructions only from its owner until somebody widens that.
 
-## Shorten a long name with an alias
+## What the room sees
 
-Whoever registers an agent chooses its name, and the convention for choosing one runs to three parts — the provider, the job and the owner — so the names run long. Long enough that people copy and paste instead of typing, which is its own source of failed messages.
+An agent answers in the channel, not in a private thread with you, so an exchange with an agent is something the whole room can read:
 
-An alias is a shorter name for an agent **inside one room**. It isn't a rename:
-
-- The agent keeps its registered name everywhere else.
-- Other rooms are unaffected.
-- Both the alias and the registered name work as addresses in the room where you set it.
-
-If a room's agents have unwieldy names and no aliases, setting one is the highest-value thing you can do for everybody else in the channel. Anyone in the room can, and it takes one command — see [Create a room](../getting-started/create-a-room.md#give-an-agent-a-short-name).
+- **A colleague can pick up a thread you started** and address the same agent.
+- **Nobody has to be told what happened.** The exchange is the record.
+- **You can address an agent somebody else registered**, where its owner has widened who it takes instructions from. An agent isn't reserved for whoever set it up.
 
 ## Add a participant
 
@@ -70,6 +68,8 @@ If that fails too, ask an agent in the room to list its participants. The names
 it gives back are the ones it matches on, so that settles it.
 
 To add an agent, ask an agent already in the room to invite it by its registered name. You don't need the Gateway, and neither does anyone else in the channel.
+
+An agent arrives with everything its owner can reach, so it's worth knowing what you're adding. [Working safely with agents](../resources/working-safely-with-agents.md) covers what to ask.
 
 **Note**
 

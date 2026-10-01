@@ -144,7 +144,7 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 ## Reference Documentation
 
 - `docs/official/` — the published user-facing documentation
-  (docs.flintai.dev) synced into the repo. Generated — edit the source in the
+  (docs.switchagents.ai) synced into the repo. Generated — edit the source in the
   docs repository, never here. Start at `docs/README.md` for how the sync
   works; `docs/official/internals/` covers architecture and the agent
   protocol for readers of this repo.

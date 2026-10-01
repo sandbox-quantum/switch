@@ -2,7 +2,7 @@
 
 _The desktop app that starts agent sessions on demand, holds their local state, and reports what they can be told to do_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/switch-console> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/switch-console> — link readers there, not to this file.
 
 Switch Console is the desktop app that runs agent sessions on the machine those agents live on. It watches for room activity addressed to an agent it manages, and starts a session when that agent has no live one. That is what lets a mention in Slack reach a working agent with nobody having opened Console first.
 
@@ -18,9 +18,9 @@ Console is an Electron app, developed in a monorepo alongside the rest of Switch
 | **Preload** | A context bridge exposing a narrow, explicit API to the renderer |
 | **Renderer** | The React UI |
 | **Shared** | The agent provider registry and the types both sides agree on |
-| **Sidecar** | A headless process on a remote host, not an Electron one |
+| **Sidecar** | A headless on-host process, not an Electron one |
 
-The sidecar exists because Console is a window on a laptop and laptops close. Work that has to outlive the app runs in a process on the remote host that doesn't depend on Electron being alive. It is a remote mechanism only: a local agent is never given one.
+The sidecar exists because Console is a window on a laptop and laptops close. Work that has to outlive the app runs in a process on the host that doesn't depend on Electron being alive.
 
 ## Its own database
 
@@ -56,19 +56,15 @@ sequenceDiagram
   S->>P: reply reaches Slack
 ```
 
-The watcher holds the agent's event stream and claims the room the message arrived in for the session it started; that session reaches Switch through the MCP tools its own host serves, which the watcher runs over HTTP. [Sessions and the runtime](connectors-and-runtime.md) covers the details.
+The watcher holds the agent's event stream and claims the room the message arrived in for the session it started. That session reaches Switch through the MCP tools its own host serves, which the watcher runs over HTTP. [Sessions and the runtime](connectors-and-runtime.md) covers the details.
 
-### One implementation, two process trees
+### A separate implementation per host
 
-On-demand start is one implementation for both local and remote agents. What differs is where the watcher runs and what its process tree hangs off — and that difference is deliberate, not an accident of history.
+The sidecar carries its own implementation of on-demand start for remote hosts. Local and remote are independent implementations of one behavior.
 
-**Local.** The watcher runs inside the Console process, and Console supervises the session it starts. Quitting Console stops the watcher and its sessions with it. Nothing is left detached and no sidecar is deployed, so a local agent does not answer while Console is closed. That is the intended behavior: the machine the agent lives on is the machine Console is on, and a process quietly surviving on someone's own laptop is a surprise, not a feature.
+Fixing on-demand start in Console does not fix it on a remote host. A difference in behavior between a local agent and a hosted one is a plausible symptom of the pair drifting apart, so treat a change to either as an open question about the other.
 
-**Remote.** The watcher runs in the sidecar on the SSH host. Console deploys and manages it but is not in its process tree and is not required for it to run, which is the whole point — a remote agent keeps working with Console closed.
-
-In both cases the agent's own CLI is a separate process: the provider SDKs launch it and talk to it, so there is always at least one process per running agent whatever the design. What moves between the two shapes is the watcher and the supervision around it.
-
-An agent that didn't answer is usually a question about the machine. The server did its part when the message was addressed. What happens next needs Console open beside a local agent, or a sidecar alive beside a remote one, configured to start sessions for it.
+An agent that didn't answer is usually a question about the machine. The server did its part when the message was addressed. What happens next needs a Console or a sidecar alive beside the agent, configured to start sessions for it.
 
 ## Binding a session to a room
 
@@ -130,9 +126,9 @@ The remote lifecycle is documented in full on [Onboard a remote host](../deploy/
 
 - A host reboot stops both the server and the agent listener on it.
 - Nothing declares a restart policy and nothing registers a service unit.
-- Launching Console again is what brings the agent back.
+- Console starts the listener again when it reaches the host: at launch, or when a host it was watching comes back. The server stays down until someone starts it.
 
-Your own machine closing is fine — that is what the sidecar is for. The host restarting is not, and nothing in the product today makes it self-healing.
+Your own machine closing is fine — that is what the sidecar is for. The host restarting is not, and while Console is closed nothing brings the listener back.
 
 ## Next steps
 
