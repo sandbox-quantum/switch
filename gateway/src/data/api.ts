@@ -141,6 +141,15 @@ export interface BridgeDetail {
   install_links?: BridgeInstallLink[];
   // What those links do not cover — chats that have to be joined by hand.
   install_note?: string | null;
+  // Something only the platform's side can fix, found while the bridge runs —
+  // an approval withdrawn, the app blocked by the organisation's admin — in
+  // plain words for a banner on the connection. Null while nothing is known
+  // to be wrong, or the bridge is not running.
+  attention: string | null;
+  // Whether the workspace chooses, here, which of the platform's teams the
+  // connection's app is in (the distributed Teams app). False while the
+  // bridge is not running.
+  team_placement_supported: boolean;
 }
 
 export interface ExternalUserSummary {
@@ -266,6 +275,22 @@ async function jsonRequest<T>(
     );
   }
   return (await res.json()) as T;
+}
+
+// For a mutation whose success response carries no body (204 No Content):
+// `jsonRequest` would fail calling `.json()` on it, so this skips that parse
+// on success and only reads a body back on failure, where FastAPI puts one.
+async function noContentRequest(path: string, method: string): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, { method, credentials: "include" });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null);
+    const detail = payload?.detail ?? null;
+    throw new ApiError(
+      res.status,
+      detail,
+      errorText(detail, `${res.status} ${res.statusText}`),
+    );
+  }
 }
 
 export async function fetchRooms(
@@ -853,6 +878,10 @@ export async function deleteBridge(bridgeId: string): Promise<{ ok: boolean }> {
 export interface BridgeUpdateInput {
   agent_greetings_enabled?: boolean;
   channel_creation_enabled?: boolean;
+  // Merged over the stored config, not substituted for it. Used to set the
+  // distributed Teams app's default team — see `updateBridge`'s callers in
+  // the Teams placements panel.
+  connection_config?: Record<string, unknown>;
 }
 
 export async function updateBridge(
@@ -864,6 +893,76 @@ export async function updateBridge(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
+}
+
+// ── Teams placements ─────────────────────────────────────────────────────────
+//
+// Which of the organisation's teams the distributed Teams app is in. Chosen
+// from the connection once a Microsoft admin has approved the app — see
+// `BridgeDetail.team_placement_supported`. Every call here is refused (404)
+// for a bridge that is not a running connection on that app.
+
+export interface TeamPlacement {
+  team_id: string;
+  name: string;
+  has_switch: boolean;
+  is_default: boolean;
+}
+
+export interface TeamPlacements {
+  teams: TeamPlacement[];
+  default_team_id: string | null;
+  // Whether the app is in the organisation's catalogue yet, which adding it
+  // to a team needs. `catalog_problem` says why when it is not, and the
+  // package can be downloaded for a Teams admin to upload by hand.
+  in_catalog: boolean;
+  catalog_problem: string | null;
+}
+
+// Throws, carrying the server's own words: a 404 means this connection is not
+// on the distributed app, 409 that it is not running right now, and 502 that
+// Microsoft refused the call — all of them are read by the panel rather than
+// collapsed into a boolean.
+export async function fetchTeamPlacements(bridgeId: string): Promise<TeamPlacements> {
+  return jsonRequest<TeamPlacements>(`/collaborations/${bridgeId}/teams`, "GET");
+}
+
+export async function addBridgeToTeam(bridgeId: string, teamId: string): Promise<void> {
+  return noContentRequest(
+    `/collaborations/${bridgeId}/teams/${encodeURIComponent(teamId)}`,
+    "POST",
+  );
+}
+
+export async function removeBridgeFromTeam(
+  bridgeId: string,
+  teamId: string,
+): Promise<void> {
+  return noContentRequest(
+    `/collaborations/${bridgeId}/teams/${encodeURIComponent(teamId)}`,
+    "DELETE",
+  );
+}
+
+export interface DownloadedFile {
+  blob: Blob;
+  filename: string;
+}
+
+// The app package for a Teams admin to upload by hand, when the app is not in
+// the organisation's catalogue yet. Fetched (rather than a plain link) so the
+// panel can keep the admin on the page and report a failure in place, the
+// same way `exportRoomYaml` does for a text download.
+export async function fetchTeamsAppPackage(bridgeId: string): Promise<DownloadedFile> {
+  const res = await fetch(`${BASE}/collaborations/${bridgeId}/teams-package`, {
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null);
+    throw new Error(errorText(payload?.detail, `${res.status} ${res.statusText}`));
+  }
+  const match = res.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/);
+  return { blob: await res.blob(), filename: match?.[1] ?? "switch-teams-app.zip" };
 }
 
 // ── Installed apps ───────────────────────────────────────────────────────────

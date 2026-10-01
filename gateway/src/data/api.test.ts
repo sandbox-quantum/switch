@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, errorText, fetchSession } from "./api";
+import {
+  ApiError,
+  addBridgeToTeam,
+  errorText,
+  fetchSession,
+  fetchTeamPlacements,
+  fetchTeamsAppPackage,
+  removeBridgeFromTeam,
+} from "./api";
 
 describe("errorText", () => {
   it("returns a string detail as is", () => {
@@ -49,5 +57,97 @@ describe("fetchSession", () => {
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(500);
     expect((err as ApiError).message).toBe("boom");
+  });
+});
+
+describe("fetchTeamPlacements", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("returns the organisation's teams", async () => {
+    respond(200, {
+      teams: [{ team_id: "t1", name: "Engineering", has_switch: true, is_default: true }],
+      default_team_id: "t1",
+      in_catalog: true,
+      catalog_problem: null,
+    });
+    const result = await fetchTeamPlacements("b1");
+    expect(result.teams).toHaveLength(1);
+    expect(result.default_team_id).toBe("t1");
+  });
+
+  it("throws the server's own words on a connection that is not running", async () => {
+    respond(409, { detail: "The Teams connection is not running; try again in a moment." });
+    const err = await fetchTeamPlacements("b1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(409);
+    expect((err as ApiError).message).toBe(
+      "The Teams connection is not running; try again in a moment.",
+    );
+  });
+});
+
+describe("addBridgeToTeam / removeBridgeFromTeam", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts to the team's id and resolves on 204", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await addBridgeToTeam("b1", "t2");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/collaborations/b1/teams/t2");
+    expect(init.method).toBe("POST");
+  });
+
+  it("throws the catalogue problem when the app cannot be added yet", async () => {
+    respond(409, {
+      detail: "Switch is not in your organisation's Teams app list yet.",
+    });
+    const err = await addBridgeToTeam("b1", "t2").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).message).toBe(
+      "Switch is not in your organisation's Teams app list yet.",
+    );
+  });
+
+  it("deletes to remove Switch from a team", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await removeBridgeFromTeam("b1", "t1");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/collaborations/b1/teams/t1");
+    expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("fetchTeamsAppPackage", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reads the filename off Content-Disposition", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Blob(["zip bytes"]), {
+            status: 200,
+            headers: {
+              "Content-Disposition": 'attachment; filename="switch-teams-1.0.0.zip"',
+            },
+          }),
+      ),
+    );
+    const result = await fetchTeamsAppPackage("b1");
+    expect(result.filename).toBe("switch-teams-1.0.0.zip");
+    expect(result.blob).toBeInstanceOf(Blob);
+  });
+
+  it("throws with the server's detail on failure", async () => {
+    respond(404, { detail: "This deployment has no distributed Teams app." });
+    await expect(fetchTeamsAppPackage("b1")).rejects.toThrow(
+      "This deployment has no distributed Teams app.",
+    );
   });
 });
