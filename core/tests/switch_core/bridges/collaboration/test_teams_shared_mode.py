@@ -834,3 +834,25 @@ async def test_a_bring_your_own_bridge_does_not_place_itself() -> None:
     assert not adapter.places_app_in_teams
     with pytest.raises(BridgeOperationError):
         await adapter.list_team_placements()
+
+
+def test_before_any_activity_a_shared_bridge_posts_through_microsofts_global_endpoint() -> (
+    None
+):
+    adapter = _shared_adapter()
+    assert adapter._service_url_for(CHANNEL) == "https://smba.trafficmanager.net/teams/"
+
+
+def test_a_bring_your_own_bridge_still_waits_to_learn_its_endpoint() -> None:
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="a",
+            app_password="p",
+            tenant_id="t",
+            team_id="team",
+            public_base_url="https://x.example",
+            client_state="s",
+        )
+    )
+    with pytest.raises(RuntimeError, match="serviceUrl"):
+        adapter._service_url_for(CHANNEL)

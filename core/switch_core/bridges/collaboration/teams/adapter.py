@@ -473,6 +473,7 @@ _BOT_DISABLED_NOTICE_SECONDS = 60 * 60
 # is: enough to answer a large organisation in seconds, few enough that one
 # request does not spend the organisation's Graph budget on its own.
 _TEAM_READS_AT_ONCE = 8
+_GLOBAL_SERVICE_URL = "https://smba.trafficmanager.net/teams/"
 # How soon, and how rarely, to re-attempt a channel that has no live
 # subscription. The floor is short because the common failure clears in about a
 # minute (a load balancer registering a newly-started pod); the ceiling keeps a
@@ -1438,6 +1439,12 @@ class TeamsAdapter(CollaborationAdapter):
 
     def _service_url_for(self, channel_id: str) -> str:
         url = self._service_url.get(channel_id) or self._default_service_url
+        if not url and self._me.shared:
+            # Microsoft's documented global endpoint for a proactive message
+            # sent before any activity has named a regional one — which on the
+            # distributed app is a channel created from Switch straight after
+            # an organisation approved it.
+            url = _GLOBAL_SERVICE_URL
         if not url:
             raise RuntimeError(
                 f"no Bot Connector serviceUrl known for channel {channel_id} — "
