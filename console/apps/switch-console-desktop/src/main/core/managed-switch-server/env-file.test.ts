@@ -31,6 +31,7 @@ describe('buildEnvFile', () => {
     ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
     secrets,
     telemetryEnabled: false,
+    telemetryEnvironment: 'prod',
   });
   const vars = Object.fromEntries(
     env
@@ -151,8 +152,26 @@ describe('buildEnvFile', () => {
       ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
       secrets,
       telemetryEnabled: true,
+      telemetryEnvironment: 'prod',
     });
     expect(sharing).toContain('TELEMETRY_ENABLED=true');
+  });
+
+  it('tells the server which Amplitude project its usage belongs in', () => {
+    // The relay files each event under the project its environment names, so a
+    // server a development build runs must say so as plainly as the app does.
+    const fromDevBuild = buildEnvFile({
+      version: '1.2.3',
+      registry: 'ghcr.io',
+      namespace: 'sandbox-quantum',
+      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      secrets,
+      telemetryEnabled: true,
+      telemetryEnvironment: 'local',
+    });
+
+    expect(fromDevBuild).toContain('TELEMETRY_ENVIRONMENT=local');
+    expect(vars.TELEMETRY_ENVIRONMENT).toBe('prod');
   });
 
   it('is the only thing the compose file needs to forward the gate', () => {
@@ -180,6 +199,7 @@ describe('readStackEnv', () => {
     ports,
     secrets,
     telemetryEnabled: true,
+    telemetryEnvironment: 'prod',
   });
 
   it('reads back exactly what buildEnvFile wrote', () => {
@@ -292,6 +312,7 @@ describe('keysDisagreeing', () => {
     ports,
     secrets,
     telemetryEnabled: true,
+    telemetryEnvironment: 'prod',
   });
 
   it('finds nothing wrong with a copy of the same settings', () => {
