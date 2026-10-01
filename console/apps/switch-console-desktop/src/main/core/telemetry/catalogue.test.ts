@@ -117,6 +117,26 @@ describe('the catalogue as a whole', () => {
     expect(recordOf(payload).attributes.length).toBeLessThanOrEqual(100);
   });
 
+  it.each(EVENT_NAMES)('sends %s well under the event size the relay drops at', (name) => {
+    // The relay drops any Amplitude event whose JSON is over 32 KiB, and still
+    // answers 200. Every string here is longer than any value the catalogue
+    // allows, and the OTLP attributes wrap each value in more JSON than the
+    // Amplitude event does, so this over-counts.
+    const largest = Object.fromEntries(
+      Object.entries(sampleEvent(name)).map(([key, value]) => [
+        key,
+        typeof value === 'string'
+          ? 'x'.repeat(256)
+          : typeof value === 'number'
+            ? -123456789012345.67
+            : false,
+      ])
+    );
+    const payload = buildOtlpPayload(name, largest as never, CONTEXT);
+
+    expect(JSON.stringify(recordOf(payload).attributes).length).toBeLessThanOrEqual(16384);
+  });
+
   it.each(EVENT_NAMES)('refuses to send %s with a property missing', (name) => {
     const properties = sampleEvent(name);
     const declared = TELEMETRY_EVENT_PROPERTIES[name];
