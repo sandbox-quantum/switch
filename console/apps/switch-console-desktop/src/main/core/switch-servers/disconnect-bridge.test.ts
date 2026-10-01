@@ -51,7 +51,7 @@ const INSTALL = {
   platform: 'teams',
   external_workspace_id: 'tenant-1',
   status: 'active',
-  scopes: [],
+  scopes: '',
   bridge_id: 'b1',
   installed_at: '2026-01-01T00:00:00Z',
   ended_at: null,
@@ -194,8 +194,11 @@ describe('disconnectBridgeOnServer', () => {
       return response(502, { detail: 'Slack refused to revoke the token' });
     });
 
-    await expect(disconnectBridgeOnServer(SERVER, 'b1')).resolves.toMatchObject({
+    // The server's own sentence (`detail`), not the raw
+    // "Switch gateway returned 502: {...}" status-line message.
+    await expect(disconnectBridgeOnServer(SERVER, 'b1')).resolves.toEqual({
       kind: 'error',
+      message: 'Slack refused to revoke the token',
     });
   });
 });
@@ -226,5 +229,10 @@ describe('bridgeInstallState', () => {
   it('says it does not know when it could not ask', async () => {
     fetchMock.mockImplementation(async () => response(403, { detail: 'admins only' }));
     await expect(bridgeInstallState(SERVER, 'b1')).resolves.toBe('unknown');
+  });
+
+  it('rethrows a server fault rather than flattening it into "unknown"', async () => {
+    fetchMock.mockImplementation(async () => response(500, 'Internal Server Error'));
+    await expect(bridgeInstallState(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
   });
 });

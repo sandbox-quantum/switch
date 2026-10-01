@@ -1424,7 +1424,7 @@ type MessagingAppInstallJson = {
   platform: string;
   external_workspace_id: string;
   status: string;
-  scopes: string[];
+  scopes: string;
   bridge_id: string | null;
   installed_at: string;
   ended_at: string | null;

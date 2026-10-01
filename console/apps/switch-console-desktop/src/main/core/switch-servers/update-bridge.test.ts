@@ -143,6 +143,53 @@ describe('updateBridgeOnServer', () => {
     });
   });
 
+  it('reports a rejected default-team choice as invalid, with the server’s own sentence', async () => {
+    // Setting a default team that Switch is not in, or that does not exist,
+    // comes back 422 from the PATCH.
+    fetchMock.mockResolvedValue(
+      response(422, {
+        detail: 'Switch is not in that team. Add it to the team first, then make it the default.',
+      })
+    );
+
+    await expect(
+      updateBridgeOnServer(SERVER, { ...PARAMS, connectionConfig: { team_id: 't2' } })
+    ).resolves.toEqual({
+      kind: 'invalid',
+      message: 'Switch is not in that team. Add it to the team first, then make it the default.',
+    });
+  });
+
+  it('reports a stopped bridge’s refusal to check a default-team change, not a thrown error', async () => {
+    fetchMock.mockResolvedValue(
+      response(409, {
+        detail:
+          'The connection is not running, so Switch cannot check this change with the platform; try again in a moment.',
+      })
+    );
+
+    await expect(
+      updateBridgeOnServer(SERVER, { ...PARAMS, connectionConfig: { team_id: 't2' } })
+    ).resolves.toEqual({
+      kind: 'error',
+      message:
+        'The connection is not running, so Switch cannot check this change with the platform; try again in a moment.',
+    });
+  });
+
+  it('reports Microsoft Graph’s own refusal of a default-team change, not a thrown error', async () => {
+    fetchMock.mockResolvedValue(
+      response(502, { detail: 'Microsoft could not be asked whether Switch is in team t2' })
+    );
+
+    await expect(
+      updateBridgeOnServer(SERVER, { ...PARAMS, connectionConfig: { team_id: 't2' } })
+    ).resolves.toEqual({
+      kind: 'error',
+      message: 'Microsoft could not be asked whether Switch is in team t2',
+    });
+  });
+
   it('surfaces an unreachable gateway rather than failing silently', async () => {
     fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 

@@ -894,7 +894,9 @@ export type MessagingAppInstall = {
   platform: string;
   externalWorkspaceId: string;
   status: string;
-  scopes: string[];
+  /** The platform's own spelling of what was granted, kept verbatim — the
+   * server stores and sends it as one string, not a list Switch parses. */
+  scopes: string;
   /** The bridge this install backs, or null if none was ever created (or it
    * was deleted without ending the install, leaving the install orphaned). */
   bridgeId: string | null;

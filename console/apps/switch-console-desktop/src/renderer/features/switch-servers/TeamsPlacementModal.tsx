@@ -105,7 +105,11 @@ export const TeamsPlacementModal = observer(function TeamsPlacementModal({
         setActionError(removeTeamFailureText(result));
         return;
       }
-      await refresh();
+      // Removing Switch from the connection's current default team clears the
+      // default and turns channel creation off on the server, restarting the
+      // bridge — the same side effect making a team the default has, so the
+      // bridge list needs the same refresh.
+      await Promise.all([refresh(), refreshBridges()]);
     } catch (cause) {
       setActionError(failureText(cause, `Could not remove Switch from ${team.name}.`));
     } finally {
@@ -181,7 +185,13 @@ export const TeamsPlacementModal = observer(function TeamsPlacementModal({
         </div>
       </DialogContentArea>
       <DialogFooter>
-        <Button variant="outline" onClick={onClose}>
+        {/* An add/remove/make-default or package save in flight has its own
+          error to show on failure; closing mid-request would lose it. */}
+        <Button
+          variant="outline"
+          onClick={onClose}
+          disabled={mutatingTeamId !== null || savingPackage}
+        >
           Close
         </Button>
       </DialogFooter>
@@ -231,6 +241,12 @@ function TeamsPlacementBody({
   }
 
   const pending = mutatingTeamId !== null;
+  // `catalogProblem` is only ever populated once the server has a reason to
+  // give; `inCatalog === false` with no problem yet is still a real state
+  // (nothing has tried to catalogue the app), so this is a fact about Switch
+  // rather than an empty hole where the server's sentence would go.
+  const catalogProblemText =
+    result.catalogProblem ?? 'Switch is not in your organisation’s Teams app list yet.';
 
   return (
     <div className="flex flex-col gap-3">
@@ -238,7 +254,7 @@ function TeamsPlacementBody({
         <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs">
           <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
           <div className="flex flex-col gap-1.5">
-            <span>{result.catalogProblem}</span>
+            <span>{catalogProblemText}</span>
             <span>
               A Teams admin uploads this app in the Teams admin center, under Teams apps → Manage
               apps → Upload new app.
@@ -302,13 +318,20 @@ function TeamsPlacementBody({
                     {mutatingTeamId === team.teamId ? 'Adding…' : 'Add'}
                   </Button>
                 ) : (
+                  // A disabled button gets `pointer-events-none`, so it never
+                  // fires the hover/focus that would open a tooltip wrapped
+                  // directly around it — the span catches those instead.
                   <Tooltip>
-                    <TooltipTrigger>
-                      <Button size="sm" disabled>
-                        Add
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-xs">{result.catalogProblem}</TooltipContent>
+                    <TooltipTrigger
+                      render={
+                        <span tabIndex={0} aria-label={catalogProblemText} className="inline-flex">
+                          <Button size="sm" disabled>
+                            Add
+                          </Button>
+                        </span>
+                      }
+                    />
+                    <TooltipContent className="max-w-xs">{catalogProblemText}</TooltipContent>
                   </Tooltip>
                 )}
               </div>

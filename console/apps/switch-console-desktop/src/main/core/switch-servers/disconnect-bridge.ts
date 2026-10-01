@@ -76,7 +76,7 @@ function resultFor(cause: unknown): DeleteBridgeResult | null {
     // The platform refusing to let go (a revocation it did not accept) is the
     // server's 502, in the platform's own words. A fault of the server's own
     // is left to raise as itself.
-    if (cause.status === 502) return { kind: 'error', message: cause.message };
+    if (cause.status === 502) return { kind: 'error', message: cause.detail ?? cause.message };
   }
   return null;
 }

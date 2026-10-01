@@ -57,6 +57,7 @@ const {
   fetchJoinableWorkspaces,
   fetchBridgeTeams,
   fetchMessagingAppInstalls,
+  fetchTeamsPackage,
   joinWorkspaceByDomain,
   fetchJoinDomains,
   addJoinDomain,
@@ -979,6 +980,18 @@ describe('distributed Teams team placement', () => {
     await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({ kind: 'unauthenticated' });
   });
 
+  it('reports an unreachable gateway as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+
   it('adds Switch to a team', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}) as never);
 
@@ -1003,6 +1016,30 @@ describe('distributed Teams team placement', () => {
     });
   });
 
+  it('reports a non-admin adding a team as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an expired session adding a team as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({ kind: 'unauthenticated' });
+  });
+
+  it('reports an unreachable gateway adding a team as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault adding a team rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).rejects.toMatchObject({ status: 500 });
+  });
+
   it('removes Switch from a team', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}) as never);
 
@@ -1011,6 +1048,55 @@ describe('distributed Teams team placement', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
     expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/teams/t1');
     expect(init.method).toBe('DELETE');
+  });
+
+  it('reports a non-admin removing a team as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an expired session removing a team as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({
+      kind: 'unauthenticated',
+    });
+  });
+
+  it('reports an unreachable gateway removing a team as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault removing a team rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('reads the install package as raw bytes', async () => {
+    const bytes = new TextEncoder().encode('zip-bytes').buffer;
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({}),
+      headers: { getSetCookie: () => [] },
+      text: async () => '',
+      arrayBuffer: async () => bytes,
+    } as unknown as Response);
+
+    await expect(fetchTeamsPackage(SERVER, 'b1')).resolves.toBe(bytes);
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/teams-package');
+  });
+
+  it('leaves a bridge this does not apply to as a throw — there is no result form for it', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchTeamsPackage(SERVER, 'b1')).rejects.toMatchObject({ status: 404 });
   });
 });
 
@@ -1034,7 +1120,7 @@ describe('messaging-app installs', () => {
             platform: 'teams',
             external_workspace_id: 'tenant-1',
             status: 'active',
-            scopes: ['Team.Create'],
+            scopes: 'Team.Create',
             bridge_id: 'b1',
             installed_at: '2026-01-01T00:00:00Z',
             ended_at: null,
@@ -1049,7 +1135,7 @@ describe('messaging-app installs', () => {
         platform: 'teams',
         externalWorkspaceId: 'tenant-1',
         status: 'active',
-        scopes: ['Team.Create'],
+        scopes: 'Team.Create',
         bridgeId: 'b1',
         installedAt: '2026-01-01T00:00:00Z',
         endedAt: null,
