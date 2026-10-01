@@ -117,14 +117,15 @@ def _capture_commands(adapter: TeamsAdapter) -> list[InboundCommand]:
 def test_channel_from_channel_activity_uses_channel_data_id() -> None:
     activity = {
         "conversation": {
-            "id": "19:abc@thread.tacv2;messageid=100",
+            "id": "19:reply@thread.tacv2;messageid=100",
             "conversationType": "channel",
         },
         "channelData": {"channel": {"id": "19:abc@thread.tacv2"}},
     }
     channel_id, channel_type = TeamsAdapter._channel_from_activity(activity)
     assert channel_id == "19:abc@thread.tacv2"
-    assert channel_type == "channel_public"
+    # The activity cannot say whether the channel is private.
+    assert channel_type is None
 
 
 def test_channel_from_personal_activity_is_direct() -> None:
@@ -327,6 +328,7 @@ def test_http_messages_dispatches_authenticated_activity() -> None:
 
 def test_inbound_channel_message_top_level_has_no_root() -> None:
     adapter = _adapter()
+    adapter._channel_type["19:abc@thread.tacv2"] = "channel_public"
     captured = _capture_messages(adapter)
 
     activity = {
@@ -457,6 +459,7 @@ def test_inbound_channel_command_after_bot_mention_routes_to_on_command() -> Non
     # the bot, so a channel command always arrives as "@Bot !cmd". The leading
     # bot mention must not hide the "!" command marker.
     adapter = _adapter()
+    adapter._channel_type["19:abc@thread.tacv2"] = "channel_public"
     commands = _capture_commands(adapter)
     messages = _capture_messages(adapter)
 

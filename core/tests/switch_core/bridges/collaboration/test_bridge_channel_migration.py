@@ -88,6 +88,9 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
         def set_channel_migration_handler(self, handler: Any) -> None:
             installed.append(handler)
 
+        def set_channel_type_handler(self, handler: Any) -> None:
+            return None
+
         def set_agent_presentation_resolver(self, resolver: Any) -> None:
             # Not what this test is about; present so the stub satisfies what
             # `start` installs on its adapter.
@@ -106,6 +109,7 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
     bridge._load_channel_map = _noop  # type: ignore[assignment,method-assign]
     bridge._load_existing_puppets = _noop  # type: ignore[assignment,method-assign]
     bridge._ensure_channel_captures = _noop  # type: ignore[assignment,method-assign]
+    bridge._refresh_channel_types = _noop  # type: ignore[assignment,method-assign]
     bridge._create_agent_identities = _noop  # type: ignore[assignment,method-assign]
 
     asyncio.run(BridgeCore.start(bridge))

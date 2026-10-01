@@ -242,6 +242,7 @@ class BridgeCore:
         self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
+        self._channel_type_refresh_task: asyncio.Task[None] | None = None
         # Turns and request cards from the tables the host reports to, pushed
         # as they change. Only where the platform draws session activity.
         self._connections = connections
@@ -395,6 +396,7 @@ class BridgeCore:
         await self._load_channel_map()
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
+        self._adapter.set_channel_type_handler(self._record_channel_type)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         # A bridge on a shared connection that started before the connection
         # was up is attached later (when it comes up, or on its first event).
@@ -431,6 +433,10 @@ class BridgeCore:
         # restarts one. Messages do not depend on it: an agent is addressable
         # by name whether or not its platform identity exists yet.
         self._identity_task = asyncio.create_task(self._run_agent_identities())
+        # Not awaited either: one platform read per channel, and nothing waits on it.
+        self._channel_type_refresh_task = asyncio.create_task(
+            self._run_channel_type_refresh()
+        )
 
     async def stop(self) -> None:
         if self._activity_publisher is not None:
@@ -438,6 +444,12 @@ class BridgeCore:
         if self._identity_task and not self._identity_task.done():
             self._identity_task.cancel()
         self._identity_task = None
+        if (
+            self._channel_type_refresh_task
+            and not self._channel_type_refresh_task.done()
+        ):
+            self._channel_type_refresh_task.cancel()
+        self._channel_type_refresh_task = None
         await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
@@ -615,6 +627,71 @@ class BridgeCore:
                 channels.append((room.external_channel_id, room.channel_type))
         if channels:
             await self._adapter.ensure_channel_subscriptions(channels)
+
+    async def _run_channel_type_refresh(self) -> None:
+        """Wrapper for the background channel-type refresh; see
+        `_run_agent_identities` for why it exists and unbinds the tenant."""
+        with no_tenant():
+            try:
+                await self._refresh_channel_types()
+            except asyncio.CancelledError:
+                logger.info(
+                    "%s channel type refresh cancelled before finishing",
+                    self._bridge_type,
+                )
+                raise
+            except Exception:
+                logger.exception(
+                    "%s channel type refresh stopped unexpectedly", self._bridge_type
+                )
+
+    async def _refresh_channel_types(self) -> None:
+        """Have the adapter re-read the type of every channel this bridge's
+        live rooms are bound to, so quiet channels are corrected too."""
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
+        channel_ids = sorted(
+            {
+                room.external_channel_id
+                for room in rooms
+                if room.external_channel_id
+                and room.archived_at is None
+                and room.channel_type in ("channel_public", "channel_private")
+            }
+        )
+        if channel_ids:
+            await self._adapter.refresh_channel_types(channel_ids)
+
+    async def _record_channel_type(
+        self, channel_id: str, channel_type: ChannelType
+    ) -> None:
+        """Correct rooms bound to a channel whose saved privacy the platform
+        contradicts. It matters beyond the label: moving a room to another
+        bridge keeps its saved type, so a private room saved as public would
+        get a public channel there."""
+        if channel_type not in ("channel_public", "channel_private"):
+            return
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            corrected = await self._room_store.correct_channel_type(
+                session,
+                bridge_id=self._bridge_id,
+                external_channel_id=channel_id,
+                channel_type=channel_type,
+            )
+            await session.commit()
+        for room_id in corrected:
+            logger.warning(
+                "Room %s was saved with the wrong privacy; %s reports its "
+                "channel %s as %s, and the room now says so",
+                room_id,
+                self._bridge_type,
+                channel_id,
+                channel_type,
+            )
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 

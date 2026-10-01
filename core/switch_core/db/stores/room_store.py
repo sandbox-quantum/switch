@@ -195,6 +195,29 @@ class RoomStore:
         room.external_channel_id = external_channel_id
         await session.flush()
 
+    async def correct_channel_type(
+        self,
+        session: AsyncSession,
+        *,
+        bridge_id: str,
+        external_channel_id: str,
+        channel_type: str,
+    ) -> list[str]:
+        """Set `channel_type` on this bridge's rooms bound to the channel and
+        saved as a channel of the other privacy; returns the ids that changed."""
+        result = await session.execute(
+            update(Room)
+            .where(
+                Room.bridge_id == bridge_id,
+                Room.external_channel_id == external_channel_id,
+                Room.channel_type.in_(("channel_public", "channel_private")),
+                Room.channel_type != channel_type,
+            )
+            .values(channel_type=channel_type)
+            .returning(Room.id)
+        )
+        return list(result.scalars().all())
+
     async def clear_bridge(self, session: AsyncSession, room_id: str) -> None:
         room = await session.get(Room, room_id)
         if room is None:

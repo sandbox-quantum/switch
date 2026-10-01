@@ -511,6 +511,11 @@ class CollaborationAdapter(ABC):
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
+        # Set by set_channel_type_handler. Called with (channel_id, type) when
+        # the adapter learns a channel's type from the platform.
+        self._on_channel_type_learned: (
+            Callable[[str, ChannelType], Awaitable[None]] | None
+        ) = None
         # Set by set_agent_presentation_resolver. Returns the agent's stored
         # presentation, or None for a name that is not an agent. Left unset an
         # adapter still works — every agent renders under its identifier with
@@ -1321,6 +1326,12 @@ class CollaborationAdapter(ABC):
         bot having to be re-added to each channel."""
         return None
 
+    async def refresh_channel_types(self, channel_ids: list[str]) -> None:
+        """Re-read each channel's type from the platform and report it through
+        the channel-type handler. Called at bridge startup. Default is a no-op;
+        only Teams saves types it could not verify."""
+        return None
+
     def set_service_url_persister(
         self, persist: Callable[[str], Awaitable[None]]
     ) -> None:
@@ -1370,6 +1381,13 @@ class CollaborationAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_channel_type_handler(
+        self, handler: Callable[[str, ChannelType], Awaitable[None]]
+    ) -> None:
+        """Install the callback an adapter calls when it learns a channel's
+        type from the platform, so rooms saved with a different one follow."""
+        self._on_channel_type_learned = handler
 
     def set_interaction_handler(
         self, handler: Callable[[InboundInteraction], Awaitable[None]]
