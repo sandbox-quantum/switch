@@ -50,6 +50,10 @@ _CLAIM_COMMANDS = frozenset({"start", "connect"})
 #: The name the tenant's one Telegram bridge is registered under.
 _BRIDGE_NAME = "Telegram"
 
+#: What Telegram says, refusing `leaveChat`, when the bot is already out of
+#: the chat. Other refusals leave it in, so only these count as having left.
+_ALREADY_OUT = ("chat not found", "not a member", "was kicked")
+
 _REMOVED_STATUSES = frozenset({"left", "kicked"})
 _PRESENT_STATUSES = frozenset({"member", "administrator"})
 #: Chats the bot being added to is never answered in.
@@ -291,17 +295,24 @@ class TelegramAppInstaller(MessagingAppInstaller):
     async def release(self, *, external_workspace_id: str) -> None:
         """Leave the chat. There is no per-install token to revoke instead.
 
-        A chat the bot is already out of answers with a refusal, which is the
-        outcome wanted; anything else leaves the bot in the chat and is raised
-        so the disconnect fails and can be tried again.
+        A chat the bot is already out of answers with a refusal saying so,
+        which is the outcome wanted. Any other failure, a refusal included,
+        leaves the bot in the chat and is raised so the disconnect fails and
+        can be tried again.
         """
         try:
             await self._client.bot.leave_chat(chat_id=int(external_workspace_id))
-        except (BadRequest, Forbidden) as gone:
-            logger.info(
+        except (BadRequest, Forbidden) as refused:
+            if not any(phrase in str(refused).lower() for phrase in _ALREADY_OUT):
+                raise MessagingInstallError(
+                    f"Telegram refused to let the bot leave chat "
+                    f"{external_workspace_id}: {refused}. It is still in the "
+                    "chat; disconnect again to retry."
+                ) from refused
+            logger.warning(
                 "The Telegram app was already out of chat %s: %s",
                 external_workspace_id,
-                gone,
+                refused,
             )
         except TelegramError as failure:
             raise MessagingInstallError(
