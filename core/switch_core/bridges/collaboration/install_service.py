@@ -61,6 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
+    InstallGrant,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
     MessagingInstallError,
@@ -235,6 +236,13 @@ class MessagingInstallService:
                 code=code, redirect_uri=self._redirect_uri(platform)
             )
 
+            if grant.bot_token is None:
+                refreshed = await self._refresh_own_install(
+                    tenant_id=state.tenant_id, platform=platform, grant=grant
+                )
+                if refreshed is not None:
+                    return refreshed
+
             async with tenant_session(
                 self._session_factory, state.tenant_id
             ) as session:
@@ -313,6 +321,47 @@ class MessagingInstallService:
                 bridge.id,
             )
             return attached
+
+    async def _refresh_own_install(
+        self, *, tenant_id: str, platform: str, grant: InstallGrant
+    ) -> MessagingInstall | None:
+        """Take a repeated approval of the tenant's own live install as a refresh.
+
+        For a platform with no per-install token, the same organisation
+        approving again — for new permissions, a newer app, or to restore an
+        approval it withdrew — must not be refused as "already connected" by
+        its own install. Read under the tenant, so another tenant's install of
+        the workspace is invisible here and still refused by the claim below.
+        The bridge is restarted so it checks the approval afresh.
+
+        A platform with a token is left to the claim: its bridge holds the old
+        token, and swapping it is not something this does.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            existing = await self._store.get_for_workspace(
+                session,
+                platform=platform,
+                external_workspace_id=grant.external_workspace_id,
+            )
+            if existing is None:
+                return None
+            refreshed = await self._store.refresh(
+                session,
+                install_id=existing.id,
+                scopes=grant.scopes,
+                platform_data=grant.platform_data,
+            )
+            await session.commit()
+        if refreshed.bridge_id is not None:
+            await self._lifecycle.restart(refreshed.bridge_id)
+        logger.info(
+            "Refreshed the install of %s workspace %s for tenant %s after it was "
+            "approved again",
+            platform,
+            grant.external_workspace_id,
+            tenant_id,
+        )
+        return refreshed
 
     async def refuse_uninstalled_bridge(
         self,

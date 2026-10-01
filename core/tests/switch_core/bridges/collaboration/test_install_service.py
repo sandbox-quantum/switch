@@ -77,6 +77,7 @@ class _FakeInstaller(MessagingAppInstaller):
         self.workspace_id = workspace_id
         self.tokenless = tokenless
         self.redeem_calls: list[str] = []
+        self.platform_data: dict[str, object] = {"kept": "for later"}
         self.revoked_tokens: list[str] = []
         self.revoke_error: Exception | None = None
 
@@ -93,7 +94,7 @@ class _FakeInstaller(MessagingAppInstaller):
             # store no token for it and revoke nothing on disconnect.
             bot_token=None if self.tokenless else "xoxb-granted",
             scopes="chat:write",
-            platform_data={"kept": "for later"},
+            platform_data=self.platform_data,
         )
 
     async def revoke(self, *, bot_token: str) -> None:
@@ -161,6 +162,10 @@ class _FakeLifecycle:
         self._suffix = suffix
         self.registered: list[dict[str, object]] = []
         self.removed: list[str] = []
+        self.restarted: list[str] = []
+
+    async def restart(self, bridge_id: str) -> None:
+        self.restarted.append(bridge_id)
 
     async def register(self, **kwargs: object) -> CollaborationBridge:
         self.registered.append(kwargs)
@@ -736,3 +741,40 @@ class TestWhatAnInstallRemembers:
 
         reread = await _reread(rls_harness.restricted, fixture.tenant_a, install.id)
         assert reread.platform_data == {"kept": "for later"}
+
+
+class TestApprovingAgain:
+    async def test_the_same_organisation_approving_again_refreshes_its_install(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """For a platform with no token, approving again is how new permissions
+        or a newer app are granted — not a second claim on the workspace."""
+        fixture = await _fixture(rls_harness, tokenless=True)
+        first = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        fixture.installer.platform_data = {"kept": "something newer"}
+
+        again = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        assert again.id == first.id
+        assert again.platform_data == {"kept": "something newer"}
+        assert fixture.lifecycle.restarted == [first.bridge_id]
+        assert len(fixture.lifecycle.registered) == 1
+
+    async def test_another_tenant_approving_the_same_workspace_is_still_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness, tokenless=True)
+        await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        with pytest.raises(MessagingInstallClaimedError):
+            await _installed(rls_harness.restricted, fixture, fixture.tenant_b)
+
+    async def test_a_platform_with_a_token_is_not_refreshed_this_way(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Its bridge holds the old token; swapping it is not what this does."""
+        fixture = await _fixture(rls_harness)
+        await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        with pytest.raises(MessagingInstallClaimedError):
+            await _installed(rls_harness.restricted, fixture, fixture.tenant_a)

@@ -235,6 +235,33 @@ class MessagingInstallStore:
         )
         return list(result.scalars())
 
+    async def refresh(
+        self,
+        session: AsyncSession,
+        *,
+        install_id: str,
+        scopes: str,
+        platform_data: Mapping[str, object],
+    ) -> MessagingInstall:
+        """Record what a repeated approval of a live install granted.
+
+        For a platform with no per-install token, approving again is how an
+        organisation grants new permissions, takes a newer version of the app,
+        or restores an approval it withdrew — and the install it refreshes is
+        the same one, still serving, so nothing about who holds the workspace
+        changes.
+        """
+        install = await self.get(session, install_id=install_id)
+        if install.status != INSTALL_ACTIVE:
+            raise MessagingInstallStateError(
+                "this install has ended, so it cannot be approved again; install "
+                "it afresh instead"
+            )
+        install.scopes = scopes
+        install.platform_data = dict(platform_data)
+        await session.flush()
+        return install
+
     async def end(
         self, session: AsyncSession, *, install_id: str, status: str
     ) -> MessagingInstall:
