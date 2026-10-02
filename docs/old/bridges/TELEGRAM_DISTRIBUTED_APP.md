@@ -112,6 +112,11 @@ and a code. Both work once, for ten minutes.
 
 Who may connect one:
 
+- **In Telegram, only the chat's creator or an admin.** Whoever adds the bot
+  through the link, or posts `/connect <code>`, must be one; Switch asks
+  Telegram before spending the code, so if someone else tries, a group admin
+  can still use the same link. In a channel only admins can post, and an
+  anonymous admin's message counts as an admin's.
 - **The first chat is an admin's.** It creates the organisation's Telegram
   connection, which is what turns Telegram on for it.
 - **After that, any member** may connect more chats and disconnect any one of
@@ -127,7 +132,8 @@ links their Telegram account once and is recognised in all of them.
 
 When a connection does not happen, the bot says why in the chat: the link has
 expired or was used, the code is not from this deployment, the chat is already
-connected to Switch, or only an admin can connect the first chat. It never says
+connected to Switch, only an admin can connect the first chat, or only an admin
+of the group can connect it. It never says
 which organisation holds a chat. A retry Telegram sends of a claim that worked
 is not answered.
 

@@ -36,6 +36,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
+    ClaimantMayNotConnect,
     ClaimRefusal,
     InboundWebhook,
     InstallClaim,
@@ -378,6 +379,8 @@ def create_messaging_install_router(
             reason, refusal = "already_connected", failure
         except InstallClaimNotPermitted as failure:
             reason, refusal = "not_permitted", failure
+        except ClaimantMayNotConnect as failure:
+            reason, refusal = "not_chat_admin", failure
         logger.warning(
             "Refused a claim of %s workspace %s: %s",
             platform,

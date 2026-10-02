@@ -333,6 +333,25 @@ class TestClaims:
         assert claim is not None
         assert claim.grant.external_workspace_id == "-1002"
 
+    async def test_the_claimant_is_who_posted_it(self) -> None:
+        installer = await _installer()
+        claim = installer.claim_of_event(_group_message("/connect c1token"))
+        assert claim is not None
+        assert claim.claimant == "42"
+
+    async def test_a_post_as_the_chat_names_the_chat(self) -> None:
+        """Only admins can post as the chat: a channel's posts, and an
+        anonymous admin's messages in a group."""
+        installer = await _installer()
+        anonymous = _group_message("/connect c1token", chat_id=-1001)
+        anonymous["message"]["sender_chat"] = {"id": -1001, "type": "supergroup"}
+
+        channel = installer.claim_of_event(_channel_post("/connect c1", chat_id=-1002))
+        group = installer.claim_of_event(anonymous)
+
+        assert channel is not None and channel.claimant == "-1002"
+        assert group is not None and group.claimant == "-1001"
+
     async def test_the_bot_name_is_matched_without_case(self) -> None:
         installer = await _installer()
         claim = installer.claim_of_event(
