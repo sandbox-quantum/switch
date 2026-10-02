@@ -80,7 +80,7 @@ describe('the consent gate', () => {
   it('makes no request at all when consent is off', async () => {
     vi.mocked(isTelemetryAllowed).mockResolvedValue(false);
 
-    await telemetryService.track('app_launched', {});
+    await telemetryService.track('app_launched', { install_kind: 'same' });
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -88,8 +88,8 @@ describe('the consent gate', () => {
   it('asks the gate again for every event, so revoking consent stops the next one', async () => {
     vi.mocked(isTelemetryAllowed).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
-    await telemetryService.track('app_launched', {});
-    await telemetryService.track('app_launched', {});
+    await telemetryService.track('app_launched', { install_kind: 'same' });
+    await telemetryService.track('app_launched', { install_kind: 'same' });
 
     expect(isTelemetryAllowed).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -130,7 +130,7 @@ describe('a build that cannot send', () => {
     vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
     const service = await freshService();
 
-    await service.track('app_launched', {});
+    await service.track('app_launched', { install_kind: 'same' });
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(isTelemetryAllowed).not.toHaveBeenCalled();
@@ -144,9 +144,9 @@ describe('a build that cannot send', () => {
     delete process.env.SWITCHDASH_TELEMETRY_DEV;
     const service = await freshService();
 
-    await service.track('app_launched', {});
-    await service.track('app_launched', {});
-    await service.track('app_launched', {});
+    await service.track('app_launched', { install_kind: 'same' });
+    await service.track('app_launched', { install_kind: 'same' });
+    await service.track('app_launched', { install_kind: 'same' });
 
     expect(log.info).toHaveBeenCalledTimes(1);
   });
@@ -217,7 +217,7 @@ describe('the payload', () => {
     const now = vi.spyOn(Date, 'now');
     now.mockReturnValueOnce(1_000).mockReturnValue(9_000);
 
-    await telemetryService.track('app_launched', {});
+    await telemetryService.track('app_launched', { install_kind: 'same' });
 
     expect(sentRecord().timeUnixNano).toBe('1000000000');
     now.mockRestore();
@@ -255,7 +255,7 @@ describe('the payload', () => {
       process.platform as string
     ];
 
-    await telemetryService.track('app_launched', {});
+    await telemetryService.track('app_launched', { install_kind: 'same' });
 
     expect(sentResource()['os.type']).toBe(expected ?? 'other');
     expect(sentResource()['os.version']).toBe(release());
@@ -274,6 +274,7 @@ describe('the payload', () => {
     expect(Object.keys(sentResource()).sort()).toEqual([
       'flint.client_id',
       'flint_env',
+      'flint_internal',
       'os.type',
       'os.version',
       'service.name',
@@ -297,7 +298,7 @@ describe('failure', () => {
   it('never reaches the caller, and is logged with a code', async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 503 } as Response);
 
-    expect(() => trackEvent('app_launched', {})).not.toThrow();
+    expect(() => trackEvent('app_launched', { install_kind: 'same' })).not.toThrow();
     await vi.waitFor(() =>
       expect(log.warn).toHaveBeenCalledWith(
         'telemetry: event not sent',
@@ -309,7 +310,7 @@ describe('failure', () => {
   it('reports a network failure as such rather than as a send', async () => {
     fetchMock.mockRejectedValue(new Error('getaddrinfo ENOTFOUND'));
 
-    trackEvent('app_launched', {});
+    trackEvent('app_launched', { install_kind: 'same' });
 
     await vi.waitFor(() =>
       expect(log.warn).toHaveBeenCalledWith(
@@ -322,7 +323,7 @@ describe('failure', () => {
   it('does not retry', async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
 
-    await telemetryService.track('app_launched', {}).catch(() => {});
+    await telemetryService.track('app_launched', { install_kind: 'same' }).catch(() => {});
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

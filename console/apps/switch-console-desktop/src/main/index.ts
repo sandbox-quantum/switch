@@ -15,6 +15,7 @@ import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migra
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
 import { appService } from './core/app/service';
+import { resolveAppVersion } from './core/app/utils';
 import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
 import { locationManager } from './core/locations/location-manager';
@@ -32,8 +33,10 @@ import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
+import { currentInternalFlag } from './core/telemetry/internal-account';
+import { recordLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
-import { trackEvent } from './core/telemetry/telemetry-service';
+import { telemetryService, trackEvent } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
@@ -143,7 +146,14 @@ void app.whenReady().then(async () => {
   // After the settings store, which owns the consent gate every event asks
   // before it is sent, and never before the database it is read from.
   registerTelemetryListeners();
-  trackEvent('app_launched', {});
+  telemetryService.setInternalSource(currentInternalFlag);
+  trackEvent('app_launched', {
+    install_kind: await recordLaunch({
+      version: await resolveAppVersion(),
+      // Imported here, not at the top: the client opens the database on import.
+      databaseExisted: (await import('./db/client')).databaseExistedAtStart,
+    }),
+  });
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below
