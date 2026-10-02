@@ -43,7 +43,7 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 import switch_core
 from switch_core.db.models import (
@@ -64,7 +64,6 @@ from switch_core.db.tenant_lookup import (
     SECURE_SEARCH_PATH,
     TENANT_LOOKUPS,
     TENANT_LOOKUPS_BY_NAME,
-    TenantLookupError,
     all_tenant_ids,
     create_lookup_ddl,
     tenant_of_agent_oauth_client,
@@ -271,10 +270,9 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                     agent_type="always_on",
                     integration_profile={"connection_model": "always_on"},
                     connector_type="test",
-                    # Both tenants carry the same value on a column with no
-                    # unique index: the one lookup that can legitimately
-                    # answer twice, and the case it has to refuse.
-                    oauth_client_id=fixture.oauth_client_a,
+                    oauth_client_id=(
+                        fixture.oauth_client_a if tag == "a" else f"oauth-b-{suffix}"
+                    ),
                 )
             )
             await session.flush()
@@ -617,20 +615,34 @@ class TestWhatTheyAnswer:
             is None
         )
 
-    async def test_an_ambiguous_answer_is_refused_rather_than_picked(
+    async def test_an_oauth_client_resolves_to_the_one_tenant_holding_it(
         self, rls_harness: RLSHarness
     ) -> None:
-        """`agents.oauth_client_id` carries no unique index, so two tenants
-        can register an agent under the same one. Resolving that to a tenant
-        by taking the first row would authenticate a caller into somebody
-        else's data on the strength of a duplicate — a provisioning fault
-        turned into an authorization one — so it raises."""
         fixture = await _two_populated_tenants(rls_harness)
-        with pytest.raises(TenantLookupError) as raised:
+        assert (
             await tenant_of_agent_oauth_client(
                 rls_harness.restricted, fixture.oauth_client_a
             )
-        assert "refusing to pick one" in str(raised.value)
+            == fixture.tenant_a
+        )
+
+    async def test_a_second_tenant_cannot_take_an_oauth_client_id(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The client id is how an OIDC sign-in finds its agent before any
+        tenant is known, so it must name one agent deployment-wide. Were a
+        second tenant able to register it, the lookup would have to refuse
+        both — the first tenant's agents locked out by someone else's row."""
+        fixture = await _two_populated_tenants(rls_harness)
+        async with rls_harness.owner() as session:
+            with pytest.raises(IntegrityError, match="uq_agents_oauth_client_id"):
+                await session.execute(
+                    text(
+                        "UPDATE agents SET oauth_client_id = :oauth "
+                        "WHERE tenant_id = :tenant"
+                    ),
+                    {"oauth": fixture.oauth_client_a, "tenant": fixture.tenant_b},
+                )
 
 
 class TestWhatTheExemptionDiscloses:

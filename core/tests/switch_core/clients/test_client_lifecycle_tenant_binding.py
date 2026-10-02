@@ -57,6 +57,7 @@ def _service(
         client_factory=client_factory,  # type: ignore[arg-type]
         session_factory=session_factory,
         config=MagicMock(),
+        tenants_isolated=True,
     )
 
 

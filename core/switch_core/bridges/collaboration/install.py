@@ -56,6 +56,10 @@ def oauth_callback_path(platform: str) -> str:
     return f"{PUBLIC_PATH_PREFIX}/{platform}/oauth/callback"
 
 
+def oauth_confirm_path(platform: str) -> str:
+    return f"{PUBLIC_PATH_PREFIX}/{platform}/oauth/confirm"
+
+
 def events_path(platform: str) -> str:
     return f"{PUBLIC_PATH_PREFIX}/{platform}/events"
 

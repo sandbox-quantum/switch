@@ -29,8 +29,10 @@ from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt, hash_password, verify_password
 from switch_core.gateway.auth_routes import router
 from switch_core.gateway.schemas import ChangePasswordRequest
+from switch_core.keys import Keyring
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
+_KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
 _OLD_PASSWORD = "old-password-1"
 _NEW_PASSWORD = "new-password-1"
 
@@ -57,7 +59,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: _USER_STORE
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        jwt_secret_key=_SECRET,
+        keyring=_KEYRING,
         gateway_cookie_secure=False,
         gateway_password_login_enabled=True,
         gateway_tenant_choice_enabled=False,
@@ -95,7 +97,7 @@ async def _stored_hash(
 
 
 def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
-    token = create_jwt(user_id, email, "user", _SECRET, None)
+    token = create_jwt(user_id, email, "user", _KEYRING, None)
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

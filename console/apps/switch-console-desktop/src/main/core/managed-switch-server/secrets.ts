@@ -3,7 +3,7 @@ import {
   UndecryptableSecretError,
 } from '@main/core/secrets/encrypted-app-secrets-store';
 import type { ServerHost } from './host/types';
-import { generateSecrets, type LocalServerSecrets, withRuntimePassword } from './secret-values';
+import { generateSecrets, type LocalServerSecrets, withNewerSecrets } from './secret-values';
 
 /**
  * A stored bundle that will not parse is not the same as no bundle at all, and
@@ -43,7 +43,7 @@ export async function loadOrCreateSecrets(
 ): Promise<LocalServerSecrets> {
   const stored = await readStoredSecrets(host);
   if (stored.kind === 'present') {
-    const { secrets, migrated } = withRuntimePassword(stored.secrets);
+    const { secrets, migrated } = withNewerSecrets(stored.secrets);
     if (migrated)
       await encryptedAppSecretsStore.setSecret(host.secretsKey, JSON.stringify(secrets));
     return secrets;
@@ -70,7 +70,7 @@ export async function loadOrCreateSecrets(
  * *display* or inspect the credentials rather than run the stack. Generating a
  * bundle as a side effect of reading would mint credentials that match no
  * running deployment, which is exactly the fiction a reader must not be shown.
- * A missing `dbRuntimePassword` is backfilled in memory for callers that expect
+ * Secrets newer than the bundle (see `withNewerSecrets`) are backfilled in memory for callers that expect
  * the full shape, but — unlike {@link loadOrCreateSecrets} — not persisted: a
  * reader must not mutate stored state, so the value shown here can differ from
  * the one the next real start assigns and persists.
@@ -79,7 +79,7 @@ export async function readSecrets(
   host: Pick<ServerHost, 'secretsKey'>
 ): Promise<LocalServerSecrets | null> {
   const stored = await readStoredSecrets(host);
-  return stored.kind === 'present' ? withRuntimePassword(stored.secrets).secrets : null;
+  return stored.kind === 'present' ? withNewerSecrets(stored.secrets).secrets : null;
 }
 
 /** Cache `secrets` as this desktop's copy of the host's bundle, replacing any

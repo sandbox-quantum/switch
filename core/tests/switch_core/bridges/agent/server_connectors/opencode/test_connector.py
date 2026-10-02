@@ -9,6 +9,7 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
+from switch_core.outbound import OutboundPolicy
 
 SESSION_ID = "sess-1"
 ROOM_ID = "room-1"
@@ -70,7 +71,7 @@ def _connector_with(
     config = OpenCodeConnectionConfig(
         server_url="http://localhost", username="u", password="p"
     )
-    connector = OpenCodeConnector(config)
+    connector = OpenCodeConnector(config, OutboundPolicy.parse("localhost"))
     client = client or _FakeClient(events)
     connector._client = client  # type: ignore[assignment]
     return connector, client

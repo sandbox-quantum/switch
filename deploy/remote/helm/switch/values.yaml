@@ -82,8 +82,9 @@ ingress:
 #      POSTGRES_PASSWORD (unless postgresql.existingSecret is set),
 #      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
 #        postgresql.owner.existingSecret is set),
-#      AGENT_REGISTRATION_TOKEN, JWT_SECRET_KEY, GATEWAY_ADMIN_EMAIL,
+#      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
+#      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
 #      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
 secrets:
@@ -94,7 +95,21 @@ secrets:
   # Password for postgresql.owner.username. Required when that is set, unless
   # postgresql.owner.existingSecret names a Secret that already carries it.
   dbOwnerPassword: ""
+  # Password for the managed-mode runtime role (postgresql.managed
+  # .runtimeUsername). Optional; see that setting for why to set it. Not
+  # usable with existingSecret: use postgresql.managed.runtimeExistingSecret.
+  dbRuntimePassword: ""
   agentRegistrationToken: ""
+  # The server's master keys, "<id>:<secret>" comma-separated, current first;
+  # each secret at least 32 characters. Every signing and encryption key is
+  # derived from these. To rotate, put a new entry first and keep the old one
+  # until a boot has re-encrypted stored values (docs/old/key-rotation.md).
+  # Generate one with: echo "$(date +%Y%m):$(openssl rand -hex 32)"
+  secretKeys: ""
+  # Legacy: the single secret used before secretKeys. Keep it set through the
+  # first upgrade so existing sessions, Mattermost buttons and stored
+  # credentials keep working; the first boot re-encrypts stored credentials
+  # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
   gatewayAdminEmail: ""
   gatewayAdminPassword: ""
@@ -246,6 +261,13 @@ switchCore:
   # lists them, rather than a 403. The gateway UI does not need it; turn it on
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
+  # Private hosts switch-core may reach at a URL a tenant or agent supplied —
+  # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
+  # Anything else that is not a public address is refused, and link-local and
+  # cloud metadata addresses are refused even when listed. The bundled
+  # Mattermost (mattermost.enabled) is added automatically.
+  outbound:
+    allowedPrivateHosts: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
   # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
   # anything that speaks SMTP). Off, the invitation is still created and the
@@ -424,9 +446,10 @@ switchCore:
   replicaCount: 1
   # Run DB migrations (alembic upgrade head) as a pre-upgrade hook Job, before
   # the new pods roll, so a failed migration blocks the upgrade instead of
-  # crash-looping the new pods. switch-core also migrates on startup (which
-  # covers fresh installs, where pre-upgrade hooks don't run), so the Job is
-  # idempotent. Disable only if you run migrations out-of-band.
+  # crash-looping the new pods. The switch-core pod also migrates in an init
+  # container before the server starts (which covers fresh installs, where
+  # pre-upgrade hooks don't run), so the Job is idempotent. Disable only if you
+  # run migrations out-of-band.
   migrations:
     preUpgradeJob: true
   resources:
@@ -611,10 +634,12 @@ postgresql:
   # distinct from DB_USER above (or postgresql.external.username for
   # mode: existing), which name the RUNTIME role every request actually
   # authenticates as and which the row-level-security policies apply to.
-  # switch-core uses the owner connection for exactly two things at boot, and
-  # never to serve a request: applying Alembic migrations, and re-issuing the
-  # runtime role's grants immediately afterwards, so a table a migration just
-  # added is usable by the role that is about to need it.
+  # switch-core uses the owner connection for exactly two things, and never to
+  # serve a request: applying Alembic migrations, and re-issuing the runtime
+  # role's grants immediately afterwards, so a table a migration just added is
+  # usable by the role that is about to need it. Both run in the migration Job
+  # and the pod's init container; the serving container is not given the
+  # owner's password at all.
   #
   # mode: managed defaults this to the bootstrapped "postgres" superuser (the
   # same account POSTGRES_USER creates on the StatefulSet below) whenever
@@ -720,17 +745,23 @@ postgresql:
     # templates/postgresql/configmap-init.yaml and, for an upgrade of a
     # deployment that predates it, by the create-runtime-role pre-upgrade hook.
     #
-    # Its password is deliberately the bootstrapped superuser's own —
-    # secrets.postgresPassword, or whatever postgresql.existingSecret resolves
-    # to — rather than a password of its own. That adds no new required value,
-    # keeps working unmodified with postgresql.existingSecret, and exposes
-    # nothing new: this pod already holds that password as DB_OWNER_PASSWORD.
-    # The point of splitting DB_USER from the superuser is that the
-    # row-level-security policies apply to the connection serving requests,
-    # not to compartmentalise passwords between two accounts that already
-    # trust each other — so change the username here if you want, but there is
-    # no separate password field to set alongside it.
+    # Its password is secrets.dbRuntimePassword, or the key named by
+    # runtimeExistingSecret below. Set one of them: the serving container is
+    # not given the superuser's password, and a runtime role sharing it hands
+    # that password back. Left unset, the role falls back to the superuser's
+    # own password (secrets.postgresPassword / postgresql.existingSecret), as
+    # releases before this setting did, and the install notes warn about it.
+    #
+    # With secrets.existingSecret, secrets.dbRuntimePassword is refused (the
+    # chart renders no Secret to hold it): set runtimeExistingSecret instead,
+    # which may name that same Secret.
+    #
+    # The create-runtime-role pre-upgrade hook re-applies the password on
+    # every upgrade, so setting it on an existing deployment takes effect in
+    # that same upgrade.
     runtimeUsername: switch_app
+    runtimeExistingSecret: ""
+    runtimeExistingSecretKey: DB_RUNTIME_PASSWORD
 
   # Postgres server parameters, passed as `-c name=value`. Each client
   # connection is a backend process costing several MB of non-reclaimable

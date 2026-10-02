@@ -10,6 +10,7 @@ const secrets: LocalServerSecrets = {
   dbRuntimePassword: 'db-runtime-pw',
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
+  secretKeys: 'console:secret-keys-value',
   gatewayAdminPassword: 'gw-admin',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',
@@ -55,6 +56,7 @@ describe('buildEnvFile', () => {
 
   it('binds the managed stack to loopback and seeds the admin account', () => {
     expect(vars.SWITCH_BIND_ADDR).toBe('127.0.0.1');
+    expect(vars.GATEWAY_COOKIE_SECURE).toBe('false');
     expect(vars.GATEWAY_ADMIN_EMAIL).toBe('admin@switch.local');
   });
 
@@ -63,6 +65,7 @@ describe('buildEnvFile', () => {
     expect(vars.DB_OWNER_PASSWORD).toBe('db-pw');
     expect(vars.AGENT_REGISTRATION_TOKEN).toBe('agent-token');
     expect(vars.JWT_SECRET_KEY).toBe('jwt-key');
+    expect(vars.SECRET_KEYS).toBe('console:secret-keys-value');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');
     expect(vars.MATTERMOST_ADMIN_PASSWORD).toBe('mm-admin');
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
@@ -117,6 +120,10 @@ describe('buildEnvFile', () => {
       'DISCORD_APP_CLIENT_SECRET',
       'DISCORD_APP_BOT_TOKEN',
       'DISCORD_APP_APPLICATION_ID',
+      // Private hosts Switch may reach at a tenant- or agent-supplied URL. The
+      // compose file always allows the bundled Mattermost; a managed stack
+      // allows nothing more until its operator says so.
+      'OUTBOUND_ALLOWED_PRIVATE_HOSTS',
     ]);
 
     const missing = [...interpolated]
@@ -196,6 +203,15 @@ describe('readStackEnv', () => {
         secrets: { ...secrets, dbRuntimePassword: null },
         version: '1.2.3',
       },
+    });
+  });
+
+  it('reads a file written before SECRET_KEYS, leaving the key ring to be filled in', () => {
+    const legacy = written.replace(/^SECRET_KEYS=.*$/m, '');
+
+    expect(readStackEnv(legacy)).toEqual({
+      kind: 'complete',
+      env: { ports, secrets: { ...secrets, secretKeys: null }, version: '1.2.3' },
     });
   });
 
@@ -303,6 +319,12 @@ describe('keysDisagreeing', () => {
     expect(keysDisagreeing(partial, { ports, secrets: { ...secrets, jwtSecretKey: 'x' } })).toEqual(
       []
     );
+  });
+
+  it('names a key ring the copy disagrees with', () => {
+    expect(
+      keysDisagreeing(written, { ports, secrets: { ...secrets, secretKeys: 'console:other' } })
+    ).toEqual(['SECRET_KEYS']);
   });
 
   it('reads DB_PASSWORD as the owner’s in a file written before the role split', () => {

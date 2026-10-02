@@ -31,11 +31,13 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
 )
 from switch_core.bridges.collaboration.mattermost.callback import action_context
 from switch_core.bridges.collaboration.models import InboundInteraction
+from switch_core.keys import Keyring
 
 from .test_collaboration_ingress import _free_port
 from .test_mattermost_sdk_only import _FakeDriver, _FakePosts, _FakeUsers, _posts
 
-SECRET = "server-secret-for-tests"
+SECRET = "server-secret-for-tests-server-secret"
+KEYRING = Keyring.parse(f"test:{SECRET}", legacy_secret=None)
 BRIDGE = "bridge-1"
 OTHER_BRIDGE = "bridge-2"
 CALLBACK_BASE = "http://switch.example:8081"
@@ -78,7 +80,7 @@ def _adapter(
 
 
 def _ingress() -> CallbackIngress:
-    return CallbackIngress(host="127.0.0.1", port=_free_port(), secret=SECRET)
+    return CallbackIngress(host="127.0.0.1", port=_free_port(), keyring=KEYRING)
 
 
 def _users(adapter: MattermostAdapter) -> _FakeUsers:

@@ -28,8 +28,8 @@ from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from tests.conftest import RLSHarness
 
 from .test_install_service import (
+    _KEYRING,
     _ORIGIN,
-    _SECRET,
     _begin,
     _FakeInstaller,
     _FakeLifecycle,
@@ -93,13 +93,14 @@ async def _shared_app(harness: RLSHarness) -> tuple[MessagingInstallService, _Id
         installers=installers,
         lifecycle=lifecycle,  # type: ignore[arg-type]
         public_origin=_ORIGIN,
-        secret=_SECRET,
+        keyring=_KEYRING,
     )
     lifecycle.service = service
     lifecycle.workspace_id = base.workspace
     base.service = service
     state = await _begin(harness.restricted, base, base.tenant_a)
-    install = await service.complete(platform="slack", code="c", state_token=state)
+    pending = await service.complete(platform="slack", code="c", state_token=state)
+    install = await service.confirm(platform="slack", ticket=pending.ticket)
     assert install.bridge_id is not None
     return service, _Ids(
         tenant_a=base.tenant_a,

@@ -193,9 +193,9 @@ from switch_core.tenant_context import no_tenant
 class TenantLookupError(RuntimeError):
     """A lookup that must name at most one tenant named several.
 
-    Only reachable for a key that is not unique by constraint — today only
-    `agents.oauth_client_id`, which has no unique index. Raised rather than
-    resolved by picking one: a credential that resolves to two tenants is a
+    Every key these lookups take is unique by constraint, so this is a
+    guard against a schema that has drifted from the models rather than an
+    expected answer. Raised rather than resolved by picking one: a credential that resolves to two tenants is a
     provisioning fault, and guessing which one it meant is how a caller ends
     up authenticated into somebody else's data.
     """
@@ -287,9 +287,8 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
         purpose=(
             "Which tenant an agent authenticating by OIDC belongs to. The "
-            "column carries no unique index, so this is the one lookup that "
-            "can legitimately answer twice; the caller refuses rather than "
-            "picking."
+            "client id is unique across the deployment by index; the caller "
+            "still refuses rather than picking if it ever answers twice."
         ),
     ),
     TenantLookup(

@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.keys import Keyring
 
 
 def _service() -> CollaborationBridgeLifecycleService:
@@ -41,7 +42,7 @@ def _service() -> CollaborationBridgeLifecycleService:
     config = MagicMock()
     config.collaboration_callback_host = "127.0.0.1"
     config.collaboration_callback_port = 0
-    config.jwt_secret_key = "server-secret-for-tests"
+    config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     return CollaborationBridgeLifecycleService(
         bridge_store=None,  # type: ignore[arg-type]
         external_user_store=None,  # type: ignore[arg-type]

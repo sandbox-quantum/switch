@@ -151,6 +151,7 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
             client_factory=MagicMock(),
             session_factory=session_factory,
             config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+            tenants_isolated=True,
         )
 
         with tenant_scope(tenant_id):
@@ -172,6 +173,7 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
             client_factory=MagicMock(),
             session_factory=session_factory,
             config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+            tenants_isolated=True,
         )
 
         record = await service.create_client(

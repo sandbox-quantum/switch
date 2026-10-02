@@ -127,3 +127,11 @@ Postgres holds everything: every room, every message, every account, and the
 Mattermost database. Back it up. See BACKUP.md and
 samples/volumesnapshot.example.yaml for the recommended approaches
 (CSI VolumeSnapshots, pg_dump / managed-DB backups, Velero).
+{{- if and (eq .Values.postgresql.mode "managed") (not (include "switch.runtimePasswordSeparate" .)) }}
+
+── WARNING: database runtime role ──────────────────────────────────────────────
+The runtime role switch-core serves requests as ({{ include "switch.postgresUser" . }})
+shares the Postgres superuser's password, so the serving container effectively
+holds superuser credentials. Set secrets.dbRuntimePassword (or
+postgresql.managed.runtimeExistingSecret) to give it a password of its own.
+{{- end }}

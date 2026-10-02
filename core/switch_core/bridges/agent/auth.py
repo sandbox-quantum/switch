@@ -52,8 +52,8 @@ class OIDCTokenValidator:
     def __init__(
         self,
         issuer_url: str,
-        audience: str | None = None,
-        verify_issuer: bool = True,
+        audience: str,
+        verify_issuer: bool,
     ) -> None:
         self._issuer = issuer_url
         self._audience = audience
@@ -64,8 +64,6 @@ class OIDCTokenValidator:
     def validate(self, token: str) -> dict:
         signing_key = self._jwk_client.get_signing_key_from_jwt(token)
         options: dict[str, bool] = {}
-        if self._audience is None:
-            options["verify_aud"] = False
         if not self._verify_issuer:
             options["verify_iss"] = False
         return jwt.decode(
@@ -265,9 +263,8 @@ class BearerAuthMiddleware:
 
         # Same two steps as `_resolve_api_key`, for the same reason: `agents`
         # is scoped, and this is the read that decides which agent — and so
-        # which tenant — is asking. `oauth_client_id` carries no unique index,
-        # so the lookup refuses rather than picking when two tenants have
-        # registered an agent under the same one.
+        # which tenant — is asking. `oauth_client_id` is unique across the
+        # deployment, so at most one tenant answers.
         tenant_id = await tenant_of_agent_oauth_client(self._session_factory, client_id)
         if tenant_id is None:
             return None

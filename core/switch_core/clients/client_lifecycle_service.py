@@ -22,6 +22,10 @@ from switch_core.tenant_context import no_tenant, tenant_scope
 logger = logging.getLogger(__name__)
 
 
+class TenantIsolationNotInForce(Exception):
+    """A second tenant was asked for on a deployment that cannot keep tenants apart."""
+
+
 class ClientLifecycleService:
     def __init__(
         self,
@@ -32,8 +36,10 @@ class ClientLifecycleService:
         client_factory: ClientFactory,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
+        tenants_isolated: bool,
     ) -> None:
         self._matrix_admin = matrix_admin
+        self._tenants_isolated = tenants_isolated
         self._client_store = client_store
         self._tenant_store = tenant_store
         self._client_factory = client_factory
@@ -136,6 +142,14 @@ class ClientLifecycleService:
         created, and to nothing else. The id is generated here rather than by
         the database for that reason.
         """
+        if not self._tenants_isolated:
+            raise TenantIsolationNotInForce(
+                "This server is not isolating tenants: its database connection is "
+                "not subject to the row-level-security policies, and it runs only "
+                "because DB_REQUIRE_RESTRICTED_ROLE is false, which allows a single "
+                "workspace. Connect it as the restricted runtime role before "
+                "creating another."
+            )
         tenant = Tenant(id=str(uuid.uuid4()), name=name, slug=slug)
         async with tenant_session(self._session_factory, tenant.id) as session:
             await self._tenant_store.create(session, tenant)

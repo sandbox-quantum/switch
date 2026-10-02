@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_service import MessagingInstallService
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.messaging_install_store import MessagingInstallNotFound
 from switch_core.gateway.auth import require_tenant_admin
@@ -107,6 +108,15 @@ async def begin_install(
     except MessagingInstallError as failure:
         raise HTTPException(status_code=404, detail=str(failure)) from failure
 
+    await record_audit_event(
+        session,
+        tenant_id=require_tenant_id(),
+        actor_user_id=user.id,
+        action=AuditAction.MESSAGING_INSTALL_STARTED,
+        target_type="messaging_install",
+        target_id=None,
+        details={"platform": platform},
+    )
     await session.commit()
     logger.info("Started a %s install for user %s", platform, user.id)
     return InstallStart(authorize_url=authorize_url)
@@ -138,6 +148,7 @@ async def list_installs(
 @router.delete("/installs/{install_id}")
 async def disconnect_install(
     install_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
     service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> InstalledApp:
@@ -147,7 +158,8 @@ async def disconnect_install(
     at the platform and tears a bridge down, and holding this request's
     transaction open across both would keep a row locked while somebody else's
     API is slow. The service opens what it needs, in the order failure can be
-    recovered from.
+    recovered from. The request's session is used only afterwards, to record
+    the disconnect in the audit log.
 
     **Rooms that used the bridge become internal-only**, which is why this is a
     delete an operator has to ask for rather than anything inferred.
@@ -164,5 +176,18 @@ async def disconnect_install(
         # which the operator needs to be told rather than left to guess.
         raise HTTPException(status_code=502, detail=str(failure)) from failure
 
+    await record_audit_event(
+        session,
+        tenant_id=ended.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.MESSAGING_INSTALL_DISCONNECTED,
+        target_type="messaging_install",
+        target_id=install_id,
+        details={
+            "platform": ended.platform,
+            "external_workspace_id": ended.external_workspace_id,
+        },
+    )
+    await session.commit()
     logger.info("User %s disconnected messaging install %s", user.id, install_id)
     return InstalledApp.model_validate(ended, from_attributes=True)
