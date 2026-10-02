@@ -37,9 +37,7 @@ describe('saveTeamsPackage', () => {
   it('shows the save dialog before fetching the package, so cancelling costs no round trip', async () => {
     showSaveDialog.mockResolvedValue({ canceled: true, filePath: undefined });
 
-    await expect(
-      saveTeamsPackage(SERVER, 'b1', 'switch-teams-acme.zip')
-    ).resolves.toBeNull();
+    await expect(saveTeamsPackage(SERVER, 'b1', 'switch-teams-acme.zip')).resolves.toBeNull();
 
     expect(showSaveDialog).toHaveBeenCalledWith(
       WINDOW,
@@ -75,9 +73,6 @@ describe('saveTeamsPackage', () => {
     );
 
     expect(fetchTeamsPackage).toHaveBeenCalledWith(SERVER, 'b1');
-    expect(writeFile).toHaveBeenCalledWith(
-      '/tmp/switch-teams-acme.zip',
-      Buffer.from(bytes)
-    );
+    expect(writeFile).toHaveBeenCalledWith('/tmp/switch-teams-acme.zip', Buffer.from(bytes));
   });
 });

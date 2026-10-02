@@ -459,8 +459,7 @@ describe('the attention warning', () => {
     await settle();
 
     expect(
-      [...el.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Opening…')
-        ?.disabled
+      [...el.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Opening…')?.disabled
     ).toBe(true);
 
     await act(async () => resolve('https://teams.example/consent'));
@@ -497,7 +496,11 @@ describe('the Teams placement button', () => {
     const el = await render(
       row({
         isAdmin: true,
-        bridge: bridge({ id: 'b-teams', displayName: 'Contoso Teams', teamPlacementSupported: true }),
+        bridge: bridge({
+          id: 'b-teams',
+          displayName: 'Contoso Teams',
+          teamPlacementSupported: true,
+        }),
       })
     );
     await openMenu(el);

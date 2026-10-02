@@ -204,7 +204,9 @@ describe('listing teams', () => {
 
     const el = await render();
 
-    const row = [...el.querySelectorAll('li')].find((li) => li.textContent?.includes('Engineering'));
+    const row = [...el.querySelectorAll('li')].find((li) =>
+      li.textContent?.includes('Engineering')
+    );
     expect(row?.textContent).toContain('Default');
     // A default team offers no "Make default" of its own.
     expect(row?.textContent).not.toContain('Make default');
