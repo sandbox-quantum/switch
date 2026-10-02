@@ -19,6 +19,13 @@ import type {
 export type TelemetryLocationKind = 'local' | 'remote' | 'unknown';
 
 /**
+ * Which kind of launch an event belongs to: `new` on an installation's very
+ * first launch, `updated` on the first launch after its version changed, and
+ * `same` otherwise. Counting `new` counts new installs; `updated`, upgrades.
+ */
+export type TelemetryInstallKind = 'new' | 'updated' | 'same';
+
+/**
  * Which CLI agent this concerns.
  *
  * `unknown` covers a value that is not one of the registered providers. The
@@ -282,16 +289,11 @@ export type TelemetryHostSetupStepKind = HostSetupStepKind | 'unknown';
  * and it is far easier to add an event than to take one away once dashboards
  * depend on it.
  */
-/**
- * An event with no properties of its own. `Record<never, never>` rather than
- * `Record<string, never>`, whose `keyof` is `string` — which claims every
- * property name, including the ambient ones the emitter adds.
- */
-type NoProperties = Record<never, never>;
-
 export type TelemetryEventMap = {
-  /** The app started. Its interesting fields are the ambient ones. */
-  app_launched: NoProperties;
+  /** The app started, and which kind of launch it was. */
+  app_launched: {
+    install_kind: TelemetryInstallKind;
+  };
   agent_created: {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
@@ -573,6 +575,8 @@ export type TelemetryEventMap = {
    */
   telemetry_consent_changed: {
     source: 'first_run' | 'settings';
+    /** This launch's kind, so a new install agreeing at first run is one filter. */
+    install_kind: TelemetryInstallKind;
   };
 };
 
@@ -587,7 +591,7 @@ export type TelemetryEventName = keyof TelemetryEventMap;
  * checking does not apply — cannot ride along into a payload unnoticed.
  */
 export const TELEMETRY_EVENT_PROPERTIES = {
-  app_launched: [],
+  app_launched: ['install_kind'],
   agent_created: ['agent_type', 'location', 'outcome', 'failure_reason', 'entry_point'],
   session_started: [
     'agent_type',
@@ -653,7 +657,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   onboarding_completed: [],
   add_server_step: ['step', 'choice', 'first_run'],
   renderer_crashed: [],
-  telemetry_consent_changed: ['source'],
+  telemetry_consent_changed: ['source', 'install_kind'],
   session_attached: ['agent_type', 'outcome'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
 

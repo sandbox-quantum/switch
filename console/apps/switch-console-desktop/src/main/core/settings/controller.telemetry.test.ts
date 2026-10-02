@@ -16,6 +16,7 @@ const { h } = vi.hoisted(() => ({
 }));
 
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
+vi.mock('@main/core/telemetry/launch-history', () => ({ currentInstallKind: () => 'new' }));
 vi.mock('./settings-service', () => ({
   appSettingsService: {
     get: h.get,
@@ -87,6 +88,7 @@ describe('agreeing to share usage data', () => {
 
     expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
       source: 'first_run',
+      install_kind: 'new',
     });
   });
 
@@ -95,7 +97,10 @@ describe('agreeing to share usage data', () => {
 
     await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
 
-    expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', { source: 'settings' });
+    expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
+      source: 'settings',
+      install_kind: 'new',
+    });
   });
 
   it('says nothing when someone declines', async () => {
