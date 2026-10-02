@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from switch_core.bridges.collaboration import install_service as install_service_module
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
+    ClaimantMayNotConnect,
     InboundWebhook,
     InstallClaim,
     InstallGrant,
@@ -99,6 +100,11 @@ class _ClaimInstaller(MessagingAppInstaller):
         self.release_error: Exception | None = None
         self.unowned: list[tuple[str, bool]] = []
         self.refused: list[tuple[str, str]] = []
+        self.claimant_check: Exception | None = None
+
+    async def require_claimant_may_connect(self, claim: InstallClaim) -> None:
+        if self.claimant_check is not None:
+            raise self.claimant_check
 
     async def on_claim_refused(self, *, claim: InstallClaim, reason: Any) -> None:
         self.refused.append((claim.grant.external_workspace_id, reason))
@@ -163,7 +169,9 @@ class _ClaimInstaller(MessagingAppInstaller):
         token = payload.get("claim")
         if not isinstance(token, str):
             return None
-        return InstallClaim(token=token, grant=_grant(str(payload["chat"])))
+        return InstallClaim(
+            token=token, grant=_grant(str(payload["chat"])), claimant="42"
+        )
 
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
         return {"event_delivery": "shared"}
@@ -341,7 +349,8 @@ async def _link(
 
 async def _claim(fixture: _Fixture, token: str, chat_id: str) -> MessagingInstall:
     return await fixture.service.claim(
-        platform=_PLATFORM, claim=InstallClaim(token=token, grant=_grant(chat_id))
+        platform=_PLATFORM,
+        claim=InstallClaim(token=token, grant=_grant(chat_id), claimant="42"),
     )
 
 
@@ -1093,6 +1102,38 @@ class TestRefusedClaims:
         )
         await self._post(fixture, {"chat": "-1001", "claim": token})
         assert fixture.installer.refused == [("-1001", "not_permitted")]
+
+    async def test_someone_who_is_not_an_admin_of_the_chat(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Refused before the code is spent, so a group admin can still use it."""
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        fixture.installer.claimant_check = ClaimantMayNotConnect("a member")
+
+        await self._post(fixture, {"chat": "-1001", "claim": token})
+
+        assert fixture.installer.refused == [("-1001", "not_chat_admin")]
+        fixture.installer.claimant_check = None
+        await _claim(fixture, token, "-1001")
+        assert len(await _active_installs(rls_harness)) == 1
+
+    async def test_a_check_telegram_could_not_answer_is_retried(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        fixture.installer.claimant_check = MessagingInstallError("timed out")
+
+        status = await self._post(fixture, {"chat": "-1001", "claim": token})
+
+        assert status == 503
+        assert fixture.installer.refused == []
+        assert await _active_installs(rls_harness) == []
 
 
 class TestABridgeStillStarting:

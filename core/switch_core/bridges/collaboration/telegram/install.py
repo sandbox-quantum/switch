@@ -26,6 +26,7 @@ from typing import Any, ClassVar
 from telegram.error import BadRequest, Forbidden, TelegramError
 
 from switch_core.bridges.collaboration.install import (
+    ClaimantMayNotConnect,
     ClaimRefusal,
     InboundWebhook,
     InstallClaim,
@@ -56,6 +57,8 @@ _ALREADY_OUT = ("chat not found", "not a member", "was kicked")
 
 _REMOVED_STATUSES = frozenset({"left", "kicked"})
 _PRESENT_STATUSES = frozenset({"member", "administrator"})
+#: Who may connect a group: the people Telegram lets decide for it.
+_ADMIN_STATUSES = frozenset({"creator", "administrator"})
 #: Chats the bot being added to is never answered in.
 _UNANSWERED_ADDS = frozenset({"private", "channel"})
 
@@ -89,6 +92,10 @@ CLAIM_REFUSED: dict[ClaimRefusal, str] = {
         "Only an admin can connect the first chat to Switch. Ask an admin to "
         "connect one, then try again."
     ),
+    "not_chat_admin": (
+        "Only an admin of this group can connect it to Switch. Ask a group "
+        "admin to add the bot with your link, or to post the /connect code."
+    ),
 }
 
 DIRECT_MESSAGE_REPLY = (
@@ -115,6 +122,16 @@ def _message_of(payload: Mapping[str, object]) -> dict[str, Any] | None:
     if callback is not None:
         return _as_dict(callback.get("message"))
     return None
+
+
+def _claimant_of(message: dict[str, Any], chat: dict[str, Any]) -> str | None:
+    """Who posted `message`: the chat itself for a channel or an anonymous admin."""
+    if chat.get("type") == "channel":
+        return str(chat["id"])
+    sender = _as_dict(message.get("sender_chat")) or _as_dict(message.get("from"))
+    if sender is None or sender.get("id") is None:
+        return None
+    return str(sender["id"])
 
 
 def _chat_of(payload: Mapping[str, object]) -> dict[str, Any] | None:
@@ -244,6 +261,10 @@ class TelegramAppInstaller(MessagingAppInstaller):
         and account linking by DM is a separate, deferred feature. A command
         addressed to a different bot — `/start@otherbot …`, which a bot with
         privacy off also sees — is not ours to read.
+
+        The claimant is whoever posted it. A channel's posts, and an anonymous
+        admin's messages in a group, are posted as the chat itself, so they
+        name the chat; only its admins can post that way.
         """
         message = _message_of(payload)
         if message is None:
@@ -263,6 +284,9 @@ class TelegramAppInstaller(MessagingAppInstaller):
             return None
         if addressee and addressee.lower() != self._client.bot_username.lower():
             return None
+        claimant = _claimant_of(message, chat)
+        if claimant is None:
+            return None
 
         return InstallClaim(
             token=parts[1],
@@ -272,7 +296,41 @@ class TelegramAppInstaller(MessagingAppInstaller):
                 bot_token=None,
                 scopes="",
             ),
+            claimant=claimant,
         )
+
+    async def require_claimant_may_connect(self, claim: InstallClaim) -> None:
+        """Refuse a claim unless a creator or admin of the chat posted it.
+
+        Telegram checks nothing here: `/start <code>` and `/connect <code>` are
+        ordinary messages anyone in the group can send, and the link's chat
+        picker offers every group where the person may add members. Telegram
+        refusing the lookup, as it does for an id that is no one in the chat,
+        is a refusal too; any other failure is raised to be retried, never let
+        through unchecked.
+        """
+        chat_id = claim.grant.external_workspace_id
+        if claim.claimant == chat_id:
+            return
+        try:
+            member = await self._client.bot.get_chat_member(
+                chat_id=int(chat_id), user_id=int(claim.claimant)
+            )
+        except (BadRequest, Forbidden) as refused:
+            raise ClaimantMayNotConnect(
+                f"Telegram would not say whether {claim.claimant} is an admin of "
+                f"chat {chat_id}: {refused}"
+            ) from refused
+        except TelegramError as failure:
+            raise MessagingInstallError(
+                f"Could not ask Telegram whether {claim.claimant} is an admin of "
+                f"chat {chat_id}: {failure}"
+            ) from failure
+        if member.status not in _ADMIN_STATUSES:
+            raise ClaimantMayNotConnect(
+                f"{claim.claimant} is a {member.status} of chat {chat_id}, not "
+                "one of its admins"
+            )
 
     async def release(self, *, external_workspace_id: str) -> None:
         """Leave the chat. There is no per-install token to revoke instead.

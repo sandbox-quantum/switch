@@ -463,9 +463,13 @@ class MessagingInstallService:
         across registration has a second benefit: a registration that fails
         rolls the install back with it, rather than leaving a workspace claimed
         by a tenant with no bridge to deliver its events to.
+
+        Who posted the claim is checked against the chat before the state is
+        burnt, so a refused attempt leaves the code for someone who may use it.
         """
         installer = self._installers.get(platform)
         state = verify_compact(claim.token, platform=platform, secret=self._secret)
+        await installer.require_claimant_may_connect(claim)
 
         with tenant_scope(state.tenant_id):
             try:

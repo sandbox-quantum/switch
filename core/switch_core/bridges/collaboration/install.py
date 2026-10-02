@@ -90,6 +90,15 @@ class MessagingInstallError(RuntimeError):
     """
 
 
+class ClaimantMayNotConnect(RuntimeError):
+    """The person who posted a claim may not connect the chat it was posted in.
+
+    Holding a valid code says who in Switch asked; it says nothing about who
+    may decide for the chat. A claim connects everything said there to a
+    tenant, so the platform's own say over the chat has to agree as well.
+    """
+
+
 class WebhookAuthenticityError(RuntimeError):
     """An inbound webhook did not prove it came from the platform.
 
@@ -209,16 +218,24 @@ class InstallClaim:
     that creates it, so for a platform whose bridge serves many workspaces it
     should name the connection rather than the one chat that happened to come
     first.
+
+    `claimant` is the platform's id for whoever posted the claim, which is what
+    `require_claimant_may_connect` asks the platform about. A message posted as
+    the chat itself (a channel's post, an anonymous group admin's) names the
+    chat.
     """
 
     token: str
     grant: InstallGrant
+    claimant: str
 
 
 #: Why a claim was refused, as a person trying to connect a chat needs to hear
 #: it. `expired` covers a link already used too: the store cannot tell the two
 #: apart, and neither is fixed differently — both want a fresh link.
-ClaimRefusal = Literal["expired", "unrecognised", "already_connected", "not_permitted"]
+ClaimRefusal = Literal[
+    "expired", "unrecognised", "already_connected", "not_permitted", "not_chat_admin"
+]
 
 
 #: Which state token an installer's platform can carry. `v1` for a platform
@@ -390,6 +407,17 @@ class MessagingAppInstaller(ABC):
         by definition not installed yet and resolving it would drop the one
         event that could change that. Pure, like :meth:`workspace_of_event`:
         the token is verified and redeemed by the install service, not here.
+        """
+        return None
+
+    async def require_claimant_may_connect(self, claim: InstallClaim) -> None:
+        """Refuse a claim posted by someone who may not decide for its chat.
+
+        Asked before the claim's code is spent, so a refused attempt leaves it
+        for someone who may. Raise :class:`ClaimantMayNotConnect` to refuse,
+        and :class:`MessagingInstallError` when the platform could not be
+        asked, which the platform retries. A no-op for a platform that installs
+        by OAuth, whose own consent screen already asked.
         """
         return None
 

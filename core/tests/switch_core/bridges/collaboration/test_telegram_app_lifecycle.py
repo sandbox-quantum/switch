@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from telegram.error import BadRequest, Forbidden, TimedOut
 
 from switch_core.bridges.collaboration.install import (
+    ClaimantMayNotConnect,
     InstallClaim,
     InstallGrant,
     MessagingInstallError,
@@ -65,12 +66,20 @@ class _WebhookInfo:
 
 
 @dataclass
+class _Member:
+    status: str
+
+
+@dataclass
 class _Bot:
     token: str = "123456:placeholder-token"
     left: list[int] = field(default_factory=list)
     sent: list[dict[str, Any]] = field(default_factory=list)
     leave_error: Exception | None = None
     webhook_info: _WebhookInfo = field(default_factory=_WebhookInfo)
+    member_status: str = "administrator"
+    member_error: Exception | None = None
+    members_asked: list[tuple[int, int]] = field(default_factory=list)
 
     async def initialize(self) -> None:
         return None
@@ -92,6 +101,12 @@ class _Bot:
 
     async def send_message(self, **kwargs: Any) -> None:
         self.sent.append(kwargs)
+
+    async def get_chat_member(self, *, chat_id: int, user_id: int) -> _Member:
+        self.members_asked.append((chat_id, user_id))
+        if self.member_error is not None:
+            raise self.member_error
+        return _Member(status=self.member_status)
 
     async def get_webhook_info(self) -> _WebhookInfo:
         return self.webhook_info
@@ -185,6 +200,54 @@ class TestLeaving:
         installer, _ = await _installer(_Bot(leave_error=TimedOut()))
         with pytest.raises(MessagingInstallError, match="still in the chat"):
             await installer.release(external_workspace_id="-1001")
+
+
+def _claim(claimant: str) -> InstallClaim:
+    return InstallClaim(
+        token="c1token",
+        grant=InstallGrant(
+            external_workspace_id="-1001",
+            workspace_name="Telegram",
+            bot_token=None,
+            scopes="",
+        ),
+        claimant=claimant,
+    )
+
+
+class TestWhoMayConnectAChat:
+    """Only a chat's creator or admins may connect it: the code says who in
+    Switch asked, not who may decide for the chat."""
+
+    @pytest.mark.parametrize("status", ["creator", "administrator"])
+    async def test_its_admins_may(self, status: str) -> None:
+        installer, bot = await _installer(_Bot(member_status=status))
+        await installer.require_claimant_may_connect(_claim("42"))
+        assert bot.members_asked == [(-1001, 42)]
+
+    @pytest.mark.parametrize("status", ["member", "restricted"])
+    async def test_anyone_else_may_not(self, status: str) -> None:
+        installer, _ = await _installer(_Bot(member_status=status))
+        with pytest.raises(ClaimantMayNotConnect, match="not one of its admins"):
+            await installer.require_claimant_may_connect(_claim("42"))
+
+    async def test_a_post_as_the_chat_itself_needs_no_lookup(self) -> None:
+        """A channel's post, or an anonymous admin's message."""
+        installer, bot = await _installer(_Bot(member_status="member"))
+        await installer.require_claimant_may_connect(_claim("-1001"))
+        assert bot.members_asked == []
+
+    async def test_someone_telegram_will_not_answer_for_is_refused(self) -> None:
+        installer, _ = await _installer(
+            _Bot(member_error=BadRequest("Bad Request: PARTICIPANT_ID_INVALID"))
+        )
+        with pytest.raises(ClaimantMayNotConnect):
+            await installer.require_claimant_may_connect(_claim("777000"))
+
+    async def test_a_lookup_that_fails_is_retried_not_let_through(self) -> None:
+        installer, _ = await _installer(_Bot(member_error=TimedOut()))
+        with pytest.raises(MessagingInstallError, match="Could not ask Telegram"):
+            await installer.require_claimant_may_connect(_claim("42"))
 
 
 def _message(chat_id: int, **fields: Any) -> dict[str, Any]:
@@ -442,6 +505,7 @@ class TestRefusedClaims:
                 bot_token=None,
                 scopes="",
             ),
+            claimant="42",
         )
 
         await installer.on_claim_refused(claim=claim, reason=reason)  # type: ignore[arg-type]
