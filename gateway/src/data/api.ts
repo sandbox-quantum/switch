@@ -135,6 +135,9 @@ export interface BridgeDetail {
   // Whether this operator has allowed this connection to create channels.
   // Only meaningful when channel_creation_supported is true.
   channel_creation_enabled: boolean;
+  // Why no existing channel can be linked by id on this connection, or null
+  // when one can — the Switch Telegram app, whose chats come from connecting.
+  channel_ids_refused?: string | null;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.
@@ -878,6 +881,9 @@ export interface InstalledApp {
   id: string;
   platform: string;
   external_workspace_id: string;
+  // What a person calls it — a chat's room, or the workspace an OAuth install
+  // came from — while it still has one. Null once it has ended.
+  name: string | null;
   // "active", "disconnected" (ended here) or "revoked" (ended at the
   // platform). The last two are kept apart because an operator whose
   // connection stopped working needs to know which of the two it was.
@@ -889,9 +895,25 @@ export interface InstalledApp {
   ended_at: string | null;
 }
 
-export async function fetchInstallablePlatforms(): Promise<string[] | null> {
-  const res = await fetchJson<{ platforms: string[] }>("/messaging-apps");
-  return res === null ? null : res.platforms;
+// A platform installed by claiming a chat (Telegram) rather than by OAuth, and
+// what the signed-in person may do with it. Worked out by the server because
+// the split — an admin connects the first chat, members the rest — depends on
+// whether the organisation has a connection yet. `connected` outlives the
+// chats: the connection stays until an admin deletes it.
+export interface ClaimablePlatform {
+  platform: string;
+  connected: boolean;
+  can_add_chat: boolean;
+}
+
+export interface InstallablePlatforms {
+  // OAuth platforms, offered to a tenant admin only.
+  platforms: string[];
+  claimable: ClaimablePlatform[];
+}
+
+export async function fetchInstallablePlatforms(): Promise<InstallablePlatforms | null> {
+  return fetchJson<InstallablePlatforms>("/messaging-apps");
 }
 
 export async function fetchInstalledApps(): Promise<InstalledApp[] | null> {
@@ -910,6 +932,19 @@ export async function beginAppInstall(platform: string): Promise<string> {
     "POST",
   );
   return res.authorize_url;
+}
+
+// A link that adds the bot to a group and connects it, and the bare code a
+// channel admin posts as `/connect <code>` instead, after adding the bot by
+// `bot_handle`. The link and code work once, for ten minutes.
+export interface ChatClaim {
+  url: string;
+  code: string;
+  bot_handle: string;
+}
+
+export async function beginChatClaim(platform: string): Promise<ChatClaim> {
+  return jsonRequest<ChatClaim>(`/messaging-apps/${platform}/claim`, "POST");
 }
 
 // Throwing, because 502 here means the platform refused to revoke, nothing was

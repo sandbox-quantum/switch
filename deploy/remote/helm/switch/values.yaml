@@ -121,6 +121,12 @@ secrets:
   # it lives here and is never stored against an install or revoked on disconnect.
   discordAppClientSecret: ""
   discordAppBotToken: ""
+  # Distributed Telegram app (required when switchCore.telegramApp.enabled). The
+  # bot token is deployment config shared by every tenant, like Discord's. The
+  # webhook secret (1-256 characters of A-Z a-z 0-9 _ -) is the whole of what
+  # proves an update came from Telegram.
+  telegramAppBotToken: ""
+  telegramAppWebhookSecret: ""
 
 # ── Switch Core (FastAPI) ─────────────────────────────────────────────────────
 switchCore:
@@ -308,6 +314,24 @@ switchCore:
     # mention-only operation; leave both false unless the app is verified.
     messageContent: false
     members: false
+  # The distributed Telegram app: one bot we register whose groups a customer
+  # claims with a link from Switch, never seeing a token — as opposed to a
+  # self-registered bot an operator pastes a token for. Off unless you have
+  # registered such a bot, with Group Privacy turned off in BotFather before it
+  # joined any chat.
+  #
+  # Telegram delivers every update as a webhook to
+  # <messagingPublicUrl>/messaging/telegram/events, so enabling it commits the
+  # deployment to being reachable there on port 443, 80, 88 or 8443 — add
+  # /messaging to ingress.agentApiPaths as well. The token and webhook secret
+  # are supplied through secrets.telegramAppBotToken /
+  # secrets.telegramAppWebhookSecret.
+  telegramApp:
+    enabled: false
+    # Public origin Telegram delivers to — scheme + host, https, no path. The
+    # same deployment-wide origin as slackApp/discordApp.messagingPublicUrl; if
+    # either of those apps is enabled its value is used and this one is ignored.
+    messagingPublicUrl: ""
   # Bearer-token resolution runs before every authenticated request and agents
   # beat continuously, so a successful resolution is memoised in process for
   # this many seconds. Only successes are cached — an unknown or revoked token

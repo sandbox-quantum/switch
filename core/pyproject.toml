@@ -90,6 +90,7 @@ markers = [
     "integration: boots real Postgres + Tuwunel via testcontainers (slow; excluded from the default run — use `just test-integration`)",
     "benchmark: boots real Postgres and serves the agent bridge on a socket to measure it (slow, and reports numbers rather than asserting them; excluded from the default run — use `just bench`)",
     "no_ambient_tenant: opt out of session_factory's default tenant-zero binding, for tests asserting what is or is not bound",
+    "collaboration_bridges: build the integration harness with the real collaboration bridge lifecycle rather than the no-bridges stand-in",
 ]
 
 [tool.mypy]

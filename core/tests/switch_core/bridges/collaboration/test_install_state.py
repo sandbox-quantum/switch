@@ -20,7 +20,9 @@ from switch_core.bridges.collaboration.install_state import (
     InstallState,
     InstallStateError,
     mint,
+    mint_compact,
     verify,
+    verify_compact,
 )
 
 _SECRET = "test-jwt-secret"
@@ -115,3 +117,62 @@ class TestMalformed:
 
         with pytest.raises(InstallStateError, match="malformed"):
             verify(f"v1.{payload}.{signature}", secret=_SECRET)
+
+
+class TestTheCompactForm:
+    """The form a Telegram deep link can carry: 64 characters at most, from
+    `[A-Za-z0-9_-]`, and bound to its platform by the key rather than a field."""
+
+    _STATE = InstallState(
+        tenant_id="3f1c2a8e-7b4d-4e0a-9c6f-1d2e3f4a5b6c",
+        state_id="a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d",
+        platform="telegram",
+    )
+
+    def test_it_verifies_back_to_what_went_in(self) -> None:
+        token = mint_compact(self._STATE, secret=_SECRET)
+        assert verify_compact(token, platform="telegram", secret=_SECRET) == self._STATE
+
+    def test_it_fits_a_telegram_start_parameter(self) -> None:
+        token = mint_compact(self._STATE, secret=_SECRET)
+        assert len(token) <= 64
+        assert all(c.isalnum() or c in "-_" for c in token)
+
+    def test_a_token_for_another_platform_is_refused(self) -> None:
+        token = mint_compact(self._STATE, secret=_SECRET)
+        with pytest.raises(InstallStateError):
+            verify_compact(token, platform="discord", secret=_SECRET)
+
+    def test_a_token_from_another_deployment_is_refused(self) -> None:
+        token = mint_compact(self._STATE, secret="a-different-secret")
+        with pytest.raises(InstallStateError):
+            verify_compact(token, platform="telegram", secret=_SECRET)
+
+    def test_an_edited_tenant_is_refused(self) -> None:
+        token = mint_compact(self._STATE, secret=_SECRET)
+        raw = bytearray(base64.urlsafe_b64decode(token.removeprefix("c1") + "=="))
+        raw[0] ^= 0x01
+        forged = "c1" + base64.urlsafe_b64encode(bytes(raw)).decode().rstrip("=")
+
+        with pytest.raises(InstallStateError):
+            verify_compact(forged, platform="telegram", secret=_SECRET)
+
+    def test_a_truncated_token_is_refused(self) -> None:
+        token = mint_compact(self._STATE, secret=_SECRET)
+        with pytest.raises(InstallStateError):
+            verify_compact(token[:-4], platform="telegram", secret=_SECRET)
+
+    def test_the_two_forms_do_not_stand_in_for_each_other(self) -> None:
+        v1 = mint(self._STATE, secret=_SECRET)
+        compact = mint_compact(self._STATE, secret=_SECRET)
+
+        with pytest.raises(InstallStateError):
+            verify_compact(v1, platform="telegram", secret=_SECRET)
+        with pytest.raises(InstallStateError):
+            verify(compact, secret=_SECRET)
+
+    def test_ids_that_are_not_uuids_cannot_be_minted(self) -> None:
+        """A programming error, raised rather than minted into a token that
+        would verify to different ids."""
+        with pytest.raises(ValueError):
+            mint_compact(_STATE, secret=_SECRET)

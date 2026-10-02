@@ -1,22 +1,35 @@
-import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import {
   Alert,
   Box,
   Button,
   Chip,
   CircularProgress,
-  IconButton,
+  Divider,
+  Paper,
   Stack,
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
-import { type InstalledApp, beginAppInstall } from "../../data/api";
+import {
+  type ChatClaim,
+  type ClaimablePlatform,
+  type InstalledApp,
+  beginAppInstall,
+  beginChatClaim,
+} from "../../data/api";
 import { useInstallablePlatforms, useInstalledApps } from "../../data/hooks";
-import { EM_DASH, MONO_SX, formatDate, titleCase } from "../../theme/hootFormat";
-import DisconnectAppDialog from "./DisconnectAppDialog";
+import {
+  MONO_SX,
+  formatDate,
+  pluralize,
+  titleCase,
+} from "../../theme/hootFormat";
+import discordIcon from "../../assets/bridges/discord.svg";
+import slackIcon from "../../assets/bridges/slack.svg";
+import telegramIcon from "../../assets/bridges/telegram.svg";
+import ClaimChatDialog from "./ClaimChatDialog";
+import DisconnectAppDialog, { installNoun } from "./DisconnectAppDialog";
 
 /**
  * The other way a connection comes into being. Registering an app means
@@ -32,11 +45,27 @@ import DisconnectAppDialog from "./DisconnectAppDialog";
  * Renders nothing at all on a deployment that has no app of its own and has
  * never had one, which is most of them: an empty section explaining a feature
  * nobody here can use is worse than no section.
+ *
+ * One card per platform, each carrying its own actions, so the page does not
+ * grow a row of buttons with every app. Installs are listed by name; ended
+ * ones, which are history rather than state, are folded away.
+ *
+ * A claim-based platform (Telegram) is installed a chat at a time, and a chat
+ * is a room rather than a connection. So its buttons are offered to whoever
+ * the server says may use them — an admin to connect the first chat, anyone
+ * after that — and any member may disconnect one of its chats, where every
+ * OAuth action here is a tenant admin's. Its connection outlives its chats,
+ * and is turned off by deleting it with the other connections.
  */
-type InstallRow = InstalledApp & { id: string };
 
-const STATUS_COLOR: Record<string, "success" | "warning" | "default"> = {
-  active: "success",
+// The platform's own logo on its Add button, as Switch Console shows it.
+const PLATFORM_ICON: Record<string, string> = {
+  discord: discordIcon,
+  slack: slackIcon,
+  telegram: telegramIcon,
+};
+
+const ENDED_COLOR: Record<string, "warning" | "default"> = {
   // Ended at the platform rather than here — somebody removed the app, or its
   // token was killed. Warned rather than greyed out, because unlike
   // "disconnected" it is news.
@@ -55,13 +84,31 @@ export default function InstalledAppsSection({
   isAdmin,
   onConnectionsChanged,
 }: Props) {
-  const { data: platforms } = useInstallablePlatforms();
+  const { data: offered, refetch: refetchOffered } = useInstallablePlatforms();
   const { data: installs, loading, refetch } = useInstalledApps();
   const [starting, setStarting] = useState<string | null>(null);
+  const [claim, setClaim] = useState<{
+    platform: string;
+    claim: ChatClaim;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<InstalledApp | null>(
     null,
   );
+
+  const claimable = useMemo(() => offered?.claimable ?? [], [offered]);
+  const installable = useMemo(() => offered?.platforms ?? [], [offered]);
+  const rows = useMemo(() => installs ?? [], [installs]);
+
+  // Every platform this organisation can add to, or has anything recorded
+  // for — a platform whose app was since removed still shows its history.
+  const platforms = useMemo(() => {
+    const seen = new Set<string>();
+    for (const c of claimable) seen.add(c.platform);
+    if (isAdmin) for (const p of installable) seen.add(p);
+    for (const row of rows) seen.add(row.platform);
+    return [...seen];
+  }, [claimable, installable, rows, isAdmin]);
 
   const handleInstall = useCallback(async (platform: string) => {
     setStarting(platform);
@@ -78,135 +125,49 @@ export default function InstalledAppsSection({
     }
   }, []);
 
+  const handleClaim = useCallback(async (platform: string) => {
+    setStarting(platform);
+    setError(null);
+    try {
+      setClaim({ platform, claim: await beginChatClaim(platform) });
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Failed to start connecting a chat",
+      );
+    } finally {
+      setStarting(null);
+    }
+  }, []);
+
+  // A claim lands in the chat, not here, so the list is refreshed when the
+  // dialog closes rather than waited on.
+  const handleClaimClosed = useCallback(() => {
+    setClaim(null);
+    refetch();
+    refetchOffered();
+    onConnectionsChanged();
+  }, [refetch, refetchOffered, onConnectionsChanged]);
+
   const handleDisconnected = useCallback(() => {
     setDisconnectTarget(null);
     refetch();
+    refetchOffered();
     onConnectionsChanged();
-  }, [refetch, onConnectionsChanged]);
+  }, [refetch, refetchOffered, onConnectionsChanged]);
 
-  const columns = useMemo<GridColDef<InstallRow>[]>(
-    () => [
-      {
-        field: "platform",
-        headerName: "Platform",
-        width: 130,
-        renderCell: ({ value }) => (
-          <Chip label={titleCase(String(value))} size="small" />
-        ),
-      },
-      {
-        field: "external_workspace_id",
-        headerName: "Workspace",
-        width: 170,
-        renderCell: ({ value }) => (
-          <Box component="span" sx={MONO_SX}>
-            {String(value)}
-          </Box>
-        ),
-      },
-      {
-        field: "status",
-        headerName: "Status",
-        width: 140,
-        renderCell: ({ value }) => (
-          <Chip
-            label={titleCase(String(value))}
-            size="small"
-            color={STATUS_COLOR[value as string] ?? "default"}
-          />
-        ),
-      },
-      {
-        field: "scopes",
-        headerName: "Scopes",
-        flex: 1,
-        minWidth: 180,
-        // Verbatim, and in full on hover: a scope string that means nothing
-        // here is still the answer to why the platform refused a call.
-        renderCell: ({ value }) => (
-          <Tooltip title={String(value)}>
-            <Box component="span" sx={MONO_SX}>
-              {String(value)}
-            </Box>
-          </Tooltip>
-        ),
-      },
-      {
-        field: "installed_at",
-        headerName: "Installed",
-        width: 130,
-        valueFormatter: (value) => formatDate(value as string),
-      },
-      {
-        field: "ended_at",
-        headerName: "Ended",
-        width: 130,
-        valueFormatter: (value) =>
-          value ? formatDate(value as string) : EM_DASH,
-      },
-      ...(isAdmin
-        ? [
-            {
-              field: "actions" as const,
-              headerName: "",
-              width: 70,
-              sortable: false,
-              filterable: false,
-              align: "right" as const,
-              renderCell: ({ row }: { row: InstallRow }) =>
-                row.status === "active" ? (
-                  <Tooltip title="Disconnect this app">
-                    <IconButton
-                      size="small"
-                      onClick={() => setDisconnectTarget(row)}
-                    >
-                      <LinkOffOutlined fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                ) : null,
-            },
-          ]
-        : []),
-    ],
-    [isAdmin],
-  );
-
-  const rows = useMemo<InstallRow[]>(() => installs ?? [], [installs]);
-
-  const installable = platforms ?? [];
-  if (installable.length === 0 && rows.length === 0) return null;
+  if (platforms.length === 0) {
+    return null;
+  }
 
   return (
     <Box mt={5}>
-      <Stack direction="row" alignItems="center" mb={1}>
-        <Typography variant="h5">Installed apps</Typography>
-        {isAdmin && (
-          <Stack direction="row" spacing={1} sx={{ ml: "auto" }}>
-            {installable.map((platform) => (
-              <Button
-                key={platform}
-                variant="contained"
-                disabled={starting !== null}
-                startIcon={
-                  starting === platform ? (
-                    <CircularProgress size={16} />
-                  ) : undefined
-                }
-                onClick={() => handleInstall(platform)}
-              >
-                Add to {titleCase(platform)}
-              </Button>
-            ))}
-          </Stack>
-        )}
-      </Stack>
-
+      <Typography variant="h5" mb={1}>
+        Installed apps
+      </Typography>
       <Typography variant="body2" color="text.secondary" mb={2}>
-        Installing adds this Switch deployment&apos;s own app to your workspace.
-        Unlike a registered app, whose token is yours to rotate, an installed app
-        authenticates with credentials this deployment holds and you cannot see
-        or rotate. Removing it has to go through Disconnect rather than deleting
-        its connection.
+        This deployment&apos;s own apps, using credentials only the deployment
+        holds. Disconnect what an app is installed in here: a connection above
+        cannot be deleted while an app is still installed through it.
       </Typography>
 
       {error && (
@@ -217,12 +178,27 @@ export default function InstalledAppsSection({
 
       {loading ? (
         <CircularProgress />
-      ) : rows.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          No workspaces yet. Use the button above to install the app into one.
-        </Typography>
       ) : (
-        <DataTable rows={rows} columns={columns} height={360} />
+        <Stack spacing={2}>
+          {platforms.map((platform) => {
+            const claimed = claimable.find((c) => c.platform === platform);
+            return (
+              <PlatformCard
+                key={platform}
+                platform={platform}
+                installs={rows.filter((row) => row.platform === platform)}
+                claimable={claimed}
+                canInstall={isAdmin && installable.includes(platform)}
+                canDisconnect={isAdmin || claimed !== undefined}
+                starting={starting}
+                onAdd={() =>
+                  claimed ? handleClaim(platform) : handleInstall(platform)
+                }
+                onDisconnect={setDisconnectTarget}
+              />
+            );
+          })}
+        </Stack>
       )}
 
       <DisconnectAppDialog
@@ -230,6 +206,188 @@ export default function InstalledAppsSection({
         onClose={() => setDisconnectTarget(null)}
         onDisconnected={handleDisconnected}
       />
+      <ClaimChatDialog
+        platform={claim?.platform ?? ""}
+        claim={claim?.claim ?? null}
+        onClose={handleClaimClosed}
+      />
     </Box>
+  );
+}
+
+interface CardProps {
+  platform: string;
+  installs: InstalledApp[];
+  // Set for a claim-based platform, with what this caller may do on it.
+  claimable: ClaimablePlatform | undefined;
+  canInstall: boolean;
+  canDisconnect: boolean;
+  starting: string | null;
+  onAdd: () => void;
+  onDisconnect: (install: InstalledApp) => void;
+}
+
+function PlatformCard({
+  platform,
+  installs,
+  claimable,
+  canInstall,
+  canDisconnect,
+  starting,
+  onAdd,
+  onDisconnect,
+}: CardProps) {
+  const [showEnded, setShowEnded] = useState(false);
+  const name = titleCase(platform);
+  const noun = installNoun(platform);
+  const active = installs.filter((row) => row.status === "active");
+  const ended = installs.filter((row) => row.status !== "active");
+  const canAdd = claimable ? claimable.can_add_chat : canInstall;
+  const icon = PLATFORM_ICON[platform];
+
+  return (
+    <Paper variant="outlined" sx={{ borderRadius: 2 }}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{ px: 2, py: 1.5 }}
+      >
+        <Box sx={{ flexGrow: 1 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+            {name}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {active.length > 0
+              ? `${pluralize(active.length, noun)} connected`
+              : claimable?.connected
+                ? `No ${noun}s connected. The connection stays until an admin deletes it above.`
+                : "Not connected"}
+          </Typography>
+        </Box>
+        {canAdd && (
+          <Button
+            variant="contained"
+            disabled={starting !== null}
+            startIcon={
+              starting === platform ? (
+                <CircularProgress size={16} />
+              ) : icon ? (
+                <Box
+                  component="img"
+                  src={icon}
+                  alt=""
+                  sx={{ width: 16, height: 16 }}
+                />
+              ) : undefined
+            }
+            onClick={onAdd}
+          >
+            Add to {name}
+          </Button>
+        )}
+      </Stack>
+
+      {active.map((install) => (
+        <InstallRow
+          key={install.id}
+          install={install}
+          onDisconnect={canDisconnect ? () => onDisconnect(install) : undefined}
+        />
+      ))}
+
+      {ended.length > 0 && (
+        <>
+          <Divider />
+          <Box sx={{ px: 1, py: 0.5 }}>
+            <Button
+              size="small"
+              onClick={() => setShowEnded((shown) => !shown)}
+            >
+              {showEnded ? "Hide ended" : `Show ${ended.length} ended`}
+            </Button>
+          </Box>
+          {showEnded &&
+            ended.map((install) => (
+              <InstallRow key={install.id} install={install} />
+            ))}
+        </>
+      )}
+    </Paper>
+  );
+}
+
+function InstallRow({
+  install,
+  onDisconnect,
+}: {
+  install: InstalledApp;
+  onDisconnect?: () => void;
+}) {
+  const live = install.status === "active";
+  return (
+    <>
+      <Divider />
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={2}
+        sx={{ px: 2, py: 1 }}
+      >
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          {/* The id is always a hover away: it is what the platform's own
+              admin screens and Switch's logs call the install. */}
+          <Tooltip
+            title={install.external_workspace_id}
+            placement="bottom-start"
+          >
+            <Typography
+              variant="body2"
+              noWrap
+              sx={install.name ? undefined : MONO_SX}
+            >
+              {install.name ?? install.external_workspace_id}
+            </Typography>
+          </Tooltip>
+          {install.scopes && (
+            // Verbatim, and in full on hover: a scope string that means
+            // nothing here is still the answer to why the platform refused a
+            // call.
+            <Tooltip title={install.scopes} placement="bottom-start">
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                noWrap
+                component="div"
+                sx={MONO_SX}
+              >
+                {install.scopes}
+              </Typography>
+            </Tooltip>
+          )}
+        </Box>
+        {!live && (
+          <Chip
+            label={titleCase(install.status)}
+            size="small"
+            color={ENDED_COLOR[install.status] ?? "default"}
+          />
+        )}
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{ whiteSpace: "nowrap" }}
+        >
+          {live
+            ? `Connected ${formatDate(install.installed_at)}`
+            : `Ended ${formatDate(install.ended_at)}`}
+        </Typography>
+        {live && onDisconnect && (
+          <Button size="small" color="error" onClick={onDisconnect}>
+            Disconnect
+          </Button>
+        )}
+      </Stack>
+    </>
   );
 }

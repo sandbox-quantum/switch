@@ -9,10 +9,11 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
 from contextvars import ContextVar
 from dataclasses import replace
-from typing import Any, ClassVar, NamedTuple
+from typing import Any, ClassVar, Literal, NamedTuple
 
+from pydantic import ConfigDict, model_validator
+from pydantic.json_schema import SkipJsonSchema
 from telegram import (
-    BotCommand,
     ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -34,10 +35,11 @@ from telegram.error import (
 )
 from telegram.ext import Application, ApplicationBuilder, TypeHandler
 
-from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME, CommandArg
+from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, CommandArg
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
+    ChannelNotBindable,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -78,10 +80,18 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.bridges.collaboration.telegram.app_client import (
+    TelegramAppClient,
+    bot_id_of,
+    bot_resource,
+)
 from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
     chunk_message,
 )
+from switch_core.bridges.collaboration.telegram.commands import command_menu
+from switch_core.observability.catalogue import BRIDGE_THROTTLE_HELD
+from switch_core.observability.metrics import metrics
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -250,12 +260,6 @@ _COMMAND_PREFIXES = ("!", "/")
 # install started from Switch from someone adding the bot by hand, which is
 # worth saying in the chat and in the logs.
 _INSTALL_PAYLOAD = "switch"
-
-# Telegram will only register a command spelled in these characters, and caps a
-# description at 256. A name it rejects is left out of the menu rather than
-# taking the whole call down.
-_TELEGRAM_COMMAND_RE = re.compile(r"[a-z0-9_-]{1,32}")
-_MAX_COMMAND_DESCRIPTION = 256
 
 # Supergroup and channel ids are the internal id with a -100 prefix; t.me/c/
 # links carry the internal id alone.
@@ -437,8 +441,55 @@ class _ThreadRoot(NamedTuple):
 
 
 class TelegramConnectionConfig(BridgeConnectionConfig):
-    bot_token: str
-    bot_username: str
+    # Still required on the registration form, which only ever creates a
+    # self-registered bridge. The model allows them absent because the install
+    # flow writes shared bridges without them; the validator below is what
+    # decides, so the form cannot drift from it.
+    model_config = ConfigDict(
+        json_schema_extra={"required": ["bot_token", "bot_username"]}
+    )
+
+    #: Optional because they depend on `event_delivery`, which the validator
+    #: below enforces: a self-registered bridge polls with its own bot; a
+    #: distributed one runs on the deployment's shared bot and carries neither.
+    bot_token: str | None = None
+    bot_username: str | None = None
+    #: How this bridge's updates reach it, decided by which bot the chat was
+    #: connected to rather than by anyone's preference.
+    #:
+    #: `own_connection` is the self-registered bot: Switch polls Telegram with
+    #: the token above. `shared` is the distributed app: the bridge polls
+    #: nothing, is handed the one deployment bot, and receives its updates
+    #: from the webhook route.
+    #:
+    #: Hidden from the registration form, which only ever reaches the
+    #: self-registered case; the shared value is written by the install flow.
+    event_delivery: SkipJsonSchema[Literal["own_connection", "shared"]] = (
+        "own_connection"
+    )
+
+    @model_validator(mode="after")
+    def _credentials_match_delivery(self) -> TelegramConnectionConfig:
+        """Refuse the half-states that look configured and cannot work.
+
+        A self-registered bridge with no token polls nothing and receives
+        nothing. A shared bridge carrying one holds a credential for a bot it
+        does not own, and polling with it would take the shared bot's updates
+        away from every tenant.
+        """
+        if self.event_delivery == "own_connection" and not (
+            self.bot_token and self.bot_username
+        ):
+            raise ValueError(
+                "bot_token and bot_username are required: without them Switch "
+                "cannot poll Telegram and this bridge would receive nothing."
+            )
+        if self.event_delivery == "shared" and (self.bot_token or self.bot_username):
+            raise ValueError(
+                "a shared-delivery Telegram bridge carries no bot_token or "
+                "bot_username; the distributed app's bot is deployment config."
+            )
+        return self
 
 
 class TelegramAdapter(PlatformAdapter):
@@ -516,7 +567,13 @@ class TelegramAdapter(PlatformAdapter):
         self._app: Application | None = None  # type: ignore[type-arg]
         self._bot: Any = None
         self._bot_user_id: int = 0
-        self._bot_username = config.bot_username.lstrip("@")
+        self._bot_username = (config.bot_username or "").lstrip("@")
+        # A shared bridge polls nothing and is handed the deployment's bot by
+        # `attach_shared_connection`; until then it neither sends nor receives.
+        self._shared = config.event_delivery == "shared"
+        # Fired on that attach, so the start-time work that needed the bot
+        # (agent identities) can run. Set by BridgeCore.
+        self._on_attached: Callable[[], None] | None = None
         self._seen_ids: OrderedDict[tuple[str, int], None] = OrderedDict()
         self._seen_ids_max = 1000
         # Telegram user id ↔ username caches, for rendering outbound mentions of
@@ -588,6 +645,14 @@ class TelegramAdapter(PlatformAdapter):
         self._on_user_joined = on_user_joined
         self._on_app_joined = on_app_joined
 
+        if self._shared:
+            # No polling and no command menu: the shared bot's updates arrive
+            # through `dispatch_event`, and its menu is published once for the
+            # deployment. Inert until `attach_shared_connection`.
+            logger.info("Telegram bridge registered on the shared app bot; awaiting it")
+            return
+
+        assert self._config.bot_token is not None  # guaranteed by the validator
         app = ApplicationBuilder().token(self._config.bot_token).build()
         app.add_handler(TypeHandler(Update, self._make_on_update()))
         self._app = app
@@ -639,24 +704,14 @@ class TelegramAdapter(PlatformAdapter):
     async def _publish_command_menu(self) -> None:
         """Publish the in-room command set so Telegram offers it as you type.
 
-        Telegram only accepts `[a-z0-9_]` in a registered command, so the
-        hyphenated names are published in their underscore spelling —
-        `/invite_agent` — and `_parse_command` accepts either. Without this the
-        commands still work when typed in full, but nothing suggests them, and
-        a `/` menu that lists none implies the bot has none.
+        Without this the commands still work when typed in full, but nothing
+        suggests them, and a `/` menu that lists none implies the bot has none.
 
         A failure here is logged and left non-fatal, as Discord's sync is: the
         bridge is fully usable without the menu, and losing it is a far better
         outcome than refusing to start.
         """
-        menu = [
-            BotCommand(
-                command=command.name.replace("-", "_"),
-                description=command.description[:_MAX_COMMAND_DESCRIPTION],
-            )
-            for command in COMMANDS
-            if not command.hidden and _TELEGRAM_COMMAND_RE.fullmatch(command.name)
-        ]
+        menu = command_menu()
         try:
             await self._require_bot().set_my_commands(menu)
         except Exception:
@@ -882,7 +937,9 @@ class TelegramAdapter(PlatformAdapter):
         The link is withheld from a bot BotFather has barred from groups,
         because Telegram answers that by opening a chat with the bot too.
         """
-        if not self._bot_username or not self._can_join_groups:
+        if self._shared or not self._bot_username or not self._can_join_groups:
+            # A shared bridge's link is a signed claim from the install flow;
+            # this unsigned one would add the bot to a chat nobody owns.
             return []
         return [
             BridgeInstallLink(
@@ -941,6 +998,69 @@ class TelegramAdapter(PlatformAdapter):
                     logger.exception("Error while stopping the Telegram adapter")
         self._bot = None
         logger.info("Telegram adapter stopped")
+
+    @classmethod
+    def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
+        """The bot a self-registered bridge polls, which only one poller can use.
+
+        Telegram hands each update to a single `getUpdates` caller, so two
+        bridges on one token split a chat's messages between them at random.
+        Declaring the bot here refuses the second at registration.
+
+        A shared bridge declares nothing: every tenant's shared bridge runs on
+        the one app bot by design, and none of them polls it.
+        """
+        config = TelegramConnectionConfig.model_validate(connection_config)
+        if config.event_delivery == "shared" or config.bot_token is None:
+            return None
+        return bot_resource(bot_id_of(config.bot_token))
+
+    def set_on_attached(self, callback: Callable[[], None]) -> None:
+        self._on_attached = callback
+
+    def attach_shared_connection(self, connection: Any) -> None:
+        """Hand a shared bridge the deployment's bot, once.
+
+        Called as a bridge starts once the bot is up, when the bot comes up
+        for bridges started before it, and on each update delivered to a
+        bridge, as a backstop. Everything the self-registered
+        bridge learns from its own `getMe` is read from the shared client
+        instead, and the rate-limit cooldown is the client's rather than this
+        bridge's, because Telegram meters the bot and not the tenant.
+
+        A no-op on a self-registered bridge and on one already attached. Any
+        other connection type is a wiring mistake and raises rather than being
+        read as if it were a Telegram bot.
+        """
+        if not self._shared or self._bot is not None:
+            return
+        if not isinstance(connection, TelegramAppClient):
+            raise TypeError(
+                f"a Telegram bridge was handed a {type(connection).__name__}, "
+                "not the Telegram app client"
+            )
+        self._bot = connection.bot
+        self._bot_user_id = int(connection.bot_id)
+        self._bot_username = connection.bot_username
+        self._privacy_mode_disabled = connection.privacy_mode_disabled
+        self._can_join_groups = connection.can_join_groups
+        self._rich_update_cooldown = connection.cooldown
+        if self._on_attached is not None:
+            self._on_attached()
+
+    async def dispatch_event(
+        self, *, envelope_type: str, payload: dict[str, Any]
+    ) -> None:
+        """Handle one update the webhook route resolved to this bridge.
+
+        The same handling a polled update gets, from the same `Update` object,
+        so the two delivery paths cannot drift in what they do with one.
+        """
+        if not self._shared:
+            await super().dispatch_event(envelope_type=envelope_type, payload=payload)
+            return
+        update = Update.de_json(payload, self._require_bot())
+        await self._handle_update(update)
 
     def _require_bot(self) -> Any:
         if self._bot is None:
@@ -1822,6 +1942,11 @@ class TelegramAdapter(PlatformAdapter):
         """
         remaining = self._rich_update_cooldown.remaining()
         if remaining > 0:
+            metrics().observe(
+                BRIDGE_THROTTLE_HELD,
+                {"platform": "telegram", "delivery": self._config.event_delivery},
+                remaining,
+            )
             raise RichContentThrottled(retry_after=remaining, text=text)
 
     def _pace_publication(
@@ -2035,6 +2160,27 @@ class TelegramAdapter(PlatformAdapter):
         if not self._bot_username:
             return None
         return f"https://t.me/{self._bot_username}"
+
+    def channel_ids_refused(self) -> str | None:
+        """Every id, on the shared bot: a chat joins it only by being claimed.
+
+        The shared bot is in every organisation's chats, and nothing it can
+        ask Telegram says whose a chat is — only a claim does, and a claimed
+        chat is given its room by the claim. A self-registered bot is the
+        organisation's own and reaches only chats someone added it to.
+        """
+        if not self._shared:
+            return None
+        return (
+            "Rooms on the Switch Telegram app come from connecting a chat: use "
+            "Add to Telegram on the Telegram card under Installed apps, and the "
+            "chat gets its room. A chat cannot be linked to a room by its id."
+        )
+
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        refusal = self.channel_ids_refused()
+        if refusal is not None:
+            raise ChannelNotBindable(refusal)
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         bot = self._require_bot()
@@ -2443,8 +2589,18 @@ class TelegramAdapter(PlatformAdapter):
             return
 
         if author is None:
-            # Channel posts are authored by the channel, not a person; there is
-            # no sender to attribute them to.
+            # A channel post names a person only when the channel shows its
+            # authors' profiles, and then it arrives with a sender and is
+            # bridged below. Otherwise it is the channel's, with no sender to
+            # attribute it to. The one exception is the `/connect` that claimed
+            # the channel for a shared bridge, which is its join.
+            if self._shared:
+                await self._absorb_claim(
+                    str(getattr(message, "text", None) or ""),
+                    chat_id,
+                    channel_type,
+                    channel_name,
+                )
             return
 
         username = self._display_name(author)
@@ -2457,6 +2613,10 @@ class TelegramAdapter(PlatformAdapter):
         root_id = self._root_id_of(message)
         message_ref = f"{chat_id}:{message.message_id}"
 
+        if self._shared and await self._absorb_claim(
+            content.strip(), chat_id, channel_type, channel_name
+        ):
+            return
         if await self._handle_start(content.strip(), chat_id, channel_type):
             return
 
@@ -2651,8 +2811,9 @@ class TelegramAdapter(PlatformAdapter):
         nothing.
 
         A bare `/start` in a 1:1 chat is left alone — it is how a person opens
-        a conversation with the bot, and swallowing it would leave the DM
-        unbridged until they typed again.
+        a conversation with the bot, and swallowing it would leave them without
+        the reply that says direct messages reach no agent. A DM is never
+        bridged either way.
 
         Only groups reach this at all. A channel add sends no `/start` — the
         start parameter is group-only — and a channel post has no sender, so it
@@ -2674,6 +2835,54 @@ class TelegramAdapter(PlatformAdapter):
             )
         else:
             logger.debug("Ignoring a bare Telegram /start in chat %s", chat_id)
+        await self.announce_visibility(chat_id)
+        return True
+
+    async def _absorb_claim(
+        self,
+        text: str,
+        chat_id: str,
+        channel_type: ChannelType,
+        channel_name: str | None,
+    ) -> bool:
+        """Treat the claim that brought a chat to this bridge as its join.
+
+        On the shared bot the bot's own add arrives while the chat still
+        belongs to nobody, so it is dropped before any bridge sees it, and the
+        room it would have provisioned is not there. The claim — `/start
+        <state>` from the link, or `/connect <state>` — is the first update the
+        chat's tenant receives, so it does the add's work instead: provision the
+        room, then say what the bot can see.
+
+        Provisioning is idempotent, so a claim repeated in a chat that already
+        has its room changes nothing. The claim itself was verified and
+        redeemed by the install route before this update was delivered here;
+        this only reads that one arrived.
+        """
+        parsed = self._parse_command(text)
+        if (
+            parsed is None
+            or parsed[0] not in ("start", "connect")
+            or not parsed[1]
+            or channel_type == "lobby"
+        ):
+            return False
+        if self._on_app_joined is None:
+            # Absorbing the claim without provisioning would lose the chat's
+            # room for good. The install route holds an event carrying a claim
+            # until its bridge has started, so reaching here means that wait
+            # was bypassed.
+            raise RuntimeError(
+                f"Telegram chat {chat_id} was claimed on a bridge that has not "
+                "started, so its room cannot be provisioned"
+            )
+        await self._on_app_joined(
+            InboundAppJoin(
+                channel_id=chat_id,
+                channel_type=channel_type,
+                channel_name=channel_name,
+            )
+        )
         await self.announce_visibility(chat_id)
         return True
 

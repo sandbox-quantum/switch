@@ -33,25 +33,33 @@ from starlette.responses import HTMLResponse, PlainTextResponse
 
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
+    ClaimantMayNotConnect,
+    ClaimRefusal,
     InboundWebhook,
+    InstallClaim,
     MessagingInstallError,
     WebhookAuthenticityError,
     WebhookEndpoint,
     WebhookPayloadError,
 )
 from switch_core.bridges.collaboration.install_service import (
+    InstallClaimNotPermitted,
+    InstallClaimRepeated,
     InstallPlatformMismatch,
     MessagingInstallService,
     Revocation,
     WebhookBridgeUnavailable,
     WebhookTarget,
     WebhookWorkspaceUnknown,
+    WebhookWorkspaceUnowned,
 )
 from switch_core.bridges.collaboration.install_state import InstallStateError
 from switch_core.db.stores.messaging_install_store import (
     MessagingInstallClaimedError,
     MessagingInstallStateError,
 )
+from switch_core.observability.catalogue import MESSAGING_EVENTS_IGNORED
+from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +184,76 @@ def create_messaging_install_router(
                 target.tenant_id,
             )
 
+    async def _claim(
+        platform: str, claim: InstallClaim, background: BackgroundTasks
+    ) -> None:
+        """Install the workspace a claim names, or say why not.
+
+        A refused claim is not a refused event. The event is resolved next
+        either way, and that is right in every case a claim can fail: a replay
+        of a claim that succeeded resolves to the install it made, and receipts
+        drop the duplicate; a workspace another tenant holds resolves to them,
+        exactly as it would have without the claim; and one nobody holds is
+        dropped as any unowned workspace is.
+
+        Saying why is the installer's, after the platform has been answered. A
+        retry of a claim that already succeeded is not a refusal and says
+        nothing.
+        """
+        reason: ClaimRefusal
+        refusal: Exception
+        try:
+            await service.claim(platform=platform, claim=claim)
+            return
+        except InstallClaimRepeated as repeated:
+            logger.info("Ignored a repeated %s claim: %s", platform, repeated)
+            return
+        except InstallStateError as failure:
+            reason, refusal = "unrecognised", failure
+        except MessagingInstallStateError as failure:
+            reason, refusal = "expired", failure
+        except MessagingInstallClaimedError as failure:
+            reason, refusal = "already_connected", failure
+        except InstallClaimNotPermitted as failure:
+            reason, refusal = "not_permitted", failure
+        except ClaimantMayNotConnect as failure:
+            reason, refusal = "not_chat_admin", failure
+        logger.warning(
+            "Refused a claim of %s workspace %s: %s",
+            platform,
+            claim.grant.external_workspace_id,
+            refusal,
+        )
+        background.add_task(_claim_refused, platform, claim, reason)
+
+    async def _claim_refused(
+        platform: str, claim: InstallClaim, reason: ClaimRefusal
+    ) -> None:
+        """Let the installer explain a refused claim; logged, never raised."""
+        try:
+            await service.installer(platform).on_claim_refused(
+                claim=claim, reason=reason
+            )
+        except Exception:
+            logger.exception(
+                "Failed to tell %s workspace %s why its claim was refused",
+                platform,
+                claim.grant.external_workspace_id,
+            )
+
+    async def _unowned(platform: str, workspace_id: str, event: InboundWebhook) -> None:
+        """Let the installer answer an unowned event; logged, never raised."""
+        try:
+            await service.unowned(
+                platform=platform, workspace_id=workspace_id, event=event
+            )
+        except Exception:
+            logger.exception(
+                "Failed to answer a %s event from unowned workspace %s",
+                platform,
+                workspace_id,
+            )
+
     async def _end_install(platform: str, revocation: Revocation) -> None:
         """Act on the platform's news after it has been acknowledged.
 
@@ -262,12 +340,40 @@ def create_messaging_install_router(
                 background.add_task(_end_install, platform, revocation)
                 return Response(status_code=200)
 
+            # Before resolving too, and handled before answering rather than
+            # after: the event goes on to be delivered below, and whether it
+            # has anywhere to go is what the claim decides.
+            claim = service.claim_of(platform=platform, event=event)
+            if claim is not None:
+                await _claim(platform, claim, background)
+
             target = await service.resolve(platform=platform, event=event)
+            if claim is not None:
+                await service.await_bridge_start(target)
+            await service.follow_migration(
+                platform=platform, event=event, target=target
+            )
         except WebhookPayloadError as failure:
             logger.error(
                 "A verified %s event named no workspace: %s", platform, failure
             )
             return Response(status_code=400)
+        except WebhookWorkspaceUnowned as failure:
+            # A 200, for the reason given below. Where the app routinely sits in
+            # chats nobody claimed, a warning per event would bury the drops
+            # that are real losses, so those are counted instead and each real
+            # loss is reported where its cause is known.
+            if service.note_unowned(
+                platform=platform, workspace_id=failure.workspace_id
+            ):
+                metrics().increment(
+                    MESSAGING_EVENTS_IGNORED,
+                    {"platform": platform, "reason": "unowned"},
+                )
+            else:
+                logger.warning("Dropped a %s event: %s", platform, failure)
+            background.add_task(_unowned, platform, failure.workspace_id, event)
+            return Response(status_code=200)
         except WebhookWorkspaceUnknown as failure:
             # A 200 for an event that reached nobody, which is the one place
             # this file answers something other than what happened. The app
@@ -277,6 +383,11 @@ def create_messaging_install_router(
             # other customer's delivery. The log is where it is visible.
             logger.warning("Dropped a %s event: %s", platform, failure)
             return Response(status_code=200)
+        except MessagingInstallError as failure:
+            # The installer cannot read this event yet — Telegram's, before its
+            # bot has said who it is. Transient, so the platform should retry.
+            logger.error("Could not read a %s event yet: %s", platform, failure)
+            return Response(status_code=503)
         except WebhookBridgeUnavailable as failure:
             # Deliberately a 503: the platform retrying is the right behaviour
             # while a bridge restarts, and a 200 here would drop a real message

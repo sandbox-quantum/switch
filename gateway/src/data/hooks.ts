@@ -13,6 +13,7 @@ import {
   type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
+  type InstallablePlatforms,
   type InstalledApp,
   type KnownAgentType,
   type LinkedRoomDetail,
@@ -168,7 +169,7 @@ export function useAllExternalUsers(): UseQueryResult<ExternalUserSummary[]> {
 // Empty on every deployment that registered no app of its own, which is most
 // of them — the page reads that as "there is nothing to install here", not as
 // a failure.
-export function useInstallablePlatforms(): UseQueryResult<string[]> {
+export function useInstallablePlatforms(): UseQueryResult<InstallablePlatforms> {
   return useQuery(fetchInstallablePlatforms);
 }
 

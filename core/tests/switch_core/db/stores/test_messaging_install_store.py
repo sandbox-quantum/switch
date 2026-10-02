@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from switch_core.db.models import Tenant, User
+from switch_core.db.models import Client, CollaborationBridge, Room, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_install_store import (
     MessagingInstallClaimedError,
@@ -297,3 +297,93 @@ class TestRecordingAnInstall:
             )
             assert mine is not None
             assert mine.encrypted_bot_token is None
+
+
+class TestNames:
+    async def test_each_install_is_named_by_its_room_and_its_bridge(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A chat bridged as a room carries the room's name; an install on a
+        bridge carries the bridge's; one on no bridge, as an ended one is,
+        carries neither; and another tenant's installs are not read at all."""
+        fixture = await _two_tenants(rls_harness.owner)
+        store = MessagingInstallStore()
+        suffix = fixture.workspace
+
+        async with rls_harness.owner() as session:
+            client = Client(
+                tenant_id=fixture.tenant_a,
+                transport_user_id=f"@bridge-{suffix}:test",
+                display_name="bridge",
+                type="bridge",
+            )
+            session.add(client)
+            await session.flush()
+            bridge = CollaborationBridge(
+                tenant_id=fixture.tenant_a,
+                type="telegram",
+                display_name="Telegram",
+                status="active",
+                connection_config={},
+                client_id=client.id,
+            )
+            session.add(bridge)
+            await session.flush()
+            session.add(
+                Room(
+                    tenant_id=fixture.tenant_a,
+                    transport_room_id=f"!news-{suffix}:test",
+                    name="Telegram: news",
+                    description="",
+                    bridge_id=bridge.id,
+                    external_channel_id="-1001",
+                )
+            )
+            bridge_id = bridge.id
+            await session.commit()
+
+        ids: dict[str, str] = {}
+        for tenant_id, chat in (
+            (fixture.tenant_a, "-1001"),
+            (fixture.tenant_a, "-1002"),
+            (fixture.tenant_a, "-1003"),
+            (fixture.tenant_b, "-2001"),
+        ):
+            async with tenant_session(rls_harness.restricted, tenant_id) as session:
+                install = await store.record_install(
+                    session,
+                    platform="telegram",
+                    external_workspace_id=chat,
+                    encrypted_bot_token=None,
+                    scopes="",
+                    user_id=fixture.user_id,
+                )
+                if chat in ("-1001", "-1002"):
+                    await store.attach_bridge(
+                        session, install_id=install.id, bridge_id=bridge_id
+                    )
+                ids[chat] = install.id
+                await session.commit()
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            names = {
+                install_id: (room, bridge_name)
+                for install_id, _, room, bridge_name in await store.names_for_tenant(
+                    session
+                )
+            }
+
+        assert names == {
+            ids["-1001"]: ("Telegram: news", "Telegram"),
+            ids["-1002"]: (None, "Telegram"),
+            ids["-1003"]: (None, None),
+        }
+
+        # The same pairing, as the room itself, for who may see and disconnect
+        # the chat.
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            rooms = await store.rooms_for_tenant(session)
+
+        assert {install_id: room.name for install_id, room in rooms.items()} == {
+            ids["-1001"]: "Telegram: news"
+        }

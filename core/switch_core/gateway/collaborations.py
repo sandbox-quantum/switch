@@ -112,6 +112,15 @@ async def _install_note(
         return None
 
 
+def _channel_ids_refused(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> str | None:
+    """Why the bridge binds no channel by id. None when it is not running,
+    where binding is refused anyway for want of a bridge to bind to."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    return None if adapter is None else adapter.channel_ids_refused()
+
+
 async def _detail(
     bridge: CollaborationBridge,
     *,
@@ -139,6 +148,7 @@ async def _detail(
             bridge.type
         ),
         channel_creation_enabled=bridge.channel_creation_enabled,
+        channel_ids_refused=_channel_ids_refused(bridge.id, collab_lifecycle),
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
         ),
@@ -320,6 +330,9 @@ async def update_bridge(
             )
         try:
             collab_lifecycle.validate_connection_config(bridge.type, merged)
+            await collab_lifecycle.reject_resource_conflict(
+                bridge.type, merged, exclude_bridge_id=bridge_id
+            )
             # Asked now rather than at the restart below, so an edit that would
             # point a shared bridge at a workspace this tenant never installed
             # into is refused instead of stored and then failing to start.
@@ -333,6 +346,8 @@ async def update_bridge(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except BridgeStartRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         bridge = await bridge_store.merge_connection_config(
             session, bridge_id, dict(payload.connection_config)
         )
@@ -559,10 +574,7 @@ async def _require_directory_account(
     except NotImplementedError as e:
         raise HTTPException(
             status_code=501,
-            detail=(
-                f"{e} — so this account cannot be linked before it has been "
-                "seen. Send one message in the workspace, then link it."
-            ),
+            detail=f"{e}. This account cannot be linked until Switch has seen it.",
         ) from e
     except DirectorySearchBusy as e:
         raise _search_busy(e) from e
@@ -753,16 +765,25 @@ async def delete_bridge(
     # real foreign key — so this delete would destroy every room on the bridge
     # and *then* be refused by Postgres, leaving the bridge running, the rooms
     # gone and a live credential nobody has revoked.
-    install = await install_store.get_for_bridge(session, bridge_id=bridge_id)
-    if install is not None:
+    installs = await install_store.list_for_bridge(session, bridge_id=bridge_id)
+    if installs:
+        install = installs[0]
+        where = (
+            f"{install.platform} workspace {install.external_workspace_id}"
+            if len(installs) == 1
+            else f"{len(installs)} {install.platform} workspaces"
+        )
+        them = "it" if len(installs) == 1 else "them"
+        # Worded for both kinds of install. Disconnecting an OAuth one removes
+        # this connection with it; a claimed chat leaves the connection behind,
+        # to be deleted here once no chat uses it.
         raise HTTPException(
             status_code=409,
             detail=(
-                f"This connection was created by installing the Switch app into "
-                f"{install.platform} workspace {install.external_workspace_id}, so "
-                "it cannot be deleted here — the app would stay installed and its "
-                "token would stay valid. Disconnect the app instead, which revokes "
-                "the token at the platform and then removes this connection."
+                f"The Switch app is still installed in {where} through this "
+                f"connection, so it cannot be deleted here: that would leave the "
+                f"app behind in {them}. Disconnect {them} under Installed apps "
+                "first."
             ),
         )
 

@@ -5,6 +5,11 @@ may do it is that workspace's owner or admin — not only the deployment
 operator. On a server where people sign themselves up, the operator bit is
 held by nobody who runs a workspace, so gating these routes on it would leave
 the Slack button unreachable to exactly the people it is for.
+
+A claim-based platform (Telegram) is the one refinement: its connection is an
+admin's, but each chat on it is a room, which members connect and disconnect.
+So the routes read the tenant-admin bit and decide per platform, and a member
+listing installs sees those chats and no OAuth workspace.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import Tenant, TenantMember, User
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.auth import create_jwt, require_admin, require_tenant_admin
+from switch_core.gateway.auth import create_jwt, get_tenant_is_admin, require_admin
 from switch_core.gateway.messaging_installs import router
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -33,12 +38,12 @@ def _dependency_calls(dependant: object) -> list[object]:
     return calls
 
 
-def test_every_route_requires_a_tenant_admin_and_not_the_operator() -> None:
+def test_every_route_asks_the_tenant_and_not_the_operator() -> None:
     routes = [route for route in router.routes if hasattr(route, "dependant")]
-    assert len(routes) == 4
+    assert routes
     for route in routes:
         calls = _dependency_calls(route.dependant)  # type: ignore[attr-defined]
-        assert require_tenant_admin in calls, route.path  # type: ignore[attr-defined]
+        assert get_tenant_is_admin in calls, route.path  # type: ignore[attr-defined]
         assert require_admin not in calls, route.path  # type: ignore[attr-defined]
 
 
@@ -102,9 +107,12 @@ class TestWhoMayManageInstalls:
         response = await _list_installs(session_factory, user_id, "wsadmin")
         assert response.status_code == 200, response.text
 
-    async def test_a_plain_member_may_not(
+    async def test_a_plain_member_sees_the_list_without_any_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """A member may list, for the chats they may disconnect; which installs
+        they see is pinned in `test_messaging_install_routes.py`."""
         user_id = await _member(session_factory, name="plain", role="member")
         response = await _list_installs(session_factory, user_id, "plain")
-        assert response.status_code == 403
+        assert response.status_code == 200, response.text
+        assert response.json() == {"installs": []}

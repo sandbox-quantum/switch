@@ -117,6 +117,11 @@ describe('buildEnvFile', () => {
       'DISCORD_APP_CLIENT_SECRET',
       'DISCORD_APP_BOT_TOKEN',
       'DISCORD_APP_APPLICATION_ID',
+      // Telegram's distributed bot is deployment config too, and Telegram
+      // delivers its updates to a webhook on MESSAGING_PUBLIC_URL, which a
+      // loopback stack cannot offer (see above).
+      'TELEGRAM_APP_BOT_TOKEN',
+      'TELEGRAM_APP_WEBHOOK_SECRET',
     ]);
 
     const missing = [...interpolated]

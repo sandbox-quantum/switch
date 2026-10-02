@@ -250,3 +250,36 @@ async def test_a_bridge_whose_install_already_ended_still_deletes(
         )
 
     assert lifecycle.removed == [bridge_id]
+
+
+async def test_a_bridge_serving_several_installs_is_refused_for_all_of_them(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A tenant's Telegram chats share one bridge, so the guard reads every
+    live install behind it, not just the first."""
+    async with session_factory() as session:
+        admin = await _make_admin(session)
+        bridge_id = await _make_bridge(session)
+        for _ in range(2):
+            await _make_install(
+                session, bridge_id=bridge_id, status=INSTALL_ACTIVE, user_id=admin.id
+            )
+        await session.commit()
+
+    lifecycle = _RecordingLifecycle()
+    async with session_factory() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await delete_bridge(
+                bridge_id,
+                session,
+                _BRIDGE_STORE,
+                _ROOM_STORE,
+                _RecordingRoomService(),  # type: ignore[arg-type]
+                _INSTALL_STORE,
+                lifecycle,  # type: ignore[arg-type]
+                await _make_admin(session),
+            )
+
+    assert excinfo.value.status_code == 409
+    assert "2 slack workspaces" in str(excinfo.value.detail)
+    assert lifecycle.removed == []

@@ -44,6 +44,14 @@ class _Lifecycle:
     def supports_channel_creation(self, bridge_type: str) -> bool:
         return False
 
+    async def reject_resource_conflict(
+        self,
+        bridge_type: str,
+        connection_config: dict[str, object],
+        *,
+        exclude_bridge_id: str,
+    ) -> None: ...
+
     async def check_start_guards(self, **kwargs: Any) -> None:
         self.checked.append(kwargs)
         if self.refuse:
