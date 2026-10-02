@@ -1,4 +1,5 @@
 import type { TelemetrySettingKey } from '@main/core/telemetry/events';
+import { currentInstallKind } from '@main/core/telemetry/launch-history';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { TelemetrySettings } from '@shared/core/app-settings';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -23,6 +24,7 @@ function reportConsent(previous: TelemetrySettings, next: TelemetrySettings): vo
 
   trackEvent('telemetry_consent_changed', {
     source: previous.askedAt === null ? 'first_run' : 'settings',
+    install_kind: currentInstallKind(),
   });
 }
 

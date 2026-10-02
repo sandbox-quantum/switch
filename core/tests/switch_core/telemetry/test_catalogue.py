@@ -143,10 +143,13 @@ class TestValuesAreClosed:
         with pytest.raises(TelemetryCatalogueError, match="expected a number"):
             validate("usage_snapshot", payload)  # type: ignore[arg-type]
 
-    def test_a_non_finite_count_is_refused(self) -> None:
-        """A mean over zero rooms must not arrive as NaN."""
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_count_is_refused(self, value: float) -> None:
+        """A mean over zero rooms must not arrive as NaN. JSON has no NaN or
+        infinity, so none of them can reach Amplitude as a number whatever the
+        relay does with it."""
         payload = _valid_payload("usage_snapshot")
-        payload["room_users_mean"] = float("nan")
+        payload["room_users_mean"] = value
         with pytest.raises(TelemetryCatalogueError, match="finite"):
             validate("usage_snapshot", payload)  # type: ignore[arg-type]
 

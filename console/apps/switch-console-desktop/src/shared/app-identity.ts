@@ -1,8 +1,14 @@
-type ImportMetaWithEnv = ImportMeta & { env?: { DEV?: boolean; VITE_BUILD?: string } };
+type ImportMetaWithEnv = ImportMeta & {
+  env?: { DEV?: boolean; VITE_BUILD?: string; VITE_RELEASE?: string };
+};
 
 const env = (import.meta as ImportMetaWithEnv).env;
 const isDev = env?.DEV === true;
 const isCanary = env?.VITE_BUILD === 'canary';
+// Stamped by the release workflow on a tagged build, and only there: a
+// workflow_dispatch test build, or one packaged on a laptop, is not a release
+// however it is otherwise configured.
+const isRelease = env?.VITE_RELEASE === '1';
 
 // What a user reads, what the app calls itself to the OS, and where data lives
 // are three different names here, and only the first one moved.
@@ -38,6 +44,7 @@ export const USER_DATA_DIR_NAME = isDev ? 'switchdash-dev' : 'switchdash';
 export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
 export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-console';
 export const IS_CANARY = isCanary;
+export const IS_RELEASE_BUILD = isRelease;
 
 // GitHub repo the desktop app publishes releases to / reads auto-updates from.
 // The repo is public, so the feed is read unauthenticated. Mirrored in

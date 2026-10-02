@@ -34,6 +34,8 @@ def _service(sink: object, *, enabled: bool = True) -> TelemetryService:
         service_name="switch-core",
         version="1.2.3",
         environment="pilot",
+        telemetry_environment="prod",
+        telemetry_internal=False,
     )
 
 
@@ -78,9 +80,56 @@ class TestTagging:
         assert sink.sent[0].resource == {
             "service.name": "switch-core",
             "flint.client_id": "deployment-uuid",
+            "flint_env": "prod",
+            "flint_internal": "false",
             "service.version": "1.2.3",
             "deployment.environment": "pilot",
         }
+
+    @pytest.mark.parametrize("environment", ["prod", "staging", "dev", "local"])
+    async def test_every_event_says_which_amplitude_project_it_belongs_in(
+        self, environment: str
+    ) -> None:
+        """The relay sends each event to the Amplitude project its `flint_env`
+        names, so a development server's usage never lands in production's."""
+        sink = _RecordingSink()
+        service = TelemetryService(
+            sink=sink,  # type: ignore[arg-type]
+            enabled=True,
+            client_id="deployment-uuid",
+            service_name="switch-core",
+            version="1.2.3",
+            environment=None,
+            telemetry_environment=environment,
+            telemetry_internal=False,
+        )
+
+        service.emit("deployment_started", tenant_count=1)
+        await service.aclose()
+
+        assert sink.sent[0].resource["flint_env"] == environment
+
+    @pytest.mark.parametrize(("internal", "sent"), [(True, "true"), (False, "false")])
+    async def test_every_event_says_whether_the_deployment_is_the_companys_own(
+        self, internal: bool, sent: str
+    ) -> None:
+        """So staff usage can be told from adoption without any identifier."""
+        sink = _RecordingSink()
+        service = TelemetryService(
+            sink=sink,  # type: ignore[arg-type]
+            enabled=True,
+            client_id="deployment-uuid",
+            service_name="switch-core",
+            version="1.2.3",
+            environment=None,
+            telemetry_environment="prod",
+            telemetry_internal=internal,
+        )
+
+        service.emit("deployment_started", tenant_count=1)
+        await service.aclose()
+
+        assert sink.sent[0].resource["flint_internal"] == sent
 
     async def test_an_unset_environment_is_omitted_rather_than_empty(self) -> None:
         """An absent attribute reads as "not configured"; an empty string reads
@@ -93,6 +142,8 @@ class TestTagging:
             service_name="switch-core",
             version=None,
             environment=None,
+            telemetry_environment="prod",
+            telemetry_internal=False,
         )
 
         service.emit("deployment_started", tenant_count=1)
@@ -154,6 +205,8 @@ class TestTheWireFormat:
                 resource={
                     "service.name": "switch-core",
                     "flint.client_id": "deployment-uuid",
+                    "flint_env": "dev",
+                    "flint_internal": "false",
                 },
                 timestamp_ns=1_700_000_000_000_000_000,
             )
@@ -187,6 +240,39 @@ class TestTheWireFormat:
 
         assert attributes["from_template"] == {"boolValue": True}
 
+    async def test_a_false_and_a_zero_are_sent_rather_than_dropped(self) -> None:
+        """Falsy values are where an encoder that tests `if value:` loses them,
+        and a missing property reads downstream exactly like one never sent."""
+        body: dict = {}
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            body.update(json.loads(request.content))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
+        await sink.send(
+            TelemetryRecord(
+                name="switch_core.connector_added",
+                properties={
+                    "is_preconfigured": False,
+                    "failed_attempts_before_success": 0,
+                },
+                resource={
+                    "service.name": "switch-core",
+                    "flint.client_id": "deployment-uuid",
+                    "flint_env": "prod",
+                    "flint_internal": "false",
+                },
+                timestamp_ns=1_700_000_000_000_000_000,
+            )
+        )
+        await http.aclose()
+        attributes = {a["key"]: a["value"] for a in self._record(body)["attributes"]}
+
+        assert attributes["is_preconfigured"] == {"boolValue": False}
+        assert attributes["failed_attempts_before_success"] == {"doubleValue": 0.0}
+
     async def test_the_body_carries_the_name_so_the_log_line_is_not_blank(
         self,
     ) -> None:
@@ -203,6 +289,9 @@ class TestTheWireFormat:
 
         assert resource["flint.client_id"] == {"stringValue": "deployment-uuid"}
         assert resource["service.name"] == {"stringValue": "switch-core"}
+        # The relay sends each event to the Amplitude project this names.
+        assert resource["flint_env"] == {"stringValue": "dev"}
+        assert resource["flint_internal"] == {"stringValue": "false"}
 
     async def test_it_posts_to_the_logs_signal(self) -> None:
         """Not `/v1/metrics`: the relay routes on log records, and a metric
@@ -290,7 +379,12 @@ def _a_record() -> TelemetryRecord:
     return TelemetryRecord(
         name="switch_core.deployment_started",
         properties={"tenant_count": 1},
-        resource={"service.name": "switch-core", "flint.client_id": "deployment-uuid"},
+        resource={
+            "service.name": "switch-core",
+            "flint.client_id": "deployment-uuid",
+            "flint_env": "dev",
+            "flint_internal": "false",
+        },
         timestamp_ns=1,
     )
 

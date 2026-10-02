@@ -89,6 +89,9 @@ vi.mock('./ports', () => ({
 const telemetryConsentMock = vi.hoisted(() => vi.fn(() => Promise.resolve(false)));
 vi.mock('./telemetry-consent', () => ({ telemetryConsent: telemetryConsentMock }));
 const assertManagedServerUrlFreeMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock('@main/core/telemetry/internal-account', () => ({
+  currentInternalFlag: async () => 'unknown',
+}));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   assertManagedServerUrlFree: assertManagedServerUrlFreeMock,
   ensureManagedServer: ensureManagedServerMock,
