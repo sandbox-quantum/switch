@@ -5,6 +5,7 @@ import {
   EVICTION_CREDENTIALS_REJECTED,
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
+  advertisedBeatInterval,
   type Eviction,
   type SwitchEventStreamDeps,
 } from './event-stream';
@@ -1896,5 +1897,55 @@ describe('the heartbeat across its own reopen after a refusal', () => {
     expect(sent.slice(reopen + 1).every((s) => s === 'beat@2')).toBe(true);
     expect(evicted).toEqual([]);
     abort.abort();
+  });
+});
+
+describe('the heartbeat cadence the server asks for', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('follows the advertised interval, clamped, and falls back when there is none', () => {
+    expect(advertisedBeatInterval(10)).toBe(10_000);
+    expect(advertisedBeatInterval(undefined)).toBe(BEAT_INTERVAL_MS);
+    expect(advertisedBeatInterval('10')).toBe(BEAT_INTERVAL_MS);
+    expect(advertisedBeatInterval(0)).toBe(BEAT_INTERVAL_MS);
+    expect(advertisedBeatInterval(0.01)).toBe(1000);
+    expect(advertisedBeatInterval(3600)).toBe(60_000);
+  });
+
+  it('beats at the pace the server named on open', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? {
+            ok: true,
+            status: 200,
+            body: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(
+                  encodeFrame('connection_state', {
+                    connection_id: 'conn-1',
+                    generation: 0,
+                    heartbeat_interval_seconds: 10,
+                  })
+                );
+              },
+            }),
+            text: async (): Promise<string> => '',
+          }
+        : { ok: true, status: 200, text: async (): Promise<string> => '{}' }
+    );
+    const { abort } = makeStream(fetchMock, { rooms: ['room-live'] });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    abort.abort();
+
+    // One on attach, then one every ten seconds: six or seven in a minute,
+    // where the old two-second cadence would have sent thirty.
+    const beats = urlsFor(fetchMock, 'connection/beat').length;
+    expect(beats).toBeGreaterThanOrEqual(6);
+    expect(beats).toBeLessThanOrEqual(7);
   });
 });

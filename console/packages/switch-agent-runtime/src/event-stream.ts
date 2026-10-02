@@ -30,9 +30,15 @@ const AGENT_PROTOCOL = contractRange('agent-protocol', RUNTIME_ARTIFACT);
  * carry on believing it saw everything.
  */
 
-/** Cadence of the connection heartbeat. Must stay well inside the server's
- * 6s TTL — the server declares the connection dead without it. */
+/** Cadence of the connection heartbeat when the server does not name one.
+ * Servers advertise `heartbeat_interval_seconds` on every open, and that is
+ * what the loop follows; this is the cadence every server accepted before
+ * they did. */
 export const BEAT_INTERVAL_MS = 2000;
+/** Bounds on an advertised interval, so a malformed value can neither flood
+ * the server nor starve the connection. */
+const MIN_BEAT_INTERVAL_MS = 1000;
+const MAX_BEAT_INTERVAL_MS = 60_000;
 const BEAT_REQUEST_TIMEOUT_MS = 4000;
 /**
  * How long a reopen waits for a beat already in flight before disowning it.
@@ -41,7 +47,7 @@ const BEAT_REQUEST_TIMEOUT_MS = 4000;
  * lands while the socket happens to be reopening is acted on. Past it the
  * answer cannot be told apart from one our own reopen provoked, and the reopen
  * matters more: it is what restores delivery, and the server gives the
- * connection six seconds without a beat.
+ * connection only a few intervals without a beat.
  */
 export const BEAT_SETTLE_LIMIT_MS = 1000;
 const INITIAL_BACKOFF_MS = 1000;
@@ -320,6 +326,9 @@ export class SwitchEventStream {
    * `connection_state`, and against a server too old to send one.
    */
   private generation: number | null = null;
+  /** The heartbeat cadence the server last asked for, or the default until it
+   * has said. */
+  private beatIntervalMs = BEAT_INTERVAL_MS;
   /**
    * The barrier between the heartbeat and the socket it beats for.
    *
@@ -340,7 +349,7 @@ export class SwitchEventStream {
    * How many times the server has named an incarnation for this client, and
    * how to cut the heartbeat's current wait short when it does.
    *
-   * A fresh attach starts the server's 6-second clock on a connection that has
+   * A fresh attach starts the server's clock on a connection that has
    * never beaten, so the heartbeat must go out promptly — whatever back-off an
    * earlier, failing connection had built up. See `beatLoop`.
    */
@@ -814,6 +823,7 @@ export class SwitchEventStream {
     switch (frame.event) {
       case 'connection_state':
         if (typeof frame.data.generation === 'number') this.generation = frame.data.generation;
+        this.beatIntervalMs = advertisedBeatInterval(frame.data.heartbeat_interval_seconds);
         log.debug('SwitchEventStream: connection established', {
           event: 'switch_stream_connected',
           rooms: frame.data.rooms,
@@ -967,7 +977,7 @@ export class SwitchEventStream {
   private async beatLoop(): Promise<void> {
     const { log, signal, connectionId } = this.deps;
     let failures = 0;
-    let backoff = BEAT_INTERVAL_MS;
+    let backoff = this.beatIntervalMs;
     // Rejections in a row, which pace reopening rather than beating. Kept
     // apart from `backoff` because a fresh attach resets that and must not
     // reset this: see the 404/409 branch below.
@@ -980,7 +990,7 @@ export class SwitchEventStream {
      *
      * The back-off used to be served in full across a reattach. A beat that
      * had been failing left the loop sleeping for up to 30 seconds; the stream
-     * reopened, the server started its 6-second clock on the new connection,
+     * reopened, the server started its clock on the new connection,
      * and the next beat arrived long after the server had closed it for
      * silence. That beat was refused, which counted as another failure, which
      * kept the wait at 30 seconds. The client could not get out of it on its
@@ -1056,11 +1066,11 @@ export class SwitchEventStream {
       // awaited before the tick, so no beat leaves while admission is shut.
       if (!this.fence.admitting) continue;
       // A connection the server has just attached has never beaten, and has
-      // 6 seconds to. Whatever an earlier connection's failures built up says
+      // only a few intervals to. Whatever an earlier connection's failures built up says
       // nothing about this one, so it starts at the base cadence.
       if (this.attaches !== seenAttach) {
         seenAttach = this.attaches;
-        backoff = BEAT_INTERVAL_MS;
+        backoff = this.beatIntervalMs;
       }
       const tick = await this.fence.tick(beat);
       if (signal.aborted || this.halt.signal.aborted) return;
@@ -1105,7 +1115,7 @@ export class SwitchEventStream {
           // as soon as it is attached.
           failures += 1;
           rejections += 1;
-          const waitMs = Math.min(BEAT_INTERVAL_MS * 2 ** rejections, MAX_BACKOFF_MS);
+          const waitMs = Math.min(this.beatIntervalMs * 2 ** rejections, MAX_BACKOFF_MS);
           if ((failures & (failures - 1)) === 0) {
             log.warn('SwitchEventStream: heartbeat rejected — reopening', {
               event: 'switch_beat_rejected',
@@ -1134,10 +1144,19 @@ export class SwitchEventStream {
           }
           failures = 0;
           rejections = 0;
-          backoff = BEAT_INTERVAL_MS;
+          backoff = this.beatIntervalMs;
         }
       }
       await pause(backoff);
     }
   }
+}
+
+/** The interval the server advertised, in milliseconds, clamped to sane
+ * bounds; the default when it named none. */
+export function advertisedBeatInterval(seconds: unknown): number {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return BEAT_INTERVAL_MS;
+  }
+  return Math.min(Math.max(seconds * 1000, MIN_BEAT_INTERVAL_MS), MAX_BEAT_INTERVAL_MS);
 }

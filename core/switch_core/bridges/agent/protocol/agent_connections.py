@@ -47,8 +47,15 @@ DeliveryFilter = Literal["all", "addressed"]
 # Clients tick every HEARTBEAT_INTERVAL_SECONDS; a connection is declared dead
 # once nothing has arrived for HEARTBEAT_TTL_SECONDS. One mechanism replaces
 # /connection/renew, /watch/heartbeat and /leases/renew.
-HEARTBEAT_INTERVAL_SECONDS = 2.0
-HEARTBEAT_TTL_SECONDS = 6.0
+#
+# The interval is advertised on every open (`stream.py`), and clients that
+# read it follow it; clients that predate that keep ticking every 2 s, which
+# the TTL comfortably covers. Ten seconds rather than two because every tick
+# is an authenticated request, and at two seconds they were most of the load
+# on the connection pool. The TTL stays three intervals, so one lost tick
+# never costs a connection.
+HEARTBEAT_INTERVAL_SECONDS = 10.0
+HEARTBEAT_TTL_SECONDS = 30.0
 
 # Refuse a client that cannot meet this server's protocol rather than degrading
 # in ways neither side can see. The runtime lives on the user's machine and
