@@ -714,6 +714,90 @@
         "width": 12,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database pool: connection hold p95 / p99 (ms) by caller. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.db.pool.hold.duration{$env,$service} by {caller}",
+            "display_type": "line"
+          },
+          {
+            "q": "p99:switch.db.pool.hold.duration{$env,$service} by {caller}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 67,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database pool: wait for a connection p95 / p99 (ms). Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.db.pool.wait.duration{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "p99:switch.db.pool.wait.duration{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 71,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent connections opened per second, by kind (after_lapse = returning from a lapse)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agent.connections_opened{$env,$service} by {kind}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 75,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Process starts (deploys and restarts)",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "sum:switch.runtime.starts{$env,$service}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 79,
+        "width": 12,
+        "height": 4
+      }
     }
   ]
 }

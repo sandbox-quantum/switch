@@ -182,6 +182,28 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_start_is_counted_once_so_restarts_line_up(monkeypatch):
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(),
+    )
+    try:
+        starts = next(
+            p for p in metrics().collect() if p.name == "switch.runtime.starts"
+        )
+        assert [point.value for point in starts.numbers] == [1.0]
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
 async def test_a_pool_that_reports_nothing_produces_no_reading(monkeypatch):
     """A zero would draw an idle pool; absence draws nothing, which is true."""
     observability = start_observability(

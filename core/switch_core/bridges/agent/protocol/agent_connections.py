@@ -33,7 +33,10 @@ from typing import Any, Literal
 
 from switch_core.artifacts import contract_range
 from switch_core.logging_context import log_context
-from switch_core.observability.catalogue import AGENT_CONNECTIONS_EXPIRED
+from switch_core.observability.catalogue import (
+    AGENT_CONNECTIONS_EXPIRED,
+    AGENT_CONNECTIONS_OPENED,
+)
 from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
@@ -265,6 +268,11 @@ class Closure:
     room_id: str | None
 
 
+# How many closed connection ids are remembered for the reconnect counter.
+# Far more than the live fleet, so a lapse storm is still recognised when its
+# agents come back.
+_RECENTLY_CLOSED_LIMIT = 10_000
+
 #: The connection's client stopped ticking. Recoverable: reopen and resume.
 HEARTBEAT_LAPSED = Closure(
     code="heartbeat_lapsed",
@@ -465,6 +473,10 @@ class AgentConnectionRegistry:
         # replaced wholesale, and a placement another connection takes is
         # reported to the one that lost it.
         self._placement_owners: dict[str, dict[str, str]] = {}
+        # Why each recently closed connection id closed, so its next open can
+        # be counted as a return after a lapse rather than a first connect.
+        # Insertion-ordered and capped: only the counter reads it.
+        self._recently_closed: dict[str, str] = {}
 
     def _new_incarnation(self) -> int:
         """The next never-before-used incarnation number.
@@ -555,6 +567,7 @@ class AgentConnectionRegistry:
             # is replaced rather than kept. The connection outlives the socket;
             # what is on the other end of it need not.
             existing.declaration = declaration
+            metrics().increment(AGENT_CONNECTIONS_OPENED, {"kind": "reattach"})
             logger.info(
                 "[CONN] reattached agent=%s connection=%s scope=%s generation=%s",
                 agent_id,
@@ -584,6 +597,10 @@ class AgentConnectionRegistry:
         )
         self._by_id[connection_id] = conn
         owned.add(connection_id)
+        metrics().increment(
+            AGENT_CONNECTIONS_OPENED,
+            {"kind": self._recently_closed.pop(connection_id, "fresh")},
+        )
         logger.info(
             "[CONN] opened agent=%s connection=%s scope=%s filter=%s spawn=%s "
             "client=%s version=%s protocol=%s",
@@ -637,6 +654,10 @@ class AgentConnectionRegistry:
         conn.closure = closure
         conn.stream_attached = False
         conn.wake.set()
+        self._remember_closed(
+            connection_id,
+            "after_lapse" if closure is HEARTBEAT_LAPSED else "after_close",
+        )
         # `beats` and the age separate the two ways a connection dies, which
         # otherwise look identical in the log: a client that never beat at all
         # (beats=0 — it is not running the heartbeat, or cannot reach us) versus
@@ -673,6 +694,12 @@ class AgentConnectionRegistry:
                 exc_info=True,
             )
         return conn
+
+    def _remember_closed(self, connection_id: str, kind: str) -> None:
+        self._recently_closed.pop(connection_id, None)
+        self._recently_closed[connection_id] = kind
+        while len(self._recently_closed) > _RECENTLY_CLOSED_LIMIT:
+            del self._recently_closed[next(iter(self._recently_closed))]
 
     def sweep(self) -> list[AgentConnection]:
         """Close connections whose heartbeat has lapsed. Returns those closed."""
