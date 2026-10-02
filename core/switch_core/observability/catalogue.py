@@ -295,8 +295,10 @@ AGENT_CONNECTIONS_EXPIRED = _spec(
     "switch.agent.connections_expired",
     "sum",
     "{connection}",
-    "Agent connections closed on a lapsed heartbeat. A steady rate against a "
-    "flat connection count is churn, which a gauge alone cannot show.",
+    "Agent connections closed on a lapsed heartbeat, whichever path noticed: "
+    "the sweep, the next use of the dead connection, or its own event stream. "
+    "A steady rate against a flat connection count is churn, which a gauge "
+    "alone cannot show.",
 )
 
 # Every stream open, by what it was. `reattach` is a live connection whose

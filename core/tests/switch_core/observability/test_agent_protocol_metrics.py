@@ -197,3 +197,28 @@ def test_the_memory_of_closed_connections_is_bounded(monkeypatch):
         connections.close(f"c{index}", conn_module.HEARTBEAT_LAPSED)
 
     assert list(connections._recently_closed) == ["c2", "c3"]
+
+
+def test_a_lapse_noticed_on_next_use_is_counted_too(registry, monkeypatch):
+    """The sweep is one of three ways a lapse is noticed. Counting only it
+    under-reported lapses against the reconnects that follow them."""
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    later = time_module.monotonic() + conn_module.HEARTBEAT_TTL_SECONDS + 1
+    monkeypatch.setattr(conn_module.time, "monotonic", lambda: later)
+
+    with pytest.raises(conn_module.UnknownConnectionError):
+        connections.require("agent-1", "c1")
+    _open(connections)
+
+    # One collection: reading the registry resets it.
+    payloads = {p.name: p for p in registry.collect()}
+    expired = sum(
+        point.value for point in payloads["switch.agent.connections_expired"].numbers
+    )
+    opened = {
+        point.attributes["kind"]: point.value
+        for point in payloads["switch.agent.connections_opened"].numbers
+    }
+    assert expired == 1.0
+    assert opened == {"fresh": 1.0, "after_lapse": 1.0}
