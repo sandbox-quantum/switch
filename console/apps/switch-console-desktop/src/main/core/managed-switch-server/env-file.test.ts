@@ -131,6 +131,7 @@ describe('buildEnvFile', () => {
       'TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY',
       'TEAMS_APP_PRIVACY_URL',
       'TEAMS_APP_TERMS_URL',
+      'TEAMS_APP_NAME',
     ]);
 
     const missing = [...interpolated]

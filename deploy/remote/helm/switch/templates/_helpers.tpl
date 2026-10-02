@@ -782,6 +782,10 @@ Include with `nindent 12`.
   value: {{ required "switchCore.teamsApp.privacyUrl is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.privacyUrl | quote }}
 - name: TEAMS_APP_TERMS_URL
   value: {{ required "switchCore.teamsApp.termsUrl is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.termsUrl | quote }}
+{{- with .Values.switchCore.teamsApp.name }}
+- name: TEAMS_APP_NAME
+  value: {{ . | quote }}
+{{- end }}
 {{- if eq .Values.switchCore.teamsApp.credential "secret" }}
 - name: TEAMS_APP_CLIENT_SECRET
   valueFrom:

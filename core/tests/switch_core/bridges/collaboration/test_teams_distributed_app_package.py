@@ -24,6 +24,7 @@ _BYO_MANIFEST = (
 def _package() -> tuple[dict[str, Any], zipfile.ZipFile]:
     package = build_distributed_app_package(
         app_id=APP_ID,
+        app_name="Agent Switch",
         messaging_public_url="https://switch.example",
         privacy_url="https://switch.example/privacy",
         terms_url="https://switch.example/terms",
@@ -45,6 +46,47 @@ def test_this_deployments_values_are_filled_in() -> None:
     assert manifest["validDomains"] == ["switch.example"]
     assert manifest["developer"]["privacyUrl"] == "https://switch.example/privacy"
     assert manifest["developer"]["termsOfUseUrl"] == "https://switch.example/terms"
+
+
+def test_the_default_name_is_agent_switch() -> None:
+    manifest, _ = _package()
+    assert manifest["name"] == {
+        "short": "Agent Switch",
+        "full": "Agent Switch — your AI agents, in your channels",
+    }
+
+
+def test_an_environment_names_its_own_app() -> None:
+    """Each environment registers its own app; an organisation approving more
+    than one — ours, testing them — tells them apart by name."""
+    package = build_distributed_app_package(
+        app_id=APP_ID,
+        app_name="Agent Switch (dev)",
+        messaging_public_url="https://switch.example",
+        privacy_url="https://switch.example/privacy",
+        terms_url="https://switch.example/terms",
+    )
+    manifest = json.loads(
+        zipfile.ZipFile(io.BytesIO(package.archive)).read("manifest.json")
+    )
+    assert manifest["name"] == {
+        "short": "Agent Switch (dev)",
+        "full": "Agent Switch (dev) — your AI agents, in your channels",
+    }
+
+
+def test_a_name_with_json_characters_stays_a_string() -> None:
+    package = build_distributed_app_package(
+        app_id=APP_ID,
+        app_name='Switch "QA" {{x}}',
+        messaging_public_url="https://switch.example",
+        privacy_url="https://switch.example/privacy",
+        terms_url="https://switch.example/terms",
+    )
+    manifest = json.loads(
+        zipfile.ZipFile(io.BytesIO(package.archive)).read("manifest.json")
+    )
+    assert manifest["name"]["short"] == 'Switch "QA" {{x}}'
 
 
 def test_it_asks_for_nothing_per_team() -> None:
@@ -80,6 +122,7 @@ def test_its_commands_match_the_bring_your_own_apps() -> None:
 def test_a_value_with_json_syntax_in_it_stays_a_string() -> None:
     package = build_distributed_app_package(
         app_id=APP_ID,
+        app_name="Agent Switch",
         messaging_public_url="https://switch.example",
         privacy_url='https://switch.example/privacy?a="b"',
         terms_url="https://switch.example/terms\\x",
@@ -108,6 +151,7 @@ def test_an_unfilled_placeholder_in_the_template_is_a_loud_failure(
     with pytest.raises(ValueError, match="does not fill in"):
         build_distributed_app_package(
             app_id=APP_ID,
+            app_name="Agent Switch",
             messaging_public_url="https://switch.example",
             privacy_url="https://switch.example/privacy",
             terms_url="https://switch.example/terms",

@@ -10,8 +10,8 @@
         "termsOfUseUrl": "{{TERMS_URL}}"
     },
     "name": {
-        "short": "Agent Switch",
-        "full": "Agent Switch — your AI agents, in your channels"
+        "short": "{{APP_NAME}}",
+        "full": "{{APP_NAME}} — your AI agents, in your channels"
     },
     "description": {
         "short": "Work with your AI agents in Teams channels and chats.",

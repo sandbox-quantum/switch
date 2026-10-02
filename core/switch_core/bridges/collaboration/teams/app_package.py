@@ -4,8 +4,8 @@ A Teams app reaches an organisation as a zip: its manifest and two icons.
 For the distributed app Switch puts that zip into the organisation's own app
 catalogue itself, with the approving admin's sign-in, so it is built here
 rather than by an operator with a script. What differs per deployment — the
-app id, the host the bot is reached on, the privacy and terms pages — is
-filled into the template in `distributed_app/`.
+app id, its name, the host the bot is reached on, the privacy and terms pages
+— is filled into the template in `distributed_app/`.
 
 The template carries no resource-specific permissions: the organisation's
 admin grants the app's permissions once, organisation-wide, and asking for
@@ -29,6 +29,8 @@ from urllib.parse import urlsplit
 
 _TEMPLATE_DIR = Path(__file__).parent / "distributed_app"
 _ICONS = ("color.png", "outline.png")
+#: Where the template's short and full names take this deployment's app name.
+_NAME_PLACEHOLDER = "{{APP_NAME}}"
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,7 @@ class DistributedAppPackage:
 def build_distributed_app_package(
     *,
     app_id: str,
+    app_name: str,
     messaging_public_url: str,
     privacy_url: str,
     terms_url: str,
@@ -58,10 +61,17 @@ def build_distributed_app_package(
     manifest["validDomains"] = [str(urlsplit(messaging_public_url).hostname)]
     manifest["developer"]["privacyUrl"] = privacy_url
     manifest["developer"]["termsOfUseUrl"] = terms_url
-    if "{{" in json.dumps(manifest):
+    # Checked before the name goes in, the one value set into the template's
+    # own text, so a name that happens to contain braces is not mistaken for
+    # a placeholder left unfilled.
+    if "{{" in json.dumps(manifest).replace(_NAME_PLACEHOLDER, ""):
         raise ValueError(
             "the distributed Teams app manifest names a value this build does "
             "not fill in"
+        )
+    for form in ("short", "full"):
+        manifest["name"][form] = manifest["name"][form].replace(
+            _NAME_PLACEHOLDER, app_name
         )
 
     buffer = io.BytesIO()

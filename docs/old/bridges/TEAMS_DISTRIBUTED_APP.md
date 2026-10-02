@@ -58,7 +58,10 @@ nothing routes to them. The bring-your-own path keeps its own listener on port
 **One app and one bot per environment, never shared.** A bot has one messaging
 address, and Switch deletes Graph subscriptions that point anywhere but its
 own, so two environments on one app would take each other's traffic and wipe
-each other's capture.
+each other's capture. They can all be registered in the same directory: a
+SingleTenant bot's identity lives there, and the multi-tenant app behind it is
+what customers approve. That directory can also approve a non-production
+environment's app itself, to test against.
 
 1. **Entra app registration.** Supported account types: **Accounts in any
    organizational directory**. Record the **Application (client) ID**
@@ -115,9 +118,15 @@ each other's capture.
 8. **Privacy and terms pages.** Every Teams app package names both, and the
    approving admin is shown them (`TEAMS_APP_PRIVACY_URL`,
    `TEAMS_APP_TERMS_URL`, https).
-9. **Publisher verification** (Partner Center). Without it, Microsoft's
-   approval screen shows the app as unverified, which makes IT teams more
-   likely to refuse. A Teams Store listing also requires it.
+9. **Name (optional).** `TEAMS_APP_NAME`, up to 30 characters, is the app's
+   name in Teams; unset, it is "Agent Switch". Give each non-production
+   environment's app its own — "Agent Switch (dev)" — so an organisation that
+   approves more than one, ours included, can tell them apart. Name the Entra
+   app registration to match. Set it before the first approval: an
+   organisation takes a new name only with a newer app package.
+10. **Publisher verification** (Partner Center). Without it, Microsoft's
+    approval screen shows the app as unverified, which makes IT teams more
+    likely to refuse. A Teams Store listing also requires it.
 
 All of these are required together; a partial configuration is refused at
 startup. Setting `TEAMS_APP_CLIENT_ID` is what enables the button.

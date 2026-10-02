@@ -161,6 +161,7 @@ def _installer(microsoft: _Microsoft) -> TeamsAppInstaller:
     )
     package = build_distributed_app_package(
         app_id=APP_ID,
+        app_name="Agent Switch",
         messaging_public_url="https://switch.example",
         privacy_url="https://switch.example/privacy",
         terms_url="https://switch.example/terms",

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from collections.abc import Callable
 from typing import Any
 
@@ -104,3 +107,22 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
 
     assert calls.index("bridges stopped") < calls.index("teams app closed")
     assert server.should_exit is True
+
+
+async def test_the_package_carries_the_environments_app_name() -> None:
+    installers = MessagingInstallerRegistry()
+
+    app = _distributed_teams_app(
+        _config(**_APP, teams_app_name="Agent Switch (dev)"),
+        installers,
+        _Lifecycle([]),  # type: ignore[arg-type]
+    )
+
+    installer = installers.get("teams")
+    assert isinstance(installer, TeamsAppInstaller)
+    manifest = json.loads(
+        zipfile.ZipFile(io.BytesIO(installer.package.archive)).read("manifest.json")
+    )
+    assert manifest["name"]["short"] == "Agent Switch (dev)"
+    assert app is not None
+    await app.aclose()

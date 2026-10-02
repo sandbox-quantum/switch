@@ -216,3 +216,21 @@ def test_an_app_with_no_public_origin_raises() -> None:
 def test_a_privacy_page_that_is_not_https_raises() -> None:
     with pytest.raises(ValueError, match="TEAMS_APP_PRIVACY_URL must be an https"):
         _config(**_without(teams_app_privacy_url="http://switch.example/privacy"))
+
+
+def test_the_app_is_called_agent_switch_unless_named() -> None:
+    assert _config(**_APP).teams_app_name == "Agent Switch"
+
+
+def test_an_environment_can_name_its_app() -> None:
+    config = _config(**_APP, teams_app_name="Agent Switch (dev)")
+    assert config.teams_app_name == "Agent Switch (dev)"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", " Agent Switch", "Agent Switch ", "A name far too long for a Teams app"],
+)
+def test_a_name_teams_would_refuse_is_refused_at_startup(name: str) -> None:
+    with pytest.raises(ValueError, match="TEAMS_APP_NAME must be 1 to 30"):
+        _config(**_APP, teams_app_name=name)

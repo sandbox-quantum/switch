@@ -1354,6 +1354,7 @@ def _distributed_teams_app(
             app=teams_app,
             package=build_distributed_app_package(
                 app_id=config.teams_app_client_id,
+                app_name=config.teams_app_name,
                 messaging_public_url=config.messaging_public_url,
                 privacy_url=config.teams_app_privacy_url,
                 terms_url=config.teams_app_terms_url,

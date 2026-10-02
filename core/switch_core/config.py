@@ -19,6 +19,8 @@ _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 # worth catching at startup rather than at the first `GRANT`. The 63-character
 # cap matches Postgres's own `NAMEDATALEN` limit.
 _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+# The longest short name a Teams app manifest takes.
+_TEAMS_APP_SHORT_NAME_LIMIT = 30
 
 
 def _require_rsa_private_key(name: str, pem: str) -> rsa.RSAPrivateKey:
@@ -445,6 +447,10 @@ class SwitchConfig(BaseSettings):
     # so they are the deployment's to state rather than a placeholder of ours.
     teams_app_privacy_url: str | None = None
     teams_app_terms_url: str | None = None
+    # The name the app goes by in Teams. Every environment registers an app of
+    # its own, and an organisation approving more than one — ours, testing
+    # them — would otherwise see several apps of the same name.
+    teams_app_name: str = "Agent Switch"
 
     # Public origin (scheme + host, no path) that a messaging platform reaches
     # Switch on: the base of the OAuth redirect and of the three event URLs
@@ -1039,6 +1045,17 @@ class SwitchConfig(BaseSettings):
                 "id, the directory its bot is registered in, the keypair Graph "
                 "encrypts captured messages to, and the privacy and terms pages "
                 "its package names."
+            )
+        app_name = self.teams_app_name
+        if (
+            not app_name
+            or app_name != app_name.strip()
+            or len(app_name) > _TEAMS_APP_SHORT_NAME_LIMIT
+        ):
+            raise ValueError(
+                f"TEAMS_APP_NAME must be 1 to {_TEAMS_APP_SHORT_NAME_LIMIT} "
+                "characters with no spaces around it; Teams refuses an app "
+                f"package whose short name is longer, got {app_name!r}."
             )
         for name in ("TEAMS_APP_PRIVACY_URL", "TEAMS_APP_TERMS_URL"):
             parts = urlsplit(str(settings[name]))

@@ -346,6 +346,12 @@ switchCore:
     # Shown to the admin approving the app, and required in its package.
     privacyUrl: ""
     termsUrl: ""
+    # The app's name in Teams, up to 30 characters; empty means "Agent
+    # Switch". Name each non-production environment's app (for example
+    # "Agent Switch (dev)"), so an organisation that approves more than one
+    # can tell them apart. Set it before the first approval: Teams takes a
+    # new name only with a newer app package.
+    name: ""
   # Bearer-token resolution runs before every authenticated request and agents
   # beat continuously, so a successful resolution is memoised in process for
   # this many seconds. Only successes are cached — an unknown or revoked token
