@@ -77,7 +77,7 @@ UNCLAIMED_NOTICE = (
 #: holds an already-connected chat, or says one exists beyond "connected".
 CLAIM_REFUSED: dict[ClaimRefusal, str] = {
     "expired": (
-        "That Switch link has expired or was already used. Get a new one from "
+        "That link or code has expired or was already used. Get a new one from "
         "Switch and try again."
     ),
     "unrecognised": (
