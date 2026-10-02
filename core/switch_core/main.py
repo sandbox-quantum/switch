@@ -139,7 +139,12 @@ from switch_core.observability.bootstrap import (
     RuntimeProbes,
     start_observability,
 )
-from switch_core.observability.pool import install_pool_watermark, pool_stats
+from switch_core.observability.pool import (
+    WaitTimedQueuePool,
+    install_hold_timer,
+    install_pool_watermark,
+    pool_stats,
+)
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
@@ -342,7 +347,7 @@ async def run(config: SwitchConfig) -> None:
     # — see `main._migrate_and_grant`, which `main()` awaits first. Both use
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
-    engine = create_engine_from_config(config)
+    engine = create_engine_from_config(config, poolclass=WaitTimedQueuePool)
     await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
     # Wired here rather than inside the engine factory, so the database layer
@@ -354,6 +359,7 @@ async def run(config: SwitchConfig) -> None:
     # not change how queries execute.
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
+    install_hold_timer(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the

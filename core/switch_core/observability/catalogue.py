@@ -124,6 +124,33 @@ DB_POOL_TIMEOUTS = _spec(
     "at its ceiling is only suggestive: this is a request that got no connection "
     "at all within the timeout.",
 )
+# How long a connection stayed borrowed, by who borrowed it. The peak above
+# says the pool filled; this says which code was holding it. `caller` is the
+# first switch_core function on the stack when the connection was handed out,
+# as `module:function`, so the series count is bounded by the code, not the
+# traffic. A hold far longer than the queries inside it is code awaiting
+# something else with a connection in hand.
+DB_POOL_HOLD_DURATION = _spec(
+    "switch.db.pool.hold.duration",
+    "histogram",
+    "ms",
+    "How long a pooled connection stayed checked out, by the code that "
+    "borrowed it. Compare with query duration: a hold much longer than its "
+    "queries is code waiting on something else while holding a connection.",
+    "caller",
+)
+# The timeouts above count requests that waited the full `db_pool_timeout`;
+# this is every wait, so a pool that makes requests queue for 200 ms shows up
+# long before one makes them give up.
+DB_POOL_WAIT_DURATION = _spec(
+    "switch.db.pool.wait.duration",
+    "histogram",
+    "ms",
+    "Time from asking the pool for a connection to getting one, including "
+    "opening a new one when the pool grows. Requests that timed out are not "
+    "here; they are counted in switch.db.pool.timeouts.",
+    bounds=SUB_MILLISECOND_BOUNDS_MS,
+)
 # The pool gauges say whether connections are scarce; this says whether the
 # database is slow, which is the other half and the one a slow request is
 # usually about. `operation` is the statement's leading keyword mapped through
@@ -268,8 +295,23 @@ AGENT_CONNECTIONS_EXPIRED = _spec(
     "switch.agent.connections_expired",
     "sum",
     "{connection}",
-    "Agent connections closed on a lapsed heartbeat. A steady rate against a "
-    "flat connection count is churn, which a gauge alone cannot show.",
+    "Agent connections closed on a lapsed heartbeat, whichever path noticed: "
+    "the sweep, the next use of the dead connection, or its own event stream. "
+    "A steady rate against a flat connection count is churn, which a gauge "
+    "alone cannot show.",
+)
+
+# Every stream open, by what it was. `reattach` is a live connection whose
+# socket came back; `after_lapse` and `after_close` are a connection id this
+# process closed recently, coming back; `fresh` is one this process has never
+# seen, which is a first connect or anything after a server restart. A burst
+# of `after_lapse` is the reconnect storm the expiry counter only implies.
+AGENT_CONNECTIONS_OPENED = _spec(
+    "switch.agent.connections_opened",
+    "sum",
+    "{connection}",
+    "Agent event streams opened, by kind: reattach, after_lapse, after_close or fresh.",
+    "kind",
 )
 
 # ── Agents and clients ───────────────────────────────────────────────────────
@@ -326,6 +368,15 @@ RUNTIME_EVENT_LOOP_LAG = _spec(
     "single-threaded, so this is the one number that says whether anything is "
     "being starved.",
 )
+# One per process start, so a restart lines up against everything else on a
+# dashboard. The version is already on every series' resource.
+RUNTIME_STARTS = _spec(
+    "switch.runtime.starts",
+    "sum",
+    "{start}",
+    "Process starts. A marker: deploys and restarts, to line up against "
+    "reconnect bursts and pool peaks.",
+)
 RUNTIME_GC_COLLECTIONS = _spec(
     "switch.runtime.gc_collections",
     "sum",
@@ -353,6 +404,8 @@ CATALOGUE: dict[str, MetricSpec] = {
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
         DB_POOL_TIMEOUTS,
+        DB_POOL_HOLD_DURATION,
+        DB_POOL_WAIT_DURATION,
         DB_QUERY_DURATION,
         MESSAGES_SENT,
         MESSAGES_DELIVERED,
@@ -366,6 +419,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGE_CALL_DURATION,
         AGENT_EVENTS_DROPPED,
         AGENT_CONNECTIONS_EXPIRED,
+        AGENT_CONNECTIONS_OPENED,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
         CONNECTORS_RUNNING,
@@ -373,6 +427,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         RUNTIME_CPU_SECONDS,
         RUNTIME_OPEN_FDS,
         RUNTIME_EVENT_LOOP_LAG,
+        RUNTIME_STARTS,
         RUNTIME_GC_COLLECTIONS,
         HEALTH_CHECK,
     )
