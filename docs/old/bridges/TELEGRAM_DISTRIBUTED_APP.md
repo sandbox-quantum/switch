@@ -131,8 +131,8 @@ Who may connect one:
 Every chat an organisation connects shares its one connection, so a person
 links their Telegram account once and is recognised in all of them.
 
-When a connection does not happen, the bot says why in the chat: the link has
-expired or was used, the code is not from this deployment, the chat is already
+When a connection does not happen, the bot says why in the chat: the link or
+code has expired or was used, the code is not from this deployment, the chat is already
 connected to Switch, only an admin can connect the first chat, or only an admin
 of the group can connect it. It never says
 which organisation holds a chat. A retry Telegram sends of a claim that worked
