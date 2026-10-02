@@ -300,10 +300,17 @@ class TestPrivateRooms:
             await disconnect_install("t1", _Session(), service, _user(), True)  # type: ignore[arg-type]
         assert service.disconnected == ["t1"]
 
-    async def test_a_chat_with_no_room_left_is_not_guarded(self) -> None:
-        """An ended chat has let go of its room, and there is nothing private
-        about it left to protect."""
+    async def test_a_chat_whose_room_is_gone_is_not_a_members(self) -> None:
+        """No room's permissions cover it any more, so the tenant's admins
+        decide."""
+        service = _Service(rooms={})
+        with tenant_scope(_TENANT), pytest.raises(HTTPException) as refused:
+            await disconnect_install("t1", _Session(), service, _user(), False)  # type: ignore[arg-type]
+        assert refused.value.status_code == 403
+        assert service.disconnected == []
+
+    async def test_an_admin_can_disconnect_a_chat_whose_room_is_gone(self) -> None:
         service = _Service(rooms={})
         with tenant_scope(_TENANT):
-            await disconnect_install("t1", _Session(), service, _user(), False)  # type: ignore[arg-type]
+            await disconnect_install("t1", _Session(), service, _user(), True)  # type: ignore[arg-type]
         assert service.disconnected == ["t1"]

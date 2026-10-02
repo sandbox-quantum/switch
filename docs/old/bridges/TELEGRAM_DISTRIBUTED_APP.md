@@ -123,7 +123,8 @@ Who may connect one:
   them, the last included. A chat is a room, and rooms are members'. A room
   made private takes its chat with it: a member who cannot read the room does
   not see the chat in the Telegram card, and one who cannot write to it cannot
-  disconnect it. Its owner and admins still can.
+  disconnect it. Its owner and admins still can. A chat whose room is gone,
+  deleted or moved elsewhere, is left to admins to disconnect.
 - **Turning Telegram off is an admin's**: it is deleting the connection, and
   connections are admins'.
 

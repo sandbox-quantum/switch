@@ -260,7 +260,7 @@ async def list_installs(
 
 def _room_allows(principal: Principal, action: Action, room: Room | None) -> bool:
     """Whether a chat's room lets `principal` act on it; a chat with no room
-    left (an ended one) has nothing to protect."""
+    left (an ended one) has nothing private to show."""
     return room is None or can(principal, action, room)
 
 
@@ -315,10 +315,15 @@ async def disconnect_install(
     if not _installs_by_claim_or_gone(installs, platform):
         _require_tenant_admin(is_admin)
     else:
-        rooms = await installs.chat_rooms(session)
-        if not _room_allows(
-            Principal(user.id, is_admin), "write", rooms.get(install_id)
-        ):
+        room = (await installs.chat_rooms(session)).get(install_id)
+        if room is None:
+            # Nobody's room covers it any more, so it is the tenant's to decide.
+            if not is_admin:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only an admin can disconnect a chat whose room is gone.",
+                )
+        elif not can(Principal(user.id, is_admin), "write", room):
             raise HTTPException(
                 status_code=403,
                 detail=(
