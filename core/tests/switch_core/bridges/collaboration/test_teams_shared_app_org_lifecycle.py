@@ -198,3 +198,43 @@ async def test_one_team_that_cannot_be_read_does_not_keep_the_app_in_the_rest(
     assert removed == ["team-2"]
     messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
     assert any("the app in team archived" in m for m in messages)
+
+
+async def test_an_organisation_whose_teams_cannot_be_listed_is_still_forgotten(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2/v2.0/token" in str(request.url):
+            return _token_response(request)
+        if request.url.path == "/v1.0/subscriptions":
+            return httpx.Response(200, json={"value": []})
+        if request.url.path == "/v1.0/teams":
+            return httpx.Response(403, json={"error": {"message": "no"}})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    app = _app(httpx.MockTransport(handler))
+    app.org_tokens(ORG)
+
+    with caplog.at_level(logging.ERROR):
+        await app.withdraw_from_org(ORG)
+
+    assert ORG not in app._org_tokens
+    assert "listing the organisation's teams failed" in caplog.text
+
+
+async def test_a_team_listed_without_an_id_is_skipped() -> None:
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2/v2.0/token" in str(request.url):
+            return _token_response(request)
+        if request.url.path == "/v1.0/subscriptions":
+            return httpx.Response(200, json={"value": []})
+        if request.url.path == "/v1.0/teams":
+            return httpx.Response(200, json={"value": [{"displayName": "?"}]})
+        asked.append(request.url.path)
+        return httpx.Response(200, json={"value": []})
+
+    await _app(httpx.MockTransport(handler)).withdraw_from_org(ORG)
+
+    assert asked == []

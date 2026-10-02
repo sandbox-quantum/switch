@@ -44,6 +44,7 @@ class _Lifecycle:
         self.refuse = refuse
         self.editable = editable
         self.edit_refusal = edit_refusal
+        self.channel_creation = False
         self.registered: list[dict[str, object]] = []
         self.checked: list[dict[str, Any]] = []
         self.edits_checked: list[dict[str, Any]] = []
@@ -71,7 +72,7 @@ class _Lifecycle:
     ) -> None: ...
 
     def supports_channel_creation(self, bridge_type: str) -> bool:
-        return False
+        return self.channel_creation
 
     async def check_start_guards(self, **kwargs: Any) -> None:
         self.checked.append(kwargs)
@@ -358,3 +359,36 @@ async def test_a_refused_edit_stores_none_of_the_rest_of_the_request(
         bridge = await _BRIDGE_STORE.get(session, bridge_id)
     assert bridge is not None
     assert bridge.agent_greetings_enabled is True
+
+
+async def test_choosing_a_default_team_turns_channel_creation_on(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """What the Teams panel sends: the default team and channel creation in
+    one request, both stored once the team checks out."""
+    async with session_factory() as session:
+        bridge_id = await _shared_bridge(
+            session, bridge_type="teams", connection_config=dict(_TEAMS_SHARED)
+        )
+        await session.commit()
+    lifecycle = _Lifecycle(editable=frozenset({"team_id"}))
+    lifecycle.channel_creation = True
+
+    async with session_factory() as session:
+        await update_bridge(
+            bridge_id=bridge_id,
+            payload=BridgeUpdateRequest(
+                channel_creation_enabled=True, connection_config={"team_id": "team-9"}
+            ),
+            session=session,
+            bridge_store=_BRIDGE_STORE,
+            room_store=RoomStore(),
+            collab_lifecycle=lifecycle,  # type: ignore[arg-type]
+            _user=_admin(),
+        )
+
+    async with session_factory() as session:
+        bridge = await _BRIDGE_STORE.get(session, bridge_id)
+    assert bridge is not None
+    assert bridge.channel_creation_enabled is True
+    assert bridge.connection_config["team_id"] == "team-9"

@@ -37,7 +37,10 @@ from switch_core.bridges.collaboration.install import (
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
 )
-from switch_core.bridges.collaboration.install_service import MessagingInstallService
+from switch_core.bridges.collaboration.install_service import (
+    MessagingInstallService,
+    WebhookTarget,
+)
 from switch_core.db.models import (
     Client,
     CollaborationBridge,
@@ -664,3 +667,49 @@ async def test_a_refused_install_is_explained_in_the_platforms_terms(
     assert "You need to be an administrator (access_denied: not an admin)." in (
         response.text
     )
+
+
+async def test_a_press_that_fails_after_its_deadline_is_logged(
+    rls_harness: RLSHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fixture = await _fixture(rls_harness)
+    fixture.lifecycle.adapters[fixture.bridges["a"]] = _Adapter(delay=0.2, fail=True)
+    monkeypatch.setattr(install_routes, "_INLINE_ANSWER_SECONDS", 0.05)
+
+    with caplog.at_level("ERROR"):
+        response = await fixture.client.post(
+            f"/messaging/{_PLATFORM}/events",
+            content=_batch({"workspace": "org-a", "id": "press-1", "inline": True}),
+            headers=_SIGNED,
+        )
+        for _ in range(50):
+            if not install_routes._finishing:
+                break
+            await asyncio.sleep(0.05)
+
+    assert response.status_code == 504
+    assert "failed after its answer was sent" in caplog.text
+
+
+async def test_a_late_press_cancelled_at_shutdown_is_let_go_quietly() -> None:
+    async def forever() -> dict[str, Any] | None:
+        await asyncio.sleep(3600)
+        return None
+
+    task = asyncio.create_task(forever())
+    install_routes._finishing.add(task)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    install_routes._finished_late(
+        WebhookTarget(
+            tenant_id="t", platform=_PLATFORM, bridge_id="b", adapter=_Adapter()
+        ),
+        "events",
+        task,
+    )
+
+    assert task not in install_routes._finishing
