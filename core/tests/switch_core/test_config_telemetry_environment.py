@@ -51,3 +51,15 @@ def test_an_environment_the_relay_does_not_know_is_refused(
 
     with pytest.raises(ValidationError, match="telemetry_environment"):
         SwitchConfig(**_BASE_KWARGS)  # type: ignore[arg-type]
+
+
+def test_a_deployment_is_not_the_companys_own_unless_it_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TELEMETRY_INTERNAL", raising=False)
+
+    assert SwitchConfig(**_BASE_KWARGS).telemetry_internal is False  # type: ignore[arg-type]
+
+    monkeypatch.setenv("TELEMETRY_INTERNAL", "true")
+
+    assert SwitchConfig(**_BASE_KWARGS).telemetry_internal is True  # type: ignore[arg-type]

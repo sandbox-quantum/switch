@@ -97,6 +97,26 @@ even `prod`:
 the reporting process runs, not anything inside the deployment, so it is not
 an identifier in the sense of the rule above.
 
+### Internal usage
+
+Staff use the product too, and their usage is real but is not adoption. Three
+signals tell it apart, none of them an identifier:
+
+- **`flint_internal`** on the resource: `"true"` or `"false"` from the server,
+  set by `TELEMETRY_INTERNAL` (Helm `switchCore.telemetry.internal`) on the
+  company's own deployments and never on a customer's. Switch Console sends
+  `"true"` when any account it is signed in to a Switch server with is on
+  `sandboxaq.com` or `sandboxquantum.com`, `"false"` when only other accounts
+  are, and `"unknown"` when none is; only that answer leaves the machine. A
+  server Console runs for the user is given Console's answer.
+- **`user_internal_count`** in the daily snapshot: accounts on those domains,
+  so a deployment that serves both staff and customers can be split.
+- Each deployment's `flint.client_id`, for the company's own deployments by
+  name.
+
+`tenant_id` is deliberately not one of them: no identifier for anything inside
+a deployment is ever sent, and a tenant is inside one.
+
 ### What the relay's 200 means
 
 The relay answers `200` once it has accepted a payload, before it forwards
@@ -302,8 +322,12 @@ never invisible.
 | `tenant_failed_count` | number | tenants whose queries raised and were stepped over. One tenant's failure no longer takes the whole pass down, so the pair is what makes a partial pass self-describing: without it, every count dropping at once is indistinguishable from a deployment losing its users |
 | `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly fifteen queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
 | `user_count` | number | user accounts that exist |
-| `user_active_1d` | number | distinct humans who interacted in 24h |
+| `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
+| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account |
 | `user_active_7d` | number | same over 7 days |
+| `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
+| `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d` |
+| `chat_identity_active_7d` | number | same over 7 days |
 | `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
 | `room_agent_created_count` | number | unarchived rooms an agent created for itself |
 | `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |

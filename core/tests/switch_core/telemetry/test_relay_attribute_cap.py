@@ -76,6 +76,7 @@ async def _attributes_on_the_wire(
         version="1.0.0",
         environment=None,
         telemetry_environment="prod",
+        telemetry_internal=False,
     )
     service.emit(event, **{key: value(kind) for key, kind in CATALOGUE[event].items()})
     await service.aclose()

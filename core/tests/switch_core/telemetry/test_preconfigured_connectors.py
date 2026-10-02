@@ -270,6 +270,7 @@ class TestRegisteringRecordsTheFlag:
             version=None,
             environment=None,
             telemetry_environment="prod",
+            telemetry_internal=False,
         )
         service._session_factory = session_factory
         service._client_lifecycle.create_client = AsyncMock(  # type: ignore[method-assign]

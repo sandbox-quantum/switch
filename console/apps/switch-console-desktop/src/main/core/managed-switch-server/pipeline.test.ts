@@ -65,6 +65,9 @@ vi.mock('./telemetry-consent', () => ({
   readDeployedTelemetry: vi.fn(),
 }));
 const setActiveServerIdMock = vi.hoisted(() => vi.fn());
+vi.mock('@main/core/telemetry/internal-account', () => ({
+  currentInternalFlag: async () => 'unknown',
+}));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   assertManagedServerUrlFree: () => Promise.resolve(),
   ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),

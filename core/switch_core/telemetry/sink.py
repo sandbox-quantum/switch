@@ -10,6 +10,7 @@ lets a reporting problem reach the caller.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -99,7 +100,7 @@ class OtlpRelaySink:
             _resource_from(record),
         )
         _add_event_name(payload, record.name)
-        _add_flint_env(payload, record.resource["flint_env"])
+        _add_relay_context(payload, record.resource)
 
         try:
             await self._client.post("logs", payload)
@@ -132,15 +133,15 @@ def _resource_from(record: TelemetryRecord) -> OtlpResource:
     )
 
 
-def _add_flint_env(payload: dict[str, Any], environment: str) -> None:
-    """Add `flint_env` to the resource, which the shared encoder's resource has
-    no field for: it describes the process to an operator's own collector,
-    where this means nothing. The relay sends each event to the Amplitude
-    project this names, and drops one it cannot place."""
+def _add_relay_context(payload: dict[str, Any], resource: Mapping[str, str]) -> None:
+    """Add `flint_env` and `flint_internal` to the resource, which the shared
+    encoder's resource has no fields for: it describes the process to an
+    operator's own collector, where they mean nothing. The relay sends each
+    event to the Amplitude project `flint_env` names, and drops one it cannot
+    place; `flint_internal` tells staff usage from adoption."""
+    context = {key: resource[key] for key in ("flint_env", "flint_internal")}
     for resource_log in payload["resourceLogs"]:
-        resource_log["resource"]["attributes"].extend(
-            otlp_attributes({"flint_env": environment})
-        )
+        resource_log["resource"]["attributes"].extend(otlp_attributes(context))
 
 
 def _add_event_name(payload: dict[str, Any], name: str) -> None:

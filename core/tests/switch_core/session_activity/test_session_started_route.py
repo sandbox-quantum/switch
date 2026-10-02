@@ -56,6 +56,7 @@ def _telemetry(sink: _RecordingSink, *, enabled: bool) -> TelemetryService:
         version=None,
         environment=None,
         telemetry_environment="prod",
+        telemetry_internal=False,
     )
 
 

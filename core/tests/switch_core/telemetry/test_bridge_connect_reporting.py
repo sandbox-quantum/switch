@@ -79,6 +79,7 @@ def _service_with_telemetry(
         version=None,
         environment=None,
         telemetry_environment="prod",
+        telemetry_internal=False,
         session_factory=session_factory,
         installed_at=installed_at,
     )

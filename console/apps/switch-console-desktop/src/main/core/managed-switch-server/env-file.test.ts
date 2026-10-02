@@ -31,6 +31,7 @@ describe('buildEnvFile', () => {
     secrets,
     telemetryEnabled: false,
     telemetryEnvironment: 'prod',
+    telemetryInternal: false,
   });
   const vars = Object.fromEntries(
     env
@@ -146,6 +147,7 @@ describe('buildEnvFile', () => {
       secrets,
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
+      telemetryInternal: false,
     });
     expect(sharing).toContain('TELEMETRY_ENABLED=true');
   });
@@ -161,12 +163,30 @@ describe('buildEnvFile', () => {
       secrets,
       telemetryEnabled: true,
       telemetryEnvironment: 'local',
+      telemetryInternal: false,
     });
 
     expect(fromDevBuild).toContain('TELEMETRY_ENVIRONMENT=local');
     expect(vars.TELEMETRY_ENVIRONMENT).toBe('prod');
     // Written but never forwarded would reach no container.
     expect(composeYaml).toMatch(/^\s+TELEMETRY_ENVIRONMENT:\s*$/m);
+  });
+
+  it('tells the server whether the person it runs for is staff', () => {
+    const forStaff = buildEnvFile({
+      version: '1.2.3',
+      registry: 'ghcr.io',
+      namespace: 'sandbox-quantum',
+      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      secrets,
+      telemetryEnabled: true,
+      telemetryEnvironment: 'prod',
+      telemetryInternal: true,
+    });
+
+    expect(forStaff).toContain('TELEMETRY_INTERNAL=true');
+    expect(vars.TELEMETRY_INTERNAL).toBe('false');
+    expect(composeYaml).toMatch(/^\s+TELEMETRY_INTERNAL:\s*$/m);
   });
 
   it('is the only thing the compose file needs to forward the gate', () => {
@@ -195,6 +215,7 @@ describe('readStackEnv', () => {
     secrets,
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
+    telemetryInternal: false,
   });
 
   it('reads back exactly what buildEnvFile wrote', () => {
@@ -299,6 +320,7 @@ describe('keysDisagreeing', () => {
     secrets,
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
+    telemetryInternal: false,
   });
 
   it('finds nothing wrong with a copy of the same settings', () => {

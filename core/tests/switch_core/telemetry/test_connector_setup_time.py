@@ -37,6 +37,7 @@ def _switched_off(telemetry: TelemetryService) -> TelemetryService:
         version=None,
         environment=None,
         telemetry_environment="prod",
+        telemetry_internal=False,
         session_factory=telemetry._session_factory,
         installed_at=INSTALLED,
     )
