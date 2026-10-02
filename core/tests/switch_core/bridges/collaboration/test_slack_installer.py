@@ -13,6 +13,7 @@ import json
 import time
 from urllib.parse import urlencode
 
+import aiohttp
 import pytest
 from slack_sdk.web.async_client import AsyncWebClient
 
@@ -213,6 +214,27 @@ class TestRedeem:
             await self._redeem_returning(
                 monkeypatch, installer, {"ok": True, "access_token": "xoxb-granted"}
             )
+
+
+class TestRevoke:
+    @pytest.mark.parametrize(
+        "failure",
+        [aiohttp.ClientConnectionError("connection refused"), TimeoutError()],
+    )
+    async def test_slack_out_of_reach_is_an_install_error(
+        self,
+        installer: SlackAppInstaller,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: Exception,
+    ) -> None:
+        """So a caller can tell the approver to try again, not answer 500."""
+
+        async def fake(self, **kwargs):  # noqa: ANN001, ANN202
+            raise failure
+
+        monkeypatch.setattr(AsyncWebClient, "auth_revoke", fake)
+        with pytest.raises(MessagingInstallError, match="Could not reach Slack"):
+            await installer.revoke(bot_token="xoxb-granted")
 
 
 class TestParsingAWebhook:

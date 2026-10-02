@@ -18,6 +18,9 @@ import { useCallback, useState } from "react";
 import { type TenantRole, createInvitation } from "../../data/api";
 import { type DeliveryNotice, deliveryNotice, inviteUrl } from "../../data/sessionState";
 
+/** Mirrors `MAX_INVITATION_USES` in the server's invitation schema. */
+const MAX_INVITATION_USES = 100;
+
 interface Props {
   open: boolean;
   tenantId: string;
@@ -90,7 +93,7 @@ export default function CreateInvitationDialog({
   const roles: TenantRole[] = isOwner ? ["member", "admin", "owner"] : ["member", "admin"];
   const valid =
     Number.isInteger(Number(hours)) && Number(hours) > 0 && Number(hours) <= 8760 &&
-    Number.isInteger(Number(uses)) && Number(uses) > 0;
+    Number.isInteger(Number(uses)) && Number(uses) > 0 && Number(uses) <= MAX_INVITATION_USES;
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
@@ -157,6 +160,7 @@ export default function CreateInvitationDialog({
                 type="number"
                 value={uses}
                 onChange={(e) => setUses(e.target.value)}
+                helperText={`Up to ${MAX_INVITATION_USES}`}
                 fullWidth
               />
             </Stack>

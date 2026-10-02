@@ -22,11 +22,20 @@ from testcontainers.postgres import PostgresContainer
 # Importing the models module registers every table on Base.metadata so
 # create_all provisions the full schema (rooms, room_groups, FKs, …).
 import switch_core.db.models  # noqa: F401
+from switch_core.db import encrypted_json
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
+from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+
+# Production configures this in `main.run()`; every test that touches a
+# connection config needs the same, and none needs a particular key.
+TEST_KEYRING = Keyring.parse(
+    "test:" + "column-encryption-secret" * 2, legacy_secret=None
+)
+encrypted_json.configure(TEST_KEYRING)
 
 
 async def _seed_tenant_zero(conn: AsyncConnection) -> None:

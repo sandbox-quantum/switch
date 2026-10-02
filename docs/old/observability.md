@@ -48,7 +48,7 @@ python scripts/otlp_sink.py
 DB_HOST=localhost DB_PORT=55432 DB_USER=postgres DB_PASSWORD=check DB_NAME=switch \
 DB_REQUIRE_RESTRICTED_ROLE=false \
 MATRIX_SERVER_NAME=switch.local \
-AGENT_REGISTRATION_TOKEN=check JWT_SECRET_KEY=check-jwt-secret-key-long-enough \
+AGENT_REGISTRATION_TOKEN=check SECRET_KEYS=check:check-secret-key-long-enough-for-32 \
 GATEWAY_ADMIN_EMAIL=admin@switch.local GATEWAY_ADMIN_PASSWORD=check \
 SERVER_PORT=8099 LOG_FORMAT=json ENVIRONMENT=local \
 OTLP_ENDPOINT=http://localhost:4318 \

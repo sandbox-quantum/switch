@@ -21,7 +21,7 @@ def _kwargs(**overrides: object) -> dict[str, object]:
         db_name="d",
         matrix_server_name="m",
         agent_registration_token="t",
-        jwt_secret_key="secret",
+        secret_keys="test:" + "x" * 40,
         gateway_admin_email="a@b.c",
         gateway_admin_password="pw",
         gateway_oidc_issuer_url=None,

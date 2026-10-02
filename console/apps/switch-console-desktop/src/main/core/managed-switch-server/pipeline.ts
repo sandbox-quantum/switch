@@ -34,7 +34,7 @@ import type { ServerHost } from './host/types';
 import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
-import { type LocalServerSecrets, withRuntimePassword } from './secret-values';
+import { type LocalServerSecrets, withNewerSecrets } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
 import type { ServerLease } from './stack-lock';
 import {
@@ -302,10 +302,13 @@ async function adoptSettings(
   stack: Extract<StackOnHost, { kind: 'present' }>
 ): Promise<StackSettings> {
   // A `.env` from before the database role split has no runtime password; one
-  // is made here, and the next start gives the role it.
-  const { secrets } = withRuntimePassword({
+  // is made here, and the next start gives the role it. One from before
+  // SECRET_KEYS takes this desktop's, if it has one — a server may already
+  // have stored credentials under it — and a fresh one otherwise.
+  const { secrets } = withNewerSecrets({
     ...stack.env.secrets,
     dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? '',
+    secretKeys: stack.env.secrets.secretKeys ?? (await readSecrets(host))?.secretKeys ?? '',
   });
   await storeSecrets(host, secrets);
   await rememberPorts(host, stack.env.ports);

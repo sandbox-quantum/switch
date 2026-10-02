@@ -27,11 +27,12 @@ init-env:
     fi
     cp .env.example .env
     for key in DB_PASSWORD DB_OWNER_PASSWORD \
-               AGENT_REGISTRATION_TOKEN JWT_SECRET_KEY GATEWAY_ADMIN_PASSWORD \
+               AGENT_REGISTRATION_TOKEN GATEWAY_ADMIN_PASSWORD \
                MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
       secret="$(openssl rand -hex 24)"
       sed -i.bak "s|^${key}=.*|${key}=${secret}|" .env
     done
+    sed -i.bak "s|^SECRET_KEYS=.*|SECRET_KEYS=local:$(openssl rand -hex 32)|" .env
     rm -f .env.bak
     echo "✅ Wrote .env with freshly generated secrets."
     echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
@@ -71,7 +72,7 @@ reset:
 # while keeping the repo root as the working directory. Tool configs are passed explicitly since the repo root no longer
 # holds pyproject.toml / alembic.ini.
 run:
-    uv run --project core python -m switch_core.main
+    GATEWAY_COOKIE_SECURE="${GATEWAY_COOKIE_SECURE:-false}" uv run --project core python -m switch_core.main
 
 # ── Run switch-core as a stand-in for Switch Cloud ────────────────────────────
 # For testing Switch Console against this checkout instead of whatever a shared
@@ -84,7 +85,7 @@ local-cloud:
     GATEWAY_SMTP_HOST=127.0.0.1 GATEWAY_SMTP_PORT=1025 GATEWAY_SMTP_TLS=none \
     GATEWAY_SMTP_USERNAME= GATEWAY_SMTP_PASSWORD= \
     GATEWAY_SMTP_FROM="Switch <invites@switch.local>" \
-    FRONTEND_BASE_URL=http://localhost:8000 \
+    FRONTEND_BASE_URL=http://localhost:8000 GATEWAY_COOKIE_SECURE=false \
     uv run --project core python -m switch_core.main
 
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in

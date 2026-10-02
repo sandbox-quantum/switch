@@ -737,6 +737,9 @@ class SessionStateResponse(BaseModel):
     invite_email_enabled: bool
 
 
+MAX_INVITATION_USES = 100
+
+
 class InvitationCreateRequest(BaseModel):
     role: str = "member"
     # None mints a shareable link; set, the invitation is addressed to one
@@ -746,7 +749,9 @@ class InvitationCreateRequest(BaseModel):
     # roughly 2.4e9 hours, so an unbounded value turns a bad request into a 500.
     # A year is well beyond any legitimate invitation's life.
     expires_in_hours: int = Field(default=168, gt=0, le=8760)
-    uses_remaining: int = Field(default=1, ge=1)
+    # Capped so a shareable link cannot be made effectively unlimited: a link
+    # that leaks keeps admitting strangers until it runs out.
+    uses_remaining: int = Field(default=1, ge=1, le=MAX_INVITATION_USES)
 
     @field_validator("email")
     @classmethod
@@ -796,6 +801,16 @@ class AddressedInvitation(BaseModel):
 class AddressedInvitationAcceptRequest(BaseModel):
     tenant_id: str
     invitation_id: str
+
+
+class AuditEventDetail(BaseModel):
+    id: str
+    occurred_at: str
+    actor_user_id: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    details: dict[str, Any] | None
 
 
 class JoinDomainDetail(BaseModel):

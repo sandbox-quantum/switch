@@ -25,8 +25,10 @@ from switch_core.bridges.collaboration.ingress import (
     CallbackIngress,
     CallbackRefused,
 )
+from switch_core.keys import Keyring
 
-SECRET = "server-secret-for-tests"
+SECRET = "server-secret-for-tests-server-secret"
+KEYRING = Keyring.parse(f"test:{SECRET}", legacy_secret=None)
 BRIDGE = "bridge-1"
 OTHER = "bridge-2"
 
@@ -39,7 +41,7 @@ def _free_port() -> int:
 
 
 def _ingress(port: int) -> CallbackIngress:
-    return CallbackIngress(host="127.0.0.1", port=port, secret=SECRET)
+    return CallbackIngress(host="127.0.0.1", port=port, keyring=KEYRING)
 
 
 async def _post(
@@ -363,7 +365,11 @@ def test_a_rotated_server_secret_gives_a_different_key() -> None:
     port = _free_port()
     before = _ingress(port).endpoint_for("mattermost", BRIDGE).key
     after = (
-        CallbackIngress(host="127.0.0.1", port=port, secret="the-next-one")
+        CallbackIngress(
+            host="127.0.0.1",
+            port=port,
+            keyring=Keyring.parse("next:" + "the-next-one" * 3, legacy_secret=None),
+        )
         .endpoint_for("mattermost", BRIDGE)
         .key
     )

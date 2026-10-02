@@ -66,6 +66,15 @@ class ServerSideConnector(ABC):
     The lifecycle service handles all Switch API communication.
     """
 
+    @classmethod
+    def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
+        """The URLs in this config that Switch connects to.
+
+        Checked against the deployment's `OutboundPolicy` when the connector is
+        registered and each time it starts.
+        """
+        return []
+
     @abstractmethod
     async def start(self) -> None:
         """Initialize connection to the external platform."""

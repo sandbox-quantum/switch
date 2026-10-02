@@ -15,13 +15,15 @@ from switch_core.bridges.collaboration.slack.adapter import (
 
 
 def _adapter() -> SlackAdapter:
-    return SlackAdapter(
+    adapter = SlackAdapter(
         config=SlackConnectionConfig(
             bot_token="xoxb-test",
             app_token="xapp-test",
             workspace_id="T123",
         )
     )
+    adapter.set_tenant_id("tenant-1")
+    return adapter
 
 
 def _run(coro: Any) -> Any:

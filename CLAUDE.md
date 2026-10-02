@@ -176,6 +176,9 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   roles, and how sign-up works (§9a)
 - `docs/old/multi-tenancy-phase1-db.md` — the Phase 1 database schema as built:
   tables, per-tenant uniqueness, and how a request's tenant is bound
+- `docs/old/key-rotation.md` — the server's keys (`SECRET_KEYS`): what each
+  derived key protects, moving a deployment off `JWT_SECRET_KEY`, and the
+  rotation runbook
 - `docs/old/rds-migration.md` — moving a deployment's Postgres to RDS: the
   proposal and the cutover runbook
 

@@ -112,6 +112,7 @@ def _adapter(
     enabled: bool = True,
     groups: list[dict[str, Any]] | None = None,
     team_id: str = "T123",
+    tenant_id: str = "tenant-a",
 ) -> tuple[SlackAdapter, FakeWebClient]:
     adapter = SlackAdapter(
         config=SlackConnectionConfig(
@@ -124,6 +125,7 @@ def _adapter(
     # Normally set from auth.test; the shared directory keys contributions on
     # it, so two adapters in one test must not look like the same workspace.
     adapter._team_id = team_id
+    adapter.set_tenant_id(tenant_id)
     client = FakeWebClient(groups)
     adapter._web_client = client  # type: ignore[assignment]
     return adapter, client
@@ -455,6 +457,37 @@ def test_a_stopped_bridge_stops_answering_for_its_workspace() -> None:
     _run(home.stop())
 
     assert sibling.translate_inbound("<!subteam^S001> hi") == "<!subteam^S001> hi"
+
+
+def test_another_tenants_workspace_never_resolves_the_group() -> None:
+    """The directory is shared by every Slack bridge in the process, which
+    serves every tenant. A group another tenant's bridge minted names an agent
+    this tenant cannot address, so it must stay unresolved here."""
+    home, _ = _adapter(
+        groups=[_agent_group("S001", "flint-tracker")],
+        team_id="T111",
+        tenant_id="tenant-a",
+    )
+    _run(home._load_agent_usergroups())
+
+    foreign, _ = _adapter(team_id="T222", tenant_id="tenant-b")
+    _run(foreign._load_agent_usergroups())
+
+    assert foreign.translate_inbound("<!subteam^S001> hi") == "<!subteam^S001> hi"
+
+
+def test_a_group_is_unresolvable_before_the_tenant_is_known() -> None:
+    adapter = SlackAdapter(
+        config=SlackConnectionConfig(
+            bot_token="xoxb-test",
+            app_token="xapp-test",
+            workspace_id="T123",
+            agent_usergroups=True,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="set_tenant_id"):
+        adapter.translate_inbound("<!subteam^S001> hi")
 
 
 # ── Rate limiting ────────────────────────────────────────────────────────────

@@ -22,17 +22,25 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATE_JOB = (
     REPO_ROOT / "deploy/remote/helm/switch/templates/switch-core/migrate-job.yaml"
 )
+DEPLOYMENT = (
+    REPO_ROOT / "deploy/remote/helm/switch/templates/switch-core/deployment.yaml"
+)
 CORE_PYPROJECT = REPO_ROOT / "core/pyproject.toml"
 
 ENTRY_POINT = "switch-migrate"
 
 
-def _job_command() -> list[str]:
-    match = re.search(
-        r"^\s*command: (\[.*\])$", MIGRATE_JOB.read_text(), flags=re.MULTILINE
+def _commands(template: Path) -> list[list[str]]:
+    matches = re.findall(
+        r"^\s*command: (\[.*\])$", template.read_text(), flags=re.MULTILINE
     )
-    assert match is not None, f"no container command found in {MIGRATE_JOB}"
-    return re.findall(r'"([^"]+)"', match.group(1))
+    assert matches, f"no container command found in {template}"
+    return [re.findall(r'"([^"]+)"', match) for match in matches]
+
+
+def _job_command() -> list[str]:
+    (command,) = _commands(MIGRATE_JOB)
+    return command
 
 
 def _console_scripts() -> dict[str, str]:
@@ -42,6 +50,12 @@ def _console_scripts() -> dict[str, str]:
 
 def test_the_job_runs_the_migration_entry_point() -> None:
     assert _job_command() == [ENTRY_POINT]
+
+
+def test_the_server_pods_init_container_runs_it_too() -> None:
+    # The serving container is not given the owner credentials, so the
+    # migration it no longer runs at boot has to run here, before it starts.
+    assert [ENTRY_POINT] in _commands(DEPLOYMENT)
 
 
 def test_the_entry_point_is_installed_by_the_package() -> None:

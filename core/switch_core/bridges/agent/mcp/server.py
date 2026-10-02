@@ -100,6 +100,7 @@ def create_mcp_app(
 
     oidc_validator = None
     if config.oauth_issuer_url:
+        assert config.oauth_audience is not None  # enforced by SwitchConfig
         oidc_validator = OIDCTokenValidator(
             issuer_url=config.oauth_issuer_url,
             audience=config.oauth_audience,

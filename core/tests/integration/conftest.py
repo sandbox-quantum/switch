@@ -102,7 +102,7 @@ RUNTIME_ROLE_PREFIX = "switch_app"
 
 # ── Throwaway test constants (not secrets — local ephemeral infra) ──────────────
 SERVER_NAME = "localhost"
-JWT_SECRET = "dev-jwt-secret-test"
+SECRET_KEYS = "test:dev-secret-key-for-integration-tests-0000"
 REGISTRATION_TOKEN = "dev-test-token"
 GATEWAY_ADMIN_EMAIL = "admin@switch.local"
 GATEWAY_ADMIN_PASSWORD = "admin"
@@ -220,7 +220,7 @@ def _build_config(
         db_name=db_name,
         matrix_server_name=SERVER_NAME,
         agent_registration_token=REGISTRATION_TOKEN,
-        jwt_secret_key=JWT_SECRET,
+        secret_keys=SECRET_KEYS,
         gateway_admin_email=GATEWAY_ADMIN_EMAIL,
         gateway_admin_password=GATEWAY_ADMIN_PASSWORD,
         frontend_base_url=None,
@@ -589,6 +589,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             client_factory=client_factory,
             session_factory=session_factory,
             config=config,
+            tenants_isolated=True,
         )
 
         room_service = RoomService(

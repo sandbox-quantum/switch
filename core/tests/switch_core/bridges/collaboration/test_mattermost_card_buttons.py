@@ -128,7 +128,7 @@ async def test_each_button_is_signed_for_its_own_option() -> None:
         for button in _buttons(_created(adapter))
     ]
     assert len({context["signature"] for context in contexts}) == 2
-    presses = [read_press(_key(), _body({"switch": context})) for context in contexts]
+    presses = [read_press([_key()], _body({"switch": context})) for context in contexts]
     assert [press.position for press in presses if press is not None] == [1, 2]
 
 
@@ -140,7 +140,7 @@ async def test_a_context_signed_for_one_option_does_not_verify_for_another() -> 
     forged = dict(first["integration"]["context"]["switch"])
     forged["position"] = second["integration"]["context"]["switch"]["position"]
 
-    assert read_press(_key(), _body({"switch": forged})) is None
+    assert read_press([_key()], _body({"switch": forged})) is None
 
 
 async def test_the_body_drops_the_options_the_buttons_already_show() -> None:

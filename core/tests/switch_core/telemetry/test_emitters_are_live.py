@@ -26,6 +26,7 @@ from typing import Any
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.dependencies import get_protocol, get_telemetry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.keys import Keyring
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
 
@@ -68,7 +69,7 @@ def _config() -> Any:
     class _Config:
         agent_auth_cache_ttl_seconds = 1
         agent_auth_cache_max_entries = 16
-        jwt_secret_key = "x"
+        keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
         oauth_issuer_url = None
         oauth_audience = None
         oauth_verify_issuer = True

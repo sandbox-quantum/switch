@@ -153,6 +153,12 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
     it is a statement about what this owner creates, and this owner creates
     only this schema.
 
+    `audit_events` is the one table the role may not change once written: it
+    gets `SELECT` and `INSERT` there and nothing else, so a compromised or
+    buggy process can add to a tenant's history but not rewrite it. The
+    revoke follows the blanket grant on every boot, so the next boot puts it
+    back if anything granted more in between.
+
     No `CREATE` on the schema, and no ownership: the role is meant to be
     unable to alter the tables it reads, which is what keeps it subject to
     their policies.
@@ -161,6 +167,7 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
     for statement in (
         f"GRANT USAGE ON SCHEMA public TO {identifier}",
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {identifier}",
+        f"REVOKE UPDATE, DELETE ON audit_events FROM {identifier}",
         f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {identifier}",
         "REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
         f"GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {identifier}",

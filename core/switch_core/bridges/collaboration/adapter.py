@@ -34,6 +34,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
 )
+from switch_core.outbound import OutboundPolicy
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     defuse_mass_mention_words,
@@ -549,6 +550,31 @@ class CollaborationAdapter(ABC):
         the event loop that carries every live Matrix session.
         """
         return connection_config
+
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        """Name the platform workspace this bridge connects, if it has one.
+
+        One workspace is connected at most once on an instance, across every
+        tenant: two bridges into it would each deliver its events to a
+        different tenant, and the hosted install path already holds a
+        workspace to one tenant. Registration refuses a second claim.
+
+        Quoted verbatim in that refusal, so it must not embed credential
+        material. Return None for a platform with no such notion.
+        """
+        return None
+
+    @classmethod
+    def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
+        """The URLs in this config that Switch itself connects to.
+
+        Checked against the deployment's `OutboundPolicy` before the bridge is
+        stored, when its config is edited and each time it starts, so a config
+        cannot point Switch at an internal address. Not the platform's own API
+        hosts, and not URLs only handed to the platform or put in links.
+        """
+        return []
 
     @classmethod
     def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
@@ -1332,6 +1358,21 @@ class CollaborationAdapter(ABC):
         only Teams saves types it could not verify."""
         return None
 
+    def set_outbound_policy(self, policy: OutboundPolicy) -> None:
+        """Install the policy for anything this adapter fetches from a URL a
+        tenant or agent chose. Set by the lifecycle before the adapter starts."""
+        self._outbound_policy = policy
+
+    @property
+    def outbound_policy(self) -> OutboundPolicy:
+        policy: OutboundPolicy | None = getattr(self, "_outbound_policy", None)
+        if policy is None:
+            raise RuntimeError(
+                f"{type(self).__name__} fetched a URL before its outbound policy "
+                "was set"
+            )
+        return policy
+
     def set_service_url_persister(
         self, persist: Callable[[str], Awaitable[None]]
     ) -> None:
@@ -1341,6 +1382,15 @@ class CollaborationAdapter(ABC):
         Default is a no-op; adapters whose outbound endpoint is only discovered
         from inbound activities (Teams, whose Bot Connector ``serviceUrl`` is
         carried on inbound activities) override this to persist it."""
+        return None
+
+    def set_tenant_id(self, tenant_id: str) -> None:
+        """Tell the adapter which tenant its bridge belongs to.
+
+        Default is a no-op: an adapter's state is its own bridge's and needs
+        no tenant. Slack overrides it, because it shares one structure across
+        every Slack bridge in the process and has to keep tenants apart in it.
+        """
         return None
 
     def set_channel_team_persister(

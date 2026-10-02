@@ -221,6 +221,7 @@ def _registry(
         client_factory=_StubFactory(),  # type: ignore[arg-type]
         session_factory=session_factory,
         config=SimpleNamespace(matrix_server_name="switch.local"),  # type: ignore[arg-type]
+        tenants_isolated=True,
     )
     for tenant_id, client_id, matrix_user_id in running:
         service.start_client(

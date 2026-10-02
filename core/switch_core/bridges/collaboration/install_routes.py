@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import html
 import logging
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Form, Query, Request, Response
 from starlette.responses import HTMLResponse, PlainTextResponse
 
 from switch_core.bridges.collaboration.install import (
@@ -38,10 +39,15 @@ from switch_core.bridges.collaboration.install import (
     WebhookAuthenticityError,
     WebhookEndpoint,
     WebhookPayloadError,
+    oauth_confirm_path,
+)
+from switch_core.bridges.collaboration.install_confirmation import (
+    InstallTicketError,
 )
 from switch_core.bridges.collaboration.install_service import (
     InstallPlatformMismatch,
     MessagingInstallService,
+    PendingInstall,
     Revocation,
     WebhookBridgeUnavailable,
     WebhookTarget,
@@ -64,14 +70,64 @@ _PAGE = """<!doctype html>
  h1 {{ font-size: 1.25rem; }}
  p {{ color: #444; }}
 </style></head>
-<body><h1>{title}</h1><p>{detail}</p></body></html>
+<body><h1>{title}</h1><p>{detail}</p>{extra}</body></html>
 """
 
+_CONFIRM_FORM = """<dl>
+ <dt>{platform} workspace</dt><dd>{workspace}</dd>
+ <dt>Switch organisation</dt><dd>{organisation}</dd>
+ <dt>Requested by</dt><dd>{requested_by}</dd>
+</dl>
+<form method="post" action="{action}">
+ <input type="hidden" name="ticket" value="{ticket}">
+ <button type="submit" name="decision" value="connect">Connect</button>
+ <button type="submit" name="decision" value="cancel">Cancel</button>
+</form>
+<p>If you do not recognise this organisation or the person who requested it,
+choose Cancel. Closing this page connects nothing, but leaves the app in your
+workspace until you remove it there.</p>
+"""
 
-def _page(*, title: str, detail: str, status: int) -> HTMLResponse:
+#: Every page here is a decision or the outcome of one; none may be framed by
+#: another site (a framed Connect button is a clickjacking target), cached, or
+#: leak the callback's query string as a referrer.
+_PAGE_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'"
+    ),
+    "X-Frame-Options": "DENY",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+def _page(*, title: str, detail: str, status: int, extra: str = "") -> HTMLResponse:
     return HTMLResponse(
-        _PAGE.format(title=html.escape(title), detail=html.escape(detail)),
+        _PAGE.format(title=html.escape(title), detail=html.escape(detail), extra=extra),
         status_code=status,
+        headers=_PAGE_HEADERS,
+    )
+
+
+def _confirmation_page(pending: PendingInstall) -> HTMLResponse:
+    return _page(
+        title=f"Connect this {pending.platform} workspace to Switch?",
+        detail=(
+            "The app was approved on the platform. Check the organisation below "
+            "before it is connected."
+        ),
+        status=200,
+        extra=_CONFIRM_FORM.format(
+            platform=html.escape(pending.platform),
+            workspace=html.escape(
+                f"{pending.workspace_name} ({pending.external_workspace_id})"
+            ),
+            organisation=html.escape(pending.organisation),
+            requested_by=html.escape(pending.requested_by),
+            action=html.escape(oauth_confirm_path(pending.platform)),
+            ticket=html.escape(pending.ticket),
+        ),
     )
 
 
@@ -114,7 +170,7 @@ def create_messaging_install_router(
             )
 
         try:
-            install = await service.complete(
+            pending = await service.complete(
                 platform=platform, code=code, state_token=state
             )
         except (InstallStateError, InstallPlatformMismatch) as failure:
@@ -133,6 +189,67 @@ def create_messaging_install_router(
         except MessagingInstallStateError as failure:
             return _page(
                 title="Install link already used",
+                detail=str(failure),
+                status=400,
+            )
+        except MessagingInstallError as failure:
+            return _page(
+                title="Install could not be completed",
+                detail=str(failure),
+                status=400,
+            )
+
+        return _confirmation_page(pending)
+
+    @router.post("/{platform}/oauth/confirm")
+    async def oauth_confirm(
+        platform: str,
+        ticket: Annotated[str, Form()],
+        decision: Annotated[Literal["connect", "cancel"], Form()],
+    ) -> HTMLResponse:
+        try:
+            if decision == "cancel":
+                try:
+                    grant = await service.cancel(platform=platform, ticket=ticket)
+                except MessagingInstallError as failure:
+                    logger.error(
+                        "Could not revoke the %s token of a cancelled install: %s",
+                        platform,
+                        failure,
+                    )
+                    return _page(
+                        title="Cancel did not finish",
+                        detail=(
+                            f"Switch could not give the app's access back to "
+                            f"{platform}. Nothing was connected to Switch. Go "
+                            "back and press Cancel again; if it keeps failing, "
+                            f"remove the app from the {platform} workspace."
+                        ),
+                        status=502,
+                    )
+                return _page(
+                    title="Install cancelled",
+                    detail=(
+                        f"Nothing was connected to Switch. The {platform} "
+                        f"workspace {grant.workspace_name} may still list the "
+                        "app; remove it there if you no longer want it."
+                    ),
+                    status=200,
+                )
+            install = await service.confirm(platform=platform, ticket=ticket)
+        except (InstallTicketError, InstallPlatformMismatch) as failure:
+            logger.warning("Refused a %s install confirmation: %s", platform, failure)
+            return _page(
+                title="Install could not be completed",
+                detail=(
+                    "This confirmation is not one Switch recognises, or it has "
+                    "expired. Start the install again from Switch."
+                ),
+                status=400,
+            )
+        except MessagingInstallStateError as failure:
+            return _page(
+                title="Install already decided",
                 detail=str(failure),
                 status=400,
             )

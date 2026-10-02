@@ -154,6 +154,7 @@ const secrets = {
   dbRuntimePassword: 'runtime-pw',
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt',
+  secretKeys: 'console:secret-keys',
   gatewayAdminPassword: 'admin-pw',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',

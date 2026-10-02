@@ -55,7 +55,7 @@ def _config(**overrides: object) -> object:
         "db_name": "d",
         "matrix_server_name": "test",
         "agent_registration_token": "t",
-        "jwt_secret_key": "k",
+        "secret_keys": "test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "gateway_admin_email": "a@b.test",
         "gateway_admin_password": "pw",
     }

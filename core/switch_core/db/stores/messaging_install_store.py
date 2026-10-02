@@ -112,6 +112,42 @@ class MessagingInstallStore:
             )
         return state
 
+    async def decide_state(
+        self,
+        session: AsyncSession,
+        *,
+        state_id: str,
+        platform: str,
+        window: timedelta,
+    ) -> MessagingInstallState:
+        """Record the approver's Connect or Cancel on a redeemed state, or raise.
+
+        One statement for the same reason as `redeem_state`: two submissions
+        of the same confirmation page must not both go through. Only a state
+        redeemed within `window` can be decided.
+        """
+        now = datetime.now(UTC)
+        result = await session.execute(
+            update(MessagingInstallState)
+            .where(
+                MessagingInstallState.id == state_id,
+                MessagingInstallState.tenant_id == require_tenant_id(),
+                MessagingInstallState.platform == platform,
+                MessagingInstallState.consumed_at.is_not(None),
+                MessagingInstallState.consumed_at > now - window,
+                MessagingInstallState.decided_at.is_(None),
+            )
+            .values(decided_at=now)
+            .returning(MessagingInstallState)
+        )
+        state = result.scalars().one_or_none()
+        if state is None:
+            raise MessagingInstallStateError(
+                "this install has already been confirmed or cancelled, or the "
+                "confirmation has expired. Start the install again from Switch."
+            )
+        return state
+
     async def record_install(
         self,
         session: AsyncSession,

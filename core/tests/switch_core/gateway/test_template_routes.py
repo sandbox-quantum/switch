@@ -59,7 +59,7 @@ def _config(**overrides: object) -> SwitchConfig:
         "db_name": "d",
         "matrix_server_name": "test",
         "agent_registration_token": "t",
-        "jwt_secret_key": "s",
+        "secret_keys": "test:" + "x" * 40,
         "gateway_admin_email": "admin@test",
         "gateway_admin_password": "pw",
     }

@@ -1,12 +1,16 @@
 import re
 import ssl
 import uuid
+from functools import cached_property
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from switch_core.keys import Keyring
+from switch_core.outbound import OutboundPolicy
 
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
@@ -55,6 +59,12 @@ class SwitchConfig(BaseSettings):
     db_owner_user: str | None = None
     db_owner_password: str | None = None
 
+    # Apply migrations and re-issue grants at boot. Turn off where a separate
+    # step runs `switch-migrate` as the owner before the server starts (the
+    # Helm chart's init container), so the serving process never holds the
+    # owner's password. Boot then only checks the schema is at head.
+    db_migrate_on_boot: bool = True
+
     # Refuse to serve when the runtime connection is not actually subject to
     # the policies — a superuser, a `BYPASSRLS` role, or the owner of the
     # scoped tables. On by default because the failure it catches is silent: a
@@ -62,9 +72,11 @@ class SwitchConfig(BaseSettings):
     # like one that is, right up until a second customer reads the first's
     # rooms.
     #
-    # Set false only for a deployment that has not created its runtime role
-    # yet. Boot then logs at `error` on every start, because that is a
-    # deployment with no tenant isolation in it.
+    # Set false only for a single-tenant deployment that has not created its
+    # runtime role yet. Boot then logs at `error` on every start, because that
+    # is a deployment with no tenant isolation in it. It keeps to one
+    # workspace: refused with open sign-up, refused at boot once more than one
+    # is stored, and no workspace can be created while it runs.
     db_require_restricted_role: bool = True
 
     # The server half of every client's `@localpart:server` id. Not a
@@ -73,14 +85,31 @@ class SwitchConfig(BaseSettings):
     matrix_server_name: str
     agent_registration_token: str
 
-    # JWT auth
-    jwt_secret_key: str
+    # The server's master keys, `<id>:<secret>` comma-separated, current
+    # first. Every signing and encryption key is derived from these, one per
+    # purpose; older entries only open what they encrypted or signed. See
+    # `keys.py` and docs/old/key-rotation.md.
+    secret_keys: str
+    # Legacy: the one secret everything used before SECRET_KEYS. Set, it opens
+    # stored values and verifies sessions and signatures made with it; boot
+    # re-encrypts those values under the current key. Remove it once that has
+    # run and whatever it signed may stop working.
+    jwt_secret_key: str | None = None
+
+    # Private hosts Switch may reach at a URL a tenant or agent supplied (a
+    # Mattermost server, an OpenCode server, an agent icon): comma-separated
+    # hostnames and CIDRs. Anything else that is not a public address is
+    # refused. Link-local and metadata addresses are refused even when listed.
+    # See `outbound.py`.
+    outbound_allowed_private_hosts: str = ""
 
     # Gateway admin seed
     gateway_admin_email: str
     gateway_admin_password: str
 
-    # OIDC (optional — enables OAuth token validation on the MCP server)
+    # OIDC (optional — enables OAuth token validation on the MCP server).
+    # The audience is required with the issuer: without it, a token the same
+    # IdP minted for any other application would be accepted here.
     oauth_issuer_url: str | None = None
     oauth_audience: str | None = None
     oauth_verify_issuer: bool = True
@@ -128,10 +157,10 @@ class SwitchConfig(BaseSettings):
     gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
-    # Sets the Secure flag on the switch_auth cookie. Defaults to False so local
-    # dev over plain HTTP keeps working; deployments serving over HTTPS must set
-    # this true so the JWT session cookie is never sent over an insecure channel.
-    gateway_cookie_secure: bool = False
+    # Sets the Secure flag on the gateway's cookies (the switch_auth session
+    # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
+    # Only a local stack served over http:// should turn it off.
+    gateway_cookie_secure: bool = True
 
     # Off by default: a person who belongs to more than one tenant and has not
     # selected one on their session gets the same 403 a single-tenant
@@ -718,6 +747,44 @@ class SwitchConfig(BaseSettings):
                 f"{self.gateway_max_workspaces_per_user!r}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_secret_keys(self) -> "SwitchConfig":
+        Keyring.parse(self.secret_keys, legacy_secret=self.jwt_secret_key)
+        return self
+
+    @cached_property
+    def keyring(self) -> Keyring:
+        return Keyring.parse(self.secret_keys, legacy_secret=self.jwt_secret_key)
+
+    @model_validator(mode="after")
+    def _validate_oauth_audience(self) -> "SwitchConfig":
+        if self.oauth_issuer_url and not self.oauth_audience:
+            raise ValueError(
+                "OAUTH_AUDIENCE is required when OAUTH_ISSUER_URL is set: "
+                "without it, agent tokens are accepted whatever application "
+                "the IdP issued them for."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_db_require_restricted_role(self) -> "SwitchConfig":
+        if not self.db_require_restricted_role and self.gateway_signup_mode == "open":
+            raise ValueError(
+                "DB_REQUIRE_RESTRICTED_ROLE=false cannot be combined with "
+                "GATEWAY_SIGNUP_MODE=open: anyone may then create a workspace "
+                "on a deployment that does not isolate them from each other."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":
+        OutboundPolicy.parse(self.outbound_allowed_private_hosts)
+        return self
+
+    @property
+    def outbound_policy(self) -> OutboundPolicy:
+        return OutboundPolicy.parse(self.outbound_allowed_private_hosts)
 
     @model_validator(mode="after")
     def _validate_db_user(self) -> "SwitchConfig":

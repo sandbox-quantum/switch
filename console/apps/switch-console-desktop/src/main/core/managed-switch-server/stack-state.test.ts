@@ -36,6 +36,7 @@ const secrets: LocalServerSecrets = {
   dbRuntimePassword: 'db-runtime-pw',
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
+  secretKeys: 'console:secret-keys-value',
   gatewayAdminPassword: 'gw-admin',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',

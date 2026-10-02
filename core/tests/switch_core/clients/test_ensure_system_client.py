@@ -53,6 +53,7 @@ def _service(
         client_factory=MagicMock(),
         session_factory=session_factory,
         config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+        tenants_isolated=True,
     )
 
 

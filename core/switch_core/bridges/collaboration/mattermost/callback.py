@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -227,7 +228,7 @@ def _button_name(control: Control) -> str:
 
 
 def read_press(
-    secret: str, body: dict[str, Any]
+    verification_keys: Sequence[str], body: dict[str, Any]
 ) -> Press | ActivityPress | InterruptPress | None:
     """What a callback is asking for, or None if it is not ours to act on.
 
@@ -254,9 +255,9 @@ def read_press(
     if not isinstance(switch, dict):
         return None
     if set(switch) == {"channel", "signature"}:
-        return _activity_press(secret, switch, body)
+        return _activity_press(verification_keys, switch, body)
     if set(switch) == {"channel", "turn", "signature"}:
-        return _interrupt_press(secret, switch, body)
+        return _interrupt_press(verification_keys, switch, body)
     # Nothing but what was signed. The signature covers the card and the
     # option, so a field beside them is one it does not vouch for — and a
     # reader added later would be reading an unsigned value out of a context
@@ -274,8 +275,8 @@ def read_press(
         return None
     if not isinstance(signature, str) or not signature:
         return None
-    if not hmac.compare_digest(
-        signature, _sign(secret, _ANSWER_PURPOSE, f"{token}:{position}")
+    if not _signed_by_any(
+        verification_keys, signature, _ANSWER_PURPOSE, f"{token}:{position}"
     ):
         logger.warning(
             "Rejected a Mattermost action callback for request %s: the context "
@@ -300,7 +301,7 @@ def read_press(
 
 
 def _activity_press(
-    secret: str, switch: dict[str, Any], body: dict[str, Any]
+    verification_keys: Sequence[str], switch: dict[str, Any], body: dict[str, Any]
 ) -> ActivityPress | None:
     """A press on the button that opens a turn's tool calls, or None.
 
@@ -314,7 +315,7 @@ def _activity_press(
         return None
     if not isinstance(signature, str) or not signature:
         return None
-    if not hmac.compare_digest(signature, _sign(secret, _ACTIVITY_PURPOSE, channel)):
+    if not _signed_by_any(verification_keys, signature, _ACTIVITY_PURPOSE, channel):
         logger.warning(
             "Rejected a Mattermost activity callback for channel %s: the "
             "context signature does not verify. Either it was not signed with "
@@ -331,7 +332,7 @@ def _activity_press(
 
 
 def _interrupt_press(
-    secret: str, switch: dict[str, Any], body: dict[str, Any]
+    verification_keys: Sequence[str], switch: dict[str, Any], body: dict[str, Any]
 ) -> InterruptPress | None:
     """A press on the button that stops the agent's current work, or None.
 
@@ -350,8 +351,8 @@ def _interrupt_press(
         return None
     if not isinstance(signature, str) or not signature:
         return None
-    if not hmac.compare_digest(
-        signature, _sign(secret, _INTERRUPT_PURPOSE, f"{channel}:{turn}")
+    if not _signed_by_any(
+        verification_keys, signature, _INTERRUPT_PURPOSE, f"{channel}:{turn}"
     ):
         logger.warning(
             "Rejected a Mattermost stop callback for turn %s in channel %s: "
@@ -414,6 +415,20 @@ def _presser(body: dict[str, Any]) -> tuple[str, str, str] | None:
     if not isinstance(channel_id, str) or not channel_id:
         return None
     return user_id, post_id, channel_id
+
+
+def _signed_by_any(
+    verification_keys: Sequence[str], signature: str, purpose: str, subject: str
+) -> bool:
+    """Whether any of the bridge's keys signed this. A button posted before
+    a key rotation carries the older key's signature and still works while
+    that key is kept."""
+    matched = False
+    for key in verification_keys:
+        matched = (
+            hmac.compare_digest(signature, _sign(key, purpose, subject)) or matched
+        )
+    return matched
 
 
 def _sign(secret: str, purpose: str, subject: str) -> str:

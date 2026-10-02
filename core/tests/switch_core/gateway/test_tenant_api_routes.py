@@ -20,6 +20,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -28,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -55,8 +57,10 @@ from switch_core.gateway.invite_mail import (
     InviteMailer,
 )
 from switch_core.gateway.tenants import router as tenants_router
+from switch_core.keys import Keyring
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
+_KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
 TENANT_A = "tenant-api-routes-a"
 TENANT_B = "tenant-api-routes-b"
 
@@ -140,7 +144,7 @@ def _app(
         client_lifecycle or _FakeClientLifecycle(session_factory)
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        jwt_secret_key=_SECRET,
+        keyring=_KEYRING,
         gateway_cookie_secure=False,
         gateway_tenant_choice_enabled=False,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
@@ -192,13 +196,13 @@ async def _make_member(
 
 
 def _token(user_id: str, email: str, tenant_id: str | None) -> str:
-    return create_jwt(user_id, email, "user", _SECRET, tenant_id)
+    return create_jwt(user_id, email, "user", _KEYRING, tenant_id)
 
 
 def _tenant_claim(response: httpx.Response) -> str | None:
     token = response.cookies.get("switch_auth")
     assert token is not None, "no session cookie was minted"
-    claim: str | None = decode_jwt(token, _SECRET).get("tenant_id")
+    claim: str | None = decode_jwt(token, _KEYRING).get("tenant_id")
     return claim
 
 
@@ -401,13 +405,44 @@ class TestCreateTenant:
         user_id = await _make_unaffiliated_user(
             session_factory, name="operator", role="admin"
         )
-        token = create_jwt(user_id, "operator@example.invalid", "admin", _SECRET, None)
+        token = create_jwt(user_id, "operator@example.invalid", "admin", _KEYRING, None)
 
         app = _app(session_factory, signup_mode="invite_only")
         async with _client(app, token) as client:
             response = await client.post("/tenants", json={"name": "Ops Co"})
 
         assert response.status_code == 201, response.text
+
+    async def test_no_workspace_is_created_where_tenants_are_not_isolated(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """With DB_REQUIRE_RESTRICTED_ROLE off the server keeps to one
+        workspace, operators included: a second would run unisolated, and the
+        next boot would refuse to start."""
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="operator", role="admin"
+        )
+        token = create_jwt(user_id, "operator@example.invalid", "admin", _KEYRING, None)
+        lifecycle = ClientLifecycleService(
+            matrix_admin=MagicMock(),
+            client_store=MagicMock(),
+            tenant_store=TenantStore(),
+            client_factory=MagicMock(),
+            session_factory=session_factory,
+            config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+            tenants_isolated=False,
+        )
+
+        app = _app(session_factory, client_lifecycle=lifecycle, signup_mode="open")
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Second Co"})
+
+        assert response.status_code == 409, response.text
+        assert "DB_REQUIRE_RESTRICTED_ROLE" in response.json()["detail"]
+        async with session_factory() as session:
+            assert (
+                await session.execute(select(Tenant).where(Tenant.name == "Second Co"))
+            ).first() is None
 
     async def test_a_failure_other_than_a_taken_slug_is_not_retried(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -648,7 +683,7 @@ class TestWorkspaceCreationLimit:
             session_factory, name="demoted", tenant_id=TENANT_A, role="member"
         )
         stale_operator_token = create_jwt(
-            user_id, "demoted@example.invalid", "admin", _SECRET, TENANT_A
+            user_id, "demoted@example.invalid", "admin", _KEYRING, TENANT_A
         )
 
         async with _client(
@@ -740,6 +775,27 @@ class TestInvitationAuthorisation:
             )
 
         assert response.status_code == 422, response.text
+
+    @pytest.mark.parametrize(("uses", "status"), [(100, 201), (101, 422)])
+    async def test_a_link_cannot_be_made_effectively_unlimited(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        uses: int,
+        status: int,
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="a-owner", tenant_id=TENANT_A, role="owner"
+        )
+        token = _token(user_id, "a-owner@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/invitations",
+                json={"role": "member", "uses_remaining": uses},
+            )
+
+        assert response.status_code == status, response.text
 
 
 class TestOwnershipIsOwnerOnly:
