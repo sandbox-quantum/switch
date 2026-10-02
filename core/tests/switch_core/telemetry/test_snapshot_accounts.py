@@ -62,18 +62,22 @@ async def _chat_account_speaks(
     suffix = uuid.uuid4().hex[:8]
     async with tenant_session(session_factory, tenant_id) as session:
         bridge_client = Client(
-            matrix_user_id=f"@bridge-{suffix}:test",
+            transport_user_id=f"@bridge-{suffix}:test",
             display_name="bridge",
             type="bridge",
         )
         person = Client(
-            matrix_user_id=f"@person-{suffix}:test", display_name="person", type="user"
+            transport_user_id=f"@person-{suffix}:test",
+            display_name="person",
+            type="user",
         )
         agent = Client(
-            matrix_user_id=f"@agent-{suffix}:test", display_name="agent", type="agent"
+            transport_user_id=f"@agent-{suffix}:test",
+            display_name="agent",
+            type="agent",
         )
         room = Room(
-            matrix_room_id=f"!{suffix}:test",
+            transport_room_id=f"!{suffix}:test",
             name=f"room-{suffix}",
             description="",
             metadata_={"created_by_kind": "user"},
@@ -106,7 +110,7 @@ async def _chat_account_speaks(
                 room_id=room.id,
                 seq=1,
                 transport_event_id=f"$evt-{suffix}",
-                sender_id=person.matrix_user_id,
+                sender_id=person.transport_user_id,
                 sender_client_id=person.id,
                 event_type="m.room.message",
                 msgtype="m.text",
