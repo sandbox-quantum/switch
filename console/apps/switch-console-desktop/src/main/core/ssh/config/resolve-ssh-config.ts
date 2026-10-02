@@ -29,6 +29,12 @@ export interface ResolvedSshConfig {
   connectTimeout?: number;
   serverAliveInterval?: number;
   serverAliveCountMax?: number;
+  /** Raw `UserKnownHostsFile` line: space separated, possibly quoted, may be `none`. */
+  userKnownHostsFile?: string;
+  /** Raw `GlobalKnownHostsFile` line, in the same form. */
+  globalKnownHostsFile?: string;
+  strictHostKeyChecking?: string;
+  hashKnownHosts?: boolean;
 }
 
 export interface ResolveSshConfigOptions {
@@ -105,6 +111,12 @@ export function parseSshGOutput(output: string): ResolvedSshConfig {
     connectTimeout: latestInt('connecttimeout'),
     serverAliveInterval: latestInt('serveraliveinterval'),
     serverAliveCountMax: latestInt('serveralivecountmax'),
+    // Kept raw: `none` is a real value here (use no file), so it must not be
+    // folded away like the other optional strings.
+    userKnownHostsFile: latest('userknownhostsfile'),
+    globalKnownHostsFile: latest('globalknownhostsfile'),
+    strictHostKeyChecking: latest('stricthostkeychecking'),
+    hashKnownHosts: latest('hashknownhosts')?.trim().toLowerCase() === 'yes',
   };
 }
 
