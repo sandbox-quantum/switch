@@ -326,18 +326,9 @@ async def update_bridge(
             ),
         )
 
-    if payload.agent_greetings_enabled is not None:
-        bridge = await bridge_store.set_agent_greetings_enabled(
-            session, bridge_id, payload.agent_greetings_enabled
-        )
-    if payload.channel_creation_enabled is not None:
-        bridge = await bridge_store.set_channel_creation_enabled(
-            session, bridge_id, payload.channel_creation_enabled
-        )
-    if payload.preconfigured is not None:
-        bridge = await bridge_store.set_preconfigured(
-            session, bridge_id, payload.preconfigured
-        )
+    # Every check before any write: the edit check can wait on the platform,
+    # and a write first would hold the bridge's row locked for all of it,
+    # stalling the running bridge's own writes to it.
     if payload.connection_config is not None:
         current = bridge.connection_config or {}
         merged = {**current, **payload.connection_config}
@@ -392,9 +383,23 @@ async def update_bridge(
         except ConfigEditRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except BridgeNotRunning as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except BridgeOperationError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if payload.agent_greetings_enabled is not None:
+        bridge = await bridge_store.set_agent_greetings_enabled(
+            session, bridge_id, payload.agent_greetings_enabled
+        )
+    if payload.channel_creation_enabled is not None:
+        bridge = await bridge_store.set_channel_creation_enabled(
+            session, bridge_id, payload.channel_creation_enabled
+        )
+    if payload.preconfigured is not None:
+        bridge = await bridge_store.set_preconfigured(
+            session, bridge_id, payload.preconfigured
+        )
+    if payload.connection_config is not None:
         bridge = await bridge_store.merge_connection_config(
             session, bridge_id, dict(payload.connection_config)
         )

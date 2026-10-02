@@ -129,7 +129,7 @@ async def test_withdrawing_forgets_the_org_even_when_uninstalling_fails(
 
     assert ORG not in app._org_tokens
     messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
-    assert any("the app in its teams" in m and ORG in m for m in messages)
+    assert any("the app in team team-1" in m and ORG in m for m in messages)
 
 
 async def test_withdrawing_cleanly_leaves_nothing_behind_to_log(
@@ -161,3 +161,40 @@ async def test_aclose_closes_the_one_shared_client() -> None:
 
     with pytest.raises(RuntimeError):
         await app.http.get("https://graph.microsoft.com/v1.0/subscriptions")
+
+
+async def test_one_team_that_cannot_be_read_does_not_keep_the_app_in_the_rest(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An archived or restricted team early in the listing used to end the
+    loop, leaving the app in every team listed after it."""
+    removed: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2/v2.0/token" in str(request.url):
+            return _token_response(request)
+        if request.url.path == "/v1.0/subscriptions":
+            return httpx.Response(200, json={"value": []})
+        if request.url.path == "/v1.0/teams":
+            return httpx.Response(
+                200, json={"value": [{"id": "archived"}, {"id": "team-2"}]}
+            )
+        if request.url.path == "/v1.0/teams/archived/installedApps":
+            return httpx.Response(403, json={"error": {"message": "archived"}})
+        if request.url.path == "/v1.0/teams/team-2/installedApps":
+            return httpx.Response(
+                200, json={"value": [{"id": "install-2", "teamsApp": {"id": "c"}}]}
+            )
+        if request.url.path == "/v1.0/teams/team-2/installedApps/install-2":
+            removed.append("team-2")
+            return httpx.Response(204)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    app = _app(httpx.MockTransport(handler))
+
+    with caplog.at_level(logging.ERROR):
+        await app.withdraw_from_org(ORG)
+
+    assert removed == ["team-2"]
+    messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("the app in team archived" in m for m in messages)

@@ -510,3 +510,46 @@ async def test_a_bridge_that_cannot_start_is_not_left_registered(
 
     async with session_factory() as session:
         assert await CollaborationBridgeStore().get_all(session) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cleanup_does_not_hide_why_the_bridge_could_not_start(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = _service(session_factory, _RegisteringClientLifecycle(session_factory))
+    service.register_adapter(
+        "mattermost", MattermostAdapter, MattermostConnectionConfig
+    )
+
+    async def refuse(bridge_id: str) -> None:
+        raise RuntimeError("the bridge could not start")
+
+    async def remove_fails(bridge_id: str) -> None:
+        raise RuntimeError("the database went away")
+
+    async def accept(connection_config: dict[str, object]) -> None:
+        return None
+
+    monkeypatch.setattr(service, "start", refuse)
+    monkeypatch.setattr(service, "remove", remove_fails)
+    monkeypatch.setattr(
+        MattermostAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
+    )
+
+    with pytest.raises(RuntimeError, match="could not start"):
+        await service.register(
+            bridge_type="mattermost",
+            display_name="MM",
+            connection_config={
+                "url": "https://mm.example",
+                "admin_user": "admin",
+                "admin_password": "pw",
+                "team_name": "team",
+            },
+            channel_creation_enabled=False,
+            preconfigured=False,
+        )
+
+    assert "could not be removed after failing to start" in caplog.text

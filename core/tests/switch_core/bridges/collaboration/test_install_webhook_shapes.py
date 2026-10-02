@@ -137,6 +137,7 @@ class _Adapter(CollaborationAdapter):
         self, *, delay: float = 0.0, fail: bool = False, no_body: bool = False
     ) -> None:
         self.dispatched: list[dict[str, Any]] = []
+        self.finished: list[dict[str, Any]] = []
         self._delay = delay
         self._fail = fail
         self._no_body = no_body
@@ -147,6 +148,7 @@ class _Adapter(CollaborationAdapter):
         self.dispatched.append(payload)
         if self._delay:
             await asyncio.sleep(self._delay)
+        self.finished.append(payload)
         if self._fail:
             raise RuntimeError("the press could not be handled")
         if self._no_body:
@@ -402,6 +404,58 @@ async def test_undeliverable_and_unreadable_alone_is_asked_for_again(
     assert response.status_code == 503
 
 
+async def test_nothing_delivered_is_asked_for_again_even_beside_an_unknown_workspace(
+    rls_harness: RLSHarness,
+) -> None:
+    """A dropped event for a workspace nobody holds is not a delivery; with the
+    rest of the batch undeliverable, the platform is asked to send it again."""
+    fixture = await _fixture(rls_harness)
+    del fixture.lifecycle.adapters[fixture.bridges["b"]]
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch(
+            {"workspace": "org-b", "id": "n-b"},
+            {"workspace": "org-nobody", "id": "n-x"},
+        ),
+        headers=_SIGNED,
+    )
+
+    assert response.status_code == 503
+
+
+async def test_a_workspace_is_looked_up_once_per_batch(
+    rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = await _fixture(rls_harness)
+    lookups: list[str] = []
+    original = MessagingInstallService.resolve_by_workspace
+
+    async def counting(
+        self: MessagingInstallService, *, platform: str, workspace_id: str
+    ) -> Any:
+        lookups.append(workspace_id)
+        return await original(self, platform=platform, workspace_id=workspace_id)
+
+    monkeypatch.setattr(MessagingInstallService, "resolve_by_workspace", counting)
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch(
+            {"workspace": "org-a", "id": "n-1"},
+            {"workspace": "org-a", "id": "n-2"},
+            {"workspace": "org-nobody", "id": "n-3"},
+            {"workspace": "org-nobody", "id": "n-4"},
+            {"workspace": "org-a", "id": "n-5"},
+        ),
+        headers=_SIGNED,
+    )
+
+    assert response.status_code == 200
+    assert sorted(lookups) == ["org-a", "org-nobody"]
+    assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-1", "n-2", "n-5"]
+
+
 async def test_a_bridge_that_is_down_asks_for_its_events_again(
     rls_harness: RLSHarness,
 ) -> None:
@@ -510,6 +564,14 @@ async def test_a_press_that_takes_too_long_is_answered_as_failed(
     )
 
     assert response.status_code == 504
+    # The deadline ends the wait, not the handling: a press abandoned half
+    # way could be recorded with its card never redrawn.
+    adapter = _adapter(fixture, "a")
+    for _ in range(50):
+        if adapter.finished:
+            break
+        await asyncio.sleep(0.05)
+    assert [p["id"] for p in adapter.finished] == ["press-1"]
 
 
 async def test_a_press_whose_handling_fails_is_answered_as_failed(

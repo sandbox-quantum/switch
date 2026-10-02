@@ -61,6 +61,10 @@ from switch_core.bridges.collaboration.teams.identity import (
     OrgTokens,
     TeamsIdentity,
 )
+from switch_core.bridges.collaboration.teams.withdrawal import (
+    delete_own_subscriptions,
+    leave_every_team,
+)
 from switch_core.config import SwitchConfig
 
 logger = logging.getLogger(__name__)
@@ -273,30 +277,14 @@ class TeamsSharedApp:
         For an organisation whose bridge is not running to do it itself
         (`TeamsAdapter.withdraw`). Every subscription the app holds there that
         delivers to this deployment goes — whichever clientState key it was
-        made under — and the app is taken out of every team it is in, which
-        has to be found by asking each team, since nothing else answers it.
-        Best effort: what could not be undone is logged.
+        made under — and the app is taken out of every team it is in. Best
+        effort, item by item: what could not be undone is logged.
         """
         graph = GraphClient(tokens=self.tokens_for(org_tenant_id), http=self._http)
-        identity = self.identity_for(org_tenant_id)
-        left_behind: list[str] = []
-        try:
-            for sub in await graph.list_subscriptions():
-                if identity.delivers_here(str(sub.get("notificationUrl") or "")):
-                    await graph.delete_subscription(subscription_id=str(sub["id"]))
-        except Exception as error:
-            left_behind.append(f"subscriptions ({error})")
-        try:
-            for team in await graph.list_teams():
-                team_id = str(team.get("id") or "")
-                for installation in await graph.find_app_installations(
-                    team_id=team_id, external_id=self._app_id
-                ):
-                    await graph.uninstall_app(
-                        team_id=team_id, installation_id=installation.installation_id
-                    )
-        except Exception as error:
-            left_behind.append(f"the app in its teams ({error})")
+        left_behind = await delete_own_subscriptions(
+            graph, identity=self.identity_for(org_tenant_id), known=()
+        )
+        left_behind += await leave_every_team(graph, app_id=self._app_id)
         self.forget_org(org_tenant_id)
         if left_behind:
             logger.error(

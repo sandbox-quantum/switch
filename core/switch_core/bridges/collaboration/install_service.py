@@ -353,7 +353,21 @@ class MessagingInstallService:
             )
             await session.commit()
         if refreshed.bridge_id is not None:
-            await self._lifecycle.restart(refreshed.bridge_id)
+            try:
+                await self._lifecycle.restart(refreshed.bridge_id)
+            except Exception as error:
+                logger.exception(
+                    "Bridge %s did not restart after %s workspace %s was approved "
+                    "again",
+                    refreshed.bridge_id,
+                    platform,
+                    grant.external_workspace_id,
+                )
+                raise MessagingInstallError(
+                    "Switch recorded the approval, but the connection could not "
+                    f"restart to use it ({error}). It is stopped until Switch "
+                    "restarts or the approval is given again."
+                ) from error
         logger.info(
             "Refreshed the install of %s workspace %s for tenant %s after it was "
             "approved again",
@@ -447,10 +461,11 @@ class MessagingInstallService:
             installer = self._installers.get(platform)
             if token is not None:
                 await installer.revoke(bot_token=decrypt_token(token, self._secret))
-            elif bridge_id is None or self._lifecycle.get_adapter(bridge_id) is None:
-                # A tokenless install has nothing to revoke, and a running
+            elif bridge_id is None or not self._lifecycle.is_connected(bridge_id):
+                # A tokenless install has nothing to revoke, and a connected
                 # bridge lets go of the platform itself as it is removed. One
-                # that is not running cannot, so the installer does it.
+                # that is not running, or still starting, cannot, so the
+                # installer does it.
                 await installer.release(external_workspace_id=workspace_id)
 
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -626,11 +641,17 @@ class MessagingInstallService:
 
     async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
         """Turn a webhook event's workspace into the bridge entitled to it."""
-        installer = self._installers.get(platform)
-        workspace_id = installer.workspace_of_event(event.payload)
         return await self.resolve_by_workspace(
-            platform=platform, workspace_id=workspace_id
+            platform=platform,
+            workspace_id=self.workspace_of(platform=platform, event=event),
         )
+
+    def workspace_of(self, *, platform: str, event: InboundWebhook) -> str:
+        """The workspace a webhook event is for, as its platform names it.
+
+        Raises `WebhookPayloadError` for an event that names none.
+        """
+        return self._installers.get(platform).workspace_of_event(event.payload)
 
     async def resolve_by_workspace(
         self, *, platform: str, workspace_id: str

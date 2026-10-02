@@ -145,7 +145,8 @@ class BotConnectorClient:
     the token posts into every approving organisation's Teams, and a service
     URL is learned from traffic and kept in config, so an address that is not
     Microsoft's is refused here, on every call, before the token is attached.
-    None leaves a bring-your-own bridge's own token unrestricted, as before.
+    None leaves a bring-your-own bridge's own token, which reaches only its
+    own organisation, unrestricted.
 
     `on_bot_disabled` is told when Teams answers that an admin has blocked the
     app, which no individual call can do anything about and which somebody has

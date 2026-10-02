@@ -162,7 +162,7 @@ describe('updateBridgeOnServer', () => {
 
   it('reports a stopped bridge’s refusal to check a default-team change, not a thrown error', async () => {
     fetchMock.mockResolvedValue(
-      response(409, {
+      response(503, {
         detail:
           'The connection is not running, so Switch cannot check this change with the platform; try again in a moment.',
       })

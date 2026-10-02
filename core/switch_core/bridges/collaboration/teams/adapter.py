@@ -94,6 +94,10 @@ from switch_core.bridges.collaboration.teams.identity import (
     TeamsIdentity,
     TeamsTokens,
 )
+from switch_core.bridges.collaboration.teams.withdrawal import (
+    delete_own_subscriptions,
+    leave_every_team,
+)
 from switch_core.sessions.contract import TURN_ENDED
 
 if TYPE_CHECKING:
@@ -1344,7 +1348,9 @@ class TeamsAdapter(CollaborationAdapter):
                     error,
                 )
             return
-        except httpx.HTTPError as error:
+        except (httpx.HTTPError, OSError) as error:
+            # OSError: the federated credential's token file, unreadable for a
+            # moment while the kubelet rotates it.
             logger.warning(
                 "Could not reach Microsoft to check the Teams app's approval in "
                 "organisation %s: %s",
@@ -1404,8 +1410,8 @@ class TeamsAdapter(CollaborationAdapter):
         found by asking Graph rather than from memory, so one this process
         failed to adopt goes too.
 
-        On the distributed app the bridge also takes the app out of the teams
-        it knows, since nothing else will: the customer asked to disconnect,
+        On the distributed app the bridge also takes the app out of every team
+        it is in, since nothing else will: the customer asked to disconnect,
         and the bot would otherwise stay in their channels unable to answer.
         A bring-your-own bridge leaves its operator's app where they put it.
         """
@@ -1417,43 +1423,19 @@ class TeamsAdapter(CollaborationAdapter):
         if self._graph is None:
             return
         identity = self._me
-        left_behind: list[str] = []
         # Taken so a subscription being made as this starts is finished, and
         # found and deleted below, rather than made just after.
         async with self._sub_lock:
             pass
-
-        subscription_ids = set(self._subscriptions.values())
-        try:
-            for sub in await self._graph.list_subscriptions():
-                if identity.delivers_here(str(sub.get("notificationUrl") or "")):
-                    subscription_ids.add(str(sub.get("id", "")))
-        except Exception as error:
-            left_behind.append(f"listing subscriptions failed ({error})")
-        for subscription_id in sorted(s for s in subscription_ids if s):
-            try:
-                await self._graph.delete_subscription(subscription_id=subscription_id)
-            except Exception as error:
-                left_behind.append(f"subscription {subscription_id} ({error})")
+        left_behind = await delete_own_subscriptions(
+            self._graph, identity=identity, known=self._subscriptions.values()
+        )
         self._subscriptions.clear()
         self._subscription_expiry.clear()
         self._capture_wanted.clear()
 
         if identity.shared:
-            teams = set(self._team_of_channel.values())
-            if self._config.team_id:
-                teams.add(self._config.team_id)
-            for team_id in sorted(teams):
-                try:
-                    for installation in await self._graph.find_app_installations(
-                        team_id=team_id, external_id=identity.app_id
-                    ):
-                        await self._graph.uninstall_app(
-                            team_id=team_id,
-                            installation_id=installation.installation_id,
-                        )
-                except Exception as error:
-                    left_behind.append(f"the app in team {team_id} ({error})")
+            left_behind += await leave_every_team(self._graph, app_id=identity.app_id)
 
         if self._shared_app is not None:
             self._shared_app.forget_org(identity.org_tenant_id)
@@ -3035,10 +3017,19 @@ class TeamsAdapter(CollaborationAdapter):
 
         team = (activity.get("channelData") or {}).get("team") or {}
         # Graph channel subscriptions key on the team's AAD group GUID, which
-        # Teams sends as ``aadGroupId``. ``team.id`` is the non-GUID channel
-        # thread id and Graph rejects it ("TeamGroupId must be ... a valid
-        # GUID"). Fall back to the configured team_id, which is also that GUID.
-        group_id = team.get("aadGroupId") or self._config.team_id
+        # Teams sends as ``aadGroupId`` — on some activities only. ``team.id``
+        # is the non-GUID channel thread id and Graph rejects it ("TeamGroupId
+        # must be ... a valid GUID"). A bring-your-own bridge lives in its one
+        # configured team, so that stands in for a channel not yet placed; a
+        # bridge on the distributed app is in many teams, and guessing its
+        # default would file another team's channel under it.
+        group_id = team.get("aadGroupId")
+        if (
+            not group_id
+            and not self._me.shared
+            and channel_id not in self._team_of_channel
+        ):
+            group_id = self._config.team_id
         is_channel = channel_type in ("channel_public", "channel_private")
         if group_id and channel_id and is_channel:
             await self._learn_channel_team(channel_id, str(group_id))
@@ -3117,8 +3108,9 @@ class TeamsAdapter(CollaborationAdapter):
 
         One read per team for the second half, a handful at a time: Graph has
         no call that answers it for the whole organisation at once. A team
-        whose apps cannot be read — archived, being deleted, restricted — is
-        listed as unknown rather than failing the rest.
+        whose apps cannot be read — archived, being deleted, restricted, or
+        the read timing out — is listed as unknown rather than failing the
+        rest.
 
         Each installation found also says the app's id in the organisation's
         catalogue, so this is how Switch learns that id when a Teams admin
@@ -3138,7 +3130,7 @@ class TeamsAdapter(CollaborationAdapter):
                     installations = await graph.find_app_installations(
                         team_id=team_id, external_id=app_id
                     )
-            except GraphError as error:
+            except (GraphError, httpx.HTTPError) as error:
                 logger.warning(
                     "Could not read which apps are in Teams team %s: %s", team_id, error
                 )
@@ -3150,9 +3142,17 @@ class TeamsAdapter(CollaborationAdapter):
                 team_id=team_id, name=name, has_switch=bool(installations)
             )
 
-        placements = await asyncio.gather(
-            *(placed(team) for team in teams if team.get("id"))
-        )
+        # Anything else — the organisation's token refused — fails every read
+        # alike, so the listing fails, and the reads still queued are
+        # cancelled rather than left spending the organisation's Graph budget.
+        reads = [asyncio.create_task(placed(team)) for team in teams if team.get("id")]
+        try:
+            placements = await asyncio.gather(*reads)
+        except BaseException:
+            for read in reads:
+                read.cancel()
+            await asyncio.gather(*reads, return_exceptions=True)
+            raise
         if len(seen_catalog_ids) > 1:
             # A copy uploaded to one team on its own (sideloaded) carries an id
             # of its own; which one the catalogue holds cannot be told from here.

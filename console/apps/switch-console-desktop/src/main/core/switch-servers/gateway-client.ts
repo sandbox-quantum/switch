@@ -1330,7 +1330,7 @@ export async function fetchBridgeTeams(
       if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
       if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
       if (cause.kind === 'http' && cause.status === 404) return { kind: 'not-distributed-teams' };
-      if (cause.kind === 'http' && cause.status === 409) {
+      if (cause.kind === 'http' && cause.status === 503) {
         return { kind: 'not-running', message: cause.detail ?? cause.message };
       }
       if (cause.kind === 'http' && cause.status === 502) {
@@ -1342,11 +1342,19 @@ export async function fetchBridgeTeams(
   }
 }
 
+/** The connection restarting (503), Microsoft refusing (502), or the
+ * connection gone (404): each written for a person in the gateway's `detail`. */
+function isTeamsConnectionFailure(status: number | undefined): boolean {
+  return status === 404 || status === 502 || status === 503;
+}
+
 /**
  * Add Switch's distributed app to a team (`POST /collaborations/{id}/teams/{teamId}`,
  * admin-only). A 409 means the app is not in the organisation's catalogue yet —
  * the one failure here with a next step, so it carries the gateway's own
- * explanation rather than being folded into a generic error.
+ * explanation rather than being folded into a generic error. The connection
+ * restarting (503), Microsoft refusing (502) and a connection that is gone
+ * (404) are errors in the gateway's own words.
  */
 export async function addBridgeTeam(
   server: SwitchServer,
@@ -1367,6 +1375,9 @@ export async function addBridgeTeam(
       if (cause.kind === 'http' && cause.status === 409) {
         return { kind: 'not-in-catalog', message: cause.detail ?? cause.message };
       }
+      if (cause.kind === 'http' && isTeamsConnectionFailure(cause.status)) {
+        return { kind: 'error', message: cause.detail ?? cause.message };
+      }
       if (cause.kind === 'network') return { kind: 'error', message: cause.message };
     }
     throw cause;
@@ -1374,7 +1385,9 @@ export async function addBridgeTeam(
 }
 
 /** Remove Switch's distributed app from a team
- * (`DELETE /collaborations/{id}/teams/{teamId}`, admin-only). */
+ * (`DELETE /collaborations/{id}/teams/{teamId}`, admin-only). The connection
+ * restarting (503), Microsoft refusing (502) and a connection that is gone
+ * (404) are errors in the gateway's own words. */
 export async function removeBridgeTeam(
   server: SwitchServer,
   bridgeId: string,
@@ -1391,6 +1404,9 @@ export async function removeBridgeTeam(
     if (cause instanceof GatewayError) {
       if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
       if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
+      if (cause.kind === 'http' && isTeamsConnectionFailure(cause.status)) {
+        return { kind: 'error', message: cause.detail ?? cause.message };
+      }
       if (cause.kind === 'network') return { kind: 'error', message: cause.message };
     }
     throw cause;

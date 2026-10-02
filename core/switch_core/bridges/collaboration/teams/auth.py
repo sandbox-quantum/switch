@@ -324,19 +324,23 @@ class SigningKeys:
         floor = _KEYS_REFETCH_FLOOR_SECONDS if self._keys else 30
         return now - self._attempted_at > floor
 
-    async def get(self, kid: str) -> SigningKey:
-        now = time.monotonic()
-        fresh = (
-            self._fetched_at is not None
-            and now - self._fetched_at <= _KEYS_REFRESH_SECONDS
+    def _holds_fresh(self, kid: str) -> bool:
+        return (
+            kid in self._keys
+            and self._fetched_at is not None
+            and time.monotonic() - self._fetched_at <= _KEYS_REFRESH_SECONDS
         )
-        if fresh and kid in self._keys:
+
+    async def get(self, kid: str) -> SigningKey:
+        if self._holds_fresh(kid):
             return self._keys[kid]
-        if self._may_attempt(now):
-            async with self._lock:
-                # Another request may have fetched while this one waited.
-                if self._may_attempt(time.monotonic()):
-                    await self._fetch()
+        # Waited on even when no fetch may start, so a request arriving while
+        # another's fetch is in flight — a burst at a cold start, or the first
+        # tokens signed with a new key — uses what that fetch brings back
+        # instead of being refused for a key it is about to have.
+        async with self._lock:
+            if not self._holds_fresh(kid) and self._may_attempt(time.monotonic()):
+                await self._fetch()
         found = self._keys.get(kid)
         if found is None:
             raise PermissionError(f"token is signed with an unknown key ({kid!r})")

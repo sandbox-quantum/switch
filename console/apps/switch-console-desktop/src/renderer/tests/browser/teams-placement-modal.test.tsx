@@ -497,7 +497,7 @@ describe('making a team the default', () => {
     );
   });
 
-  it('shows the server’s own sentence for a transient failure (409/502 → error)', async () => {
+  it('shows the server’s own sentence for a transient failure (503/502 → error)', async () => {
     listedTwoTeams();
     setDefaultTeamsTeam.mockResolvedValue({
       kind: 'error',

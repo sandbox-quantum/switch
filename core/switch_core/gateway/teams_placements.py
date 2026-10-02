@@ -85,10 +85,14 @@ async def _connection(
             status_code=404,
             detail="No connection on the distributed Teams app has that id.",
         )
+    # Connected, not merely registered: a bridge restarting — as it does after
+    # its default team changes — is registered before it has a Graph client.
     adapter = collab_lifecycle.get_adapter(bridge_id)
-    if not isinstance(adapter, TeamsAdapter):
+    if not isinstance(adapter, TeamsAdapter) or not collab_lifecycle.is_connected(
+        bridge_id
+    ):
         raise HTTPException(
-            status_code=409,
+            status_code=503,
             detail="The Teams connection is not running; try again in a moment.",
         )
     return adapter, install

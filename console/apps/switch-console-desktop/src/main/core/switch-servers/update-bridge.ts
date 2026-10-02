@@ -34,11 +34,11 @@ export async function updateBridgeOnServer(
         return { kind: 'invalid', message: cause.detail ?? cause.message };
       }
       // A distributed Teams bridge editing its default team can also fail with
-      // 409 (not running right now) or 502 (Microsoft Graph itself refusing
+      // 503 (restarting right now) or 502 (Microsoft Graph itself refusing
       // the request) — both recoverable and both already written for a human
       // in `detail`, so they get the same treatment as 400/422 rather than
       // falling through to the generic throw below.
-      if (cause.kind === 'http' && (cause.status === 409 || cause.status === 502)) {
+      if (cause.kind === 'http' && (cause.status === 503 || cause.status === 502)) {
         return { kind: 'error', message: cause.detail ?? cause.message };
       }
       if (cause.kind === 'network') return { kind: 'error', message: cause.message };

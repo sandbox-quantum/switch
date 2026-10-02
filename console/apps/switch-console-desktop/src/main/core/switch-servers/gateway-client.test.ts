@@ -948,7 +948,7 @@ describe('distributed Teams team placement', () => {
 
   it('reports a stopped bridge with the detail naming it', async () => {
     fetchMock.mockResolvedValue(
-      errorResponse(409, '{"detail":"The bridge is not running"}') as never
+      errorResponse(503, '{"detail":"The bridge is not running"}') as never
     );
 
     await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
@@ -1013,6 +1013,35 @@ describe('distributed Teams team placement', () => {
     await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({
       kind: 'not-in-catalog',
       message: "The app is not yet in this organisation's catalogue",
+    });
+  });
+
+  it.each([
+    [503, 'The Teams connection is not running; try again in a moment.'],
+    [502, 'Microsoft refused: AADSTS7000112'],
+    [404, 'No connection on the distributed Teams app has that id.'],
+  ])(
+    'reports a %s adding a team as an error in the gateway’s words, not a catalogue problem',
+    async (status, detail) => {
+      fetchMock.mockResolvedValue(errorResponse(status, JSON.stringify({ detail })) as never);
+
+      await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({
+        kind: 'error',
+        message: detail,
+      });
+    }
+  );
+
+  it.each([
+    [503, 'The Teams connection is not running; try again in a moment.'],
+    [502, 'Microsoft refused: AADSTS7000112'],
+    [404, 'No connection on the distributed Teams app has that id.'],
+  ])('reports a %s removing a team as an error in the gateway’s words', async (status, detail) => {
+    fetchMock.mockResolvedValue(errorResponse(status, JSON.stringify({ detail })) as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({
+      kind: 'error',
+      message: detail,
     });
   });
 

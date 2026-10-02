@@ -294,7 +294,7 @@ async def test_the_running_bridge_is_asked_about_the_edit_as_it_would_be(
     ("refusal", "status"),
     [
         (ConfigEditRefused("Switch is not in that team."), 422),
-        (BridgeNotRunning("The connection is not running."), 409),
+        (BridgeNotRunning("The connection is not running."), 503),
         (BridgeOperationError("Microsoft could not be asked."), 502),
     ],
 )
@@ -320,3 +320,41 @@ async def test_an_edit_the_platform_refuses_is_not_stored(
     assert str(refusal) in str(refused.detail)
     assert "team_id" not in await _stored_config(session_factory, bridge_id)
     assert lifecycle.restarted == []
+
+
+async def test_a_refused_edit_stores_none_of_the_rest_of_the_request(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Every check runs before any write, so a refused connection edit leaves
+    the request's other changes unmade too — and no write holds the bridge's
+    row locked while the platform is asked."""
+    async with session_factory() as session:
+        bridge_id = await _shared_bridge(
+            session, bridge_type="teams", connection_config=dict(_TEAMS_SHARED)
+        )
+        await session.commit()
+    lifecycle = _Lifecycle(
+        editable=frozenset({"team_id"}),
+        edit_refusal=ConfigEditRefused("Switch is not in that team."),
+    )
+
+    async with session_factory() as session:
+        with pytest.raises(HTTPException) as refused:
+            await update_bridge(
+                bridge_id=bridge_id,
+                payload=BridgeUpdateRequest(
+                    agent_greetings_enabled=False,
+                    connection_config={"team_id": "team-9"},
+                ),
+                session=session,
+                bridge_store=_BRIDGE_STORE,
+                room_store=RoomStore(),
+                collab_lifecycle=lifecycle,  # type: ignore[arg-type]
+                _user=_admin(),
+            )
+
+    assert refused.value.status_code == 422
+    async with session_factory() as session:
+        bridge = await _BRIDGE_STORE.get(session, bridge_id)
+    assert bridge is not None
+    assert bridge.agent_greetings_enabled is True

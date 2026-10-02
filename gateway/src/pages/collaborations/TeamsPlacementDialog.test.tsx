@@ -199,7 +199,7 @@ describe("TeamsPlacementDialog", () => {
 
   it("shows the server's error when the teams list fails to load", async () => {
     mockFetch(() =>
-      jsonResponse(409, {
+      jsonResponse(503, {
         detail: "The Teams connection is not running; try again in a moment.",
       }),
     );
@@ -248,7 +248,7 @@ describe("TeamsPlacementDialog", () => {
   it("shows the server's reason when toggling a team fails", async () => {
     mockFetch((_url, init) =>
       init?.method === "DELETE"
-        ? jsonResponse(409, {
+        ? jsonResponse(503, {
             detail: "The Teams connection is not running; try again in a moment.",
           })
         : jsonResponse(200, placements()),

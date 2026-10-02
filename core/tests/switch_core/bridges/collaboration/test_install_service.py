@@ -168,12 +168,20 @@ class _FakeLifecycle:
         self.removed: list[str] = []
         self.restarted: list[str] = []
         self.running: dict[str, object] = {}
+        # Registered but still starting: running, and not yet connected.
+        self.starting: set[str] = set()
+        self.restart_failure: Exception | None = None
 
     async def restart(self, bridge_id: str) -> None:
         self.restarted.append(bridge_id)
+        if self.restart_failure is not None:
+            raise self.restart_failure
 
     def get_adapter(self, bridge_id: str) -> object | None:
         return self.running.get(bridge_id)
+
+    def is_connected(self, bridge_id: str) -> bool:
+        return bridge_id in self.running and bridge_id not in self.starting
 
     async def register(self, **kwargs: object) -> CollaborationBridge:
         self.registered.append(kwargs)
@@ -768,6 +776,20 @@ class TestApprovingAgain:
         assert fixture.lifecycle.restarted == [first.bridge_id]
         assert len(fixture.lifecycle.registered) == 1
 
+    async def test_a_connection_that_cannot_restart_says_so_on_the_page(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The approval is recorded either way; the admin is told the
+        connection is stopped, not shown a raw server error."""
+        fixture = await _fixture(rls_harness, tokenless=True)
+        first = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        fixture.lifecycle.restart_failure = RuntimeError("database went away")
+
+        with pytest.raises(MessagingInstallError, match="could not restart"):
+            await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        assert fixture.lifecycle.restarted == [first.bridge_id]
+
     async def test_another_tenant_approving_the_same_workspace_is_still_refused(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -816,6 +838,23 @@ class TestLettingGoOfATokenlessWorkspace:
         )
 
         assert fixture.installer.released == []
+
+    async def test_a_bridge_still_starting_is_released_by_the_installer(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Registered is not connected: a bridge just restarted has no Graph
+        client yet, and letting go itself would quietly do nothing."""
+        fixture = await _fixture(rls_harness, tokenless=True)
+        install = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        assert install.bridge_id is not None
+        fixture.lifecycle.running[install.bridge_id] = object()
+        fixture.lifecycle.starting.add(install.bridge_id)
+
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=install.id
+        )
+
+        assert fixture.installer.released == [fixture.workspace]
 
 
 class TestApprovingAgainKeepsWhatItLearned:

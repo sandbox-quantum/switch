@@ -192,7 +192,7 @@ organisation's Teams admin shows on the connection as something to act on, with
 must not disconnect a customer and free their organisation for someone else.
 
 Disconnecting from Switch stops capture in the organisation and takes Switch
-out of the teams it knew. Removing the app from the organisation entirely is
+out of every team it is in. Removing the app from the organisation entirely is
 the customer's to do: their Teams admin removes **Agent Switch** in the Teams
 admin center, and their Entra admin deletes the enterprise application.
 

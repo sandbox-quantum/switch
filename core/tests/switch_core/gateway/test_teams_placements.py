@@ -72,12 +72,16 @@ class _Graph:
 
 
 class _Lifecycle:
-    def __init__(self, adapter: TeamsAdapter | None) -> None:
+    def __init__(self, adapter: TeamsAdapter | None, *, connected: bool = True) -> None:
         self._adapter = adapter
+        self._connected = connected
         self.restarted: list[str] = []
 
     def get_adapter(self, bridge_id: str) -> TeamsAdapter | None:
         return self._adapter
+
+    def is_connected(self, bridge_id: str) -> bool:
+        return self._adapter is not None and self._connected
 
     async def restart(self, bridge_id: str) -> None:
         self.restarted.append(bridge_id)
@@ -389,7 +393,7 @@ async def test_a_stopped_connection_is_said_to_be_not_running(
                 list_team_placements, session, _Lifecycle(None), bridge_id=bridge_id
             )
 
-    assert refused.value.status_code == 409
+    assert refused.value.status_code == 503
 
 
 async def test_a_microsoft_refusal_while_adding_or_removing_is_a_502(
@@ -476,3 +480,19 @@ async def test_a_deployment_without_the_app_has_no_package(
             )
 
     assert refused.value.status_code == 404
+
+
+async def test_a_connection_still_starting_is_said_to_be_not_running(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Making a team the default restarts the connection, and the panel reloads
+    at once; a bridge registered but not yet started has no Graph client, and
+    the answer is 'try again', not a fault."""
+    async with session_factory() as session:
+        bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
+        starting = _Lifecycle(_shared_adapter(_Graph()), connected=False)
+
+        with pytest.raises(HTTPException) as refused:
+            await _call(list_team_placements, session, starting, bridge_id=bridge_id)
+
+    assert refused.value.status_code == 503

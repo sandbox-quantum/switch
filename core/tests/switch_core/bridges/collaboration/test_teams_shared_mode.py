@@ -872,15 +872,23 @@ async def test_a_subscription_delete_that_fails_while_stopping_capture_is_only_l
 
 class _WithdrawGraph:
     def __init__(
-        self, *, listed: list[dict[str, Any]], installations: list[str]
+        self,
+        *,
+        listed: list[dict[str, Any]],
+        installations: list[str],
+        teams: tuple[str, ...] = ("team-1",),
     ) -> None:
         self._listed = listed
         self._installations = installations
+        self._teams = teams
         self.deleted: list[str] = []
         self.uninstalled: list[tuple[str, str]] = []
 
     async def list_subscriptions(self) -> list[dict[str, Any]]:
         return self._listed
+
+    async def list_teams(self) -> list[dict[str, Any]]:
+        return [{"id": team_id} for team_id in self._teams]
 
     async def delete_subscription(self, *, subscription_id: str) -> None:
         self.deleted.append(subscription_id)
@@ -909,15 +917,18 @@ async def test_removing_a_shared_bridge_stops_listening_and_leaves_its_teams() -
             {"id": "SUB-ELSEWHERE", "notificationUrl": "https://other.example/x"},
         ],
         installations=["INST-1"],
+        teams=("team-1", "team-default", "team-never-seen"),
     )
     adapter._graph = graph  # type: ignore[assignment]
 
     await adapter.withdraw()
 
     assert sorted(graph.deleted) == ["SUB-KNOWN", "SUB-UNADOPTED"]
+    # Every team the app is in, including one whose join the bridge never saw.
     assert sorted(graph.uninstalled) == [
         ("team-1", "INST-1"),
         ("team-default", "INST-1"),
+        ("team-never-seen", "INST-1"),
     ]
     assert adapter._capture_wanted == set()
 
@@ -1457,6 +1468,9 @@ class _SubscribingGraph:
     ) -> list[AppInstallation]:
         return []
 
+    async def list_teams(self) -> list[dict[str, Any]]:
+        return []
+
 
 async def test_capture_waits_until_the_existing_subscriptions_can_be_read() -> None:
     """A channel whose live subscription could not be seen at start would be
@@ -1660,3 +1674,166 @@ async def test_two_catalogue_ids_for_the_app_are_logged(
 
     assert placements.catalog_app_id is not None
     assert "more than one catalogue id" in caplog.text
+
+
+# ── Final review fixes ───────────────────────────────────────────────────────
+
+
+async def test_a_channel_activity_without_its_team_does_not_move_the_channel() -> None:
+    """Teams names a channel's team group on some activities only. A bridge on
+    the distributed app is in many teams, so guessing the default would file
+    another team's channel under it, and its capture would ask the wrong team."""
+    adapter = _shared_adapter(team_id="team-default")
+    _capture(adapter)
+    adapter._team_of_channel = {CHANNEL: "team-x"}
+
+    await adapter.receive_activity(
+        _activity(channelData={"channel": {"id": CHANNEL}, "tenant": {"id": ORG}})
+    )
+
+    assert adapter._team_of_channel == {CHANNEL: "team-x"}
+
+
+async def test_a_channel_activity_naming_its_team_places_the_channel() -> None:
+    adapter = _shared_adapter(team_id="team-default")
+    _capture(adapter)
+
+    await adapter.receive_activity(
+        _activity(
+            channelData={
+                "channel": {"id": CHANNEL},
+                "tenant": {"id": ORG},
+                "team": {"id": "19:team-thread", "aadGroupId": "team-x"},
+            }
+        )
+    )
+
+    assert adapter._team_of_channel == {CHANNEL: "team-x"}
+
+
+def _own_bridge() -> TeamsAdapter:
+    return TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="a",
+            app_password="p",
+            tenant_id=ORG,
+            team_id="team-own",
+            public_base_url="https://x.example",
+            client_state="s",
+        )
+    )
+
+
+async def test_a_bring_your_own_bridge_places_an_unplaced_channel_in_its_team() -> None:
+    adapter = _own_bridge()
+    _capture(adapter)
+
+    await adapter.receive_activity(
+        _activity(channelData={"channel": {"id": CHANNEL}, "tenant": {"id": ORG}})
+    )
+
+    assert adapter._team_of_channel == {CHANNEL: "team-own"}
+
+
+async def test_a_bring_your_own_bridge_keeps_a_channel_it_already_placed() -> None:
+    adapter = _own_bridge()
+    _capture(adapter)
+    adapter._team_of_channel = {CHANNEL: "team-elsewhere"}
+
+    await adapter.receive_activity(
+        _activity(channelData={"channel": {"id": CHANNEL}, "tenant": {"id": ORG}})
+    )
+
+    assert adapter._team_of_channel == {CHANNEL: "team-elsewhere"}
+
+
+async def test_an_unreadable_credential_file_is_not_an_approval_problem() -> None:
+    """The federated token file can be unreadable for a moment while it is
+    rotated; the check says it could not ask, and the bridge carries on."""
+    adapter = _shared_adapter()
+    adapter._tokens = _Tokens(  # type: ignore[assignment]
+        error=FileNotFoundError("/var/run/secrets/microsoft/teams-app/token")
+    )
+
+    await adapter._check_approval()
+
+    assert await adapter.attention() is None
+
+
+async def test_a_team_whose_read_times_out_is_listed_as_unknown() -> None:
+    adapter = _shared_adapter()
+
+    class _Slow(_PlacementGraph):
+        async def find_app_installations(
+            self, *, team_id: str, external_id: str
+        ) -> list[AppInstallation]:
+            if team_id == "team-a":
+                raise httpx.ReadTimeout("timed out")
+            return await super().find_app_installations(
+                team_id=team_id, external_id=external_id
+            )
+
+    adapter._graph = _Slow()  # type: ignore[assignment]
+
+    placements = await adapter.list_team_placements()
+
+    by_id = {p.team_id: p.has_switch for p in placements.teams}
+    assert by_id["team-a"] is None
+    assert by_id["team-b"] is True
+
+
+async def test_a_refused_organisation_token_fails_the_listing_and_stops_the_reads() -> (
+    None
+):
+    adapter = _shared_adapter()
+    started: list[str] = []
+    finished: list[str] = []
+
+    class _Refused(_PlacementGraph):
+        async def list_teams(self) -> list[dict[str, Any]]:
+            return [{"id": f"team-{n}", "displayName": str(n)} for n in range(20)]
+
+        async def find_app_installations(
+            self, *, team_id: str, external_id: str
+        ) -> list[AppInstallation]:
+            started.append(team_id)
+            if team_id == "team-0":
+                raise TokenRequestRefused(
+                    "AADSTS7000112: disabled", error_codes=frozenset({7000112})
+                )
+            await asyncio.sleep(0.5)
+            finished.append(team_id)
+            return []
+
+    adapter._graph = _Refused()  # type: ignore[assignment]
+
+    with pytest.raises(TokenRequestRefused):
+        await adapter.list_team_placements()
+
+    await asyncio.sleep(0.6)
+    assert finished == []
+
+
+async def test_one_subscription_that_cannot_be_deleted_does_not_keep_the_rest() -> None:
+    adapter = _shared_adapter()
+    url = adapter._me.notification_url
+
+    class _OneStuck(_WithdrawGraph):
+        async def delete_subscription(self, *, subscription_id: str) -> None:
+            if subscription_id == "SUB-A":
+                raise GraphError("delete failed (503)", status=503)
+            await super().delete_subscription(subscription_id=subscription_id)
+
+    graph = _OneStuck(
+        listed=[
+            {"id": "SUB-A", "notificationUrl": url},
+            {"id": "SUB-B", "notificationUrl": url},
+        ],
+        installations=[],
+    )
+    adapter._graph = graph  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="SUB-A"):
+        await adapter.withdraw()
+
+    assert graph.deleted == ["SUB-B"]

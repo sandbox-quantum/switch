@@ -26,8 +26,10 @@ codes and say the rest in the log.
 from __future__ import annotations
 
 import asyncio
+import functools
 import html
 import logging
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
@@ -61,6 +63,30 @@ logger = logging.getLogger(__name__)
 #: after about fifteen seconds — so the answer that says it failed is the one
 #: the person sees, rather than the platform's own timeout.
 _INLINE_ANSWER_SECONDS = 10.0
+
+#: Inline handling that outran its deadline and is still finishing. Held so
+#: the task is not collected mid-way, and dropped as each one ends.
+_finishing: set[asyncio.Task[dict[str, Any] | None]] = set()
+
+
+def _finished_late(
+    target: WebhookTarget,
+    envelope_type: str,
+    task: asyncio.Task[dict[str, Any] | None],
+) -> None:
+    _finishing.discard(task)
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.error(
+            "A %s %s event for bridge %s failed after its answer was sent",
+            target.platform,
+            envelope_type,
+            target.bridge_id,
+            exc_info=error,
+        )
+
 
 _PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -221,17 +247,26 @@ def create_messaging_install_router(
         and the platform's own timeout reports a failure in its words, not
         ours.
         """
+        handling = asyncio.create_task(service.answer(target, event))
         try:
+            # Shielded: the deadline is the platform's, and running out of it
+            # ends the wait, not the handling — a press abandoned half way
+            # could be recorded with its card never redrawn.
             body = await asyncio.wait_for(
-                service.answer(target, event), _INLINE_ANSWER_SECONDS
+                asyncio.shield(handling), _INLINE_ANSWER_SECONDS
             )
         except TimeoutError:
             logger.error(
-                "A %s %s event for bridge %s was not handled within %ss",
+                "A %s %s event for bridge %s was not handled within %ss; it is "
+                "still being handled, but the platform has been told it failed",
                 target.platform,
                 event.envelope_type,
                 target.bridge_id,
                 _INLINE_ANSWER_SECONDS,
+            )
+            _finishing.add(handling)
+            handling.add_done_callback(
+                functools.partial(_finished_late, target, event.envelope_type)
             )
             return Response(status_code=504)
         except Exception:
@@ -306,6 +341,25 @@ def create_messaging_install_router(
 
         unavailable = 0
         unreadable = 0
+        handled = 0
+        # A batch usually names a handful of workspaces among many events, and
+        # each lookup is two database reads before the platform is answered.
+        resolved: dict[str, WebhookTarget | Exception] = {}
+
+        async def resolve(event: InboundWebhook) -> WebhookTarget:
+            workspace_id = service.workspace_of(platform=platform, event=event)
+            if workspace_id not in resolved:
+                try:
+                    resolved[workspace_id] = await service.resolve_by_workspace(
+                        platform=platform, workspace_id=workspace_id
+                    )
+                except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable) as failure:
+                    resolved[workspace_id] = failure
+            outcome = resolved[workspace_id]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
         for event in events:
             if event.delivery_attempt > 0:
                 # The only signal this deployment gets that its own
@@ -328,9 +382,10 @@ def create_messaging_install_router(
                 revocation = service.revocation(platform=platform, event=event)
                 if revocation is not None:
                     background.add_task(_end_install, platform, revocation)
+                    handled += 1
                     continue
 
-                target = await service.resolve(platform=platform, event=event)
+                target = await resolve(event)
             except WebhookPayloadError as failure:
                 # Skipped rather than answered: on an endpoint every workspace
                 # shares, one unreadable item in a batch must not take the rest
@@ -365,6 +420,7 @@ def create_messaging_install_router(
             # minutes — so acknowledging on the way out is what keeps a slow
             # room from becoming a retried, duplicated one.
             background.add_task(_deliver, target, event)
+            handled += 1
 
         # A 503 asks the platform to send the request again, which is right
         # while a bridge restarts — a 200 would drop a real message and report
@@ -376,7 +432,7 @@ def create_messaging_install_router(
         # changing under this build, and says so with a 400 that is not retried.
         if events and unreadable == len(events):
             return Response(status_code=400)
-        if unavailable and unavailable + unreadable == len(events):
+        if unavailable and not handled:
             return Response(status_code=503)
         return Response(status_code=200)
 

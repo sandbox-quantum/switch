@@ -60,6 +60,7 @@ class _Adapter:
 
 def _running(service: CollaborationBridgeLifecycleService, adapter: Any) -> None:
     service._bridges["b-1"] = SimpleNamespace(adapter=adapter)  # type: ignore[assignment]
+    service._connected.add("b-1")
 
 
 async def test_the_running_bridge_is_asked() -> None:
@@ -105,3 +106,21 @@ def test_an_unknown_type_leaves_editing_to_validation() -> None:
 
 def test_the_adapter_names_what_is_editable() -> None:
     assert _service().editable_config_keys("teams", _SHARED) == frozenset({"team_id"})
+
+
+async def test_a_bridge_still_starting_cannot_be_checked() -> None:
+    """A restart registers the bridge before its adapter has a Graph client;
+    asked then, the edit is refused as not running, not failed as a fault."""
+    service = _service()
+    adapter = _Adapter()
+    service._bridges["b-1"] = SimpleNamespace(adapter=adapter)  # type: ignore[assignment]
+
+    with pytest.raises(BridgeNotRunning):
+        await service.check_config_edit(
+            bridge_id="b-1",
+            bridge_type="teams",
+            current=_SHARED,
+            connection_config={**_SHARED, "team_id": "team-2"},
+        )
+
+    assert adapter.asked == []

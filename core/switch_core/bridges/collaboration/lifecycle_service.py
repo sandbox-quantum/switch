@@ -490,12 +490,12 @@ class CollaborationBridgeLifecycleService:
 
         See `CollaborationAdapter.check_config_edit`. A bridge on an app the
         deployment owns (one whose adapter limits what is editable) checks
-        with the platform, and cannot while it is not running, so the edit is
-        refused with `BridgeNotRunning` rather than stored unchecked. Any other
+        with the platform, and cannot until it has finished starting, so the
+        edit is refused with `BridgeNotRunning` rather than stored unchecked. Any other
         bridge's edit goes through on its validation alone.
         """
         adapter = self.get_adapter(bridge_id)
-        if adapter is None:
+        if adapter is None or not self.is_connected(bridge_id):
             if self.editable_config_keys(bridge_type, current) is not None:
                 raise BridgeNotRunning(
                     "The connection is not running, so Switch cannot check this "
@@ -850,7 +850,16 @@ class CollaborationBridgeLifecycleService:
                 bridge.id,
                 bridge_type,
             )
-            await self.remove(bridge.id)
+            try:
+                await self.remove(bridge.id)
+            except Exception:
+                # The start failure is what the caller needs to see; this one
+                # is logged rather than raised in its place.
+                logger.exception(
+                    "Collaboration bridge %s could not be removed after failing "
+                    "to start; its record remains",
+                    bridge.id,
+                )
             raise
 
         logger.info(

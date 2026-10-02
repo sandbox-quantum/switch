@@ -653,3 +653,36 @@ def test_an_id_token_issued_by_a_directory_other_than_the_one_it_names_is_reject
                 forged, app_id="app-1", keys=_signing_keys(server)
             )
         )
+
+
+def test_requests_arriving_during_the_first_fetch_wait_for_its_keys() -> None:
+    """A burst at a cold start: every request after the first used to find no
+    key and no fetch allowed, and was refused."""
+    key = _rsa_key()
+
+    class _SlowKeyServer(_KeyServer):
+        async def handle(self, request: httpx.Request) -> httpx.Response:
+            if str(request.url) != _METADATA:
+                await asyncio.sleep(0.2)
+            return self.handler(request)
+
+    server = _SlowKeyServer([_jwk(key, "k1", ["msteams"])])
+    http = httpx.AsyncClient(transport=httpx.MockTransport(server.handle))
+    authenticator = BotFrameworkAuthenticator(
+        app_id="app-1", keys=SigningKeys(metadata_url=_METADATA, http=http)
+    )
+    header = f"Bearer {_bot_token(key)}"
+
+    async def burst() -> None:
+        await asyncio.gather(
+            *(
+                authenticator.verify(
+                    header, service_url=_SERVICE_URL, channel_id="msteams"
+                )
+                for _ in range(5)
+            )
+        )
+
+    _run(burst())
+
+    assert server.fetches == 1
