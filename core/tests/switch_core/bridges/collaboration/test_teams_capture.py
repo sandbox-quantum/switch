@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
+    _parse_graph_time,
 )
 from switch_core.bridges.collaboration.teams.crypto import (
     ResourceDataError,
@@ -179,6 +180,26 @@ def test_validation_handshake_echoes_token() -> None:
 
     assert resp.status == 200
     assert resp.text == "tok-xyz"
+
+
+def test_a_notification_that_fails_to_handle_does_not_fail_the_whole_batch() -> None:
+    """Graph gets a 202 either way: raising here would have it retry a batch
+    where only one item was bad, instead of the one that failed."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+
+    async def _raise(item: dict[str, Any]) -> None:
+        raise RuntimeError("boom")
+
+    adapter.receive_notification = _raise  # type: ignore[method-assign]
+
+    resp = _run(
+        adapter._handle_http_notifications(
+            _FakeRequest(body={"value": [{"anything": "goes"}]})  # type: ignore[arg-type]
+        )
+    )
+
+    assert resp.status == 202
 
 
 def test_notification_decrypts_and_delivers_message() -> None:
@@ -450,6 +471,34 @@ def test_ensure_channel_subscription_creates_with_expected_resource() -> None:
     assert adapter._subscriptions["19:c@thread.tacv2"] == "SUB-1"
 
 
+class _ExpiringGraph(_FakeGraph):
+    async def create_subscription(self, **kwargs: Any) -> dict[str, Any]:
+        self.created.append(kwargs)
+        return {"id": "SUB-1", "expirationDateTime": "2026-01-01T00:00:00Z"}
+
+
+def test_an_unparseable_graph_timestamp_is_read_as_unknown_rather_than_raised() -> None:
+    assert _parse_graph_time("not-a-timestamp") is None
+    assert _parse_graph_time(None) is None
+    assert _parse_graph_time(12345) is None
+
+
+def test_ensure_channel_subscription_records_when_the_new_one_runs_out() -> None:
+    """The renewal loop reads this back to decide whether a subscription is
+    close enough to running out to renew; a new one has to record it the same
+    as one adopted on restart does."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    adapter._graph = _ExpiringGraph()  # type: ignore[assignment]
+    adapter._team_of_channel["19:c@thread.tacv2"] = "team-9"
+
+    _run(adapter._ensure_channel_subscription("19:c@thread.tacv2"))
+
+    assert adapter._subscription_expiry["19:c@thread.tacv2"] == datetime.datetime(
+        2026, 1, 1, tzinfo=datetime.UTC
+    )
+
+
 def test_ensure_channel_subscription_skips_without_certificate() -> None:
     adapter = TeamsAdapter(
         config=TeamsConnectionConfig(
@@ -531,6 +580,43 @@ def test_adopt_existing_subscriptions_deletes_stale_and_keeps_current() -> None:
 
     assert adapter._subscriptions == {"19:keep@thread.tacv2": "CUR"}
     assert fake.deleted == ["OLD"]
+
+
+def test_adopt_existing_subscriptions_records_a_readable_expiry() -> None:
+    """A subscription adopted on restart is handed to the renewal loop the
+    same as one this process made itself, so it has to carry when the
+    adopted one actually runs out."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    current = adapter._me.notification_url
+    fake = _FakeGraph(
+        existing=[
+            {
+                "id": "CUR",
+                "resource": "teams/t/channels/19:keep@thread.tacv2/messages",
+                "notificationUrl": current,
+                "expirationDateTime": "2026-01-01T00:00:00Z",
+            }
+        ]
+    )
+    adapter._graph = fake  # type: ignore[assignment]
+
+    _run(adapter._adopt_existing_subscriptions())
+
+    assert adapter._subscription_expiry["19:keep@thread.tacv2"] == datetime.datetime(
+        2026, 1, 1, tzinfo=datetime.UTC
+    )
+
+
+def test_renewing_a_subscription_with_no_graph_client_yet_is_a_no_op() -> None:
+    """Reached only if a renewal round somehow outlives `stop()` clearing the
+    graph client; nothing to renew against, so this is a no-op rather than an
+    attribute error on a bridge mid-shutdown."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    assert adapter._graph is None
+
+    _run(adapter._renew_subscription("19:c@thread.tacv2", "SUB-1"))
 
 
 def test_channel_from_resource_parses_channel_id() -> None:

@@ -14,6 +14,7 @@ import functools
 from typing import Any
 
 import httpx
+import jwt
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -168,6 +169,14 @@ async def test_registration_mints_nothing_for_a_shared_bridge() -> None:
     assert await TeamsAdapter.prepare_config(config) == config
 
 
+async def test_a_shared_bridge_has_no_credentials_of_its_own_to_verify() -> None:
+    """Whether the organisation approved the app is proved by the install, not
+    by a secret this bridge never carries."""
+    await TeamsAdapter.verify_credentials(
+        {"event_delivery": "shared", "tenant_id": ORG}
+    )
+
+
 def test_only_the_default_team_is_editable_on_a_shared_bridge() -> None:
     assert TeamsAdapter.editable_config_keys({"event_delivery": "shared"}) == (
         frozenset({"team_id"})
@@ -223,6 +232,65 @@ async def test_a_shared_bridge_will_not_start_without_the_deployments_app() -> N
 
     with pytest.raises(RuntimeError, match="TEAMS_APP_"):
         await adapter.start(_noop, _noop, _noop, _noop, _noop)
+
+
+def _app_over(handler: httpx.MockTransport) -> TeamsSharedApp:
+    certificate, key = _keypair()
+    return TeamsSharedApp(
+        app_id="switch-app",
+        home_tenant_id="11111111-0000-0000-0000-000000000000",
+        credential=ClientSecret("secret"),
+        keyring=NotificationKeyring(
+            current=NotificationKey(certificate_id="switch-cert", private_key=key),
+            certificate_der_b64=load_certificate_der_b64(certificate),
+            retired=(),
+        ),
+        messaging_public_url="https://switch.example",
+        client_state_secret="jwt-secret",
+        http=httpx.AsyncClient(transport=handler),
+    )
+
+
+async def test_starting_a_shared_bridge_checks_approval_and_schedules_renewal() -> None:
+    """The shared path of `start`: no listener of its own, tokens and a Graph
+    client built from the deployment's app, and the renewal and repair loops
+    running against it — proved by `stop` tearing down exactly those two tasks
+    and leaving the app's own client open behind it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2/v2.0/token" in str(request.url):
+            token = jwt.encode({"roles": sorted(REQUIRED_GRAPH_ROLES)}, "k" * 32)
+            return httpx.Response(200, json={"access_token": token, "expires_in": 3600})
+        if request.url.path == "/v1.0/subscriptions":
+            return httpx.Response(200, json={"value": []})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    app = _app_over(httpx.MockTransport(handler))
+    adapter = TeamsAdapter(config=_shared_config())
+    app.attach_if_teams(adapter)
+
+    async def _noop(*args: Any) -> None:
+        return None
+
+    await adapter.start(_noop, _noop, _noop, _noop, _noop)
+
+    assert adapter._owns_http is False
+    assert adapter._http is app.http
+    renewal_task, repair_task = adapter._renewal_task, adapter._repair_task
+    assert renewal_task is not None and not renewal_task.done()
+    assert repair_task is not None and not repair_task.done()
+
+    await adapter.stop()
+
+    assert renewal_task.cancelled()
+    assert repair_task.cancelled()
+    assert adapter._renewal_task is None
+    assert adapter._repair_task is None
+    assert adapter._http is None
+    # The deployment's own client belongs to the app, not the bridge: stop()
+    # must not have closed it.
+    assert app.http.is_closed is False
+    await app.aclose()
 
 
 # ── Inbound: only this organisation's ────────────────────────────────────────
@@ -436,12 +504,66 @@ async def test_a_channel_in_an_unknown_team_is_refused() -> None:
         await adapter.require_bindable_channel(CHANNEL)
 
 
+async def test_a_bring_your_own_bridge_has_nothing_to_refuse_when_binding() -> None:
+    """Its own credential reaches only its own organisation, so there is no
+    other organisation's channel it could bind by mistake."""
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="a",
+            app_password="p",
+            tenant_id="t",
+            team_id="team",
+            public_base_url="https://x.example",
+            client_state="s",
+        )
+    )
+
+    await adapter.require_bindable_channel(CHANNEL)  # must not raise
+
+
+async def test_an_unstarted_shared_bridge_cannot_check_a_channel_binding() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    assert adapter._graph is None
+
+    with pytest.raises(RuntimeError, match="not started"):
+        await adapter.require_bindable_channel(CHANNEL)
+
+
+async def test_a_deeplink_for_a_channel_with_no_known_team_is_none() -> None:
+    """Nothing to link to without a team id — a stopped bridge's dashboard
+    shows no deeplink rather than a broken one."""
+    adapter = _shared_adapter()
+
+    assert await adapter.channel_deeplink(CHANNEL) is None
+
+
+async def test_adding_people_to_a_channel_with_no_known_team_fails_them_all() -> None:
+    adapter = _shared_adapter()
+    adapter._graph = _ChannelGraph(fail=False)  # type: ignore[assignment]
+
+    failed = await adapter.add_users_to_channel(CHANNEL, ["someone"], ["aad-1"])
+
+    assert failed == ["aad-1"]
+
+
 async def test_creating_a_channel_needs_a_default_team() -> None:
     adapter = _shared_adapter()
     adapter._graph = _ChannelGraph(fail=False)  # type: ignore[assignment]
 
     with pytest.raises(BridgeOperationError, match="default team"):
         await adapter.create_channel("room", "topic")
+
+
+async def test_the_type_of_a_channel_whose_team_is_not_yet_known_cannot_be_read() -> (
+    None
+):
+    """Reading a channel needs its team, and nothing has learned this one's
+    yet — no activity from it, and no default team to fall back to."""
+    adapter = _shared_adapter()
+    adapter._graph = _ChannelGraph(fail=False)  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="which team"):
+        await adapter.get_channel_type(CHANNEL)
 
 
 # ── Approval health ──────────────────────────────────────────────────────────
@@ -500,6 +622,37 @@ async def test_a_transient_failure_changes_nothing() -> None:
     adapter = _shared_adapter()
     adapter._tokens = _Tokens(  # type: ignore[assignment]
         error=TokenRequestRefused("busy", error_codes=frozenset({50196}))
+    )
+
+    await adapter._check_approval()
+
+    assert await adapter.attention() is None
+
+
+async def test_microsoft_being_unreachable_is_not_an_approval_problem() -> None:
+    """A connectivity failure says nothing about whether the organisation still
+    approves the app, so it must not be mistaken for one."""
+    adapter = _shared_adapter()
+    adapter._tokens = _Tokens(error=httpx.ConnectError("no route to host"))  # type: ignore[assignment]
+
+    await adapter._check_approval()
+
+    assert await adapter.attention() is None
+
+
+async def test_a_bring_your_own_bridge_has_no_approval_to_check() -> None:
+    """Only a bridge on the distributed app can lose an organisation's
+    approval; a bring-your-own bridge's identity asks for no Graph roles, so
+    this returns before touching tokens it was never given."""
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="a",
+            app_password="p",
+            tenant_id="t",
+            team_id="team",
+            public_base_url="https://x.example",
+            client_state="s",
+        )
     )
 
     await adapter._check_approval()
@@ -577,6 +730,28 @@ async def test_a_failed_renewal_keeps_the_subscription_for_the_next_attempt() ->
     assert adapter._subscriptions == {CHANNEL: "SUB"}
 
 
+class _UnreachableRenewGraph:
+    """Graph is not reachable at all — not even a Graph-shaped refusal."""
+
+    async def renew_subscription(
+        self, *, subscription_id: str, expiration_iso: str
+    ) -> None:
+        raise RuntimeError("connection reset")
+
+
+async def test_a_renewal_that_fails_outright_also_keeps_the_subscription() -> None:
+    """Not every failure to renew comes back as a `GraphError` — anything else
+    Graph's own client can raise is kept for the next attempt exactly the same
+    way a refusal is."""
+    adapter = _shared_adapter()
+    adapter._subscriptions = {CHANNEL: "SUB"}
+    adapter._graph = _UnreachableRenewGraph()  # type: ignore[assignment]
+
+    await adapter._renew_due_subscriptions()
+
+    assert adapter._subscriptions == {CHANNEL: "SUB"}
+
+
 async def test_removing_the_app_from_a_team_stops_capture_there() -> None:
     adapter = _shared_adapter()
     adapter._team_of_channel = {CHANNEL: "team-1", "19:other@thread.tacv2": "team-2"}
@@ -634,6 +809,62 @@ async def test_an_upgrade_is_not_a_removal() -> None:
     )
 
     assert adapter._subscriptions == {CHANNEL: "SUB-1"}
+
+
+async def test_a_removal_naming_no_team_stops_capture_nowhere() -> None:
+    """Graph always names the team on a real removal; this is the defensive
+    branch for one that somehow does not, and it must not guess by falling
+    back to whatever team this bridge defaults to."""
+    adapter = _shared_adapter(team_id="team-1")
+    adapter._team_of_channel = {CHANNEL: "team-1"}
+    adapter._subscriptions = {CHANNEL: "SUB-1"}
+
+    await adapter.receive_activity(
+        {
+            "type": "installationUpdate",
+            "action": "remove",
+            "serviceUrl": SERVICE_URL,
+            "conversation": {
+                "id": CHANNEL,
+                "conversationType": "channel",
+                "tenantId": ORG,
+            },
+            "channelData": {"tenant": {"id": ORG}},
+        }
+    )
+
+    assert adapter._subscriptions == {CHANNEL: "SUB-1"}
+
+
+async def test_stopping_capture_with_no_live_subscription_is_a_no_op() -> None:
+    adapter = _shared_adapter()
+    adapter._capture_wanted = {CHANNEL}
+    adapter._capture_failures = {CHANNEL: "some failure"}
+
+    await adapter._stop_capture(CHANNEL)
+
+    assert CHANNEL not in adapter._capture_wanted
+    assert CHANNEL not in adapter._capture_failures
+    assert CHANNEL not in adapter._subscriptions
+
+
+async def test_a_subscription_delete_that_fails_while_stopping_capture_is_only_logged() -> (
+    None
+):
+    """The subscription runs out on its own within the hour; capture is
+    already stopped either way, so a Graph failure here is not raised."""
+    adapter = _shared_adapter()
+    adapter._subscriptions = {CHANNEL: "SUB-1"}
+
+    class _FailingDelete:
+        async def delete_subscription(self, *, subscription_id: str) -> None:
+            raise RuntimeError("Graph is down")
+
+    adapter._graph = _FailingDelete()  # type: ignore[assignment]
+
+    await adapter._stop_capture(CHANNEL)  # must not raise
+
+    assert CHANNEL not in adapter._subscriptions
 
 
 # ── Removal ──────────────────────────────────────────────────────────────────
@@ -728,6 +959,45 @@ async def test_what_could_not_be_withdrawn_is_said() -> None:
         await adapter.withdraw()
 
 
+async def test_withdrawing_before_a_graph_client_ever_existed_is_a_no_op() -> None:
+    """A bridge that never got past `start`'s early checks has nothing on the
+    platform to let go of."""
+    adapter = _shared_adapter()
+    assert adapter._graph is None
+
+    await adapter.withdraw()  # must not raise
+
+
+async def test_a_withdrawal_that_cannot_even_list_subscriptions_still_says_so() -> None:
+    adapter = _shared_adapter()
+
+    class _Unreachable(_WithdrawGraph):
+        async def list_subscriptions(self) -> list[dict[str, Any]]:
+            raise GraphError("list failed (503)", status=503)
+
+    adapter._graph = _Unreachable(listed=[], installations=[])  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="listing subscriptions failed"):
+        await adapter.withdraw()
+
+
+async def test_a_team_the_app_cannot_be_removed_from_is_named_in_what_is_left_behind() -> (
+    None
+):
+    adapter = _shared_adapter(team_id="team-1")
+
+    class _CannotUninstall(_WithdrawGraph):
+        async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
+            raise GraphError("uninstall failed (403)", status=403)
+
+    adapter._graph = _CannotUninstall(  # type: ignore[assignment]
+        listed=[], installations=["INST-1"]
+    )
+
+    with pytest.raises(BridgeOperationError, match="the app in team team-1"):
+        await adapter.withdraw()
+
+
 # ── From the deployment's public route ───────────────────────────────────────
 
 
@@ -756,6 +1026,19 @@ async def test_an_envelope_it_does_not_know_is_refused() -> None:
     adapter = _shared_adapter()
     with pytest.raises(ValueError):
         await adapter.dispatch_event(envelope_type="mystery", payload={})
+
+
+async def test_a_notification_from_the_public_route_answers_nothing() -> None:
+    """Unlike an activity, which may carry an invoke's answer, a notification
+    never does — Graph does not wait on a reply."""
+    adapter = _shared_adapter()
+
+    answer = await adapter.dispatch_event(
+        envelope_type="notification",
+        payload={"clientState": "not this organisation's", "subscriptionId": "x"},
+    )
+
+    assert answer is None
 
 
 # ── Which teams Switch is in ─────────────────────────────────────────────────
@@ -854,6 +1137,18 @@ async def test_a_bring_your_own_bridge_does_not_place_itself() -> None:
         await adapter.list_team_placements()
 
 
+async def test_an_unstarted_shared_bridge_cannot_be_asked_which_teams_it_is_in() -> (
+    None
+):
+    """It is a bridge on the distributed app, so the request is the right one —
+    just asked of a bridge that has no Graph client yet."""
+    adapter = _shared_adapter()
+    assert adapter._graph is None
+
+    with pytest.raises(RuntimeError, match="not started"):
+        await adapter.list_team_placements()
+
+
 def test_before_any_activity_a_shared_bridge_posts_through_microsofts_global_endpoint() -> (
     None
 ):
@@ -931,6 +1226,34 @@ async def test_a_renewal_round_that_fails_does_not_end_renewal(
         await adapter._renewal_loop()
 
     assert len(rounds) == 3
+
+
+async def test_a_successful_round_goes_on_to_renew_due_subscriptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _shared_adapter()
+    rounds: list[int] = []
+
+    async def ok_check() -> None:
+        return None
+
+    async def renew() -> None:
+        rounds.append(1)
+
+    async def fast_sleep(seconds: float) -> None:
+        if len(rounds) >= 2:
+            raise asyncio.CancelledError
+
+    adapter._check_approval = ok_check  # type: ignore[method-assign]
+    adapter._renew_due_subscriptions = renew  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.teams.adapter.asyncio.sleep", fast_sleep
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._renewal_loop()
+
+    assert len(rounds) == 2
 
 
 def test_an_unusable_encryption_key_only_turns_capture_off() -> None:

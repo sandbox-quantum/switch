@@ -112,7 +112,7 @@ class _RelayInstaller(MessagingAppInstaller):
                 payload=item,
                 handshake=None,
                 external_event_id=item.get("id"),
-                delivery_attempt=0,
+                delivery_attempt=item.get("delivery_attempt", 0),
                 answers_inline=bool(item.get("inline")),
             )
             for item in json.loads(body)["items"]
@@ -133,10 +133,13 @@ class _RelayInstaller(MessagingAppInstaller):
 class _Adapter(CollaborationAdapter):
     """Records what it is handed and answers with what it was asked to."""
 
-    def __init__(self, *, delay: float = 0.0, fail: bool = False) -> None:
+    def __init__(
+        self, *, delay: float = 0.0, fail: bool = False, no_body: bool = False
+    ) -> None:
         self.dispatched: list[dict[str, Any]] = []
         self._delay = delay
         self._fail = fail
+        self._no_body = no_body
 
     async def dispatch_event(
         self, *, envelope_type: str, payload: dict[str, Any]
@@ -146,6 +149,8 @@ class _Adapter(CollaborationAdapter):
             await asyncio.sleep(self._delay)
         if self._fail:
             raise RuntimeError("the press could not be handled")
+        if self._no_body:
+            return None
         return {"answer": payload["id"]} if payload.get("inline") else None
 
     async def start(self, *a: Any, **k: Any) -> Any: ...
@@ -520,6 +525,62 @@ async def test_a_press_whose_handling_fails_is_answered_as_failed(
     )
 
     assert response.status_code == 500
+
+
+async def test_an_inline_answered_event_with_nothing_to_say_back_is_a_bare_200(
+    rls_harness: RLSHarness,
+) -> None:
+    """Most events the platform waits on carry an answer, but one that does
+    not is still a plain success rather than an empty JSON body."""
+    fixture = await _fixture(rls_harness)
+    fixture.lifecycle.adapters[fixture.bridges["a"]] = _Adapter(no_body=True)
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/events",
+        content=_batch({"workspace": "org-a", "id": "press-1", "inline": True}),
+        headers=_SIGNED,
+    )
+
+    assert response.status_code == 200
+    assert response.content == b""
+
+
+async def test_a_redelivered_event_is_warned_about_and_still_handled(
+    rls_harness: RLSHarness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A positive `delivery_attempt` is the platform saying an earlier
+    acknowledgement arrived too late — worth a log, but the event is handled
+    exactly as any other, not dropped as a duplicate."""
+    fixture = await _fixture(rls_harness)
+
+    with caplog.at_level("WARNING"):
+        response = await fixture.client.post(
+            f"/messaging/{_PLATFORM}/notifications",
+            content=_batch({"workspace": "org-a", "id": "n-a", "delivery_attempt": 2}),
+            headers=_SIGNED,
+        )
+
+    assert response.status_code == 200
+    assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-a"]
+    assert any(
+        "re-sending" in record.message and "attempt 2" in record.message
+        for record in caplog.records
+    )
+
+
+async def test_a_callback_error_for_an_unregistered_platform_is_reported_plainly(
+    rls_harness: RLSHarness,
+) -> None:
+    """No installer is registered to translate the code into words a person
+    acts on, so the fallback explanation is used instead of a 500."""
+    fixture = await _fixture(rls_harness)
+
+    response = await fixture.client.get(
+        "/messaging/no-such-platform/oauth/callback?error=access_denied"
+    )
+
+    assert response.status_code == 200
+    assert "no-such-platform reported: access_denied." in response.text
 
 
 async def test_a_refused_install_is_explained_in_the_platforms_terms(

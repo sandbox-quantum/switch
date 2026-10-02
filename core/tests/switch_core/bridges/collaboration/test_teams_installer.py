@@ -25,6 +25,7 @@ from cryptography.x509.oid import NameOID
 from jwt.algorithms import RSAAlgorithm
 
 from switch_core.bridges.collaboration.install import (
+    InstallGrant,
     MessagingInstallError,
     WebhookAuthenticityError,
     WebhookPayloadError,
@@ -40,7 +41,10 @@ from switch_core.bridges.collaboration.teams.identity import (
     NotificationKey,
     NotificationKeyring,
 )
-from switch_core.bridges.collaboration.teams.install import TeamsAppInstaller
+from switch_core.bridges.collaboration.teams.install import (
+    TeamsAppInstaller,
+    _graph_refusal,
+)
 from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
 
 APP_ID = "aaaaaaaa-1111-1111-1111-111111111111"
@@ -254,6 +258,19 @@ async def test_an_organisation_that_never_approved_is_refused() -> None:
     }
 
     with pytest.raises(MessagingInstallError, match="not approved for the whole"):
+        await _redeem(microsoft)
+
+
+async def test_an_organisation_token_refused_for_an_unrelated_reason_is_not_swallowed() -> (
+    None
+):
+    """Only "not approved" is treated as something approving again might fix;
+    anything else Microsoft's identity platform says about the request is a
+    Switch-side problem worth its own message, not a silent retry."""
+    microsoft = _Microsoft()
+    microsoft.org_token_error = {"error": "invalid_client", "error_codes": [7000215]}
+
+    with pytest.raises(MessagingInstallError, match="would not issue Switch a token"):
         await _redeem(microsoft)
 
 
@@ -605,3 +622,203 @@ def test_each_event_names_its_organisation() -> None:
 
 def test_microsoft_announces_no_organisation_wide_uninstall() -> None:
     assert _installer(_Microsoft()).revocation_of_event(_activity()) is None
+
+
+# ── Review gaps ──────────────────────────────────────────────────────────────
+
+
+def test_the_package_is_offered_for_a_manual_upload() -> None:
+    installer = _installer(_Microsoft())
+    assert installer.package is installer._package
+
+
+async def test_a_non_json_sign_in_response_is_explained() -> None:
+    microsoft = _Microsoft()
+
+    def not_json(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/organizations/oauth2/v2.0/token"):
+            return httpx.Response(200, content=b"not json")
+        return microsoft.handler(request)
+
+    installer = _installer(microsoft)
+    installer._app._http = httpx.AsyncClient(transport=httpx.MockTransport(not_json))
+
+    with pytest.raises(MessagingInstallError, match="is not JSON"):
+        await installer.redeem(code="c", redirect_uri="https://switch.example/cb")
+
+
+async def test_a_refused_sign_in_carries_microsofts_own_reason() -> None:
+    microsoft = _Microsoft()
+
+    def refused(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/organizations/oauth2/v2.0/token"):
+            return httpx.Response(
+                400, json={"error": "invalid_grant", "error_description": "expired"}
+            )
+        return microsoft.handler(request)
+
+    installer = _installer(microsoft)
+    installer._app._http = httpx.AsyncClient(transport=httpx.MockTransport(refused))
+
+    with pytest.raises(MessagingInstallError, match="Microsoft refused the sign-in"):
+        await installer.redeem(code="c", redirect_uri="https://switch.example/cb")
+
+
+async def test_a_sign_in_response_with_no_id_token_is_explained() -> None:
+    microsoft = _Microsoft()
+
+    def no_id_token(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/organizations/oauth2/v2.0/token"):
+            return httpx.Response(200, json={"access_token": "delegated"})
+        return microsoft.handler(request)
+
+    installer = _installer(microsoft)
+    installer._app._http = httpx.AsyncClient(transport=httpx.MockTransport(no_id_token))
+
+    with pytest.raises(MessagingInstallError, match="no id token"):
+        await installer.redeem(code="c", redirect_uri="https://switch.example/cb")
+
+
+async def test_an_organisation_name_that_cannot_be_read_falls_back_to_its_id() -> None:
+    microsoft = _Microsoft()
+
+    def organisation_unreadable(request: httpx.Request) -> httpx.Response:
+        if "/v1.0/organization" in str(request.url):
+            return httpx.Response(500, json={"error": {"message": "down"}})
+        return microsoft.handler(request)
+
+    installer = _installer(microsoft)
+    installer._app._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(organisation_unreadable)
+    )
+
+    grant = await installer.redeem(code="c", redirect_uri="https://switch.example/cb")
+
+    assert grant.workspace_name == ORG
+
+
+def test_connection_config_is_a_shared_bridge_for_the_approved_organisation() -> None:
+    installer = _installer(_Microsoft())
+    grant = InstallGrant(
+        external_workspace_id=ORG,
+        workspace_name="Contoso",
+        bot_token=None,
+        scopes="",
+        platform_data={},
+    )
+
+    assert installer.connection_config(grant) == {
+        "event_delivery": "shared",
+        "tenant_id": ORG,
+    }
+
+
+async def test_releasing_an_organisation_leaves_it_through_the_shared_app() -> None:
+    installer = _installer(_Microsoft())
+    left: list[str] = []
+
+    async def _withdraw(organisation: str) -> None:
+        left.append(organisation)
+
+    installer._app.withdraw_from_org = _withdraw  # type: ignore[method-assign]
+
+    await installer.release(external_workspace_id=ORG)
+
+    assert left == [ORG]
+
+
+async def test_revoke_is_not_supported_for_a_tokenless_install() -> None:
+    installer = _installer(_Microsoft())
+    with pytest.raises(NotImplementedError, match="no per-install token"):
+        await installer.revoke(bot_token="irrelevant")
+
+
+def test_an_unrecognised_refusal_is_reported_in_microsofts_own_words() -> None:
+    installer = _installer(_Microsoft())
+    assert (
+        installer.describe_callback_error(
+            error="server_error", description="something unexpected"
+        )
+        == "Microsoft reported: something unexpected."
+    )
+
+
+async def test_a_notification_batch_whose_value_is_not_a_list_is_not_genuine() -> None:
+    installer = _installer(_Microsoft())
+    with pytest.raises(WebhookAuthenticityError, match="not a Graph notification"):
+        await installer.verify_webhook(
+            endpoint="notifications",
+            headers={},
+            query={},
+            body=json.dumps({"value": "not-a-list"}).encode(),
+        )
+
+
+def test_parsing_a_notification_batch_whose_value_is_not_a_list_is_refused() -> None:
+    installer = _installer(_Microsoft())
+    with pytest.raises(WebhookPayloadError, match="had no value"):
+        installer.parse_webhook(
+            endpoint="notifications",
+            headers={},
+            query={},
+            body=json.dumps({"value": "not-a-list"}).encode(),
+        )
+
+
+def test_a_non_object_item_in_a_notification_batch_is_skipped_not_raised() -> None:
+    installer = _installer(_Microsoft())
+    installer._vouched[teams_install._digest({"value": ["not-a-dict", _DATA]})] = (
+        frozenset({ORG})
+    )
+
+    events = installer.parse_webhook(
+        endpoint="notifications",
+        headers={},
+        query={},
+        body=json.dumps({"value": ["not-a-dict", _DATA]}).encode(),
+    )
+
+    assert [e.payload for e in events] == [_DATA]
+
+
+def test_only_the_most_recently_vouched_batches_are_remembered() -> None:
+    installer = _installer(_Microsoft())
+    for i in range(300):
+        installer._remember_vouched(f"digest-{i}".encode(), frozenset({ORG}))
+
+    assert len(installer._vouched) == 256
+    assert b"digest-0" not in installer._vouched
+    assert b"digest-299" in installer._vouched
+
+
+async def test_a_webhook_body_that_is_valid_json_but_not_an_object_is_not_genuine() -> (
+    None
+):
+    installer = _installer(_Microsoft())
+    with pytest.raises(WebhookAuthenticityError, match="not a JSON object"):
+        await installer.verify_webhook(
+            endpoint="events", headers={}, query={}, body=b"[1, 2, 3]"
+        )
+
+
+def test_a_graph_refusal_with_an_unreadable_body_falls_back_to_the_raw_text() -> None:
+    request = httpx.Request("POST", "https://graph.microsoft.com/v1.0/x")
+    response = httpx.Response(403, content=b"not json", request=request)
+    error = httpx.HTTPStatusError("refused", request=request, response=response)
+
+    assert "not a Teams administrator" in _graph_refusal(error)
+    assert "not json" in _graph_refusal(error)
+
+
+def test_a_graph_refusal_that_is_not_a_permission_problem_names_the_status() -> None:
+    request = httpx.Request("POST", "https://graph.microsoft.com/v1.0/x")
+    response = httpx.Response(
+        500, json={"error": {"message": "internal error"}}, request=request
+    )
+    error = httpx.HTTPStatusError("refused", request=request, response=response)
+
+    assert _graph_refusal(error) == "Microsoft refused (500): internal error"
+
+
+def test_a_graph_refusal_that_is_not_an_http_status_error_is_reported_as_is() -> None:
+    assert _graph_refusal(ValueError("boom")) == "boom"

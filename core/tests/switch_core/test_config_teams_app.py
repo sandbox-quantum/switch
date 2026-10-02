@@ -193,6 +193,11 @@ def test_a_garbled_key_names_its_setting() -> None:
         _config(**_without(teams_app_notification_private_key="not a key"))
 
 
+def test_a_garbled_certificate_names_its_setting() -> None:
+    with pytest.raises(ValueError, match="TEAMS_APP_NOTIFICATION_CERTIFICATE"):
+        _config(**_without(teams_app_notification_certificate="not a certificate"))
+
+
 def test_a_missing_federated_token_file_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="is not a file"):
         _config(

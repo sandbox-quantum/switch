@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.teams.auth import (
     TeamsTokenProvider,
     TokenRequestRefused,
     token_endpoint,
+    verify_microsoft_id_token,
 )
 
 _SERVICE_URL = "https://smba.trafficmanager.net/amer/"
@@ -567,3 +568,88 @@ def test_a_token_naming_no_signing_key_is_refused() -> None:
 
     with pytest.raises(PermissionError, match="names no signing key"):
         _verify(_authenticator(key), f"Bearer {unnamed}")
+
+
+# ── Verifying an id token an admin signed in with ─────────────────────────────
+
+
+def _id_token(
+    key: rsa.RSAPrivateKey,
+    *,
+    kid: str = "id1",
+    app_id: str = "app-1",
+    tenant: str = "tenant-1",
+    expired: bool = False,
+    claims: dict[str, Any] | None = None,
+) -> str:
+    now = datetime.now(UTC)
+    exp = now - timedelta(minutes=5) if expired else now + timedelta(hours=1)
+    body: dict[str, Any] = {
+        "aud": app_id,
+        "iss": f"https://login.microsoftonline.com/{tenant}/v2.0",
+        "tid": tenant,
+        "exp": exp,
+    }
+    if claims:
+        body.update(claims)
+    return jwt.encode(body, key, algorithm="RS256", headers={"kid": kid})
+
+
+def test_a_genuine_id_token_is_accepted() -> None:
+    key = _rsa_key()
+    server = _KeyServer([_jwk(key, "id1", [])])
+
+    verified = _run(
+        verify_microsoft_id_token(
+            _id_token(key), app_id="app-1", keys=_signing_keys(server)
+        )
+    )
+
+    assert verified["tid"] == "tenant-1"
+
+
+def test_an_expired_id_token_is_rejected() -> None:
+    key = _rsa_key()
+    server = _KeyServer([_jwk(key, "id1", [])])
+
+    with pytest.raises(PermissionError, match="id token rejected"):
+        _run(
+            verify_microsoft_id_token(
+                _id_token(key, expired=True),
+                app_id="app-1",
+                keys=_signing_keys(server),
+            )
+        )
+
+
+def test_an_id_token_addressed_to_a_different_app_is_rejected() -> None:
+    key = _rsa_key()
+    server = _KeyServer([_jwk(key, "id1", [])])
+
+    with pytest.raises(PermissionError, match="id token rejected"):
+        _run(
+            verify_microsoft_id_token(
+                _id_token(key, app_id="some-other-app"),
+                app_id="app-1",
+                keys=_signing_keys(server),
+            )
+        )
+
+
+def test_an_id_token_issued_by_a_directory_other_than_the_one_it_names_is_rejected() -> (
+    None
+):
+    key = _rsa_key()
+    server = _KeyServer([_jwk(key, "id1", [])])
+    forged = _id_token(
+        key, claims={"iss": "https://login.microsoftonline.com/someone-else/v2.0"}
+    )
+
+    with pytest.raises(
+        PermissionError, match="not issued by the organisation it names"
+    ):
+        _run(
+            verify_microsoft_id_token(
+                forged, app_id="app-1", keys=_signing_keys(server)
+            )
+        )

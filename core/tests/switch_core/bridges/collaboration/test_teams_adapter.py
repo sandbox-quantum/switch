@@ -304,6 +304,21 @@ def test_http_messages_rejects_invalid_json() -> None:
     assert resp.status == 400
 
 
+def test_http_messages_rejects_a_json_body_that_is_not_an_activity() -> None:
+    """A Bot Framework activity is always a JSON object; a list or a bare
+    scalar parses as valid JSON but is not one."""
+    adapter = _adapter()
+    adapter._authenticator = _PassAuthenticator()  # type: ignore[assignment]
+
+    resp = _run(
+        adapter._handle_http_messages(
+            _FakeHttpRequest(headers={}, body=["not", "an", "activity"])  # type: ignore[arg-type]
+        )
+    )
+
+    assert resp.status == 400
+
+
 def test_http_messages_dispatches_authenticated_activity() -> None:
     adapter = _adapter()
     adapter._authenticator = _PassAuthenticator()  # type: ignore[assignment]

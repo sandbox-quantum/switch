@@ -17,6 +17,7 @@ import pytest
 from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.install import (
+    PUBLIC_PATH_PREFIX,
     InstallGrant,
     MessagingInstallerRegistry,
     MessagingInstallError,
@@ -24,6 +25,7 @@ from switch_core.bridges.collaboration.install import (
     WebhookEndpoint,
     WebhookPayloadError,
     events_path,
+    notifications_path,
     oauth_callback_path,
     public_url,
 )
@@ -581,3 +583,27 @@ class TestPaths:
         assert public_url(
             "https://switch.example/", oauth_callback_path("slack")
         ) == public_url("https://switch.example", oauth_callback_path("slack"))
+
+    def test_the_notifications_path_is_scoped_to_its_own_platform(self) -> None:
+        assert (
+            notifications_path("slack") == f"{PUBLIC_PATH_PREFIX}/slack/notifications"
+        )
+
+
+class TestInstallerDefaults:
+    """Behaviour `MessagingAppInstaller` gives every platform that has no
+    per-install token to revoke and no refusal code worth translating —
+    Slack's installer overrides neither."""
+
+    async def test_releasing_a_workspace_is_a_no_op_with_no_per_install_token(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        assert await installer.release(external_workspace_id="T1") is None
+
+    def test_a_refusal_is_reported_in_the_platforms_own_words_by_default(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        message = installer.describe_callback_error(
+            error="access_denied", description=None
+        )
+        assert message == "slack reported: access_denied."

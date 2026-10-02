@@ -246,3 +246,31 @@ async def test_a_channel_that_never_recovers_is_still_being_tried(
 
     assert graph.attempts >= 4
     assert _CHANNEL in adapter._capture_wanted
+
+
+async def test_a_round_that_raises_outright_is_logged_and_the_loop_keeps_going(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`_ensure_channel_subscription` catches its own failures, so this is the
+    loop's own belt-and-braces: whatever still escapes one round must not end
+    the task, with the next round running all the same."""
+    monkeypatch.setattr(adapter_module, "_REPAIR_MIN_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(adapter_module, "_REPAIR_MAX_INTERVAL_SECONDS", 0.02)
+    adapter = _adapter(_Graph(failures=0))
+    adapter._capture_wanted.add(_CHANNEL)
+    rounds = 0
+
+    async def _raise(channel_id: str) -> None:
+        nonlocal rounds
+        rounds += 1
+        raise RuntimeError("unexpected")
+
+    adapter._ensure_channel_subscription = _raise  # type: ignore[method-assign]
+
+    with caplog.at_level("ERROR"):
+        await _drive(adapter, until=lambda: rounds >= 2)
+
+    assert rounds >= 2
+    assert any(
+        "Teams capture repair failed this round" in r.message for r in caplog.records
+    )

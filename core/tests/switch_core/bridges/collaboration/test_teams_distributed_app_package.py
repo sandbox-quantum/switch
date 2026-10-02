@@ -8,6 +8,9 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from switch_core.bridges.collaboration.teams import app_package as app_package_module
 from switch_core.bridges.collaboration.teams.app_package import (
     build_distributed_app_package,
 )
@@ -86,3 +89,26 @@ def test_a_value_with_json_syntax_in_it_stays_a_string() -> None:
     )
     assert manifest["developer"]["privacyUrl"] == 'https://switch.example/privacy?a="b"'
     assert manifest["developer"]["termsOfUseUrl"] == "https://switch.example/terms\\x"
+
+
+def test_an_unfilled_placeholder_in_the_template_is_a_loud_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A deployment value that never got substituted must not ship silently —
+    Teams would treat the literal ``{{...}}`` as the value itself."""
+    manifest = {
+        "id": "placeholder",
+        "bots": [{"botId": "placeholder"}],
+        "developer": {},
+        "unfilled": "{{SOMETHING}}",
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(app_package_module, "_TEMPLATE_DIR", tmp_path)
+
+    with pytest.raises(ValueError, match="does not fill in"):
+        build_distributed_app_package(
+            app_id=APP_ID,
+            messaging_public_url="https://switch.example",
+            privacy_url="https://switch.example/privacy",
+            terms_url="https://switch.example/terms",
+        )
