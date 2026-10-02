@@ -76,6 +76,20 @@ SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required
 DISCORD_APP_CLIENT_SECRET: {{ required "secrets.discordAppClientSecret is required when switchCore.discordApp.enabled" .Values.secrets.discordAppClientSecret | b64enc | quote }}
 DISCORD_APP_BOT_TOKEN: {{ required "secrets.discordAppBotToken is required when switchCore.discordApp.enabled" .Values.secrets.discordAppBotToken | b64enc | quote }}
 {{- end }}
+{{- if .Values.switchCore.teamsApp.enabled }}
+{{- if eq .Values.switchCore.teamsApp.credential "secret" }}
+TEAMS_APP_CLIENT_SECRET: {{ required "secrets.teamsAppClientSecret is required when switchCore.teamsApp.credential is secret" .Values.secrets.teamsAppClientSecret | b64enc | quote }}
+{{- end }}
+{{- if eq .Values.switchCore.teamsApp.credential "certificate" }}
+TEAMS_APP_CERTIFICATE: {{ required "secrets.teamsAppCertificate is required when switchCore.teamsApp.credential is certificate" .Values.secrets.teamsAppCertificate | b64enc | quote }}
+TEAMS_APP_CERTIFICATE_PRIVATE_KEY: {{ required "secrets.teamsAppCertificatePrivateKey is required when switchCore.teamsApp.credential is certificate" .Values.secrets.teamsAppCertificatePrivateKey | b64enc | quote }}
+{{- end }}
+TEAMS_APP_NOTIFICATION_CERTIFICATE: {{ required "secrets.teamsAppNotificationCertificate is required when switchCore.teamsApp.enabled" .Values.secrets.teamsAppNotificationCertificate | b64enc | quote }}
+TEAMS_APP_NOTIFICATION_PRIVATE_KEY: {{ required "secrets.teamsAppNotificationPrivateKey is required when switchCore.teamsApp.enabled" .Values.secrets.teamsAppNotificationPrivateKey | b64enc | quote }}
+{{- if .Values.secrets.teamsAppNotificationPreviousPrivateKey }}
+TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY: {{ .Values.secrets.teamsAppNotificationPreviousPrivateKey | b64enc | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -717,9 +731,11 @@ Include with `nindent 12`.
 - name: GATEWAY_PUBLIC_URL
   value: {{ .Values.switchCore.gatewayPublicUrl | quote }}
 {{- end }}
-{{- if .Values.switchCore.slackApp.enabled }}
+{{- if or .Values.switchCore.slackApp.enabled .Values.switchCore.discordApp.enabled .Values.switchCore.teamsApp.enabled }}
 - name: MESSAGING_PUBLIC_URL
-  value: {{ required "switchCore.slackApp.messagingPublicUrl is required when switchCore.slackApp.enabled" .Values.switchCore.slackApp.messagingPublicUrl | quote }}
+  value: {{ required "switchCore.messagingPublicUrl is required when a distributed messaging app is enabled" (include "switch.messagingPublicUrl" .) | quote }}
+{{- end }}
+{{- if .Values.switchCore.slackApp.enabled }}
 - name: SLACK_APP_CLIENT_ID
   value: {{ required "switchCore.slackApp.clientId is required when switchCore.slackApp.enabled" .Values.switchCore.slackApp.clientId | quote }}
 - name: SLACK_APP_CLIENT_SECRET
@@ -734,10 +750,6 @@ Include with `nindent 12`.
       key: SLACK_APP_SIGNING_SECRET
 {{- end }}
 {{- if .Values.switchCore.discordApp.enabled }}
-{{- if not .Values.switchCore.slackApp.enabled }}
-- name: MESSAGING_PUBLIC_URL
-  value: {{ required "switchCore.discordApp.messagingPublicUrl is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.messagingPublicUrl | quote }}
-{{- end }}
 - name: DISCORD_APP_CLIENT_ID
   value: {{ required "switchCore.discordApp.clientId is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.clientId | quote }}
 - name: DISCORD_APP_APPLICATION_ID
@@ -761,6 +773,85 @@ Include with `nindent 12`.
   value: "true"
 {{- end }}
 {{- end }}
+{{- if .Values.switchCore.teamsApp.enabled }}
+- name: TEAMS_APP_CLIENT_ID
+  value: {{ required "switchCore.teamsApp.clientId is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.clientId | quote }}
+- name: TEAMS_APP_TENANT_ID
+  value: {{ required "switchCore.teamsApp.tenantId is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.tenantId | quote }}
+- name: TEAMS_APP_PRIVACY_URL
+  value: {{ required "switchCore.teamsApp.privacyUrl is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.privacyUrl | quote }}
+- name: TEAMS_APP_TERMS_URL
+  value: {{ required "switchCore.teamsApp.termsUrl is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.termsUrl | quote }}
+{{- with .Values.switchCore.teamsApp.name }}
+- name: TEAMS_APP_NAME
+  value: {{ . | quote }}
+{{- end }}
+{{- if eq .Values.switchCore.teamsApp.credential "secret" }}
+- name: TEAMS_APP_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_CLIENT_SECRET
+{{- else if eq .Values.switchCore.teamsApp.credential "certificate" }}
+- name: TEAMS_APP_CERTIFICATE
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_CERTIFICATE
+- name: TEAMS_APP_CERTIFICATE_PRIVATE_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_CERTIFICATE_PRIVATE_KEY
+{{- else if eq .Values.switchCore.teamsApp.credential "federated" }}
+- name: TEAMS_APP_FEDERATED_TOKEN_FILE
+  value: {{ include "switch.teamsAppTokenPath" . | quote }}
+{{- else }}
+{{- fail "switchCore.teamsApp.credential must be secret, certificate or federated" }}
+{{- end }}
+- name: TEAMS_APP_NOTIFICATION_CERTIFICATE
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_NOTIFICATION_CERTIFICATE
+- name: TEAMS_APP_NOTIFICATION_PRIVATE_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_NOTIFICATION_PRIVATE_KEY
+{{- if .Values.secrets.teamsAppNotificationPreviousPrivateKey }}
+- name: TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+The one public origin every distributed messaging app is reached on. Read
+from switchCore.messagingPublicUrl, falling back to the per-app values earlier
+releases took, so an existing Slack or Discord deployment keeps working.
+*/}}
+{{- define "switch.messagingPublicUrl" -}}
+{{- coalesce .Values.switchCore.messagingPublicUrl .Values.switchCore.slackApp.messagingPublicUrl .Values.switchCore.discordApp.messagingPublicUrl | default "" -}}
+{{- end }}
+
+{{/*
+Where the projected service-account token the distributed Teams app presents
+to Microsoft (a federated credential, so no secret) is mounted.
+*/}}
+{{- define "switch.teamsAppTokenDir" -}}
+/var/run/secrets/microsoft/teams-app
+{{- end }}
+
+{{- define "switch.teamsAppTokenPath" -}}
+{{ include "switch.teamsAppTokenDir" . }}/token
+{{- end }}
+
+{{- define "switch.teamsAppFederated" -}}
+{{- if and .Values.switchCore.teamsApp.enabled (eq .Values.switchCore.teamsApp.credential "federated") }}true{{- end }}
 {{- end }}
 
 {{/*

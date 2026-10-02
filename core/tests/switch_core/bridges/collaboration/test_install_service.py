@@ -69,13 +69,18 @@ class _FakeInstaller(MessagingAppInstaller):
     """A platform that always says yes, and counts how often it was asked."""
 
     platform: ClassVar[str] = "slack"
+    webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]] = frozenset(
+        {"events", "interactive", "commands"}
+    )
 
     def __init__(self, workspace_id: str, *, tokenless: bool = False) -> None:
         self.workspace_id = workspace_id
         self.tokenless = tokenless
         self.redeem_calls: list[str] = []
+        self.platform_data: dict[str, object] = {"kept": "for later"}
         self.revoked_tokens: list[str] = []
         self.revoke_error: Exception | None = None
+        self.released: list[str] = []
 
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
         return f"https://platform.example/authorize?state={state}"
@@ -90,12 +95,16 @@ class _FakeInstaller(MessagingAppInstaller):
             # store no token for it and revoke nothing on disconnect.
             bot_token=None if self.tokenless else "xoxb-granted",
             scopes="chat:write",
+            platform_data=self.platform_data,
         )
 
     async def revoke(self, *, bot_token: str) -> None:
         if self.revoke_error is not None:
             raise self.revoke_error
         self.revoked_tokens.append(bot_token)
+
+    async def release(self, *, external_workspace_id: str) -> None:
+        self.released.append(external_workspace_id)
 
     def revocation_of_event(self, payload: Mapping[str, object]) -> str | None:
         event = payload.get("event")
@@ -105,19 +114,34 @@ class _FakeInstaller(MessagingAppInstaller):
             return "the app was removed"
         return None
 
-    def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
+    async def verify_webhook(
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> None:
         return None
 
     def parse_webhook(
-        self, *, endpoint: WebhookEndpoint, headers: Mapping[str, str], body: bytes
-    ) -> InboundWebhook:
-        return InboundWebhook(
-            envelope_type=endpoint,
-            payload={},
-            handshake=None,
-            external_event_id=None,
-            delivery_attempt=0,
-        )
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> list[InboundWebhook]:
+        return [
+            InboundWebhook(
+                envelope_type=endpoint,
+                payload={},
+                handshake=None,
+                external_event_id=None,
+                delivery_attempt=0,
+                answers_inline=False,
+            )
+        ]
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
         return self.workspace_id
@@ -142,6 +166,22 @@ class _FakeLifecycle:
         self._suffix = suffix
         self.registered: list[dict[str, object]] = []
         self.removed: list[str] = []
+        self.restarted: list[str] = []
+        self.running: dict[str, object] = {}
+        # Registered but still starting: running, and not yet connected.
+        self.starting: set[str] = set()
+        self.restart_failure: Exception | None = None
+
+    async def restart(self, bridge_id: str) -> None:
+        self.restarted.append(bridge_id)
+        if self.restart_failure is not None:
+            raise self.restart_failure
+
+    def get_adapter(self, bridge_id: str) -> object | None:
+        return self.running.get(bridge_id)
+
+    def is_connected(self, bridge_id: str) -> bool:
+        return bridge_id in self.running and bridge_id not in self.starting
 
     async def register(self, **kwargs: object) -> CollaborationBridge:
         self.registered.append(kwargs)
@@ -675,3 +715,162 @@ class TestATokenlessGrant:
         assert ended.ended_at is not None
         assert ended.bridge_id is None
         assert fixture.lifecycle.removed == [bridge_id]
+
+
+class TestASetupThatFailsHalfway:
+    async def test_a_bridge_that_cannot_be_built_releases_the_workspace(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Left claimed with nothing serving it, every event from the workspace
+        is refused as undeliverable and every retry of the install is told
+        somebody else holds it — the customer, a minute later, included."""
+        fixture = await _fixture(rls_harness)
+        registered = fixture.lifecycle.register
+
+        async def refuse(**kwargs: object) -> CollaborationBridge:
+            raise ValueError("the platform refused the credentials")
+
+        fixture.lifecycle.register = refuse  # type: ignore[method-assign]
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        with pytest.raises(MessagingInstallError, match="refused the credentials"):
+            await fixture.service.complete(
+                platform="slack", code="the-code", state_token=state
+            )
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            installs = await MessagingInstallStore().list_for_tenant(session)
+        assert [install.status for install in installs] == [INSTALL_DISCONNECTED]
+
+        fixture.lifecycle.register = registered  # type: ignore[method-assign]
+        again = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        assert again.status == INSTALL_ACTIVE
+
+
+class TestWhatAnInstallRemembers:
+    async def test_what_the_platform_keeps_is_recorded_with_the_install(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+
+        install = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        reread = await _reread(rls_harness.restricted, fixture.tenant_a, install.id)
+        assert reread.platform_data == {"kept": "for later"}
+
+
+class TestApprovingAgain:
+    async def test_the_same_organisation_approving_again_refreshes_its_install(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """For a platform with no token, approving again is how new permissions
+        or a newer app are granted — not a second claim on the workspace."""
+        fixture = await _fixture(rls_harness, tokenless=True)
+        first = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        fixture.installer.platform_data = {"kept": "something newer"}
+
+        again = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        assert again.id == first.id
+        assert again.platform_data == {"kept": "something newer"}
+        assert fixture.lifecycle.restarted == [first.bridge_id]
+        assert len(fixture.lifecycle.registered) == 1
+
+    async def test_a_connection_that_cannot_restart_says_so_on_the_page(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The approval is recorded either way; the admin is told the
+        connection is stopped, not shown a raw server error."""
+        fixture = await _fixture(rls_harness, tokenless=True)
+        first = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        fixture.lifecycle.restart_failure = RuntimeError("database went away")
+
+        with pytest.raises(MessagingInstallError, match="could not restart"):
+            await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        assert fixture.lifecycle.restarted == [first.bridge_id]
+
+    async def test_another_tenant_approving_the_same_workspace_is_still_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness, tokenless=True)
+        await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        with pytest.raises(MessagingInstallClaimedError):
+            await _installed(rls_harness.restricted, fixture, fixture.tenant_b)
+
+    async def test_a_platform_with_a_token_is_not_refreshed_this_way(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Its bridge holds the old token; swapping it is not what this does."""
+        fixture = await _fixture(rls_harness)
+        await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        with pytest.raises(MessagingInstallClaimedError):
+            await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+
+class TestLettingGoOfATokenlessWorkspace:
+    async def test_a_bridge_that_is_not_running_is_released_by_the_installer(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A running bridge lets go of the platform as it is removed; one that
+        is not running cannot, so the installer does it instead."""
+        fixture = await _fixture(rls_harness, tokenless=True)
+        install = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=install.id
+        )
+
+        assert fixture.installer.released == [fixture.workspace]
+
+    async def test_a_running_bridge_is_left_to_let_go_itself(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness, tokenless=True)
+        install = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        assert install.bridge_id is not None
+        fixture.lifecycle.running[install.bridge_id] = object()
+
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=install.id
+        )
+
+        assert fixture.installer.released == []
+
+    async def test_a_bridge_still_starting_is_released_by_the_installer(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Registered is not connected: a bridge just restarted has no Graph
+        client yet, and letting go itself would quietly do nothing."""
+        fixture = await _fixture(rls_harness, tokenless=True)
+        install = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        assert install.bridge_id is not None
+        fixture.lifecycle.running[install.bridge_id] = object()
+        fixture.lifecycle.starting.add(install.bridge_id)
+
+        await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=install.id
+        )
+
+        assert fixture.installer.released == [fixture.workspace]
+
+
+class TestApprovingAgainKeepsWhatItLearned:
+    async def test_a_repeated_approval_that_learned_less_erases_nothing(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """An id an earlier approval learned is still good when this one could
+        not read it again."""
+        fixture = await _fixture(rls_harness, tokenless=True)
+        fixture.installer.platform_data = {"catalog_app_id": "c-1"}
+        await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        fixture.installer.platform_data = {"publish_problem": "update refused"}
+
+        again = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        assert again.platform_data == {
+            "catalog_app_id": "c-1",
+            "publish_problem": "update refused",
+        }

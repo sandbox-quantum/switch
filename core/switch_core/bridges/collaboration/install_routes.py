@@ -25,11 +25,14 @@ codes and say the rest in the log.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import html
 import logging
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
-from starlette.responses import HTMLResponse, PlainTextResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
@@ -54,6 +57,36 @@ from switch_core.db.stores.messaging_install_store import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: How long an event the platform waits on may take before it is answered as
+#: failed. Under the platforms' own limits — Teams gives up on a card press
+#: after about fifteen seconds — so the answer that says it failed is the one
+#: the person sees, rather than the platform's own timeout.
+_INLINE_ANSWER_SECONDS = 10.0
+
+#: Inline handling that outran its deadline and is still finishing. Held so
+#: the task is not collected mid-way, and dropped as each one ends.
+_finishing: set[asyncio.Task[dict[str, Any] | None]] = set()
+
+
+def _finished_late(
+    target: WebhookTarget,
+    envelope_type: str,
+    task: asyncio.Task[dict[str, Any] | None],
+) -> None:
+    _finishing.discard(task)
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.error(
+            "A %s %s event for bridge %s failed after its answer was sent",
+            target.platform,
+            envelope_type,
+            target.bridge_id,
+            exc_info=error,
+        )
+
 
 _PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -92,14 +125,21 @@ def create_messaging_install_router(
         code: str | None = Query(default=None),
         state: str | None = Query(default=None),
         error: str | None = Query(default=None),
+        error_description: str | None = Query(default=None),
     ) -> HTMLResponse:
         # The platform's own refusal, which is usually the customer deciding
         # not to install after all. Nothing went wrong here and nothing was
         # written; saying so is the whole handling.
         if error:
+            try:
+                explained = service.installer(platform).describe_callback_error(
+                    error=error, description=error_description
+                )
+            except MessagingInstallError:
+                explained = f"{platform} reported: {error}."
             return _page(
                 title="Install cancelled",
-                detail=f"{platform} reported: {error}. Nothing was connected.",
+                detail=f"{explained} Nothing was connected.",
                 status=200,
             )
 
@@ -199,13 +239,56 @@ def create_messaging_install_router(
                 revocation.reason,
             )
 
+    async def _answer(target: WebhookTarget, event: InboundWebhook) -> Response:
+        """Handle an event the platform waits on, and answer with what came of it.
+
+        Under a deadline, and with every failure answered rather than raised:
+        until it is answered the person who pressed is looking at a spinner,
+        and the platform's own timeout reports a failure in its words, not
+        ours.
+        """
+        handling = asyncio.create_task(service.answer(target, event))
+        try:
+            # Shielded: the deadline is the platform's, and running out of it
+            # ends the wait, not the handling — a press abandoned half way
+            # could be recorded with its card never redrawn.
+            body = await asyncio.wait_for(
+                asyncio.shield(handling), _INLINE_ANSWER_SECONDS
+            )
+        except TimeoutError:
+            logger.error(
+                "A %s %s event for bridge %s was not handled within %ss; it is "
+                "still being handled, but the platform has been told it failed",
+                target.platform,
+                event.envelope_type,
+                target.bridge_id,
+                _INLINE_ANSWER_SECONDS,
+            )
+            _finishing.add(handling)
+            handling.add_done_callback(
+                functools.partial(_finished_late, target, event.envelope_type)
+            )
+            return Response(status_code=504)
+        except Exception:
+            logger.exception(
+                "Failed to handle a %s %s event for bridge %s (tenant %s)",
+                target.platform,
+                event.envelope_type,
+                target.bridge_id,
+                target.tenant_id,
+            )
+            return Response(status_code=500)
+        if body is None:
+            return Response(status_code=200)
+        return JSONResponse(body)
+
     async def _inbound(
         platform: str,
         endpoint: WebhookEndpoint,
         request: Request,
         background: BackgroundTasks,
     ) -> Response:
-        """One verified event, from any of a platform's three inbound URLs.
+        """One verified request, from any of a platform's inbound URLs.
 
         The status codes are read by the platform, not by a person, and they
         are chosen for what it does with them. Slack retries a 5xx and gives up
@@ -213,18 +296,33 @@ def create_messaging_install_router(
         permanent condition must not look transient, and a transient one must
         not look permanent.
         """
+        query = dict(request.query_params)
+        try:
+            # Before verification, because it cannot pass it by design and
+            # answering it does nothing but echo the caller's own string.
+            unsigned = service.unsigned_handshake(
+                platform=platform, endpoint=endpoint, query=query
+            )
+        except MessagingInstallError:
+            # No app registered for this platform, or none that posts here, so
+            # nothing here could have signed anything. Not found rather than an
+            # explanation: the caller is unauthenticated and learns only that
+            # there is nothing here.
+            return Response(status_code=404)
+        if unsigned is not None:
+            logger.info("Answered a %s URL validation", platform)
+            return PlainTextResponse(unsigned)
+
         body = await request.body()
         try:
-            event = service.authenticate(
+            events = await service.authenticate(
                 platform=platform,
                 endpoint=endpoint,
                 headers=dict(request.headers),
+                query=query,
                 body=body,
             )
         except MessagingInstallError:
-            # No app registered for this platform, so nothing here could have
-            # signed anything. Not found rather than an explanation: the caller
-            # is unauthenticated and learns only that there is nothing here.
             return Response(status_code=404)
         except WebhookAuthenticityError as failure:
             logger.warning("Refused an unverified %s webhook: %s", platform, failure)
@@ -236,59 +334,106 @@ def create_messaging_install_router(
             logger.error("Could not read a verified %s webhook: %s", platform, failure)
             return Response(status_code=400)
 
-        if event.handshake is not None:
+        handshake = next((e.handshake for e in events if e.handshake is not None), None)
+        if handshake is not None:
             logger.info("Answered a %s URL verification", platform)
-            return PlainTextResponse(event.handshake)
+            return PlainTextResponse(handshake)
 
-        if event.delivery_attempt > 0:
-            # The only signal this deployment gets that its own acknowledgements
-            # are arriving too late. The event itself is handled normally — the
-            # receipt decides whether it is a duplicate — but a run of these is
-            # the platform saying the three-second answer is being missed, and
-            # nothing else in the system would say so.
-            logger.warning(
-                "%s is re-sending a %s event (attempt %s), which means an earlier "
-                "delivery was not acknowledged in time",
-                platform,
-                event.envelope_type,
-                event.delivery_attempt,
-            )
+        unavailable = 0
+        unreadable = 0
+        handled = 0
+        # A batch usually names a handful of workspaces among many events, and
+        # each lookup is two database reads before the platform is answered.
+        resolved: dict[str, WebhookTarget | Exception] = {}
 
-        try:
-            # Before resolving, because this is the one event that arrives as
-            # the bridge it would be resolved to is going away.
-            revocation = service.revocation(platform=platform, event=event)
-            if revocation is not None:
-                background.add_task(_end_install, platform, revocation)
-                return Response(status_code=200)
+        async def resolve(event: InboundWebhook) -> WebhookTarget:
+            workspace_id = service.workspace_of(platform=platform, event=event)
+            if workspace_id not in resolved:
+                try:
+                    resolved[workspace_id] = await service.resolve_by_workspace(
+                        platform=platform, workspace_id=workspace_id
+                    )
+                except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable) as failure:
+                    resolved[workspace_id] = failure
+            outcome = resolved[workspace_id]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
 
-            target = await service.resolve(platform=platform, event=event)
-        except WebhookPayloadError as failure:
-            logger.error(
-                "A verified %s event named no workspace: %s", platform, failure
-            )
+        for event in events:
+            if event.delivery_attempt > 0:
+                # The only signal this deployment gets that its own
+                # acknowledgements are arriving too late. The event itself is
+                # handled normally — the receipt decides whether it is a
+                # duplicate — but a run of these is the platform saying the
+                # three-second answer is being missed, and nothing else in the
+                # system would say so.
+                logger.warning(
+                    "%s is re-sending a %s event (attempt %s), which means an "
+                    "earlier delivery was not acknowledged in time",
+                    platform,
+                    event.envelope_type,
+                    event.delivery_attempt,
+                )
+
+            try:
+                # Before resolving, because this is the one event that arrives
+                # as the bridge it would be resolved to is going away.
+                revocation = service.revocation(platform=platform, event=event)
+                if revocation is not None:
+                    background.add_task(_end_install, platform, revocation)
+                    handled += 1
+                    continue
+
+                target = await resolve(event)
+            except WebhookPayloadError as failure:
+                # Skipped rather than answered: on an endpoint every workspace
+                # shares, one unreadable item in a batch must not take the rest
+                # of it down with it.
+                logger.error(
+                    "A verified %s event named no workspace: %s", platform, failure
+                )
+                unreadable += 1
+                continue
+            except WebhookWorkspaceUnknown as failure:
+                # A 200 for an event that reached nobody, which is the one place
+                # this file answers something other than what happened. The app
+                # left behind in a workspace whose install ended goes on
+                # posting, the platform cannot act on a 404, and it counts the
+                # refusals against the app as a whole — so the honest answer
+                # costs every other customer's delivery. The log is where it is
+                # visible.
+                logger.warning("Dropped a %s event: %s", platform, failure)
+                continue
+            except WebhookBridgeUnavailable as failure:
+                logger.error("Could not deliver a %s event: %s", platform, failure)
+                unavailable += 1
+                continue
+
+            if event.answers_inline:
+                # Only ever one to a request: a platform that waits on an
+                # answer sends the one event it waits on.
+                return await _answer(target, event)
+
+            # Answered first, handled after. The platform's deadline is short
+            # and what happens next is not bounded by it — a turn can take
+            # minutes — so acknowledging on the way out is what keeps a slow
+            # room from becoming a retried, duplicated one.
+            background.add_task(_deliver, target, event)
+            handled += 1
+
+        # A 503 asks the platform to send the request again, which is right
+        # while a bridge restarts — a 200 would drop a real message and report
+        # it handled. But only when nothing in it was delivered: a batch on an
+        # endpoint every workspace shares is otherwise one workspace's restart
+        # failing, and the platform backing off from, everyone else's delivery.
+        # What was undeliverable in a partly delivered batch is logged above.
+        # A batch nothing in which could be read is the platform's payload
+        # changing under this build, and says so with a 400 that is not retried.
+        if events and unreadable == len(events):
             return Response(status_code=400)
-        except WebhookWorkspaceUnknown as failure:
-            # A 200 for an event that reached nobody, which is the one place
-            # this file answers something other than what happened. The app
-            # left behind in a workspace whose install ended goes on posting,
-            # the platform cannot act on a 404, and it counts the refusals
-            # against the app as a whole — so the honest answer costs every
-            # other customer's delivery. The log is where it is visible.
-            logger.warning("Dropped a %s event: %s", platform, failure)
-            return Response(status_code=200)
-        except WebhookBridgeUnavailable as failure:
-            # Deliberately a 503: the platform retrying is the right behaviour
-            # while a bridge restarts, and a 200 here would drop a real message
-            # on the floor and report that it had been handled.
-            logger.error("Could not deliver a %s event: %s", platform, failure)
+        if unavailable and not handled:
             return Response(status_code=503)
-
-        # Answered first, handled after. The platform's deadline is short and
-        # what happens next is not bounded by it — a turn can take minutes —
-        # so acknowledging on the way out is what keeps a slow room from
-        # becoming a retried, duplicated one.
-        background.add_task(_deliver, target, event)
         return Response(status_code=200)
 
     @router.post("/{platform}/events")
@@ -317,5 +462,16 @@ def create_messaging_install_router(
         platform: str, request: Request, background: BackgroundTasks
     ) -> Response:
         return await _inbound(platform, "commands", request, background)
+
+    @router.post("/{platform}/notifications")
+    async def notifications(
+        platform: str, request: Request, background: BackgroundTasks
+    ) -> Response:
+        """Change notifications a platform pushes for what it was asked to watch.
+
+        Microsoft Graph's, for the distributed Teams app: every message in the
+        channels Switch captures, batched, from every organisation at once.
+        """
+        return await _inbound(platform, "notifications", request, background)
 
     return router

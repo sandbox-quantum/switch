@@ -67,7 +67,12 @@ class _Connector:
         self.conversation: str | None = None
 
     async def create_channel_thread(
-        self, *, service_url: str, channel_id: str, activity: dict[str, Any]
+        self,
+        *,
+        service_url: str,
+        channel_id: str,
+        tenant_id: str,
+        activity: dict[str, Any],
     ) -> tuple[str, str]:
         if self.fail_send is not None:
             raise self.fail_send

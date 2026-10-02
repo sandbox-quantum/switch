@@ -18,6 +18,7 @@ from switch_core.bridges.collaboration.ingress import CallbackEndpoint, Callback
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeNotRunning,
     BridgeOperationError,
 )
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
@@ -418,6 +419,17 @@ class CollaborationBridgeLifecycleService:
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
 
+    def is_connected(self, bridge_id: str) -> bool:
+        """Whether a bridge's adapter has finished starting and is serving.
+
+        A bridge is registered as running the moment it is started, well
+        before its adapter has loaded what it needs to handle traffic; an event
+        handed to it in that window is acknowledged and lost. Whoever delivers
+        platform traffic asks this, and tells the platform to try again until
+        it is true.
+        """
+        return bridge_id in self._connected
+
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
 
@@ -466,6 +478,32 @@ class CollaborationBridgeLifecycleService:
                 connection_config=connection_config,
             )
 
+    async def check_config_edit(
+        self,
+        *,
+        bridge_id: str,
+        bridge_type: str,
+        current: Mapping[str, object],
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Ask the running bridge whether an edit of its settings is sound.
+
+        See `CollaborationAdapter.check_config_edit`. A bridge on an app the
+        deployment owns (one whose adapter limits what is editable) checks
+        with the platform, and cannot until it has finished starting, so the
+        edit is refused with `BridgeNotRunning` rather than stored unchecked. Any other
+        bridge's edit goes through on its validation alone.
+        """
+        adapter = self.get_adapter(bridge_id)
+        if adapter is None or not self.is_connected(bridge_id):
+            if self.editable_config_keys(bridge_type, current) is not None:
+                raise BridgeNotRunning(
+                    "The connection is not running, so Switch cannot check this "
+                    "change with the platform; try again in a moment."
+                )
+            return
+        await adapter.check_config_edit(connection_config)
+
     def iter_adapters(self) -> Iterator[CollaborationAdapter]:
         """The live adapter of every running bridge, as a snapshot.
 
@@ -492,6 +530,20 @@ class CollaborationBridgeLifecycleService:
         if adapter_cls is None:
             return True
         return adapter_cls.supports_channel_creation
+
+    def editable_config_keys(
+        self, bridge_type: str, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Which of a bridge's connection settings may be edited, or None for all.
+
+        The adapter class decides — see `CollaborationAdapter.editable_config_keys`.
+        An unknown type has no adapter to ask and leaves everything to the
+        validation that rejects it by name.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return None
+        return adapter_cls.editable_config_keys(connection_config)
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Whether this platform has a user directory Switch can search.
@@ -787,7 +839,28 @@ class CollaborationBridgeLifecycleService:
             },
         )
 
-        await self.start(bridge.id)
+        try:
+            await self.start(bridge.id)
+        except Exception:
+            # Stored and not startable is a half state: a row that fails every
+            # boot, and for an install a second bridge on the next attempt. The
+            # registration either produces a bridge that starts, or nothing.
+            logger.exception(
+                "Collaboration bridge %s (%s) could not start; removing it",
+                bridge.id,
+                bridge_type,
+            )
+            try:
+                await self.remove(bridge.id)
+            except Exception:
+                # The start failure is what the caller needs to see; this one
+                # is logged rather than raised in its place.
+                logger.exception(
+                    "Collaboration bridge %s could not be removed after failing "
+                    "to start; its record remains",
+                    bridge.id,
+                )
+            raise
 
         logger.info(
             "Registered collaboration bridge %s (%s): %s",
@@ -1306,6 +1379,23 @@ class CollaborationBridgeLifecycleService:
         was_connected = await milestone_claimed(
             self._session_factory, f"connector_added:{bridge_id}"
         )
+        running = self._bridges.get(bridge_id)
+        if running is not None:
+            try:
+                await running.adapter.withdraw()
+            except Exception:
+                logger.error(
+                    "Collaboration bridge %s could not let go of everything it "
+                    "held on its platform; removing it anyway",
+                    bridge_id,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Collaboration bridge %s is not running, so it cannot let go of "
+                "what it holds on its platform itself; removing it anyway",
+                bridge_id,
+            )
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)

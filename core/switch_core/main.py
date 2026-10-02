@@ -75,6 +75,11 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
 )
+from switch_core.bridges.collaboration.teams.app_package import (
+    build_distributed_app_package,
+)
+from switch_core.bridges.collaboration.teams.install import TeamsAppInstaller
+from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
@@ -633,6 +638,8 @@ async def run(config: SwitchConfig) -> None:
             )
         )
 
+    teams_app = _distributed_teams_app(config, installers, collab_lifecycle)
+
     install_service: MessagingInstallService | None = None
     if installers.platforms():
         assert config.messaging_public_url is not None
@@ -882,6 +889,7 @@ async def run(config: SwitchConfig) -> None:
                     matrix_admin,
                     discord_gateway,
                     discord_gateway_task,
+                    teams_app,
                 )
             ),
         )
@@ -1323,6 +1331,40 @@ async def _bootstrap_key_tenant(
     return TENANT_ZERO_ID
 
 
+def _distributed_teams_app(
+    config: SwitchConfig,
+    installers: MessagingInstallerRegistry,
+    collab_lifecycle: CollaborationBridgeLifecycleService,
+) -> TeamsSharedApp | None:
+    """The one distributed Teams app, when this deployment is configured with it.
+
+    Its installer is registered, and every bridge on the app is handed it as
+    the bridge starts, before it runs — so this must happen before any bridge
+    does. Unlike Discord's Gateway client there is nothing to connect. Config
+    validation has already required every `TEAMS_APP_*` value together.
+    """
+    if not config.teams_app_client_id:
+        return None
+    assert config.messaging_public_url is not None
+    assert config.teams_app_privacy_url is not None
+    assert config.teams_app_terms_url is not None
+    teams_app = TeamsSharedApp.from_config(config)
+    installers.register(
+        TeamsAppInstaller(
+            app=teams_app,
+            package=build_distributed_app_package(
+                app_id=config.teams_app_client_id,
+                app_name=config.teams_app_name,
+                messaging_public_url=config.messaging_public_url,
+                privacy_url=config.teams_app_privacy_url,
+                terms_url=config.teams_app_terms_url,
+            ),
+        )
+    )
+    collab_lifecycle.add_bridge_starting_listener(teams_app.attach_if_teams)
+    return teams_app
+
+
 async def _shutdown(
     server: uvicorn.Server,
     client_lifecycle: ClientLifecycleService,
@@ -1331,6 +1373,7 @@ async def _shutdown(
     matrix_admin: Provisioning,
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
+    teams_app: TeamsSharedApp | None,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True
@@ -1346,6 +1389,9 @@ async def _shutdown(
             pass
     if discord_gateway is not None:
         await discord_gateway.stop()
+    # After the bridges, which borrow its HTTP client until they stop.
+    if teams_app is not None:
+        await teams_app.aclose()
     await client_lifecycle.stop_all()
     await matrix_admin.close()
 

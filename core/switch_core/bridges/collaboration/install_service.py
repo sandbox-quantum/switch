@@ -54,14 +54,17 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
+    InstallGrant,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
+    MessagingInstallError,
     WebhookEndpoint,
     oauth_callback_path,
     public_url,
@@ -233,6 +236,13 @@ class MessagingInstallService:
                 code=code, redirect_uri=self._redirect_uri(platform)
             )
 
+            if grant.bot_token is None:
+                refreshed = await self._refresh_own_install(
+                    tenant_id=state.tenant_id, platform=platform, grant=grant
+                )
+                if refreshed is not None:
+                    return refreshed
+
             async with tenant_session(
                 self._session_factory, state.tenant_id
             ) as session:
@@ -249,24 +259,51 @@ class MessagingInstallService:
                         else None
                     ),
                     scopes=grant.scopes,
+                    platform_data=grant.platform_data,
                     user_id=burnt.created_by_user_id,
                 )
                 install_id = install.id
                 await session.commit()
 
-            bridge = await self._lifecycle.register(
-                bridge_type=platform,
-                display_name=grant.workspace_name,
-                connection_config=installer.connection_config(grant),
-                # Off, though the granted scopes would allow it. Nobody was
-                # asked: an install has no registration form, and letting an
-                # app create channels in a customer's workspace is a decision
-                # someone should make rather than inherit.
-                channel_creation_enabled=False,
-                # A person installed the app: this is them connecting their
-                # platform, which is exactly what onboarding measures.
-                preconfigured=False,
-            )
+            try:
+                bridge = await self._lifecycle.register(
+                    bridge_type=platform,
+                    display_name=grant.workspace_name,
+                    connection_config=installer.connection_config(grant),
+                    # Off, though the granted scopes would allow it. Nobody was
+                    # asked: an install has no registration form, and letting an
+                    # app create channels in a customer's workspace is a decision
+                    # someone should make rather than inherit.
+                    channel_creation_enabled=False,
+                    # A person installed the app: this is them connecting their
+                    # platform, which is exactly what onboarding measures.
+                    preconfigured=False,
+                )
+            except Exception as failure:
+                # The workspace is claimed and nothing serves it. Left so, every
+                # event from it is refused as undeliverable and every attempt
+                # to install it again — by the same customer, a minute later —
+                # is told someone else holds it. Releasing the claim is what
+                # makes trying again possible.
+                async with tenant_session(
+                    self._session_factory, state.tenant_id
+                ) as session:
+                    await self._store.end(
+                        session, install_id=install_id, status=INSTALL_DISCONNECTED
+                    )
+                    await session.commit()
+                logger.exception(
+                    "Could not build the bridge for %s workspace %s (tenant %s); "
+                    "released the workspace so the install can be tried again",
+                    platform,
+                    grant.external_workspace_id,
+                    state.tenant_id,
+                )
+                raise MessagingInstallError(
+                    f"Switch could not finish connecting the {platform} "
+                    f"workspace ({failure}). Nothing is left connected; try the "
+                    "install again from Switch."
+                ) from failure
 
             async with tenant_session(
                 self._session_factory, state.tenant_id
@@ -284,6 +321,61 @@ class MessagingInstallService:
                 bridge.id,
             )
             return attached
+
+    async def _refresh_own_install(
+        self, *, tenant_id: str, platform: str, grant: InstallGrant
+    ) -> MessagingInstall | None:
+        """Take a repeated approval of the tenant's own live install as a refresh.
+
+        For a platform with no per-install token, the same organisation
+        approving again — for new permissions, a newer app, or to restore an
+        approval it withdrew — must not be refused as "already connected" by
+        its own install. Read under the tenant, so another tenant's install of
+        the workspace is invisible here and still refused by the claim below.
+        The bridge is restarted so it checks the approval afresh.
+
+        A platform with a token is left to the claim: its bridge holds the old
+        token, and swapping it is not something this does.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            existing = await self._store.get_for_workspace(
+                session,
+                platform=platform,
+                external_workspace_id=grant.external_workspace_id,
+            )
+            if existing is None:
+                return None
+            refreshed = await self._store.refresh(
+                session,
+                install_id=existing.id,
+                scopes=grant.scopes,
+                platform_data=grant.platform_data,
+            )
+            await session.commit()
+        if refreshed.bridge_id is not None:
+            try:
+                await self._lifecycle.restart(refreshed.bridge_id)
+            except Exception as error:
+                logger.exception(
+                    "Bridge %s did not restart after %s workspace %s was approved "
+                    "again",
+                    refreshed.bridge_id,
+                    platform,
+                    grant.external_workspace_id,
+                )
+                raise MessagingInstallError(
+                    "Switch recorded the approval, but the connection could not "
+                    f"restart to use it ({error}). It is stopped until Switch "
+                    "restarts or the approval is given again."
+                ) from error
+        logger.info(
+            "Refreshed the install of %s workspace %s for tenant %s after it was "
+            "approved again",
+            platform,
+            grant.external_workspace_id,
+            tenant_id,
+        )
+        return refreshed
 
     async def refuse_uninstalled_bridge(
         self,
@@ -366,10 +458,15 @@ class MessagingInstallService:
                 return await self._store.get(session, install_id=install_id)
 
         with tenant_scope(tenant_id):
+            installer = self._installers.get(platform)
             if token is not None:
-                await self._installers.get(platform).revoke(
-                    bot_token=decrypt_token(token, self._secret)
-                )
+                await installer.revoke(bot_token=decrypt_token(token, self._secret))
+            elif bridge_id is None or not self._lifecycle.is_connected(bridge_id):
+                # A tokenless install has nothing to revoke, and a connected
+                # bridge lets go of the platform itself as it is removed. One
+                # that is not running, or still starting, cannot, so the
+                # installer does it.
+                await installer.release(external_workspace_id=workspace_id)
 
             async with tenant_session(self._session_factory, tenant_id) as session:
                 ended = await self._store.end(
@@ -468,23 +565,59 @@ class MessagingInstallService:
     # messages. Everything up to and including `resolve` is fast enough to
     # answer inside, and `deliver` runs after the response has gone.
 
-    def authenticate(
+    def _webhook_installer(
+        self, platform: str, endpoint: WebhookEndpoint
+    ) -> MessagingAppInstaller:
+        """The installer for a webhook request, or the same refusal as no app.
+
+        An endpoint the platform's app does not post to does not exist, and is
+        answered exactly as a platform with no app registered is — before
+        anything reads the request.
+        """
+        installer = self._installers.get(platform)
+        if endpoint not in installer.webhook_endpoints:
+            raise MessagingInstallError(
+                f"the {platform} app does not post to {endpoint}"
+            )
+        return installer
+
+    def unsigned_handshake(
+        self,
+        *,
+        platform: str,
+        endpoint: WebhookEndpoint,
+        query: Mapping[str, str],
+    ) -> str | None:
+        """The answer to a platform's unsigned URL check, if this request is one.
+
+        The one thing answered before verification, and only because it cannot
+        be verified by design; see `MessagingAppInstaller.unsigned_handshake`.
+        """
+        installer = self._webhook_installer(platform, endpoint)
+        return installer.unsigned_handshake(endpoint=endpoint, query=query)
+
+    async def authenticate(
         self,
         *,
         platform: str,
         endpoint: WebhookEndpoint,
         headers: Mapping[str, str],
+        query: Mapping[str, str],
         body: bytes,
-    ) -> InboundWebhook:
+    ) -> list[InboundWebhook]:
         """Prove an inbound request came from the platform, and read it.
 
         Verification is first and unconditional. Nothing above it inspects the
         body, so an unsigned request cannot pick which parser runs, and nothing
         is logged from it either — it is a stranger's bytes until this passes.
         """
-        installer = self._installers.get(platform)
-        installer.verify_webhook(headers=headers, body=body)
-        return installer.parse_webhook(endpoint=endpoint, headers=headers, body=body)
+        installer = self._webhook_installer(platform, endpoint)
+        await installer.verify_webhook(
+            endpoint=endpoint, headers=headers, query=query, body=body
+        )
+        return installer.parse_webhook(
+            endpoint=endpoint, headers=headers, query=query, body=body
+        )
 
     def revocation(self, *, platform: str, event: InboundWebhook) -> Revocation | None:
         """Whether this event is the platform ending the install, and for whom.
@@ -508,11 +641,17 @@ class MessagingInstallService:
 
     async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
         """Turn a webhook event's workspace into the bridge entitled to it."""
-        installer = self._installers.get(platform)
-        workspace_id = installer.workspace_of_event(event.payload)
         return await self.resolve_by_workspace(
-            platform=platform, workspace_id=workspace_id
+            platform=platform,
+            workspace_id=self.workspace_of(platform=platform, event=event),
         )
+
+    def workspace_of(self, *, platform: str, event: InboundWebhook) -> str:
+        """The workspace a webhook event is for, as its platform names it.
+
+        Raises `WebhookPayloadError` for an event that names none.
+        """
+        return self._installers.get(platform).workspace_of_event(event.payload)
 
     async def resolve_by_workspace(
         self, *, platform: str, workspace_id: str
@@ -557,7 +696,7 @@ class MessagingInstallService:
             )
 
         adapter = self._lifecycle.get_adapter(install.bridge_id)
-        if adapter is None:
+        if adapter is None or not self._lifecycle.is_connected(install.bridge_id):
             raise WebhookBridgeUnavailable(
                 f"bridge {install.bridge_id}, which serves {platform} workspace "
                 f"{workspace_id}, is not running"
@@ -631,8 +770,22 @@ class MessagingInstallService:
                 target.tenant_id,
             )
 
-    async def _dispatch(self, target: WebhookTarget, event: InboundWebhook) -> None:
+    async def answer(
+        self, target: WebhookTarget, event: InboundWebhook
+    ) -> dict[str, Any] | None:
+        """Handle an event the platform waits on, and return its answer.
+
+        No receipt, unlike `deliver`: a platform that retries one of these
+        does so because it never saw the answer, and the retry has to be given
+        one rather than dropped as a duplicate. Handling the same press twice
+        is the adapter's to make harmless, and on Teams it already is.
+        """
+        return await self._dispatch(target, event)
+
+    async def _dispatch(
+        self, target: WebhookTarget, event: InboundWebhook
+    ) -> dict[str, Any] | None:
         with no_tenant():
-            await target.adapter.dispatch_event(
+            return await target.adapter.dispatch_event(
                 envelope_type=event.envelope_type, payload=event.payload
             )

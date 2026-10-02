@@ -11,6 +11,10 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
     _bridge_client_localpart,
 )
+from switch_core.bridges.collaboration.mattermost.adapter import (
+    MattermostAdapter,
+    MattermostConnectionConfig,
+)
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
@@ -381,3 +385,171 @@ async def test_removing_a_bridge_forgets_that_it_was_preconfigured(
     await service.remove(bridge_id)
 
     assert bridge_id not in service._preconfigured
+
+
+class _WithdrawingAdapter:
+    def __init__(self, events: list[str], *, fail: bool = False) -> None:
+        self._events = events
+        self._fail = fail
+
+    async def withdraw(self) -> None:
+        self._events.append("withdraw")
+        if self._fail:
+            raise RuntimeError("the platform would not let go")
+
+
+class _RunningBridge:
+    def __init__(self, adapter: _WithdrawingAdapter, events: list[str]) -> None:
+        self.adapter = adapter
+        self._events = events
+
+    async def stop(self) -> None:
+        self._events.append("stop")
+
+
+@pytest.mark.asyncio
+async def test_a_removed_bridge_withdraws_from_its_platform_before_it_stops(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Withdrawing needs the bridge still running — its clients and its
+    platform credential — and only a removal does it, never a restart."""
+    service = _service(session_factory, _ClientLifecycle())
+    async with session_factory() as session:
+        bridge_id, _ = await _make_bridge(session)
+        await session.commit()
+    events: list[str] = []
+    service._bridges[bridge_id] = _RunningBridge(  # type: ignore[assignment]
+        _WithdrawingAdapter(events), events
+    )
+
+    await service.remove(bridge_id)
+
+    assert events == ["withdraw", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_a_bridge_that_cannot_withdraw_is_still_removed(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The removal is what someone asked for; what was left behind is logged."""
+    service = _service(session_factory, _ClientLifecycle())
+    async with session_factory() as session:
+        bridge_id, _ = await _make_bridge(session)
+        await session.commit()
+    events: list[str] = []
+    service._bridges[bridge_id] = _RunningBridge(  # type: ignore[assignment]
+        _WithdrawingAdapter(events, fail=True), events
+    )
+
+    await service.remove(bridge_id)
+
+    async with session_factory() as session:
+        assert await CollaborationBridgeStore().get(session, bridge_id) is None
+    assert "could not let go" in caplog.text
+
+
+class _RegisteringClientLifecycle(_ClientLifecycle):
+    """Also creates the bridge's client row, as registration needs."""
+
+    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+        super().__init__()
+        self._factory = factory
+
+    async def create_client(
+        self, *, client_type: str, display_name: str, localpart: str
+    ) -> Client:
+        async with self._factory() as session:
+            client = Client(
+                matrix_user_id=f"@{localpart}-{uuid.uuid4().hex[:8]}:test",
+                display_name=display_name,
+                type=client_type,
+                tenant_id=TENANT_ZERO_ID,
+            )
+            session.add(client)
+            await session.commit()
+            return client
+
+
+@pytest.mark.asyncio
+async def test_a_bridge_that_cannot_start_is_not_left_registered(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stored and not startable would be a row that fails every boot — and,
+    for an install, a second bridge on the customer's next attempt."""
+    service = _service(session_factory, _RegisteringClientLifecycle(session_factory))
+    service.register_adapter(
+        "mattermost", MattermostAdapter, MattermostConnectionConfig
+    )
+
+    async def refuse(bridge_id: str) -> None:
+        raise RuntimeError("the bridge could not start")
+
+    async def accept(connection_config: dict[str, object]) -> None:
+        return None
+
+    monkeypatch.setattr(service, "start", refuse)
+    monkeypatch.setattr(
+        MattermostAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
+    )
+
+    with pytest.raises(RuntimeError, match="could not start"):
+        await service.register(
+            bridge_type="mattermost",
+            display_name="MM",
+            connection_config={
+                "url": "https://mm.example",
+                "admin_user": "admin",
+                "admin_password": "pw",
+                "team_name": "team",
+            },
+            channel_creation_enabled=False,
+            preconfigured=False,
+        )
+
+    async with session_factory() as session:
+        assert await CollaborationBridgeStore().get_all(session) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cleanup_does_not_hide_why_the_bridge_could_not_start(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = _service(session_factory, _RegisteringClientLifecycle(session_factory))
+    service.register_adapter(
+        "mattermost", MattermostAdapter, MattermostConnectionConfig
+    )
+
+    async def refuse(bridge_id: str) -> None:
+        raise RuntimeError("the bridge could not start")
+
+    async def remove_fails(bridge_id: str) -> None:
+        raise RuntimeError("the database went away")
+
+    async def accept(connection_config: dict[str, object]) -> None:
+        return None
+
+    monkeypatch.setattr(service, "start", refuse)
+    monkeypatch.setattr(service, "remove", remove_fails)
+    monkeypatch.setattr(
+        MattermostAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
+    )
+
+    with pytest.raises(RuntimeError, match="could not start"):
+        await service.register(
+            bridge_type="mattermost",
+            display_name="MM",
+            connection_config={
+                "url": "https://mm.example",
+                "admin_user": "admin",
+                "admin_password": "pw",
+                "team_name": "team",
+            },
+            channel_creation_enabled=False,
+            preconfigured=False,
+        )
+
+    assert "could not be removed after failing to start" in caplog.text

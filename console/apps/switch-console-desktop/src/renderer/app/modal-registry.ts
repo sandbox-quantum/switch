@@ -19,6 +19,7 @@ import { CreateRoomModal } from '@renderer/features/switch-servers/CreateRoomMod
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
+import { TeamsPlacementModal } from '@renderer/features/switch-servers/TeamsPlacementModal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
 import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
 import { InvitePeopleModal } from '@renderer/features/workspaces/invite-people-modal';
@@ -96,6 +97,7 @@ export const modalRegistry = {
     size: 'sm',
     dismissOnOutsideClick: false,
   }),
+  teamsPlacementModal: createModal(TeamsPlacementModal, { size: 'md' }),
   addAgentsToRoomModal: createModal(AddAgentsToRoomModal, {
     // The room-side twin of `addAgentToRoomModal`, and sized to match: the two
     // do the same job from opposite ends and should not feel like two dialogs.

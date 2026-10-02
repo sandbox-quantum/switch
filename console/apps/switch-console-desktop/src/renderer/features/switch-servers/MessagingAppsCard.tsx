@@ -11,6 +11,7 @@ import {
   Trash2,
   TriangleAlert,
   Unlink,
+  Users,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
@@ -22,6 +23,7 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
+import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -309,6 +311,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                   workspaceId,
                   bridgeId: bridge.id,
                   bridgeDisplayName: bridge.displayName,
+                  bridgeType: bridge.type,
                   onSuccess: () => {
                     void queryClient.invalidateQueries({
                       queryKey: ['remote-bridges', workspaceId],
@@ -370,6 +373,7 @@ export function MessagingAppRow({
 }) {
   const showClaimIdentity = useShowModal('claimIdentityModal');
   const showBundledChatSignIn = useShowModal('bundledChatSignInModal');
+  const showTeamsPlacement = useShowModal('teamsPlacementModal');
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
 
@@ -378,6 +382,32 @@ export function MessagingAppRow({
   const claim = () => {
     if (workspaceId === null) return;
     showClaimIdentity({ workspaceId, bridgeId: bridge.id });
+  };
+
+  // Offered only for the distributed Teams app: re-approving is exactly the
+  // "Add to Microsoft Teams" install flow run again, which only makes sense
+  // for a connection that came from that flow in the first place. A Teams
+  // bridge registered with pasted-in credentials would get a fresh, unrelated
+  // install out of this button rather than a fix. An attention note only ever
+  // comes from a running bridge, so `teamPlacementSupported` is known for it.
+  const offerReapprove = isAdmin && bridge.teamPlacementSupported && bridge.attention !== null;
+  const [reapprovePhase, setReapprovePhase] = useState<'idle' | 'starting' | 'opened'>('idle');
+  const [reapproveError, setReapproveError] = useState<string | null>(null);
+  const reapprove = async () => {
+    if (workspaceId === null) return;
+    setReapprovePhase('starting');
+    setReapproveError(null);
+    try {
+      const url = await rpc.workspaces.beginMessagingAppInstall({
+        workspaceId,
+        platform: bridge.type,
+      });
+      const opened = await openExternalUrl(url, `Could not open ${platform}`);
+      setReapprovePhase(opened ? 'opened' : 'idle');
+    } catch (cause) {
+      setReapprovePhase('idle');
+      setReapproveError(failureText(cause, `Could not start re-approving ${platform}.`));
+    }
   };
 
   const release = async (identityId: string) => {
@@ -419,149 +449,204 @@ export function MessagingAppRow({
       : null;
 
   return (
-    <div className="flex items-center gap-3 py-2 text-sm">
-      <span className="flex size-5 shrink-0 items-center justify-center">
-        {hasBridgeIcon(bridge.type) ? (
-          <BridgeIcon bridgeType={bridge.type} size={16} />
-        ) : (
-          <MessageSquare className="size-4 text-foreground-muted" />
-        )}
-      </span>
+    <div className="flex flex-col gap-1.5 py-2">
+      <div className="flex items-center gap-3 text-sm">
+        <span className="flex size-5 shrink-0 items-center justify-center">
+          {hasBridgeIcon(bridge.type) ? (
+            <BridgeIcon bridgeType={bridge.type} size={16} />
+          ) : (
+            <MessageSquare className="size-4 text-foreground-muted" />
+          )}
+        </span>
 
-      {/* Name over account: the account is a property of the app, so it reads
+        {/* Name over account: the account is a property of the app, so it reads
           under its name rather than in a column of its own. */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-foreground">{bridge.displayName}</span>
-          {bridge.isDefault && <Badge variant="secondary">Default</Badge>}
-          {/* Only when it is NOT active, and never otherwise. A bridge that is
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-foreground">{bridge.displayName}</span>
+            {bridge.isDefault && <Badge variant="secondary">Default</Badge>}
+            {/* Only when it is NOT active, and never otherwise. A bridge that is
               down cannot back a new room and the room-creation picker omits it
               silently, so without this the app simply is not in the list and
               nothing anywhere says why. */}
-          {bridge.status !== 'active' && (
-            <span className="shrink-0 text-xs text-destructive">{bridge.status}</span>
+            {bridge.status !== 'active' && (
+              <span className="shrink-0 text-xs text-destructive">{bridge.status}</span>
+            )}
+          </div>
+          {identities === null ? null : identity === null ? (
+            <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+              <TriangleAlert className="size-3 shrink-0" />
+              No account linked
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span
+                      tabIndex={0}
+                      aria-label={noAccountHelp}
+                      className="inline-flex text-foreground-muted"
+                    >
+                      <Info className="size-3" />
+                    </span>
+                  }
+                />
+                <TooltipContent className="max-w-xs">{noAccountHelp}</TooltipContent>
+              </Tooltip>
+            </span>
+          ) : (
+            <span className="truncate font-mono text-xs text-foreground-muted">
+              {handleOf(identity)}
+            </span>
+          )}
+          {releaseError !== null && (
+            <p className="mt-0.5 text-xs text-destructive">{releaseError}</p>
           )}
         </div>
-        {identities === null ? null : identity === null ? (
-          <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
-            <TriangleAlert className="size-3 shrink-0" />
-            No account linked
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span
-                    tabIndex={0}
-                    aria-label={noAccountHelp}
-                    className="inline-flex text-foreground-muted"
-                  >
-                    <Info className="size-3" />
-                  </span>
-                }
-              />
-              <TooltipContent className="max-w-xs">{noAccountHelp}</TooltipContent>
-            </Tooltip>
-          </span>
-        ) : (
-          <span className="truncate font-mono text-xs text-foreground-muted">
-            {handleOf(identity)}
-          </span>
-        )}
-        {releaseError !== null && <p className="mt-0.5 text-xs text-destructive">{releaseError}</p>}
-      </div>
 
-      {/* Linking is the one thing an unlinked app needs, so it stays a button
+        {/* Linking is the one thing an unlinked app needs, so it stays a button
           rather than going into the menu with the rest. A linked app shows no
           button at all: the only thing left to do to it is destructive, and a
           control next to the handle would sit one mis-click from the action
           that *changes* the account (CHOO-2137). */}
-      {identities !== null && identity === null && (
-        <Button variant="outline" size="xs" className="shrink-0" onClick={claim}>
-          <Link2 className="size-3" />
-          Link
-        </Button>
-      )}
+        {identities !== null && identity === null && (
+          <Button variant="outline" size="xs" className="shrink-0" onClick={claim}>
+            <Link2 className="size-3" />
+            Link
+          </Button>
+        )}
 
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="shrink-0"
-              aria-label={`${bridge.displayName} actions`}
-              disabled={releasing}
-            >
-              <MoreVertical className="size-3" />
-            </Button>
-          }
-        />
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={claim}>
-            <Link2 className="size-4" />
-            {identity === null ? 'Link my account…' : 'Change my account…'}
-          </DropdownMenuItem>
-          {identity !== null && (
-            <DropdownMenuItem onClick={() => void release(identity.id)}>
-              <Unlink className="size-4" />
-              Unlink {handleOf(identity)}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="shrink-0"
+                aria-label={`${bridge.displayName} actions`}
+                disabled={releasing}
+              >
+                <MoreVertical className="size-3" />
+              </Button>
+            }
+          />
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={claim}>
+              <Link2 className="size-4" />
+              {identity === null ? 'Link my account…' : 'Change my account…'}
             </DropdownMenuItem>
-          )}
+            {identity !== null && (
+              <DropdownMenuItem onClick={() => void release(identity.id)}>
+                <Unlink className="size-4" />
+                Unlink {handleOf(identity)}
+              </DropdownMenuItem>
+            )}
 
-          <DropdownMenuSeparator />
-          {/* "Off" and "this platform has no such thing" are different claims,
+            <DropdownMenuSeparator />
+            {/* "Off" and "this platform has no such thing" are different claims,
               and an unticked box makes them look the same (CHOO-2137). A
               platform that cannot do it at all gets a plain disabled line
               saying so, never an unchecked box. */}
-          {bridge.channelCreationSupported ? (
-            <DropdownMenuCheckboxItem
-              checked={bridge.canCreateChannels}
-              disabled={!isAdmin || savingChannelCreation}
-              onCheckedChange={(next) => onToggleChannelCreation(next)}
-            >
-              Create channels on {platform}
-            </DropdownMenuCheckboxItem>
-          ) : (
-            <DropdownMenuItem disabled>Channels not supported on {platform}</DropdownMenuItem>
-          )}
-          {channelsLockedReason !== null && (
-            <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
-          )}
+            {bridge.channelCreationSupported ? (
+              <DropdownMenuCheckboxItem
+                checked={bridge.canCreateChannels}
+                disabled={!isAdmin || savingChannelCreation}
+                onCheckedChange={(next) => onToggleChannelCreation(next)}
+              >
+                Create channels on {platform}
+              </DropdownMenuCheckboxItem>
+            ) : (
+              <DropdownMenuItem disabled>Channels not supported on {platform}</DropdownMenuItem>
+            )}
+            {channelsLockedReason !== null && (
+              <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
+            )}
 
-          {(showBundledSignIn || bridge.homeUrl) && <DropdownMenuSeparator />}
-          {showBundledSignIn && (
-            <DropdownMenuItem
-              onClick={() =>
-                showBundledChatSignIn({ serverId, bridgeDisplayName: bridge.displayName })
-              }
-            >
-              <KeyRound className="size-4" />
-              Sign-in details…
-            </DropdownMenuItem>
-          )}
-          {/* Offered only when the link resolves — an older server, or a bridge
-              that is down, reports none. */}
-          {bridge.homeUrl && (
-            <DropdownMenuItem
-              onClick={() =>
-                void openExternalUrl(bridge.homeUrl as string, `Could not open ${platform}`)
-              }
-            >
-              <ExternalLink className="size-4" />
-              Open in {platform}
-            </DropdownMenuItem>
-          )}
-
-          {isAdmin && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onClick={onDisconnect}>
-                <Trash2 className="size-4" />
-                Disconnect app…
+            {(showBundledSignIn || bridge.homeUrl) && <DropdownMenuSeparator />}
+            {showBundledSignIn && (
+              <DropdownMenuItem
+                onClick={() =>
+                  showBundledChatSignIn({ serverId, bridgeDisplayName: bridge.displayName })
+                }
+              >
+                <KeyRound className="size-4" />
+                Sign-in details…
               </DropdownMenuItem>
-            </>
+            )}
+            {/* Offered only when the link resolves — an older server, or a bridge
+              that is down, reports none. */}
+            {bridge.homeUrl && (
+              <DropdownMenuItem
+                onClick={() =>
+                  void openExternalUrl(bridge.homeUrl as string, `Could not open ${platform}`)
+                }
+              >
+                <ExternalLink className="size-4" />
+                Open in {platform}
+              </DropdownMenuItem>
+            )}
+
+            {bridge.teamPlacementSupported && isAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => {
+                    if (workspaceId === null) return;
+                    showTeamsPlacement({
+                      workspaceId,
+                      bridgeId: bridge.id,
+                      bridgeDisplayName: bridge.displayName,
+                    });
+                  }}
+                >
+                  <Users className="size-4" />
+                  Manage Microsoft Teams…
+                </DropdownMenuItem>
+              </>
+            )}
+
+            {isAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onClick={onDisconnect}>
+                  <Trash2 className="size-4" />
+                  Disconnect app…
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      {/* Generic across every bridge type: something only the platform's side
+          can fix, worded by the server (approval withdrawn, the app blocked by
+          the organisation's admin). "Approve again" is offered only for the
+          distributed Teams app, whose attention notes are the ones a re-run of
+          the install flow can actually resolve. */}
+      {bridge.attention !== null && (
+        <Alert variant="warning" className="ml-8">
+          <TriangleAlert className="size-4" />
+          <AlertDescription>
+            <p>{bridge.attention}</p>
+            {offerReapprove && reapprovePhase === 'opened' && (
+              <p>
+                Approve again in the browser window that opened. This warning clears once Switch
+                sees the renewed approval.
+              </p>
+            )}
+            {reapproveError !== null && <p className="text-destructive">{reapproveError}</p>}
+          </AlertDescription>
+          {offerReapprove && (
+            <AlertAction>
+              <Button
+                size="sm"
+                disabled={reapprovePhase === 'starting' || workspaceId === null}
+                onClick={() => void reapprove()}
+              >
+                {reapprovePhase === 'starting' ? 'Opening…' : 'Approve again'}
+              </Button>
+            </AlertAction>
           )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+        </Alert>
+      )}
     </div>
   );
 }
