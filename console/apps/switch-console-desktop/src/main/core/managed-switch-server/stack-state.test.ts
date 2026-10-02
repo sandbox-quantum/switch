@@ -52,6 +52,7 @@ function envFor(overrides: Partial<LocalServerSecrets> = {}, version = '0.27.0')
     secrets: { ...secrets, ...overrides },
     telemetryEnabled: false,
     telemetryEnvironment: 'prod',
+    telemetryInternal: false,
   });
 }
 

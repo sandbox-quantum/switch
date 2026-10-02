@@ -40,6 +40,7 @@ def _telemetry() -> TelemetryService:
         version="1.0.0",
         environment=None,
         telemetry_environment="prod",
+        telemetry_internal=False,
     )
 
 

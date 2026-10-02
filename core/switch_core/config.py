@@ -331,6 +331,12 @@ class SwitchConfig(BaseSettings):
     # relay drops an event naming an environment it has no project for.
     telemetry_environment: Literal["prod", "staging", "dev", "local"] = "prod"
 
+    # Whether this deployment is one of the company's own, sent as
+    # `flint_internal` so staff usage can be told from adoption. A customer's
+    # deployment never sets it. Within a deployment, staff accounts are counted
+    # separately by email domain whether or not this is set.
+    telemetry_internal: bool = False
+
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 

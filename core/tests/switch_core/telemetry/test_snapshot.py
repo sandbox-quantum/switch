@@ -233,7 +233,7 @@ class TestWhatCountsAsActive:
             counts = await _counts(session)
 
         assert counts.room_active_1d == 1
-        assert counts.user_active_1d == 1
+        assert counts.chat_identity_active_1d == 1
 
     async def test_two_agents_talking_is_not_activity(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -252,7 +252,7 @@ class TestWhatCountsAsActive:
             counts = await _counts(session)
 
         assert counts.room_active_1d == 0
-        assert counts.user_active_1d == 0
+        assert counts.chat_identity_active_1d == 0
 
     async def test_a_human_in_a_room_with_no_agent_is_not_activity(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -283,7 +283,7 @@ class TestWhatCountsAsActive:
 
             counts = await _counts(session)
 
-        assert counts.user_active_1d == 0
+        assert counts.chat_identity_active_1d == 0
         assert counts.room_active_1d == 0
 
     async def test_the_day_and_week_windows_differ(
@@ -320,7 +320,7 @@ class TestWhatCountsAsActive:
             counts = await _counts(session)
 
         assert counts.room_active_1d == 0
-        assert counts.user_active_1d == 0
+        assert counts.chat_identity_active_1d == 0
 
 
 class TestRoomsAreCountedByWhoMadeThem:
@@ -516,8 +516,8 @@ class TestOnlyWhatSomeoneSaidCounts:
             ever_active = await room_had_human_activity(session, TENANT_ZERO, room.id)
 
         assert counts.message_from_human_1d == 0
-        assert counts.user_active_1d == 0
-        assert counts.user_active_7d == 0
+        assert counts.chat_identity_active_1d == 0
+        assert counts.chat_identity_active_7d == 0
         assert counts.room_active_1d == 0
         assert counts.room_active_7d == 0
         assert ever_active is False
@@ -543,7 +543,7 @@ class TestOnlyWhatSomeoneSaidCounts:
             counts = await _counts(session)
 
         assert counts.message_from_human_1d == 1
-        assert counts.user_active_1d == 1
+        assert counts.chat_identity_active_1d == 1
         assert counts.room_active_1d == 1
 
     async def test_the_notice_switch_posts_for_an_agent_is_not_the_agent_talking(
@@ -929,7 +929,7 @@ class TestTheFourPathsAgreeOnActivity:
         )
 
         assert counts.room_active_1d == 0
-        assert counts.user_active_1d == 0
+        assert counts.chat_identity_active_1d == 0
         assert was_ever_active is False
         assert newly_active == []
 
@@ -956,7 +956,7 @@ class TestTheFourPathsAgreeOnActivity:
         )
 
         assert counts.room_active_1d == 1
-        assert counts.user_active_1d == 1
+        assert counts.chat_identity_active_1d == 1
         assert was_ever_active is True
         assert len(newly_active) == 1
 
@@ -991,7 +991,7 @@ class TestTheFourPathsAgreeOnActivity:
         )
 
         assert counts.room_active_1d == 1
-        assert counts.user_active_1d == 1
+        assert counts.chat_identity_active_1d == 1
         assert was_ever_active is True
         assert len(newly_active) == 1
         assert newly_active[0].first_active_at == NOW - timedelta(minutes=90)

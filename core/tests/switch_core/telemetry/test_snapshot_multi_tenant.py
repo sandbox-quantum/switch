@@ -145,7 +145,7 @@ class TestCountsDoNotMultiplyByTenant:
         # Two, not four. Without the tenant predicate each pass saw both rooms.
         assert counts.room_count == 2
         assert counts.room_active_1d == 2
-        assert counts.user_active_1d == 2
+        assert counts.chat_identity_active_1d == 2
         assert counts.message_count_1d == 2
         assert counts.room_membership_total == 2
 
@@ -164,7 +164,7 @@ class TestCountsDoNotMultiplyByTenant:
         assert counts.tenant_count == 2
         assert counts.room_count == 1
         assert counts.room_active_7d == 1
-        assert counts.user_active_7d == 1
+        assert counts.chat_identity_active_7d == 1
         assert counts.message_count_1d == 1
 
 

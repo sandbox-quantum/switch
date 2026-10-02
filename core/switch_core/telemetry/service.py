@@ -44,6 +44,7 @@ class TelemetryService:
         version: str | None,
         environment: str | None,
         telemetry_environment: str,
+        telemetry_internal: bool,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         installed_at: datetime | None = None,
     ) -> None:
@@ -60,6 +61,9 @@ class TelemetryService:
             # `prod`, so an event says where it belongs rather than relying on
             # what the relay does with silence.
             "flint_env": telemetry_environment,
+            # A string, as Switch Console sends it, where `unknown` is a third
+            # answer; a deployment always knows which it is.
+            "flint_internal": "true" if telemetry_internal else "false",
         }
         # Omitted rather than sent empty: an absent attribute reads as "not
         # configured", where `""` reads as a real environment named nothing.

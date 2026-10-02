@@ -380,6 +380,7 @@ class TestOpeningAStreamReportsASession:
             version="1.0.0",
             environment=None,
             telemetry_environment="prod",
+            telemetry_internal=False,
         )
         protocol = _Protocol()
         protocol.sessions = SessionReporter(service, protocol.connections)

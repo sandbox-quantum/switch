@@ -37,6 +37,7 @@ def _config(environment: str) -> SwitchConfig:
         telemetry_enabled=True,
         telemetry_endpoint="https://relay.example",
         telemetry_environment=environment,
+        telemetry_internal=False,
     )
 
 
@@ -77,3 +78,4 @@ async def test_the_configured_environment_is_sent_as_flint_env(
         a["key"]: a["value"] for a in body["resourceLogs"][0]["resource"]["attributes"]
     }
     assert resource["flint_env"] == {"stringValue": environment}
+    assert resource["flint_internal"] == {"stringValue": "false"}
