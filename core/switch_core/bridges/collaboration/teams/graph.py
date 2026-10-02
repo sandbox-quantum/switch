@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,10 @@ GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 # How old our token must be before an authorization refusal is worth re-minting
 # it for. A token issued seconds ago cannot have missed a grant.
 _TOKEN_RETRY_AGE = 30.0
+# How often a throttled call is asked again, and the longest wait between
+# attempts this will sit through rather than fail the call.
+_THROTTLE_RETRIES = 2
+_THROTTLE_MAX_WAIT_SECONDS = 30.0
 
 
 class GraphError(BridgeOperationError):
@@ -55,6 +60,14 @@ def _graph_error(operation: str, resp: httpx.Response) -> GraphError:
     return GraphError(
         f"{operation} failed ({resp.status_code}): {detail}", status=resp.status_code
     )
+
+
+def _retry_after(resp: httpx.Response, *, default: float) -> float:
+    """The wait Graph asked for, in seconds; `default` when it named none."""
+    try:
+        return max(0.0, float(resp.headers["Retry-After"]))
+    except (KeyError, ValueError):
+        return default
 
 
 def _segment(value: str) -> str:
@@ -111,9 +124,7 @@ class GraphClient:
         grant, so a genuine denial costs one extra round trip rather than
         looping.
         """
-        resp = await self._http.request(
-            method, url, headers=await self._headers(extra_headers), **kwargs
-        )
+        resp = await self._request(method, url, extra_headers, kwargs)
         if resp.status_code not in (401, 403):
             return resp
         if not self._tokens.invalidate(GRAPH_SCOPE, min_age_seconds=_TOKEN_RETRY_AGE):
@@ -125,9 +136,40 @@ class GraphClient:
             url,
             resp.status_code,
         )
-        return await self._http.request(
-            method, url, headers=await self._headers(extra_headers), **kwargs
-        )
+        return await self._request(method, url, extra_headers, kwargs)
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        extra_headers: dict[str, str] | None,
+        kwargs: dict[str, Any],
+    ) -> httpx.Response:
+        """One Graph call, waited out and asked again while Graph is throttling.
+
+        Graph throttles per app and per organisation, and says how long to
+        wait in `Retry-After`; asking again sooner only extends it. The
+        distributed app shares one budget across everything it does in an
+        organisation, so a burst — listing every team's apps, say — is the
+        likely way to meet it. A wait longer than this will sit through, or
+        throttling that outlasts the retries, is answered with Graph's own
+        response, which the caller raises as an error naming it.
+        """
+        attempt = 0
+        while True:
+            resp = await self._http.request(
+                method, url, headers=await self._headers(extra_headers), **kwargs
+            )
+            if resp.status_code != 429 or attempt == _THROTTLE_RETRIES:
+                return resp
+            wait = _retry_after(resp, default=float(2**attempt))
+            if wait > _THROTTLE_MAX_WAIT_SECONDS:
+                return resp
+            logger.warning(
+                "Graph is throttling %s %s; asking again in %.0fs", method, url, wait
+            )
+            await asyncio.sleep(wait)
+            attempt += 1
 
     async def create_subscription(
         self,

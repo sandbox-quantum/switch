@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
+import pytest
+
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import AgentPresentation, AgentRendering
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
@@ -921,3 +924,47 @@ def _card_text(activity: dict[str, Any]) -> str:
     """The body an agent card carries, whatever its shape."""
     card = activity["attachments"][0]["content"]
     return "\n".join(str(block.get("text", "")) for block in card["body"])
+
+
+def test_a_bring_your_own_bridge_starts_its_own_listener_and_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bring-your-own path of `start`, unchanged by the distributed app:
+    its own HTTP client and credential, its own listener, and on `stop` both
+    are closed, since nothing else shares them."""
+    real_client = httpx.AsyncClient
+    made: list[httpx.AsyncClient] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2/v2.0/token" in str(request.url):
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        if request.url.path == "/v1.0/subscriptions":
+            return httpx.Response(200, json={"value": []})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    def client(**kwargs: Any) -> httpx.AsyncClient:
+        made.append(real_client(transport=httpx.MockTransport(handler), **kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    adapter = TeamsAdapter(
+        config=_config().model_copy(
+            update={"listen_host": "127.0.0.1", "listen_port": 0}
+        )
+    )
+
+    async def scenario() -> None:
+        async def _noop(*args: Any) -> None:
+            return None
+
+        await adapter.start(_noop, _noop, _noop, _noop, _noop)
+        assert adapter._runner is not None
+        assert adapter._owns_http is True
+        assert adapter._authenticator is not None
+        assert adapter._adopted is True
+        await adapter.stop()
+
+    _run(scenario())
+
+    assert adapter._runner is None
+    assert [c.is_closed for c in made] == [True]

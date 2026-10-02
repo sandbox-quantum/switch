@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
+from switch_core.bridges.collaboration.teams import graph as graph_module
 from switch_core.bridges.collaboration.teams.connector import (
     ACTIVITY_SIZE_LIMIT,
     BotConnectorClient,
@@ -856,3 +857,104 @@ def test_a_team_id_cannot_move_the_rest_of_the_url() -> None:
         b"/v1.0/teams/x%3Fy%3D1%2F..%2F..%2Fusers/installedApps"
     )
     assert recorder.last.url.query == b""
+
+
+# ── Throttling ───────────────────────────────────────────────────────────────
+
+
+class _ThrottlingRecorder(_Recorder):
+    """Throttles the first `times` requests, naming `retry_after` if given."""
+
+    def __init__(self, *, times: int, retry_after: str | None) -> None:
+        super().__init__(200, {"value": []})
+        self._times = times
+        self._retry_after = retry_after
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if self._times > 0:
+            self._times -= 1
+            headers = {"Retry-After": self._retry_after} if self._retry_after else {}
+            return httpx.Response(
+                429, json={"error": {"message": "slow down"}}, headers=headers
+            )
+        return httpx.Response(200, json=self.body)
+
+
+@pytest.fixture
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(graph_module.asyncio, "sleep", fake_sleep)
+    return slept
+
+
+def test_a_throttled_call_waits_as_long_as_graph_asks_and_tries_again(
+    waits: list[float],
+) -> None:
+    recorder = _ThrottlingRecorder(times=2, retry_after="3")
+
+    teams = _run(_graph(recorder).list_teams())
+
+    assert teams == []
+    assert len(recorder.requests) == 3
+    assert waits == [3.0, 3.0]
+
+
+def test_without_a_named_wait_the_wait_grows(waits: list[float]) -> None:
+    recorder = _ThrottlingRecorder(times=2, retry_after=None)
+
+    _run(_graph(recorder).list_teams())
+
+    assert waits == [1.0, 2.0]
+
+
+def test_throttling_that_outlasts_the_retries_is_raised(waits: list[float]) -> None:
+    recorder = _ThrottlingRecorder(times=5, retry_after="1")
+
+    with pytest.raises(GraphError) as failed:
+        _run(_graph(recorder).list_teams())
+
+    assert failed.value.status == 429
+    assert len(recorder.requests) == 3
+
+
+def test_a_wait_longer_than_is_worth_sitting_through_is_raised_at_once(
+    waits: list[float],
+) -> None:
+    recorder = _ThrottlingRecorder(times=1, retry_after="120")
+
+    with pytest.raises(GraphError) as failed:
+        _run(_graph(recorder).list_teams())
+
+    assert failed.value.status == 429
+    assert waits == []
+    assert len(recorder.requests) == 1
+
+
+def test_a_user_is_read_by_their_escaped_id() -> None:
+    recorder = _Recorder(200, {"id": "u/1", "displayName": "Alice"})
+
+    user = _run(_graph(recorder).get_user(user_id="u/1"))
+
+    assert user["displayName"] == "Alice"
+    assert recorder.last.url.raw_path.startswith(b"/v1.0/users/u%2F1?")
+
+
+def test_a_user_graph_cannot_find_raises() -> None:
+    with pytest.raises(GraphError) as failed:
+        _run(_graph(_Recorder(404)).get_user(user_id="u-1"))
+    assert failed.value.status == 404
+
+
+def test_a_channel_graph_will_not_show_raises() -> None:
+    with pytest.raises(GraphError) as failed:
+        _run(
+            _graph(_Recorder(403)).get_channel(
+                team_id="team-1", channel_id="19:abc@thread.tacv2"
+            )
+        )
+    assert failed.value.status == 403

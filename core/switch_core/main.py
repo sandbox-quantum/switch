@@ -638,26 +638,7 @@ async def run(config: SwitchConfig) -> None:
             )
         )
 
-    # The one distributed Teams app. Built here because its installer needs it;
-    # unlike Discord's Gateway client there is nothing to connect, and its
-    # bridges are handed it as each one starts (below).
-    teams_app: TeamsSharedApp | None = None
-    if config.teams_app_client_id:
-        assert config.messaging_public_url is not None
-        assert config.teams_app_privacy_url is not None
-        assert config.teams_app_terms_url is not None
-        teams_app = TeamsSharedApp.from_config(config)
-        installers.register(
-            TeamsAppInstaller(
-                app=teams_app,
-                package=build_distributed_app_package(
-                    app_id=config.teams_app_client_id,
-                    messaging_public_url=config.messaging_public_url,
-                    privacy_url=config.teams_app_privacy_url,
-                    terms_url=config.teams_app_terms_url,
-                ),
-            )
-        )
+    teams_app = _distributed_teams_app(config, installers, collab_lifecycle)
 
     install_service: MessagingInstallService | None = None
     if installers.platforms():
@@ -834,10 +815,6 @@ async def run(config: SwitchConfig) -> None:
         collab_lifecycle.add_bridge_start_guard(
             install_service.refuse_uninstalled_bridge
         )
-    # Before the bridges start, so every bridge on the distributed Teams app
-    # has the app before it runs.
-    if teams_app is not None:
-        collab_lifecycle.add_bridge_starting_listener(teams_app.attach_if_teams)
     await collab_lifecycle.start_all()
 
     # The one shared Discord Gateway connection. Started after the bridges so it
@@ -1352,6 +1329,39 @@ async def _bootstrap_key_tenant(
     if legacy_holders:
         return legacy_holders[0]
     return TENANT_ZERO_ID
+
+
+def _distributed_teams_app(
+    config: SwitchConfig,
+    installers: MessagingInstallerRegistry,
+    collab_lifecycle: CollaborationBridgeLifecycleService,
+) -> TeamsSharedApp | None:
+    """The one distributed Teams app, when this deployment is configured with it.
+
+    Its installer is registered, and every bridge on the app is handed it as
+    the bridge starts, before it runs — so this must happen before any bridge
+    does. Unlike Discord's Gateway client there is nothing to connect. Config
+    validation has already required every `TEAMS_APP_*` value together.
+    """
+    if not config.teams_app_client_id:
+        return None
+    assert config.messaging_public_url is not None
+    assert config.teams_app_privacy_url is not None
+    assert config.teams_app_terms_url is not None
+    teams_app = TeamsSharedApp.from_config(config)
+    installers.register(
+        TeamsAppInstaller(
+            app=teams_app,
+            package=build_distributed_app_package(
+                app_id=config.teams_app_client_id,
+                messaging_public_url=config.messaging_public_url,
+                privacy_url=config.teams_app_privacy_url,
+                terms_url=config.teams_app_terms_url,
+            ),
+        )
+    )
+    collab_lifecycle.add_bridge_starting_listener(teams_app.attach_if_teams)
+    return teams_app
 
 
 async def _shutdown(
