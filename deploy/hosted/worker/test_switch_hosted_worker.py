@@ -1248,7 +1248,10 @@ class CoreClientTests(unittest.TestCase):
             sent.append(json.loads(request.data))
             return Response(
                 json.dumps(
-                    {"controller_id": CONTROLLER_ID, "credential": CONTROLLER_CREDENTIAL}
+                    {
+                        "controller_id": CONTROLLER_ID,
+                        "credential": CONTROLLER_CREDENTIAL,
+                    }
                 ).encode()
             )
 
@@ -1473,7 +1476,9 @@ class SupervisorTests(RootPatched):
         self.assertEqual(list(self.paths.agents_runtime.glob(".*")), [])
 
     def test_the_deployment_matches_the_recorded_one(self):
-        self.assertInstalled({**core_agent(), "switch_credentials": relay_credentials()})
+        self.assertInstalled(
+            {**core_agent(), "switch_credentials": relay_credentials()}
+        )
         written = (self.paths.agents_runtime / AGENT / "deployment.json").read_text()
         written = written.replace(str(self.paths.data), "/data").replace(
             str(self.paths.runtime), "/run/switch-hosted"
@@ -1561,7 +1566,9 @@ class SupervisorTests(RootPatched):
         self.assertEqual(self.state()["process_state"], "stopped")
         restarted = self.harness.build()
         restarted._observe()
-        self.assertEqual(restarted.heartbeat_body()["agents"][0]["process_state"], "stopped")
+        self.assertEqual(
+            restarted.heartbeat_body()["agents"][0]["process_state"], "stopped"
+        )
 
     def test_failed_restart_is_retried_on_the_next_install(self):
         unit = f"switch-agent@{AGENT}.service"
@@ -1667,7 +1674,11 @@ class SupervisorTests(RootPatched):
             {"op": "install", "agent": valid_agent(), "restart": "yes"},
             {"op": "install", "agent": "junk", "restart": False},
             {"op": "install", "agent": {"agent_id": AGENT}, "restart": False},
-            {"op": "install", "agent": valid_agent(agent_id="../etc"), "restart": False},
+            {
+                "op": "install",
+                "agent": valid_agent(agent_id="../etc"),
+                "restart": False,
+            },
             {"op": "stop", "agent_id": "../../etc", "wait": False},
             {"op": "stop", "agent_id": AGENT},
             {"op": "remove", "agent_id": AGENT.upper()},
@@ -2007,9 +2018,7 @@ class ProcessStateTests(RootPatched):
                 },
             },
         )
-        unknown = self.supervisor.handle_request(
-            {"op": "state", "agent_id": AGENT_2}
-        )
+        unknown = self.supervisor.handle_request({"op": "state", "agent_id": AGENT_2})
         self.assertEqual(unknown["unit"]["installed"], False)
         self.assertEqual(unknown["unit"]["process_state"], "pending")
         self.commands.units[AGENT_2] = {
@@ -2258,9 +2267,7 @@ class LoopTests(RootPatched):
         self.assertEqual(
             stat.S_IMODE(self.paths.controller_record.stat().st_mode), 0o600
         )
-        self.assertEqual(
-            stat.S_IMODE(self.paths.controller_data.stat().st_mode), 0o700
-        )
+        self.assertEqual(stat.S_IMODE(self.paths.controller_data.stat().st_mode), 0o700)
 
     def test_a_restarted_supervisor_keeps_the_running_controller(self):
         self.supervisor.tick()
@@ -2289,7 +2296,11 @@ class LoopTests(RootPatched):
     def test_a_new_boot_enrolls_afresh(self):
         worker._write_root_json(
             self.paths.controller_record,
-            {"controllerId": "old", "credential": CONTROLLER_CREDENTIAL, "bootId": BOOT_2},
+            {
+                "controllerId": "old",
+                "credential": CONTROLLER_CREDENTIAL,
+                "bootId": BOOT_2,
+            },
         )
         self.supervisor.tick()
         self.assertEqual(len(self.client.enrolled), 1)
@@ -2323,7 +2334,10 @@ class LoopTests(RootPatched):
         self.supervisor.tick()
         (self.paths.controller_data / "controller.db").write_text("old identity")
         self.client.enrollments.append(
-            ("3f1c2b4a-0000-4000-8000-0000000000c2", "swcc_second-credential-placeholder")
+            (
+                "3f1c2b4a-0000-4000-8000-0000000000c2",
+                "swcc_second-credential-placeholder",
+            )
         )
         self.commands.units["controller"] = {
             "ActiveState": "inactive",
@@ -2473,10 +2487,15 @@ class LoopTests(RootPatched):
         self.assertEqual(len(self.client.bodies), 4)
         self.harness.now = 138
         self.supervisor.tick()
-        self.assertEqual(self.commands.controller_actions().count(["start"]), starts + 1)
+        self.assertEqual(
+            self.commands.controller_actions().count(["start"]), starts + 1
+        )
 
     def test_410_while_retired_and_401_exits(self):
-        self.client.heartbeats += [worker.MachineRetired(), worker.WorkerError("rejected")]
+        self.client.heartbeats += [
+            worker.MachineRetired(),
+            worker.WorkerError("rejected"),
+        ]
         with self.assertLogs(worker.logger, "WARNING"):
             self.supervisor.tick()
         self.assertEqual(self.commands.actions(), [["stop", "switch-agent@*.service"]])
@@ -2563,9 +2582,12 @@ class RequestServerTests(RootPatched):
             handler=harness.supervisor.handle_request,
         )
         self.addCleanup(server.close)
-        raw = json.dumps(
-            {"op": "install", "agent": valid_agent(), "restart": False}
-        ).encode() + b"\n"
+        raw = (
+            json.dumps(
+                {"op": "install", "agent": valid_agent(), "restart": False}
+            ).encode()
+            + b"\n"
+        )
         answer = json.loads(self.ask(server, raw))
         self.assertTrue(answer["ok"], answer)
         self.assertEqual(answer["unit"]["revision"], 1)
@@ -2848,7 +2870,9 @@ class UnitFileTests(unittest.TestCase):
         for key, value in expected.items():
             self.assertEqual(service[key], value, key)
         command = service["ExecStart"].split()
-        self.assertEqual(command[:2], [worker.UNIT_NODE_PATH, worker.UNIT_CONTROLLER_PATH])
+        self.assertEqual(
+            command[:2], [worker.UNIT_NODE_PATH, worker.UNIT_CONTROLLER_PATH]
+        )
         self.assertEqual(command[2], "run")
         self.assertIn("--credential-stdin", command)
         rest = [word for word in command[3:] if word != "--credential-stdin"]

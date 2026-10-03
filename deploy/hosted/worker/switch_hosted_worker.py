@@ -578,9 +578,7 @@ def _validate_switch_credentials(value: Any, agent_id: str) -> dict[str, Any]:
         "Switch credential environment",
     )
     endpoint = env["SWITCH_API_ENDPOINT"]
-    match = (
-        RELAY_ENDPOINT_RE.fullmatch(endpoint) if isinstance(endpoint, str) else None
-    )
+    match = RELAY_ENDPOINT_RE.fullmatch(endpoint) if isinstance(endpoint, str) else None
     if match is None or int(match.group(1)) > 65535:
         raise WorkerError(
             "Switch credentials must name the agents controller's loopback relay."
@@ -1076,7 +1074,9 @@ class Systemd:
         self._commands.run([SYSTEMCTL, "stop", "switch-agent@*.service"], capture=False)
 
     def show_unit(self, unit: str) -> dict[str, str]:
-        output = self._commands.run([SYSTEMCTL, "show", "-p", ",".join(SHOW_PROPERTIES), unit])
+        output = self._commands.run(
+            [SYSTEMCTL, "show", "-p", ",".join(SHOW_PROPERTIES), unit]
+        )
         values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
         if not set(SHOW_PROPERTIES) <= set(values):
             raise WorkerError(f"systemctl show returned no state for {unit}.")
@@ -2374,7 +2374,9 @@ class RequestServer:
                 }
             else:
                 answer = self._handler(request)
-            connection.sendall(json.dumps(answer, separators=(",", ":")).encode() + b"\n")
+            connection.sendall(
+                json.dumps(answer, separators=(",", ":")).encode() + b"\n"
+            )
         except (OSError, ValueError) as error:
             logger.warning("A supervisor request failed: %s", type(error).__name__)
 
@@ -2533,7 +2535,10 @@ class Supervisor:
             else:
                 raise RequestRefused("invalid_request", f"Unknown op {op!r}.")
         except RequestRefused as refused:
-            return {"ok": False, "error": {"code": refused.code, "message": str(refused)}}
+            return {
+                "ok": False,
+                "error": {"code": refused.code, "message": str(refused)},
+            }
         except (WorkerError, OSError, ValueError) as error:
             logger.error("A controller request failed: %s", error)
             return {
@@ -2575,7 +2580,11 @@ class Supervisor:
         if agent_id in self._ownership_blocked:
             self._hold(
                 HeldAgent(
-                    launch_id, agent_id, revision, None, Failure("failed", OWNERSHIP_INVALID)
+                    launch_id,
+                    agent_id,
+                    revision,
+                    None,
+                    Failure("failed", OWNERSHIP_INVALID),
                 )
             )
             self._disable(agent_id, [])
@@ -2589,7 +2598,11 @@ class Supervisor:
             logger.error("Agent %s has an invalid configuration: %s", agent_id, error)
             self._hold(
                 HeldAgent(
-                    launch_id, agent_id, revision, None, Failure("failed", INVALID_CONFIG)
+                    launch_id,
+                    agent_id,
+                    revision,
+                    None,
+                    Failure("failed", INVALID_CONFIG),
                 )
             )
             self._disable(agent_id, [])
@@ -2600,13 +2613,18 @@ class Supervisor:
             logger.error("Agent %s could not be set up: %s", agent_id, error)
             self._hold(
                 HeldAgent(
-                    launch_id, agent_id, revision, plan.desired_state,
+                    launch_id,
+                    agent_id,
+                    revision,
+                    plan.desired_state,
                     Failure("failed", SETUP_FAILED),
                 )
             )
             raise RequestRefused("setup_failed", str(error)[:512]) from None
         self._hold(
-            HeldAgent(plan.launch_id, plan.agent_id, plan.revision, plan.desired_state, None)
+            HeldAgent(
+                plan.launch_id, plan.agent_id, plan.revision, plan.desired_state, None
+            )
         )
         return self.unit_report(agent_id)
 
@@ -2789,7 +2807,9 @@ class Supervisor:
         if self._installed_files(agent_id) != files:
             pending = self._paths.pending_install(agent_id)
             _write_root_json(pending, {"revision": plan.revision})
-            install_runtime_files(self._paths.agents_runtime, agent_id, files, self._gid)
+            install_runtime_files(
+                self._paths.agents_runtime, agent_id, files, self._gid
+            )
             if plan.desired_state == "running":
                 self._systemd.reset_failed(agent_id)
                 self._systemd.restart(agent_id)
