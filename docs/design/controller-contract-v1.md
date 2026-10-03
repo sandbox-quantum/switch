@@ -32,7 +32,9 @@ POST /v1/management/enrollment-codes                 auth: user session (Console
 POST /v1/management/controllers/enroll               auth: one of the proofs below
   { proof: { kind: "user_session" }                  // Console, user signed in (bearer = user session)
          | { kind: "enrollment_code", code: string } // personal VM / own machine
-         | { kind: "machine_secret", assertion: string }  // Switch EC2, from the boot secret
+         | { kind: "machine_secret", machine_id: string, capability: string }
+                                                     // Switch EC2: the machine capability from its boot secret,
+                                                     // with X-Switch-Host-Boot-Id and X-Switch-Host-Instance-Id
     controller: { kind: "console" | "daemon" | "ec2", name: string, platform: Platform, version: string },
     public_key: { alg: "X25519", key: base64 } }     // used to seal provider logins to this controller
   → 201 { controller_id: string, credential: string } // credential returned once, stored in the local secret store
@@ -48,6 +50,16 @@ DELETE /v1/management/controllers/{id}                    auth: owner (user). Re
 ```ts
 type Platform = { os: "macos" | "linux" | "windows"; arch: "arm64" | "x64"; os_version: string }
 ```
+
+**Machine secret (as implemented).** The machine's supervisor enrolls, not
+the controller, and hands the controller its identity on the command line and
+the credential on stdin. The capability is checked as on the machine routes:
+`401 invalid_credential` for a wrong one, `400 validation_error` without the
+host headers, `410 machine_retired` once the machine is retained or being
+deleted. The controller is of kind `ec2` and bound to the machine: one per
+machine. Enrolling again keeps it and rotates its credential (the old one is
+refused with `invalid_credential`); a machine whose controller was revoked
+gets a new one. An enrollment code cannot enroll an `ec2` controller.
 
 The token is short-lived and the credential is long-lived but revocable. An expired token returns `401 token_expired`, and the controller then exchanges its credential again. A revoked credential returns `401 controller_revoked`, and the controller stops all agents and exits.
 
@@ -94,6 +106,29 @@ type AgentDefinition = {
 
 type Skill = { name: string; content: string }   // installed into the provider's skills dir
 ```
+
+**Cloud agents (as implemented).** v1 sends the v1 definition
+(`agent-controllers-v1.md`) and, for a cloud agent, adds an optional
+`hosted` block rather than the fields above. Management writes it from the
+agent's cloud launch; a person's client cannot submit one.
+
+```ts
+type HostedDefinition = {
+  machine_id: string
+  launch_id: string
+  launch_revision: number             // the cloud launch's revision; a new one rebuilds the block
+  provider_credential_kind: "api-key" | "setup-token" | "auth-json" | null
+  repository: string | null           // "owner/name"
+  spec: { name?: string; definition?: string; instructions: string;
+          definition_attributes: Record<string, unknown>; auto_session: boolean; auto_approve: boolean }
+  skills: { slug: string; files: Record<string, string> }[]
+  worker_capability: string | null    // added as the assignment is read, never stored; null while the
+                                      // launch is moving to a new revision (the controller then waits)
+}
+```
+
+Only a cloud machine's controller (`ec2`) runs a definition with a `hosted`
+block, and it runs nothing else.
 
 ---
 
@@ -249,6 +284,38 @@ type StreamEvent =
 
 Cursors are **per agent**, because each agent keeps its own sequence in Core's buffer. That's why resume uses the `cursors` map and not `Last-Event-ID`.
 
+**Cloud agent workers (as implemented).** A cloud agent's watcher attaches as
+its worker through the controller's relay, and Core admits it on the
+controller's connection:
+
+```
+POST /v1/controllers/{id}/agents/{agent_id}/worker
+  { connection_id, generation,                       // the controller's open connection
+    worker: { connection_id, generation,             // the relay's local connection and incarnation
+              spawn_capable, protocol, protocol_accepts,
+              capability, boot_id, instance_id, state_version } }
+  → 200 { attached: WorkerAttached }                 // the worker_attached payload, written first on its stream
+  → 403/409/426 { detail: { code, message } }        // the worker's own admission refused, as on its own stream
+  → 403 not_assigned | 409 no_stream | 404 unknown_connection   // the controller's: retry
+
+POST /v1/controllers/{id}/agents/{agent_id}/worker/detach
+  { connection_id, generation, worker: { connection_id, generation } }
+  → 204                                              // a stale detach changes nothing
+```
+
+Two frames carry what the worker is owed:
+
+```ts
+  | { type: "agent.worker";        agent_id; connection_id; generation; event: WorkerFrameName; data: object }
+                                   // relay, relay_cancel, wake, mailbox_cancel, operation, credential
+  | { type: "agent.worker_closed"; agent_id; connection_id; generation; code: "launch_superseded"; reason }
+```
+
+The worker's up-calls carry the relay's connection id and incarnation, and
+are refused (`409 generation_changed`) unless they name the attached worker.
+A worker is let go of when the controller connection closes, is taken over or
+loses its stream, when the agent is moved or unbound, or on detach.
+
 ---
 
 ## 7. Acting as an agent (Core)
@@ -259,6 +326,14 @@ Cursors are **per agent**, because each agent keeps its own sequence in Core's b
   - If that fails, it returns `403 not_assigned`.
   - Per-agent API keys keep working for agents with no binding: third-party agents and plugins.
 - **Not used by controllers:** the per-agent `GET /agents/{agent_id}/events` stream. §6 replaces it.
+- **Cloud agents (as implemented):** a cloud agent's worker up-calls under
+  `/agents/{agent_id}/connection/` (`relay/...`, `idle`, `mailbox/ack`,
+  `cutover-manifest`) are accepted from its controller, though the rest of the
+  connection surface is not; so are `/hosted/provider-credential`,
+  `/hosted/provider-status`, `/hosted/github-credential` and
+  `/hosted/operations/{id}/claim|result`, with the agent in
+  `X-Switch-Agent-Id`. An operation claimed this way is held under
+  `controller:{controller_id}:{agent_id}`.
 - **CLIs never call these routes directly.** The controller serves the Switch tools to its CLIs and makes the calls itself.
 
 **Sessions are not managed through this contract.** A session and its transcript live with the host that runs it, and Core keeps no server-side session state. In-room session commands (`!reset`, `!compact`, `!interrupt`) keep reaching the session through the agent's own watcher stream, as `session_command` frames. How the Console reaches a session on a machine it cannot connect to directly (a cloud VM) is an open question, outside this contract.
@@ -333,8 +408,8 @@ The personal agent relays that reason to the user as is.
 
 | Contract | Exists today | Change |
 |---|---|---|
-| §1 enrollment, EC2 | #556 machine secret and capability | Generalise to all controller kinds |
-| §2 assignment | #556 `GET /hosted/machines/{id}/agents` | Generalise, and add revisions per agent |
+| §1 enrollment, EC2 | #556 machine secret and capability | Done: `machine_secret` proof, one `ec2` controller per machine |
+| §2 assignment | #556 `GET /hosted/machines/{id}/agents` | Done for cloud agents: the `hosted` block; the machine list stops carrying a placed agent's key |
 | §3 status | #556 `/heartbeat`, `process_state`, OOM and restart counts, `/provider-status` | Merge into one snapshot |
 | §4 operations | #556 `HostedOperation`, `/operations/{id}/claim` and `/result` | Generalise the kinds |
 | §5 tokens | #556 `/github-credential` | Generalise to connectors. Sealed provider logins are new |
