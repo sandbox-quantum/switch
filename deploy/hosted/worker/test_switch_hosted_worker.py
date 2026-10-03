@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -46,6 +47,10 @@ SECRET_ARN = "arn:aws:secretsmanager:eu-west-1:000000000000:secret:switch-hosted
 CAPABILITY = "wcap-test-0000000000000000"
 MACHINE_CAPABILITY = "mcap-test-00000000000000000000000000000000"
 GENERATION = 1
+RELAY = "http://127.0.0.1:41000"
+RELAY_TOKEN = "swlr_test-relay-token-placeholder"
+CONTROLLER_ID = "3f1c2b4a-0000-4000-8000-0000000000c1"
+CONTROLLER_CREDENTIAL = "swcc_test-controller-credential-placeholder"
 ONE_AGENT_MESSAGE = "data volume uses the one-agent layout; see 'Moving to one machine per user' in deploy/hosted/README.md"
 INACTIVE = {
     "ActiveState": "inactive",
@@ -86,6 +91,7 @@ def runtime_config() -> worker.RuntimeConfig:
         bootstrap_path="/opt/switch/agent-providers/hosted-bootstrap.mjs",
         shared_host_daemon_path="/opt/switch/agent-providers/shared-host-daemon.mjs",
         provider_binary_path="/opt/switch/claude/bin/claude",
+        controller_path="/opt/switch/agent-controller/agent-controller.mjs",
         agent_user="switch-agent",
         agent_group="switch-agent",
         path="/opt/switch/node/bin:/usr/bin:/bin",
@@ -94,6 +100,7 @@ def runtime_config() -> worker.RuntimeConfig:
             "node": "1" * 64,
             "bootstrap": "2" * 64,
             "sharedHostDaemon": "3" * 64,
+            "agentController": "6" * 64,
             "provider": "4" * 64,
         },
         providers={
@@ -115,8 +122,21 @@ def worker_config(runtime: worker.RuntimeConfig | None = None) -> worker.WorkerC
     )
 
 
+def relay_credentials(agent_id: str = AGENT) -> dict:
+    return {
+        "env": {
+            "SWITCH_API_ENDPOINT": RELAY,
+            "SWITCH_API_TOKEN": RELAY_TOKEN,
+            "SWITCH_AGENT_ID": agent_id,
+        }
+    }
+
+
 def valid_agent(**overrides) -> dict:
+    """An agent as the machine's controller asks for it: the agent list's
+    entry shape, with the relay's credentials."""
     agent = core_agent()
+    agent["switch_credentials"] = relay_credentials()
     agent["worker_capability"] = CAPABILITY
     agent["skills"] = []
     agent["spec"] = {
@@ -138,23 +158,10 @@ def second_agent(**overrides) -> dict:
         agent_id=AGENT_2,
         launch_id="req-0000000000000002",
         repository=None,
-        switch_credentials={
-            "env": {
-                "SWITCH_API_ENDPOINT": "https://switch.example.test/agent-api",
-                "SWITCH_API_TOKEN": "test-token-placeholder",
-                "SWITCH_AGENT_ID": AGENT_2,
-            }
-        },
+        switch_credentials=relay_credentials(AGENT_2),
     )
     agent.update(overrides)
     return agent
-
-
-def listing(*agents: dict, version: int = 3) -> dict:
-    value = core_fixture("agents_response.json")
-    value["agents"] = list(agents)
-    value["agents_version"] = version
-    return value
 
 
 class Response(io.BytesIO):
@@ -171,13 +178,9 @@ def http_error(code: int) -> urllib.error.HTTPError:
     )
 
 
-def core_client(requests: list, agents_status: int | None = None) -> worker.CoreClient:
+def core_client(requests: list) -> worker.CoreClient:
     def opener(request, timeout):
         requests.append(request)
-        if request.full_url.endswith("/agents"):
-            if agents_status is not None:
-                raise http_error(agents_status)
-            return Response((CORE_FIXTURES / "agents_response.json").read_bytes())
         return Response((CORE_FIXTURES / "heartbeat_response.json").read_bytes())
 
     return worker.CoreClient(
@@ -199,17 +202,39 @@ class FakeSystemctl:
     def run(self, arguments, capture=True):
         self.calls.append(arguments)
         if arguments[1] == "show":
-            agent = arguments[-1].removeprefix("switch-agent@").removesuffix(".service")
-            properties = {**INACTIVE, **self.units.get(agent, {})}
+            unit = arguments[-1]
+            key = (
+                "controller"
+                if unit == worker.CONTROLLER_UNIT
+                else unit.removeprefix("switch-agent@").removesuffix(".service")
+            )
+            properties = {**INACTIVE, **self.units.get(key, {})}
             return "".join(f"{name}={value}\n" for name, value in properties.items())
+        if arguments[1:] == ["start", worker.CONTROLLER_UNIT]:
+            self.on_controller_start()
         return ""
+
+    def on_controller_start(self) -> None:
+        self.units["controller"] = {"ActiveState": "active", "SubState": "running"}
 
     def result(self, arguments, capture=True):
         self.calls.append(arguments)
         return subprocess.CompletedProcess(arguments, 1, "", "")
 
     def actions(self) -> list[list[str]]:
-        return [call[1:] for call in self.calls if call[1] != "show"]
+        """What was done to the agents' units: the controller's are `controller_actions`."""
+        return [
+            call[1:]
+            for call in self.calls
+            if call[1] != "show" and call[-1] != worker.CONTROLLER_UNIT
+        ]
+
+    def controller_actions(self) -> list[list[str]]:
+        return [
+            call[1:-1]
+            for call in self.calls
+            if call[1] != "show" and call[-1] == worker.CONTROLLER_UNIT
+        ]
 
     def clear(self) -> None:
         self.calls.clear()
@@ -217,14 +242,18 @@ class FakeSystemctl:
 
 class FakeClient:
     def __init__(self):
-        self.listings: list = []
         self.heartbeats: list = []
         self.bodies: list[dict] = []
-        self.list_calls = 0
+        self.enrollments: list = []
+        self.enrolled: list[dict] = []
 
-    def agents(self):
-        self.list_calls += 1
-        value = self.listings.pop(0)
+    def enroll_controller(self, controller):
+        self.enrolled.append(controller)
+        value = (
+            self.enrollments.pop(0)
+            if self.enrollments
+            else (CONTROLLER_ID, CONTROLLER_CREDENTIAL)
+        )
         if isinstance(value, BaseException):
             raise value
         return value
@@ -272,6 +301,27 @@ class Harness:
         self.clock_value = datetime(2026, 1, 1, tzinfo=UTC)
         self.supervisor = self.build()
 
+    def controller(self) -> worker.ControllerUnit:
+        return worker.ControllerUnit(
+            client=self.client,
+            systemd=worker.Systemd(self.commands),
+            paths=self.paths,
+            uid=os.getuid(),
+            gid=os.getgid(),
+            api_endpoint="https://switch.example.test/agent-api",
+            identity=worker.MachineIdentity(INSTANCE, BOOT_1, GENERATION),
+            name="cloud-machine-slot-a",
+            monotonic=lambda: self.now,
+        )
+
+    def install(self, agent: dict, *, restart: bool = False) -> dict:
+        return self.supervisor.handle_request(
+            {"op": "install", "agent": agent, "restart": restart}
+        )
+
+    def remove(self, agent_id: str = AGENT) -> dict:
+        return self.supervisor.handle_request({"op": "remove", "agent_id": agent_id})
+
     def build(self) -> worker.Supervisor:
         return worker.Supervisor(
             runtime=runtime_config(),
@@ -284,9 +334,9 @@ class Harness:
             client=self.client,
             systemd=worker.Systemd(self.commands),
             git=self.git,
+            controller=self.controller(),
             clock=lambda: self.clock_value,
             monotonic=lambda: self.now,
-            sleep=lambda _seconds: None,
             statvfs=lambda _path: SimpleNamespace(
                 f_frsize=4096, f_blocks=52428800, f_bfree=49807360, f_bavail=49807360
             ),
@@ -894,7 +944,13 @@ class HostTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = {}
             hashes = {}
-            for name in ("node", "bootstrap", "sharedHostDaemon", "provider"):
+            for name in (
+                "node",
+                "bootstrap",
+                "sharedHostDaemon",
+                "agentController",
+                "provider",
+            ):
                 path = Path(temporary) / name
                 path.write_bytes(f"trusted-{name}".encode())
                 path.chmod(0o444)
@@ -905,6 +961,7 @@ class HostTests(unittest.TestCase):
                 bootstrap_path=paths["bootstrap"],
                 shared_host_daemon_path=paths["sharedHostDaemon"],
                 provider_binary_path=paths["provider"],
+                controller_path=paths["agentController"],
                 agent_user="switch-agent",
                 agent_group="switch-agent",
                 path="/usr/bin:/bin",
@@ -920,11 +977,17 @@ class HostTests(unittest.TestCase):
                     worker.verify_pinned_runtime(worker_config(runtime)),
                     r"^[0-9a-f]{64}$",
                 )
-                Path(paths["bootstrap"]).chmod(0o644)
-                Path(paths["bootstrap"]).write_text("tampered")
-                Path(paths["bootstrap"]).chmod(0o444)
-                with self.assertRaisesRegex(worker.WorkerError, "checksum"):
-                    worker.verify_pinned_runtime(worker_config(runtime))
+                for name in ("bootstrap", "agentController"):
+                    with self.subTest(tampered=name):
+                        original = Path(paths[name]).read_bytes()
+                        Path(paths[name]).chmod(0o644)
+                        Path(paths[name]).write_text("tampered")
+                        Path(paths[name]).chmod(0o444)
+                        with self.assertRaisesRegex(worker.WorkerError, "checksum"):
+                            worker.verify_pinned_runtime(worker_config(runtime))
+                        Path(paths[name]).chmod(0o644)
+                        Path(paths[name]).write_bytes(original)
+                        Path(paths[name]).chmod(0o444)
 
     def test_meminfo_is_read_in_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -982,7 +1045,8 @@ class DeploymentTests(unittest.TestCase):
         )
         self.assertEqual(plan.worker_capability, CAPABILITY)
         self.assertNotIn(CAPABILITY, json.dumps(plan.deployment))
-        self.assertNotIn("test-token-placeholder", json.dumps(plan.deployment))
+        self.assertNotIn(RELAY_TOKEN, json.dumps(plan.deployment))
+        self.assertEqual(plan.switch_credentials, relay_credentials())
 
     def test_repository_paths_are_lowercase_and_optional(self):
         plan = self.plan(valid_agent(repository="Example-Org/Example.Repo"))
@@ -1035,13 +1099,17 @@ class DeploymentTests(unittest.TestCase):
                     self.plan(valid_agent(skills=bad))
 
     def test_invalid_agent_fields_are_rejected(self):
-        wrong_agent = {
-            "env": {
-                "SWITCH_API_ENDPOINT": "https://switch.example.test",
-                "SWITCH_API_TOKEN": "x",
-                "SWITCH_AGENT_ID": AGENT_2,
+        wrong_agent = relay_credentials(AGENT_2)
+
+        def credentials(endpoint=RELAY, token=RELAY_TOKEN):
+            return {
+                "env": {
+                    "SWITCH_API_ENDPOINT": endpoint,
+                    "SWITCH_API_TOKEN": token,
+                    "SWITCH_AGENT_ID": AGENT,
+                }
             }
-        }
+
         for change in (
             {"agent_id": "agent-1"},
             {"agent_id": AGENT.upper()},
@@ -1054,6 +1122,13 @@ class DeploymentTests(unittest.TestCase):
             {"revision": 0},
             {"spec": {"session_limit": 8}},
             {"switch_credentials": wrong_agent},
+            {"switch_credentials": credentials("https://switch.example.test")},
+            {"switch_credentials": credentials("http://10.0.0.1:41000")},
+            {"switch_credentials": credentials("http://127.0.0.1:41000/x")},
+            {"switch_credentials": credentials("http://127.0.0.1:99999")},
+            {"switch_credentials": credentials("http://localhost:41000")},
+            {"switch_credentials": credentials(token="an-agent-api-key")},
+            {"switch_credentials": credentials(token="swlr_two words")},
         ):
             with self.subTest(change=change):
                 with self.assertRaises(worker.WorkerError):
@@ -1112,37 +1187,87 @@ class CoreClientTests(unittest.TestCase):
 
         def opener(request, timeout):
             requests.append((request, timeout))
-            if request.full_url.endswith("/agents"):
-                value = {**core_fixture("agents_response.json"), "future": 1}
+            if request.full_url.endswith("/enroll"):
+                value = {
+                    "controller_id": CONTROLLER_ID,
+                    "credential": CONTROLLER_CREDENTIAL,
+                }
             else:
                 value = {**core_fixture("heartbeat_response.json"), "future": 1}
             return Response(json.dumps(value).encode())
 
         client = self.client(opener)
-        self.assertEqual(client.agents()["agents_version"], 3)
         body = core_fixture("heartbeat_request.json")
         self.assertEqual(client.heartbeat(body)["heartbeat_every_s"], 15)
-        listed, beat = requests
+        controller = {
+            "kind": "ec2",
+            "name": "cloud-machine-slot-a",
+            "platform": {"os": "linux", "arch": "x64", "os_version": "6.1.0"},
+            "version": worker.SUPERVISOR_VERSION,
+        }
         self.assertEqual(
-            listed[0].full_url,
-            f"https://switch.example.test/agent-api/hosted/machines/{MACHINE}/agents",
+            client.enroll_controller(controller),
+            (CONTROLLER_ID, CONTROLLER_CREDENTIAL),
         )
-        self.assertEqual(listed[0].get_method(), "GET")
-        self.assertIsNone(listed[0].data)
+        beat, enrolled = requests
         self.assertEqual(
             beat[0].full_url,
             f"https://switch.example.test/agent-api/hosted/machines/{MACHINE}/heartbeat",
         )
         self.assertEqual(beat[0].get_method(), "POST")
         self.assertEqual(json.loads(beat[0].data), body)
+        self.assertEqual(
+            beat[0].get_header("Authorization"), "Bearer " + MACHINE_CAPABILITY
+        )
+        self.assertEqual(
+            enrolled[0].full_url,
+            "https://switch.example.test/agent-api/v1/management/controllers/enroll",
+        )
+        self.assertEqual(enrolled[0].get_method(), "POST")
+        self.assertIsNone(enrolled[0].get_header("Authorization"))
+        self.assertEqual(
+            json.loads(enrolled[0].data),
+            {
+                "proof": {
+                    "kind": "machine_secret",
+                    "machine_id": MACHINE,
+                    "capability": MACHINE_CAPABILITY,
+                },
+                "controller": controller,
+            },
+        )
         for request, timeout in requests:
             self.assertEqual(timeout, worker.HTTP_TIMEOUT_SECONDS)
-            self.assertEqual(
-                request.get_header("Authorization"),
-                "Bearer " + MACHINE_CAPABILITY,
-            )
             self.assertEqual(request.get_header("X-switch-host-boot-id"), BOOT_1)
             self.assertEqual(request.get_header("X-switch-host-instance-id"), INSTANCE)
+
+    def test_the_enrollment_body_is_the_contract_fixture_shape(self):
+        sent = []
+
+        def opener(request, timeout):
+            sent.append(json.loads(request.data))
+            return Response(
+                json.dumps(
+                    {"controller_id": CONTROLLER_ID, "credential": CONTROLLER_CREDENTIAL}
+                ).encode()
+            )
+
+        self.client(opener).enroll_controller(
+            {
+                "kind": "ec2",
+                "name": "cloud-machine-slot-a",
+                "platform": {"os": "linux", "arch": "x64", "os_version": "6.1.0"},
+                "version": worker.SUPERVISOR_VERSION,
+            }
+        )
+        recorded = json.loads(
+            (
+                HERE.parents[2]
+                / "core/tests/switch_core/fixtures/agent_controllers"
+                / "enroll_machine_request.json"
+            ).read_text()
+        )
+        self.assertEqual(structure(sent[0]), structure(recorded))
 
     def test_status_codes_map_to_restart_retire_and_retry(self):
         for code, expected in (
@@ -1159,38 +1284,57 @@ class CoreClientTests(unittest.TestCase):
                 with self.assertRaises(expected):
                     self.client(opener).heartbeat({})
 
+    def test_enrollment_status_codes(self):
+        for code, expected in (
+            (401, worker.WorkerError),
+            (400, worker.WorkerError),
+            (404, worker.WorkerError),
+            (410, worker.MachineRetired),
+            (429, worker.CoreUnavailable),
+            (503, worker.CoreUnavailable),
+        ):
+
+            def opener(request, timeout, code=code):
+                raise http_error(code)
+
+            with self.subTest(code=code):
+                with self.assertRaises(expected):
+                    self.client(opener).enroll_controller({})
+
     def test_network_errors_and_invalid_bodies_are_retryable(self):
         def unreachable(request, timeout):
             raise urllib.error.URLError("down")
 
         with self.assertRaises(worker.CoreUnavailable):
-            self.client(unreachable).agents()
+            self.client(unreachable).heartbeat({})
+        with self.assertRaises(worker.CoreUnavailable):
+            self.client(unreachable).enroll_controller({})
+        for raw in (b"not json", b"[]", b'{"agents_version": true}'):
+            with self.subTest(raw=raw):
+                with self.assertRaises(worker.CoreUnavailable):
+                    self.client(
+                        lambda request, timeout, raw=raw: Response(raw)
+                    ).heartbeat({})
         for raw in (
             b"not json",
-            b"[]",
-            b'{"agents_version": true, "agents": []}',
-            b'{"agents_version": 1}',
+            b'{"controller_id": "x"}',
+            b'{"controller_id": "x", "credential": "short"}',
         ):
             with self.subTest(raw=raw):
                 with self.assertRaises(worker.CoreUnavailable):
                     self.client(
                         lambda request, timeout, raw=raw: Response(raw)
-                    ).agents()
+                    ).enroll_controller({})
 
     def test_redirects_are_not_followed(self):
         hits = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
+            def do_POST(self):
                 hits.append(self.path)
-                if self.path.endswith("/agents"):
-                    self.send_response(302)
-                    self.send_header("Location", "/elsewhere")
-                    self.end_headers()
-                else:
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(b'{"agents_version":1,"agents":[]}')
+                self.send_response(302)
+                self.send_header("Location", "/elsewhere")
+                self.end_headers()
 
             def log_message(self, *_args):
                 pass
@@ -1203,8 +1347,8 @@ class CoreClientTests(unittest.TestCase):
         endpoint = f"http://127.0.0.1:{server.server_address[1]}/agent-api"
         with mock.patch.dict(os.environ, {"no_proxy": "*", "NO_PROXY": "*"}):
             with self.assertRaisesRegex(worker.CoreUnavailable, "302"):
-                self.client(worker.default_opener(), endpoint).agents()
-        self.assertEqual(hits, [f"/agent-api/hosted/machines/{MACHINE}/agents"])
+                self.client(worker.default_opener(), endpoint).heartbeat({})
+        self.assertEqual(hits, [f"/agent-api/hosted/machines/{MACHINE}/heartbeat"])
 
 
 class SystemdTests(unittest.TestCase):
@@ -1256,6 +1400,8 @@ class SystemdTests(unittest.TestCase):
 
 
 class SupervisorTests(RootPatched):
+    """The controller's requests: install, stop, remove, prune and state."""
+
     def setUp(self):
         super().setUp()
         self.harness = Harness(self.temporary / "machine")
@@ -1263,16 +1409,35 @@ class SupervisorTests(RootPatched):
         self.paths = self.harness.paths
         self.commands = self.harness.commands
 
+    def install(self, agent: dict, *, restart: bool = False) -> dict:
+        return self.harness.install(agent, restart=restart)
+
+    def assertInstalled(self, agent: dict, **options) -> dict:
+        answer = self.install(agent, **options)
+        self.assertTrue(answer["ok"], answer)
+        return answer
+
     def state(self, agent_id=AGENT) -> dict:
         body = self.supervisor.heartbeat_body()
         return next(agent for agent in body["agents"] if agent["agent_id"] == agent_id)
 
     def test_new_running_agent_gets_files_directories_and_a_restart(self):
-        self.supervisor.reconcile([valid_agent()])
+        answer = self.assertInstalled(valid_agent())
         unit = f"switch-agent@{AGENT}.service"
         self.assertEqual(
             self.commands.actions(),
             [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+        self.assertEqual(
+            answer["unit"],
+            {
+                "installed": True,
+                "revision": 1,
+                "process_state": "stopped",
+                "restarts": 0,
+                "oom_kills": 0,
+                "exit": None,
+            },
         )
         directory = self.paths.agents_runtime / AGENT
         self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o750)
@@ -1284,8 +1449,7 @@ class SupervisorTests(RootPatched):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o440)
         self.assertEqual((directory / "worker-capability").read_text(), CAPABILITY)
         self.assertEqual(
-            json.loads((directory / "switch.json").read_text()),
-            valid_agent()["switch_credentials"],
+            json.loads((directory / "switch.json").read_text()), relay_credentials()
         )
         deployment = json.loads((directory / "deployment.json").read_text())
         self.assertEqual(deployment["version"], 2)
@@ -1306,12 +1470,18 @@ class SupervisorTests(RootPatched):
             self.paths.repos,
         ):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700, path)
-        self.assertEqual(stat.S_IMODE(self.paths.agents.stat().st_mode), 0o755)
-        self.assertEqual(stat.S_IMODE(self.paths.worktrees.stat().st_mode), 0o755)
         self.assertEqual(list(self.paths.agents_runtime.glob(".*")), [])
 
+    def test_the_deployment_matches_the_recorded_one(self):
+        self.assertInstalled({**core_agent(), "switch_credentials": relay_credentials()})
+        written = (self.paths.agents_runtime / AGENT / "deployment.json").read_text()
+        written = written.replace(str(self.paths.data), "/data").replace(
+            str(self.paths.runtime), "/run/switch-hosted"
+        )
+        self.assertEqual(json.loads(written), fixture("deployment.json"))
+
     def test_new_stopped_agent_is_stopped(self):
-        self.supervisor.reconcile([valid_agent(desired_state="stopped")])
+        self.assertInstalled(valid_agent(desired_state="stopped"))
         unit = f"switch-agent@{AGENT}.service"
         self.assertEqual(
             self.commands.actions(),
@@ -1320,47 +1490,80 @@ class SupervisorTests(RootPatched):
         self.supervisor._observe()
         self.assertEqual(self.state()["process_state"], "stopped")
 
-    def test_same_revision_only_corrects_the_running_state(self):
+    def test_same_files_only_correct_the_running_state(self):
         unit = f"switch-agent@{AGENT}.service"
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         deployment = self.paths.agents_runtime / AGENT / "deployment.json"
         inode = deployment.stat().st_ino
         self.commands.clear()
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         self.assertEqual(self.commands.actions(), [["--no-block", "start", unit]])
         self.commands.clear()
         self.commands.units[AGENT] = {"ActiveState": "active", "SubState": "running"}
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         self.assertEqual(self.commands.actions(), [])
-        self.supervisor.reconcile([valid_agent(desired_state="stopped")])
-        self.assertEqual(
-            self.commands.actions(),
-            [["--no-block", "stop", unit], ["reset-failed", unit]],
-        )
-        self.commands.clear()
         self.commands.units[AGENT] = {
             "ActiveState": "failed",
             "Result": "start-limit-hit",
         }
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         self.assertEqual(self.commands.actions(), [])
         self.assertEqual(deployment.stat().st_ino, inode)
 
-    def test_stopping_a_crashed_agent_resets_the_failed_unit(self):
+    def test_a_restart_request_restarts_a_failed_unit(self):
         unit = f"switch-agent@{AGENT}.service"
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         self.commands.clear()
         self.commands.units[AGENT] = {
             "ActiveState": "failed",
             "Result": "start-limit-hit",
         }
-        self.supervisor.reconcile([valid_agent(desired_state="stopped")])
+        self.assertInstalled(valid_agent(), restart=True)
+        self.assertEqual(
+            self.commands.actions(),
+            [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+
+    def test_new_relay_credentials_rewrite_the_files_and_restart(self):
+        unit = f"switch-agent@{AGENT}.service"
+        self.assertInstalled(valid_agent())
+        self.commands.clear()
+        moved = relay_credentials()
+        moved["env"]["SWITCH_API_ENDPOINT"] = "http://127.0.0.1:42000"
+        self.assertInstalled(valid_agent(switch_credentials=moved))
+        self.assertEqual(
+            self.commands.actions(),
+            [["reset-failed", unit], ["--no-block", "restart", unit]],
+        )
+        self.assertEqual(
+            json.loads((self.paths.agents_runtime / AGENT / "switch.json").read_text()),
+            moved,
+        )
+
+    def test_a_stop_request_stops_and_is_reported_stopped(self):
+        unit = f"switch-agent@{AGENT}.service"
+        self.assertInstalled(valid_agent())
+        self.commands.clear()
+        self.commands.units[AGENT] = {
+            "ActiveState": "failed",
+            "Result": "start-limit-hit",
+        }
+        answer = self.supervisor.handle_request(
+            {"op": "stop", "agent_id": AGENT, "wait": False}
+        )
+        self.assertTrue(answer["ok"], answer)
         self.assertEqual(
             self.commands.actions(),
             [["--no-block", "stop", unit], ["reset-failed", unit]],
         )
+        self.commands.units[AGENT] = {}
+        self.supervisor._observe()
+        self.assertEqual(self.state()["process_state"], "stopped")
+        restarted = self.harness.build()
+        restarted._observe()
+        self.assertEqual(restarted.heartbeat_body()["agents"][0]["process_state"], "stopped")
 
-    def test_failed_restart_is_retried_on_the_next_reconcile(self):
+    def test_failed_restart_is_retried_on_the_next_install(self):
         unit = f"switch-agent@{AGENT}.service"
         failing = [True]
         original = self.commands.run
@@ -1372,31 +1575,31 @@ class SupervisorTests(RootPatched):
             return original(arguments, capture)
 
         self.commands.run = run
-        with (
-            self.assertLogs(worker.logger, "ERROR"),
-            self.assertRaises(worker.ReconcileIncomplete),
-        ):
-            self.supervisor.reconcile([valid_agent()])
+        with self.assertLogs(worker.logger, "ERROR"):
+            answer = self.install(valid_agent())
+        self.assertEqual(answer["error"]["code"], "setup_failed")
+        self.supervisor._observe()
+        self.assertEqual(self.state()["exit"]["result"], "setup-failed")
         self.commands.clear()
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         self.assertEqual(
             self.commands.actions(),
             [["reset-failed", unit], ["--no-block", "restart", unit]],
         )
         self.commands.clear()
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         self.assertEqual(self.commands.actions(), [["--no-block", "start", unit]])
 
     def test_revision_change_rewrites_files_and_resets_a_crashed_unit(self):
         unit = f"switch-agent@{AGENT}.service"
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         self.commands.clear()
         self.commands.units[AGENT] = {
             "ActiveState": "failed",
             "Result": "start-limit-hit",
         }
-        self.supervisor.reconcile(
-            [valid_agent(revision=4, worker_capability="wcap-test-1111111111111111")]
+        self.assertInstalled(
+            valid_agent(revision=4, worker_capability="wcap-test-1111111111111111")
         )
         self.assertEqual(
             self.commands.actions(),
@@ -1411,49 +1614,12 @@ class SupervisorTests(RootPatched):
             "wcap-test-1111111111111111",
         )
 
-    def test_core_agent_list_configures_the_agent(self):
-        requests: list = []
-        self.harness.client = core_client(requests)
-        supervisor = self.harness.build()
-        supervisor.tick()
-        unit = f"switch-agent@{AGENT}.service"
-        self.assertEqual(
-            self.commands.actions(),
-            [["reset-failed", unit], ["--no-block", "restart", unit]],
-        )
-        self.assertEqual(
-            [request.full_url.rsplit("/", 1)[-1] for request in requests],
-            ["agents", "heartbeat"],
-        )
-        written = (self.paths.agents_runtime / AGENT / "deployment.json").read_text()
-        written = written.replace(str(self.paths.data), "/data").replace(
-            str(self.paths.runtime), "/run/switch-hosted"
-        )
-        self.assertEqual(json.loads(written), fixture("deployment.json"))
-        body = json.loads(requests[1].data)
-        agent = core_agent()
-        self.assertEqual(
-            [
-                (state["launch_id"], state["revision"], state["exit"])
-                for state in body["agents"]
-            ],
-            [(agent["launch_id"], agent["revision"], None)],
-        )
-        self.harness.now = 14
-        supervisor.tick()
-        self.assertEqual(len(requests), 2)
-        self.harness.now = 15
-        supervisor.tick()
-        self.assertEqual(
-            [request.full_url.rsplit("/", 1)[-1] for request in requests],
-            ["agents", "heartbeat", "heartbeat"],
-        )
-
-    def test_core_agent_without_a_credential_kind_is_stopped_and_kept(self):
-        self.supervisor.reconcile(core_fixture("agents_response.json")["agents"])
+    def test_an_agent_without_a_credential_kind_is_stopped_and_kept(self):
+        self.assertInstalled(valid_agent())
         self.commands.clear()
         with self.assertLogs(worker.logger, "ERROR"):
-            self.supervisor.reconcile([core_agent(provider_credential_kind=None)])
+            answer = self.install(valid_agent(provider_credential_kind=None))
+        self.assertEqual(answer["error"]["code"], "invalid_config")
         unit = f"switch-agent@{AGENT}.service"
         self.assertEqual(
             self.commands.actions(),
@@ -1479,105 +1645,48 @@ class SupervisorTests(RootPatched):
             },
         )
 
-    def test_unavailable_agent_is_stopped_and_kept(self):
-        unit = f"switch-agent@{AGENT}.service"
-        self.supervisor.reconcile([valid_agent()])
-        self.commands.clear()
-        entry = core_fixture("agents_response_unavailable.json")["agents"][0]
-        self.assertNotIn("worker_capability", entry)
-        self.assertNotIn("switch_credentials", entry)
-        with self.assertLogs(worker.logger, "WARNING"):
-            self.supervisor.reconcile([entry])
-        self.assertEqual(
-            self.commands.actions(),
-            [["--no-block", "stop", unit], ["reset-failed", unit]],
-        )
-        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
-        self.assertTrue((self.paths.agents / AGENT / "home").is_dir())
-        self.assertTrue(
-            (self.paths.worktrees / AGENT / "example-org/example-repo").is_dir()
-        )
-        self.supervisor._observe()
-        self.assertEqual(
-            self.state(),
-            {
-                "launch_id": entry["launch_id"],
-                "agent_id": AGENT,
-                "revision": 1,
-                "process_state": "stopped",
-                "restarts": 0,
-                "oom_kills": 0,
-                "exit": {"code": None, "signal": None, "result": "invalid-config"},
-                "since": "2026-01-01T00:00:00Z",
-            },
-        )
-        self.commands.clear()
-        self.supervisor.reconcile([valid_agent()])
-        self.assertEqual(
-            self.commands.actions(),
-            [["reset-failed", unit], ["--no-block", "restart", unit]],
-        )
-
-    def test_agent_with_a_missing_identity_is_stopped_and_kept(self):
-        self.supervisor.reconcile([valid_agent()])
-        entry = core_fixture("agents_response_unavailable.json")["agents"][0]
-        entry["unavailable"] = "agent_identity_missing"
-        with self.assertLogs(worker.logger, "WARNING"):
-            self.supervisor.reconcile([entry])
-        self.assertTrue((self.paths.agents / AGENT / "home").is_dir())
-        self.supervisor._observe()
-        self.assertEqual(self.state()["process_state"], "stopped")
-
-    def test_malformed_unavailable_code_is_an_invalid_config(self):
-        entry = core_fixture("agents_response_unavailable.json")["agents"][0]
-        entry["unavailable"] = ""
+    def test_a_switch_credential_is_never_written(self):
+        key = {
+            "env": {
+                "SWITCH_API_ENDPOINT": "https://switch.example.test/agent-api",
+                "SWITCH_API_TOKEN": "test-token-placeholder",
+                "SWITCH_AGENT_ID": AGENT,
+            }
+        }
         with self.assertLogs(worker.logger, "ERROR"):
-            self.supervisor.reconcile([entry])
-        self.supervisor._observe()
-        self.assertEqual(self.state()["process_state"], "failed")
-        self.assertEqual(self.state()["exit"]["result"], "invalid-config")
-
-    def test_invalid_revision_stops_a_running_agent_but_keeps_its_data(self):
-        self.supervisor.reconcile([valid_agent()])
-        self.commands.clear()
-        with self.assertLogs(worker.logger, "ERROR"):
-            self.supervisor.reconcile(
-                [valid_agent(revision=4, provider_credential_kind="oauth")]
-            )
-        unit = f"switch-agent@{AGENT}.service"
-        self.assertEqual(
-            self.commands.actions(),
-            [["--no-block", "stop", unit], ["reset-failed", unit]],
-        )
-        self.assertFalse((self.paths.agents_runtime / AGENT).exists())
-        self.assertTrue((self.paths.agents / AGENT).exists())
-
-    def test_duplicate_agents_are_all_invalid(self):
-        with self.assertLogs(worker.logger, "ERROR"):
-            self.supervisor.reconcile(
-                [valid_agent(), valid_agent(launch_id="req-0000000000000009")]
-            )
-        self.supervisor._observe()
-        states = self.supervisor.heartbeat_body()["agents"]
-        self.assertEqual(
-            [agent["exit"]["result"] for agent in states], ["invalid-config"] * 2
-        )
+            answer = self.install(valid_agent(switch_credentials=key))
+        self.assertEqual(answer["error"]["code"], "invalid_config")
         self.assertFalse((self.paths.agents_runtime / AGENT).exists())
 
-    def test_entries_without_identity_are_left_out(self):
-        with self.assertLogs(worker.logger, "ERROR"):
-            self.supervisor.reconcile([{"agent_id": AGENT}, "junk"])
+    def test_malformed_requests_are_refused_without_touching_the_host(self):
+        for request in (
+            "junk",
+            {},
+            {"op": "launch"},
+            {"op": "install", "agent": valid_agent()},
+            {"op": "install", "agent": valid_agent(), "restart": "yes"},
+            {"op": "install", "agent": "junk", "restart": False},
+            {"op": "install", "agent": {"agent_id": AGENT}, "restart": False},
+            {"op": "install", "agent": valid_agent(agent_id="../etc"), "restart": False},
+            {"op": "stop", "agent_id": "../../etc", "wait": False},
+            {"op": "stop", "agent_id": AGENT},
+            {"op": "remove", "agent_id": AGENT.upper()},
+            {"op": "prune", "keep": ["not-an-agent"]},
+            {"op": "state", "agent_id": AGENT, "extra": 1},
+        ):
+            with self.subTest(request=request):
+                answer = self.supervisor.handle_request(request)
+                self.assertEqual(answer["ok"], False)
+                self.assertEqual(answer["error"]["code"], "invalid_request")
+        self.assertEqual(self.commands.actions(), [])
         self.supervisor._observe()
         self.assertEqual(self.supervisor.heartbeat_body()["agents"], [])
-        self.assertEqual(self.commands.actions(), [])
 
     def test_setup_failure_is_reported(self):
         (self.paths.worktrees / AGENT).write_text("not a directory")
-        with (
-            self.assertLogs(worker.logger, "ERROR"),
-            self.assertRaises(worker.ReconcileIncomplete),
-        ):
-            self.supervisor.reconcile([valid_agent()])
+        with self.assertLogs(worker.logger, "ERROR"):
+            answer = self.install(valid_agent())
+        self.assertEqual(answer["error"]["code"], "setup_failed")
         self.supervisor._observe()
         self.assertEqual(self.state()["process_state"], "failed")
         self.assertEqual(self.state()["exit"]["result"], "setup-failed")
@@ -1597,9 +1706,9 @@ class SupervisorTests(RootPatched):
         with (
             mock.patch.object(worker.os, "mkdir", racing_mkdir),
             self.assertLogs(worker.logger, "ERROR"),
-            self.assertRaises(worker.ReconcileIncomplete),
         ):
-            self.supervisor.reconcile([valid_agent()])
+            answer = self.install(valid_agent())
+        self.assertEqual(answer["error"]["code"], "setup_failed")
         self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o755)
         for call in worker.os.chown.call_args_list + worker.os.fchown.call_args_list:
             self.assertNotIn(str(victim), str(call))
@@ -1608,7 +1717,7 @@ class SupervisorTests(RootPatched):
         self.assertEqual(self.commands.actions(), [])
 
     def test_loosened_directory_modes_are_repaired(self):
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         loosened = (
             self.paths.agents / AGENT / "home",
             self.paths.worktrees / AGENT / "example-org/example-repo",
@@ -1617,21 +1726,22 @@ class SupervisorTests(RootPatched):
         for path in loosened:
             path.chmod(0o755)
         worker.prepare_layout(self.paths, os.getuid(), os.getgid())
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         self.supervisor._observe()
         self.assertIsNone(self.state()["exit"])
         for path in loosened:
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700, path)
 
-    def test_absent_agent_is_removed_and_mirrors_are_kept(self):
-        self.supervisor.reconcile([valid_agent(), second_agent()])
+    def test_a_removed_agent_goes_and_mirrors_are_kept(self):
+        self.assertInstalled(valid_agent())
+        self.assertInstalled(second_agent())
         mirror = self.paths.repos / "example-org/example-repo.git"
         mirror.mkdir(parents=True)
         (self.paths.agents / AGENT / "home/notes").write_text("x")
-        (self.paths.agents / "not-a-uuid").mkdir()
         self.commands.clear()
-        with self.assertLogs(worker.logger, "WARNING") as logs:
-            self.supervisor.reconcile([second_agent()])
+        with self.assertLogs(worker.logger, "WARNING"):
+            answer = self.harness.remove(AGENT)
+        self.assertEqual(answer, {"ok": True})
         actions = self.commands.actions()
         self.assertIn(["stop", f"switch-agent@{AGENT}.service"], actions)
         self.assertNotIn(["stop", f"switch-agent@{AGENT_2}.service"], actions)
@@ -1639,7 +1749,6 @@ class SupervisorTests(RootPatched):
         self.assertFalse((self.paths.agents / AGENT).exists())
         self.assertFalse((self.paths.worktrees / AGENT).exists())
         self.assertTrue((self.paths.agents / AGENT_2).exists())
-        self.assertTrue((self.paths.agents / "not-a-uuid").exists())
         self.assertTrue(mirror.exists())
         worktree = self.paths.worktrees / AGENT / "example-org/example-repo"
         self.assertEqual(
@@ -1649,6 +1758,25 @@ class SupervisorTests(RootPatched):
                 (mirror, ["worktree", "prune"]),
             ],
         )
+        self.supervisor._observe()
+        self.assertEqual(
+            [agent["agent_id"] for agent in self.supervisor.heartbeat_body()["agents"]],
+            [AGENT_2],
+        )
+
+    def test_prune_removes_what_the_controller_does_not_keep(self):
+        self.assertInstalled(valid_agent())
+        self.assertInstalled(second_agent())
+        stray = self.paths.agents / "3f1c2b4a-0000-4000-8000-0000000000a9"
+        stray.mkdir()
+        (self.paths.agents / "not-a-uuid").mkdir()
+        with self.assertLogs(worker.logger, "WARNING") as logs:
+            answer = self.supervisor.handle_request({"op": "prune", "keep": [AGENT_2]})
+        self.assertEqual(answer, {"ok": True})
+        self.assertFalse((self.paths.agents / AGENT).exists())
+        self.assertFalse(stray.exists())
+        self.assertTrue((self.paths.agents / AGENT_2).exists())
+        self.assertTrue((self.paths.agents / "not-a-uuid").exists())
         self.assertTrue(any("not-a-uuid" in line for line in logs.output))
 
     def test_failed_prune_is_retried(self):
@@ -1664,30 +1792,27 @@ class SupervisorTests(RootPatched):
                     raise worker.WorkerError("git worktree prune failed.")
 
         harness = Harness(self.temporary / "prune", git=FlakyPruneGit())
-        harness.supervisor.reconcile([valid_agent()])
+        self.assertTrue(harness.install(valid_agent())["ok"])
         mirror = harness.paths.repos / "example-org/example-repo.git"
         mirror.mkdir(parents=True)
-        with (
-            self.assertLogs(worker.logger, "WARNING"),
-            self.assertRaises(worker.ReconcileIncomplete),
-        ):
-            harness.supervisor.reconcile([])
+        with self.assertLogs(worker.logger, "WARNING"):
+            harness.remove(AGENT)
         self.assertFalse((harness.paths.worktrees / AGENT).exists())
-        harness.supervisor.reconcile([])
+        harness.supervisor.tick()
         self.assertEqual(
             [arguments for _mirror, arguments in harness.git.calls][-2:],
             [["worktree", "prune"], ["worktree", "prune"]],
         )
         harness.git.calls.clear()
-        harness.supervisor.reconcile([])
+        harness.supervisor.tick()
         self.assertEqual(harness.git.calls, [])
 
     def test_owner_named_workspace_is_cleaned_up(self):
-        self.supervisor.reconcile([valid_agent(repository="workspace/example-repo")])
+        self.assertInstalled(valid_agent(repository="workspace/example-repo"))
         mirror = self.paths.repos / "workspace/example-repo.git"
         mirror.mkdir(parents=True)
         with self.assertLogs(worker.logger, "WARNING"):
-            self.supervisor.reconcile([])
+            self.harness.remove(AGENT)
         worktree = self.paths.worktrees / AGENT / "workspace/example-repo"
         self.assertEqual(
             self.harness.git.calls,
@@ -1699,9 +1824,11 @@ class SupervisorTests(RootPatched):
 
     def test_agent_with_blocked_ownership_is_not_started(self):
         self.harness.ownership_blocked.add(AGENT)
-        supervisor = self.harness.build()
-        with self.assertLogs(worker.logger, "ERROR"):
-            supervisor.reconcile([valid_agent(), second_agent()])
+        self.harness.supervisor = self.harness.build()
+        supervisor = self.harness.supervisor
+        answer = self.install(valid_agent())
+        self.assertEqual(answer["error"]["code"], "ownership_invalid")
+        self.assertTrue(self.install(second_agent())["ok"])
         self.assertEqual(
             self.commands.actions(),
             [
@@ -1723,14 +1850,14 @@ class SupervisorTests(RootPatched):
         self.assertNotEqual(states[AGENT_2]["process_state"], "failed")
 
     def test_worktree_without_mirror_skips_git(self):
-        self.supervisor.reconcile([valid_agent()])
+        self.assertInstalled(valid_agent())
         with self.assertLogs(worker.logger, "WARNING"):
-            self.supervisor.reconcile([])
+            self.harness.remove(AGENT)
         self.assertEqual(self.harness.git.calls, [])
         self.assertFalse((self.paths.worktrees / AGENT).exists())
 
-    def test_failed_removal_is_logged_and_retried(self):
-        self.supervisor.reconcile([valid_agent()])
+    def test_failed_removal_is_reported_and_can_be_asked_again(self):
+        self.assertInstalled(valid_agent())
         failing = [True]
         original = self.commands.run
 
@@ -1740,14 +1867,12 @@ class SupervisorTests(RootPatched):
             return original(arguments, capture)
 
         self.commands.run = run
-        with (
-            self.assertLogs(worker.logger, "ERROR"),
-            self.assertRaises(worker.ReconcileIncomplete),
-        ):
-            self.supervisor.reconcile([])
+        with self.assertLogs(worker.logger, "ERROR"):
+            answer = self.harness.remove(AGENT)
+        self.assertEqual(answer["error"]["code"], "remove_failed")
         self.assertTrue((self.paths.agents / AGENT).exists())
         with self.assertLogs(worker.logger, "WARNING"):
-            self.supervisor.reconcile([])
+            self.assertEqual(self.harness.remove(AGENT), {"ok": True})
         self.assertFalse((self.paths.agents / AGENT).exists())
 
     def test_removal_stops_when_git_outlives_its_kill(self):
@@ -1757,13 +1882,11 @@ class SupervisorTests(RootPatched):
                 raise worker.GitAbandoned("git worktree remove did not exit.")
 
         harness = Harness(self.temporary / "abandoned", git=AbandoningGit())
-        harness.supervisor.reconcile([valid_agent()])
+        self.assertTrue(harness.install(valid_agent())["ok"])
         (harness.paths.repos / "example-org/example-repo.git").mkdir(parents=True)
-        with (
-            self.assertLogs(worker.logger, "ERROR"),
-            self.assertRaises(worker.ReconcileIncomplete),
-        ):
-            harness.supervisor.reconcile([])
+        with self.assertLogs(worker.logger, "ERROR"):
+            answer = harness.remove(AGENT)
+        self.assertEqual(answer["error"]["code"], "remove_failed")
         self.assertTrue(
             (harness.paths.worktrees / AGENT / "example-org/example-repo").is_dir()
         )
@@ -1774,8 +1897,34 @@ class SupervisorTests(RootPatched):
         stale = self.paths.agents_runtime / ".tmp-crashed"
         stale.mkdir(mode=0o750)
         (stale / "switch.json").write_text("{}")
-        self.supervisor.reconcile([])
+        self.assertInstalled(valid_agent())
         self.assertFalse(stale.exists())
+
+    def test_installed_agents_survive_a_supervisor_restart(self):
+        self.assertInstalled(valid_agent())
+        self.assertInstalled(second_agent(desired_state="stopped"))
+        held = self.paths.held_record
+        self.assertEqual(stat.S_IMODE(held.stat().st_mode), 0o600)
+        self.assertNotIn(RELAY_TOKEN, held.read_text())
+        self.assertNotIn(CAPABILITY, held.read_text())
+        restarted = self.harness.build()
+        restarted._observe()
+        self.assertEqual(
+            {
+                agent["agent_id"]: agent["process_state"]
+                for agent in restarted.heartbeat_body()["agents"]
+            },
+            {AGENT: "pending", AGENT_2: "stopped"},
+        )
+
+    def test_a_retired_machine_installs_nothing(self):
+        self.harness.client.heartbeats.append(worker.MachineRetired())
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.commands.clear()
+        answer = self.install(valid_agent())
+        self.assertEqual(answer["error"]["code"], "retired")
+        self.assertEqual(self.commands.actions(), [])
 
     def test_slice_memory_is_total_minus_one_gibibyte(self):
         self.supervisor.limit_slice()
@@ -1833,6 +1982,37 @@ class ProcessStateTests(RootPatched):
         with self.assertRaisesRegex(worker.WorkerError, "unknown unit state"):
             self.observe(ActiveState="maintenance")
 
+    def test_the_unit_report_carries_what_the_controller_maps(self):
+        self.assertTrue(self.harness.install(valid_agent())["ok"])
+        self.commands.units[AGENT] = {
+            "ActiveState": "failed",
+            "Result": "exit-code",
+            "NRestarts": "2",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "75",
+            "ExecMainExitTimestampMonotonic": "100",
+        }
+        answer = self.supervisor.handle_request({"op": "state", "agent_id": AGENT})
+        self.assertEqual(
+            answer,
+            {
+                "ok": True,
+                "unit": {
+                    "installed": True,
+                    "revision": 1,
+                    "process_state": "failed",
+                    "restarts": 2,
+                    "oom_kills": 0,
+                    "exit": {"code": 75, "signal": None, "result": "exit-code"},
+                },
+            },
+        )
+        unknown = self.supervisor.handle_request(
+            {"op": "state", "agent_id": AGENT_2}
+        )
+        self.assertEqual(unknown["unit"]["installed"], False)
+        self.assertEqual(unknown["unit"]["process_state"], "pending")
+
     def test_restarts_and_exit_shape(self):
         state, restarts, exit_value = self.observe(
             ActiveState="failed",
@@ -1865,7 +2045,7 @@ class ProcessStateTests(RootPatched):
         self.assertIsNone(self.observe()[2])
 
     def test_oom_kills_are_counted_once_per_exit_and_persisted(self):
-        self.supervisor.reconcile([valid_agent()])
+        self.assertTrue(self.harness.install(valid_agent())["ok"])
         oom = {
             "ActiveState": "activating",
             "SubState": "auto-restart",
@@ -1901,15 +2081,16 @@ class ProcessStateTests(RootPatched):
             },
         )
         restarted = self.harness.build()
-        restarted.reconcile([valid_agent()])
+        install = {"op": "install", "agent": valid_agent(), "restart": False}
+        self.assertTrue(restarted.handle_request(install)["ok"])
         restarted._observe()
         self.assertEqual(restarted.heartbeat_body()["agents"][0]["oom_kills"], 2)
         with self.assertLogs(worker.logger, "WARNING"):
-            restarted.reconcile([])
+            restarted.handle_request({"op": "remove", "agent_id": AGENT})
         self.assertEqual(json.loads(records.read_text()), {"version": 1, "agents": {}})
 
     def test_new_revision_resets_the_oom_count(self):
-        self.supervisor.reconcile([valid_agent()])
+        self.assertTrue(self.harness.install(valid_agent())["ok"])
         self.commands.units[AGENT] = {
             "ActiveState": "activating",
             "SubState": "auto-restart",
@@ -1920,7 +2101,7 @@ class ProcessStateTests(RootPatched):
         }
         self.supervisor._observe()
         self.assertEqual(self.supervisor.heartbeat_body()["agents"][0]["oom_kills"], 1)
-        self.supervisor.reconcile([valid_agent(revision=2)])
+        self.assertTrue(self.harness.install(valid_agent(revision=2))["ok"])
         self.supervisor._observe()
         self.assertEqual(self.supervisor.heartbeat_body()["agents"][0]["oom_kills"], 0)
         self.assertEqual(
@@ -1928,7 +2109,9 @@ class ProcessStateTests(RootPatched):
             {"oomKills": 0, "lastOomExit": f"{BOOT_1}:100", "revision": 2},
         )
         restarted = self.harness.build()
-        restarted.reconcile([valid_agent(revision=2)])
+        restarted.handle_request(
+            {"op": "install", "agent": valid_agent(revision=2), "restart": False}
+        )
         restarted._observe()
         self.assertEqual(restarted.heartbeat_body()["agents"][0]["oom_kills"], 0)
 
@@ -1938,7 +2121,7 @@ class ProcessStateTests(RootPatched):
             self.harness.build()
 
     def test_since_changes_only_with_the_process_state(self):
-        self.supervisor.reconcile([valid_agent()])
+        self.assertTrue(self.harness.install(valid_agent())["ok"])
         self.commands.units[AGENT] = {"ActiveState": "active", "SubState": "running"}
         self.assertTrue(self.supervisor._observe())
         self.harness.clock_value = datetime(2026, 1, 1, 0, 5, tzinfo=UTC)
@@ -1969,7 +2152,13 @@ class ProcessStateTests(RootPatched):
             },
         )
         supervisor = self.harness.build()
-        supervisor.reconcile(core_fixture("agents_response.json")["agents"])
+        supervisor.handle_request(
+            {
+                "op": "install",
+                "agent": {**core_agent(), "switch_credentials": relay_credentials()},
+                "restart": False,
+            }
+        )
         self.commands.units[AGENT] = {
             "ActiveState": "failed",
             "SubState": "failed",
@@ -1995,28 +2184,190 @@ class LoopTests(RootPatched):
         self.supervisor = self.harness.supervisor
         self.client = self.harness.client
         self.commands = self.harness.commands
+        self.paths = self.harness.paths
 
-    def test_boot_fetches_reconciles_and_heartbeats(self):
-        self.client.listings.append(listing(valid_agent()))
+    def test_boot_enrolls_and_starts_the_controller_then_heartbeats(self):
         self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 1)
+        self.assertEqual(len(self.client.enrolled), 1)
+        self.assertEqual(
+            self.client.enrolled[0],
+            {
+                "kind": "ec2",
+                "name": "cloud-machine-slot-a",
+                "platform": {
+                    "os": "linux",
+                    "arch": "arm64" if os.uname().machine == "aarch64" else "x64",
+                    "os_version": os.uname().release,
+                },
+                "version": worker.SUPERVISOR_VERSION,
+            },
+        )
+        self.assertEqual(
+            self.commands.controller_actions(), [["reset-failed"], ["start"]]
+        )
         self.assertEqual(len(self.client.bodies), 1)
-        self.assertEqual(self.client.bodies[0]["agents"][0]["process_state"], "stopped")
+        self.assertEqual(self.client.bodies[0]["agents"], [])
         self.harness.now = 3
         self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 1)
+        self.assertEqual(len(self.commands.controller_actions()), 2)
         self.assertEqual(len(self.client.bodies), 1)
-        self.commands.units[AGENT] = {"ActiveState": "active", "SubState": "running"}
-        self.harness.now = 6
+        self.harness.now = 15
         self.supervisor.tick()
         self.assertEqual(len(self.client.bodies), 2)
-        self.assertEqual(self.client.bodies[1]["agents"][0]["process_state"], "running")
-        self.harness.now = 6 + 15
+
+    def test_the_credential_reaches_the_unit_only_through_a_deleted_tmpfs_file(self):
+        seen: dict[str, str] = {}
+
+        def on_start():
+            credential = self.paths.controller_credential
+            seen["credential"] = credential.read_text()
+            seen["mode"] = oct(stat.S_IMODE(credential.stat().st_mode))
+            seen["env"] = self.paths.controller_env.read_text()
+            self.commands.units["controller"] = {"ActiveState": "active"}
+
+        self.commands.on_controller_start = on_start
         self.supervisor.tick()
-        self.assertEqual(len(self.client.bodies), 3)
-        self.assertEqual(self.client.list_calls, 1)
+        self.assertEqual(seen["credential"], CONTROLLER_CREDENTIAL + "\n")
+        self.assertEqual(seen["mode"], "0o600")
+        self.assertEqual(
+            seen["env"],
+            f"SWITCH_CONTROLLER_ID={CONTROLLER_ID}\n"
+            "SWITCH_CONTROLLER_SERVER=https://switch.example.test/agent-api\n",
+        )
+        self.assertNotIn(CONTROLLER_CREDENTIAL, seen["env"])
+        self.assertFalse(self.paths.controller_credential.exists())
+        record = json.loads(self.paths.controller_record.read_text())
+        self.assertEqual(
+            record,
+            {
+                "controllerId": CONTROLLER_ID,
+                "credential": CONTROLLER_CREDENTIAL,
+                "bootId": BOOT_1,
+            },
+        )
+        self.assertEqual(
+            stat.S_IMODE(self.paths.controller_record.stat().st_mode), 0o600
+        )
+        self.assertEqual(
+            stat.S_IMODE(self.paths.controller_data.stat().st_mode), 0o700
+        )
+
+    def test_a_restarted_supervisor_keeps_the_running_controller(self):
+        self.supervisor.tick()
+        restarted = self.harness.build()
+        restarted.tick()
+        self.assertEqual(len(self.client.enrolled), 1)
+        self.assertEqual(len(self.commands.controller_actions()), 2)
+
+    def test_a_stopped_controller_starts_again_with_the_same_identity(self):
+        self.supervisor.tick()
+        self.commands.units["controller"] = {
+            "ActiveState": "failed",
+            "Result": "exit-code",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "1",
+        }
+        self.harness.now = 3
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 1)
+        self.assertEqual(
+            self.commands.controller_actions(),
+            [["reset-failed"], ["start"], ["reset-failed"], ["start"]],
+        )
+
+    def test_a_new_boot_enrolls_afresh(self):
+        worker._write_root_json(
+            self.paths.controller_record,
+            {"controllerId": "old", "credential": CONTROLLER_CREDENTIAL, "bootId": BOOT_2},
+        )
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 1)
+        self.assertEqual(
+            json.loads(self.paths.controller_record.read_text())["controllerId"],
+            CONTROLLER_ID,
+        )
+
+    def test_a_controller_enrolled_again_keeps_its_data_directory(self):
+        self.supervisor.tick()
+        (self.paths.controller_data / "controller.db").write_text("same identity")
+        self.paths.controller_record.unlink()
+        self.harness.now = 3
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 2)
+        self.assertEqual(
+            self.commands.controller_actions(),
+            [
+                ["reset-failed"],
+                ["start"],
+                ["stop"],
+                ["reset-failed"],
+                ["reset-failed"],
+                ["start"],
+            ],
+        )
+        self.assertTrue((self.paths.controller_data / "controller.db").exists())
+
+    def test_a_revoked_controller_is_enrolled_again_on_a_clean_data_directory(self):
+        self.supervisor.tick()
+        (self.paths.controller_data / "controller.db").write_text("old identity")
+        self.client.enrollments.append(
+            ("3f1c2b4a-0000-4000-8000-0000000000c2", "swcc_second-credential-placeholder")
+        )
+        self.commands.units["controller"] = {
+            "ActiveState": "inactive",
+            "Result": "exit-code",
+            "ExecMainCode": "1",
+            "ExecMainStatus": str(worker.CONTROLLER_REVOKED_EXIT),
+        }
+        self.harness.now = 3
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 2)
+        self.assertFalse((self.paths.controller_data / "controller.db").exists())
+        self.assertEqual(
+            json.loads(self.paths.controller_record.read_text())["controllerId"],
+            "3f1c2b4a-0000-4000-8000-0000000000c2",
+        )
+
+    def test_a_failed_enrollment_is_retried_with_backoff(self):
+        self.client.enrollments += [
+            worker.CoreUnavailable("down"),
+            worker.CoreUnavailable("down"),
+        ]
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.tick()
+        self.assertEqual(self.commands.controller_actions(), [])
+        self.harness.now = 14
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 1)
+        self.harness.now = 15
+        with self.assertLogs(worker.logger, "ERROR"):
+            self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 2)
+        self.harness.now = 44
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 2)
+        self.harness.now = 45
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.enrolled), 3)
+        self.assertEqual(
+            self.commands.controller_actions(), [["reset-failed"], ["start"]]
+        )
+
+    def test_a_server_without_agent_management_stops_the_supervisor(self):
+        self.client.enrollments.append(
+            worker.WorkerError(
+                "Switch has no agent management (AGENT_MANAGEMENT_ENABLED is off); "
+                "this machine image needs it to run its agents."
+            )
+        )
+        with self.assertRaisesRegex(worker.WorkerError, "agent management"):
+            self.supervisor.tick()
 
     def test_heartbeat_interval_comes_from_the_response(self):
-        self.client.listings.append(listing())
         self.client.heartbeats.append(
             {
                 "agents_version": 3,
@@ -2033,84 +2384,44 @@ class LoopTests(RootPatched):
         self.supervisor.tick()
         self.assertEqual(len(self.client.bodies), 2)
 
-    def test_changed_agents_version_refetches(self):
-        self.client.listings += [listing(), listing(valid_agent(), version=8)]
-        self.client.heartbeats.append(
-            {
-                "agents_version": 8,
-                "machine_desired_state": "running",
-                "heartbeat_every_s": 15,
-            }
-        )
+    def test_an_installed_agent_is_in_the_heartbeat(self):
         self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 2)
-        self.assertEqual(
-            self.commands.actions()[-1],
-            ["--no-block", "restart", f"switch-agent@{AGENT}.service"],
-        )
-
-    def test_exit_75_refetches_the_list(self):
-        self.client.listings += [listing(valid_agent()), listing(valid_agent())]
-        self.supervisor.tick()
-        self.commands.units[AGENT] = {
-            "ActiveState": "failed",
-            "Result": "exit-code",
-            "ExecMainCode": "1",
-            "ExecMainStatus": "75",
-            "ExecMainExitTimestampMonotonic": "100",
-        }
-        self.harness.now = 3
-        with self.assertLogs(worker.logger, "WARNING"):
-            self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 2)
-        self.harness.now = 6
-        self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 2)
-
-    def test_failed_fetch_is_retried(self):
-        self.client.listings += [worker.CoreUnavailable("down"), listing()]
-        with self.assertLogs(worker.logger, "WARNING"):
-            self.supervisor.tick()
+        self.assertTrue(self.harness.install(valid_agent())["ok"])
+        self.commands.units[AGENT] = {"ActiveState": "active", "SubState": "running"}
         self.harness.now = 3
         self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 1)
-        self.harness.now = 15
-        self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 2)
-
-    def test_failed_reconcile_is_retried_with_backoff(self):
-        blocker = self.harness.paths.worktrees / AGENT
-        blocker.write_text("not a directory")
-        self.client.listings += [listing(valid_agent()) for _ in range(3)]
-        with self.assertLogs(worker.logger, "ERROR"):
-            self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 1)
-        self.assertIsNone(self.supervisor._agents_version)
-        self.harness.now = 14
-        self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 1)
-        self.harness.now = 15
-        with self.assertLogs(worker.logger, "ERROR"):
-            self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 2)
-        self.harness.now = 44
-        self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 2)
-        blocker.unlink()
-        self.harness.now = 45
-        self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 3)
-        self.assertEqual(self.supervisor._agents_version, 3)
+        self.assertEqual(len(self.client.bodies), 2)
         self.assertEqual(
-            self.commands.actions()[-1],
-            ["--no-block", "restart", f"switch-agent@{AGENT}.service"],
+            [
+                (agent["agent_id"], agent["process_state"])
+                for agent in self.client.bodies[1]["agents"]
+            ],
+            [(AGENT, "running")],
         )
-        self.harness.now = 200
-        self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 3)
+
+    def test_the_core_heartbeat_is_the_contract_one(self):
+        requests: list = []
+        self.harness.client = core_client(requests)
+        supervisor = self.harness.build()
+        supervisor._controller = mock.Mock()
+        self.harness.supervisor = supervisor
+        self.assertTrue(self.harness.install(valid_agent())["ok"])
+        supervisor.tick()
+        self.assertEqual(
+            [request.full_url.rsplit("/", 1)[-1] for request in requests],
+            ["heartbeat"],
+        )
+        body = json.loads(requests[0].data)
+        agent = core_agent()
+        self.assertEqual(
+            [
+                (state["launch_id"], state["revision"], state["exit"])
+                for state in body["agents"]
+            ],
+            [(agent["launch_id"], agent["revision"], None)],
+        )
 
     def test_failed_heartbeat_is_retried_next_interval(self):
-        self.client.listings.append(listing())
         self.client.heartbeats.append(worker.CoreUnavailable("down"))
         with self.assertLogs(worker.logger, "WARNING"):
             self.supervisor.tick()
@@ -2118,89 +2429,137 @@ class LoopTests(RootPatched):
         self.supervisor.tick()
         self.assertEqual(len(self.client.bodies), 2)
 
-    def test_rejected_agent_list_leaves_agents_and_their_data_alone(self):
-        for status, retired in (
-            (400, False),
-            (409, False),
-            (500, False),
-            (503, False),
-            (410, True),
-        ):
-            with self.subTest(status=status):
-                harness = Harness(self.temporary / f"machine-{status}")
-                for directory in (
-                    harness.paths.agents / AGENT / "home",
-                    harness.paths.worktrees / AGENT / "workspace",
-                ):
-                    directory.mkdir(parents=True)
-                    (directory / "notes").write_text("kept")
-                requests: list = []
-                harness.client = core_client(requests, status)
-                supervisor = harness.build()
-                with self.assertLogs(worker.logger, "WARNING"):
-                    supervisor.tick()
-                self.assertEqual(
-                    harness.commands.actions(),
-                    [["stop", "switch-agent@*.service"]] if retired else [],
-                )
-                self.assertEqual(supervisor.heartbeat_body()["agents"], [])
-                self.assertEqual(
-                    (harness.paths.agents / AGENT / "home/notes").read_text(), "kept"
-                )
-                self.assertEqual(
-                    (harness.paths.worktrees / AGENT / "workspace/notes").read_text(),
-                    "kept",
-                )
-                self.assertEqual(requests[0].full_url.rsplit("/", 1)[-1], "agents")
-
     def test_401_stops_the_supervisor(self):
-        self.client.listings.append(worker.WorkerError("rejected"))
+        self.client.heartbeats.append(worker.WorkerError("rejected"))
         with self.assertRaises(worker.WorkerError):
             self.supervisor.tick()
 
-    def test_410_stops_all_agents_idles_and_resumes(self):
+    def test_410_stops_the_controller_and_agents_idles_and_resumes(self):
         stop_all = ["stop", "switch-agent@*.service"]
-        self.client.listings += [listing(valid_agent()), listing(valid_agent())]
+        self.supervisor.tick()
+        self.assertTrue(self.harness.install(valid_agent())["ok"])
         self.client.heartbeats += [
             worker.MachineRetired(),
             worker.MachineRetired(),
             core_fixture("heartbeat_response.json"),
         ]
+        self.harness.now = 15
         with self.assertLogs(worker.logger, "WARNING"):
             self.supervisor.tick()
         self.assertEqual(self.commands.actions()[-1], stop_all)
-        self.assertEqual(len(self.client.bodies), 1)
-        self.harness.now = 59
-        self.supervisor.tick()
-        self.assertEqual(len(self.client.bodies), 1)
-        self.harness.now = 60
+        self.assertIn(["stop"], self.commands.controller_actions())
+        self.commands.units["controller"] = {}
+        self.harness.now = 74
         self.supervisor.tick()
         self.assertEqual(len(self.client.bodies), 2)
+        self.harness.now = 75
+        self.supervisor.tick()
+        self.assertEqual(len(self.client.bodies), 3)
         self.assertEqual(self.commands.actions().count(stop_all), 1)
-        self.assertEqual(self.client.bodies[1]["agents"][0]["process_state"], "stopped")
-        self.harness.now = 120
+        self.assertEqual(self.client.bodies[2]["agents"][0]["process_state"], "stopped")
+        starts = self.commands.controller_actions().count(["start"])
+        self.harness.now = 135
         with self.assertLogs(worker.logger, "WARNING"):
             self.supervisor.tick()
-        self.assertEqual(len(self.client.bodies), 3)
-        self.assertEqual(self.client.list_calls, 1)
-        self.harness.now = 123
+        self.assertEqual(len(self.client.bodies), 4)
+        self.harness.now = 138
         self.supervisor.tick()
-        self.assertEqual(self.client.list_calls, 2)
-        self.assertEqual(
-            self.commands.actions()[-1],
-            ["--no-block", "start", f"switch-agent@{AGENT}.service"],
-        )
+        self.assertEqual(self.commands.controller_actions().count(["start"]), starts + 1)
 
-    def test_410_on_the_list_retires_and_401_while_retired_exits(self):
-        self.client.listings.append(worker.MachineRetired())
-        self.client.heartbeats.append(worker.WorkerError("rejected"))
+    def test_410_while_retired_and_401_exits(self):
+        self.client.heartbeats += [worker.MachineRetired(), worker.WorkerError("rejected")]
         with self.assertLogs(worker.logger, "WARNING"):
             self.supervisor.tick()
         self.assertEqual(self.commands.actions(), [["stop", "switch-agent@*.service"]])
-        self.assertEqual(self.client.bodies, [])
         self.harness.now = 60
         with self.assertRaises(worker.WorkerError):
             self.supervisor.tick()
+
+
+class RequestServerTests(RootPatched):
+    def setUp(self):
+        super().setUp()
+        self.requests: list = []
+        self.path = self.temporary / "supervisor.sock"
+
+    def server(self, allowed: set[int]) -> worker.RequestServer:
+        def handler(request):
+            self.requests.append(request)
+            return {"ok": True, "echo": request}
+
+        server = worker.RequestServer(
+            self.path, gid=os.getgid(), allowed_uids=allowed, handler=handler
+        )
+        self.addCleanup(server.close)
+        return server
+
+    def ask(self, server: worker.RequestServer, raw: bytes) -> bytes:
+        answer: list[bytes] = []
+
+        def client():
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(str(self.path))
+                connection.sendall(raw)
+                answer.append(connection.makefile("rb").readline())
+
+        thread = threading.Thread(target=client)
+        thread.start()
+        server.serve(2)
+        thread.join(5)
+        return answer[0] if answer else b""
+
+    def test_the_socket_is_the_agent_group_s_only(self):
+        self.server({os.getuid()})
+        self.assertTrue(stat.S_ISSOCK(self.path.lstat().st_mode))
+        self.assertEqual(stat.S_IMODE(self.path.lstat().st_mode), 0o660)
+
+    def test_one_json_request_per_connection_answered_on_one_line(self):
+        server = self.server({os.getuid()})
+        answer = self.ask(server, b'{"op":"state","agent_id":"x"}\n')
+        self.assertEqual(
+            json.loads(answer),
+            {"ok": True, "echo": {"op": "state", "agent_id": "x"}},
+        )
+        self.assertEqual(self.requests, [{"op": "state", "agent_id": "x"}])
+
+    def test_a_request_that_is_not_json_is_refused(self):
+        server = self.server({os.getuid()})
+        answer = json.loads(self.ask(server, b"not json\n"))
+        self.assertEqual(answer["error"]["code"], "invalid_request")
+        self.assertEqual(self.requests, [])
+
+    def test_another_user_is_not_answered(self):
+        server = self.server({os.getuid() + 1})
+        with self.assertLogs(worker.logger, "WARNING"):
+            self.assertEqual(self.ask(server, b'{"op":"state"}\n'), b"")
+        self.assertEqual(self.requests, [])
+
+    def test_a_stale_socket_is_replaced_but_nothing_else_is(self):
+        first = self.server({os.getuid()})
+        first._socket.close()
+        self.server({os.getuid()})
+        other = self.temporary / "not-a-socket"
+        other.write_text("x")
+        with self.assertRaises(worker.WorkerError):
+            worker.RequestServer(
+                other, gid=os.getgid(), allowed_uids=set(), handler=lambda _r: {}
+            )
+
+    def test_the_supervisor_answers_through_it(self):
+        harness = Harness(self.temporary / "machine")
+        server = worker.RequestServer(
+            self.path,
+            gid=os.getgid(),
+            allowed_uids={os.getuid()},
+            handler=harness.supervisor.handle_request,
+        )
+        self.addCleanup(server.close)
+        raw = json.dumps(
+            {"op": "install", "agent": valid_agent(), "restart": False}
+        ).encode() + b"\n"
+        answer = json.loads(self.ask(server, raw))
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual(answer["unit"]["revision"], 1)
 
 
 class GitTests(RootPatched):
@@ -2265,7 +2624,7 @@ class GitTests(RootPatched):
 
     def test_removal_runs_real_git_under_the_mirror_lock(self):
         harness = Harness(self.temporary / "machine", git=self.runner)
-        harness.supervisor.reconcile([valid_agent()])
+        self.assertTrue(harness.install(valid_agent())["ok"])
         source = self.temporary / "source"
         self.git_setup("init", "-q", str(source))
         self.git_setup(
@@ -2301,7 +2660,7 @@ class GitTests(RootPatched):
         )
         harness.commands.clear()
         with self.assertLogs(worker.logger, "WARNING"):
-            harness.supervisor.reconcile([])
+            self.assertEqual(harness.remove(AGENT), {"ok": True})
         unit = f"switch-agent@{AGENT}.service"
         self.assertEqual(
             harness.commands.actions(), [["stop", unit], ["reset-failed", unit]]
@@ -2462,6 +2821,44 @@ class UnitFileTests(unittest.TestCase):
             self.assertEqual(service[key], value, key)
         self.assertNotIn("PartOf", service)
 
+    def test_controller_unit(self):
+        unit = unit_file("switch-agent-controller.service")
+        service = unit["Service"]
+        expected = {
+            "Type": "exec",
+            "User": "switch-agent",
+            "Group": "switch-agent",
+            "EnvironmentFile": "/run/switch-hosted/machine/controller.env",
+            "StandardInput": "file:/run/switch-hosted/machine/controller-credential",
+            "Restart": "no",
+            "NoNewPrivileges": "yes",
+            "CapabilityBoundingSet": "",
+            "ProtectSystem": "strict",
+            "ReadWritePaths": "/run/switch-hosted/controller",
+        }
+        for key, value in expected.items():
+            self.assertEqual(service[key], value, key)
+        command = service["ExecStart"].split()
+        self.assertEqual(command[:2], [worker.UNIT_NODE_PATH, worker.UNIT_CONTROLLER_PATH])
+        self.assertEqual(command[2], "run")
+        self.assertIn("--credential-stdin", command)
+        rest = [word for word in command[3:] if word != "--credential-stdin"]
+        arguments = dict(zip(rest[::2], rest[1::2], strict=True))
+        self.assertEqual(
+            arguments["--systemd-socket"], "/run/switch-hosted/supervisor.sock"
+        )
+        self.assertEqual(arguments["--data-dir"], "/run/switch-hosted/controller")
+        self.assertEqual(arguments["--controller-id"], "${SWITCH_CONTROLLER_ID}")
+        self.assertEqual(arguments["--server"], "${SWITCH_CONTROLLER_SERVER}")
+        paths = worker.Paths(Path("/data"), Path("/run/switch-hosted"))
+        self.assertEqual(str(paths.supervisor_socket), arguments["--systemd-socket"])
+        self.assertEqual(str(paths.controller_data), arguments["--data-dir"])
+        self.assertEqual(
+            "file:" + str(paths.controller_credential), service["StandardInput"]
+        )
+        self.assertEqual(str(paths.controller_env), service["EnvironmentFile"])
+        self.assertNotIn("Install", unit.sections())
+
     def test_slice_and_supervisor_units(self):
         slice_unit = unit_file("switch-agents.slice")
         self.assertEqual(slice_unit["Slice"]["MemoryAccounting"], "yes")
@@ -2478,6 +2875,7 @@ class UnitFileTests(unittest.TestCase):
         install = (HERE / "install.sh").read_text()
         for name in (
             "switch-agent@.service",
+            "switch-agent-controller.service",
             "switch-agents.slice",
             "switch-hosted-worker.service",
         ):
@@ -2488,6 +2886,13 @@ class UnitFileTests(unittest.TestCase):
         runtime = json.loads((HERE / "runtime.json").read_text())
         self.assertEqual(runtime["nodePath"], worker.UNIT_NODE_PATH)
         self.assertEqual(runtime["bootstrapPath"], worker.UNIT_BOOTSTRAP_PATH)
+        self.assertEqual(runtime["controllerPath"], worker.UNIT_CONTROLLER_PATH)
+        self.assertIn("agentController", runtime["artifactSha256"])
+        self.assertIn('"agent-controller.mjs"', install)
+        self.assertIn(
+            '"$runtime_build/agent-controller.mjs" /opt/switch/agent-controller/agent-controller.mjs',
+            install,
+        )
 
 
 if __name__ == "__main__":

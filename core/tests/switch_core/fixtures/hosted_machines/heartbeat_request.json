@@ -1,7 +1,7 @@
 {
   "boot_id": "00000000-0000-4000-8000-00000000b001",
   "instance_id": "i-0123456789abcdef0",
-  "supervisor_version": "2.0.0",
+  "supervisor_version": "3.0.0",
   "runtime_fingerprint": "sha256:0000",
   "disk": {
     "path": "/data",

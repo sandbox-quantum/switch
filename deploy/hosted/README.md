@@ -11,6 +11,16 @@ One ordinary EC2 VM (a machine) runs all cloud agents of one user, with a
 retained encrypted EBS data disk. Each machine uses one machine slot from the
 operator-configured pool. The watcher starts a separate session for each addressed
 room on that VM.
+
+Each machine runs an **agents controller** (`console/packages/agent-controller`),
+enrolled by the machine's supervisor with the machine capability. Every cloud
+agent is a managed agent placed on its machine's controller: Switch writes its
+definition from the cloud launch, the controller holds the one event stream
+to Switch for all of them and serves each agent's watcher through a loopback
+relay, and no agent API key is on the machine. The cloud launch stays the
+record of the agent's machine, limits, billing and lifecycle, and Switch
+Console keeps using the cloud agent routes. See
+[the agents controller on a cloud machine](#the-agents-controller-on-a-cloud-machine).
 Creating an agent does not create a room. The controller runs on existing EKS;
 workers never join that cluster.
 
@@ -20,9 +30,10 @@ workers never join that cluster.
   state and an exclusive reconciliation lock. Create/start/stop/delete requests
   are local operator actions, not an unauthenticated web API.
 - `worker/`: root-owned AMI launcher. It validates the exact attached EBS volume,
-  retrieves one scoped Secrets Manager document, prepares tmpfs credential files
-  and starts the runtime as an unprivileged account. Retained boot identity prevents
-  old process IDs from being treated as ownership evidence after a reboot.
+  retrieves one scoped Secrets Manager document, enrolls the machine's agents
+  controller and runs it as an unprivileged account, and installs each agent's
+  unit and tmpfs runtime files when the controller asks. Retained boot identity
+  prevents old process IDs from being treated as ownership evidence after a reboot.
 - `terraform/`: a separate worker VPC, private worker subnet, NAT egress, no inbound
   worker access, restricted worker roles, and an IRSA role for the controller.
 - `chart/`: a digest-pinned controller image, one replica with Recreate rollout,
@@ -99,10 +110,13 @@ public repository.
 2. Build a pinned Linux x86 AMI using the worker installer and its documented
    prerequisites. The runtime artifact must include this branch's reviewed
    bootstrap and ownership identity support; an older released runtime is insufficient.
-   After installing the console workspace dependencies, build self-contained files:
-   `node deploy/hosted/build-runtime.mjs /path/to/runtime-output`. Copy the three
-   `.mjs` files and SHA256 manifest to the worker installer's documented location;
-   pin and verify those hashes as part of the AMI build.
+   After installing the console workspace dependencies and building its
+   packages (`pnpm -r --filter './packages/**' run build` in `console/`), build
+   self-contained files: `node deploy/hosted/build-runtime.mjs /path/to/runtime-output`.
+   It writes `hosted-bootstrap.mjs`, `shared-host-daemon.mjs` and
+   `agent-controller.mjs` with a SHA256 manifest. Copy all four to the worker
+   installer's documented location; the installer verifies them, and the
+   supervisor verifies every pinned file again at each start.
    Validate the AMI has the configured root-device name, exactly one EBS root mapping,
    and an approved source-snapshot encryption key. This slice creates disks with
    `alias/aws/ebs`; customer-managed EBS keys need additional reviewed permissions.
@@ -276,6 +290,83 @@ and create the agents again. Do these steps in order.
 9. Create each agent again in Switch Console with the settings from step 1. The
    first agent of a user creates that user's machine. Later agents of the same
    user share it.
+
+## The agents controller on a cloud machine
+
+Core needs agent management on: set `AGENT_MANAGEMENT_ENABLED=true` and a
+`CONTROLLER_TOKEN_SECRET` of at least 32 characters alongside the hosted
+settings. A machine image with the controller refuses to run its agents on a
+server without it, and says so.
+
+- **Enrollment.** At boot the supervisor enrolls the machine's controller with
+  `POST /v1/management/controllers/enroll` and proof
+  `{"kind": "machine_secret", "machine_id", "capability"}`. Core checks the
+  capability and host identity as on the machine routes. A machine has one
+  controller of kind `ec2` (`agent_controllers.hosted_machine_id`): enrolling
+  again (a reboot, a new generation) gives it a new credential, and a machine
+  whose controller was revoked gets a new one. The supervisor keeps the
+  credential on the runtime tmpfs and hands it to the controller on stdin.
+- **Placement.** Each launch with an agent has an `agent_definitions` row: the
+  v1 definition (provider, model from the definition attributes,
+  instructions, auto-session, auto-approve) and a `hosted` block (the launch
+  and its revision, the provider credential kind, the repository, the launch
+  spec and the connection skills). It is placed on the machine's controller,
+  or left unplaced while the machine has none. It is rebuilt only when the
+  launch moves to a new revision, so instructions edited in between still
+  apply at the next start. Core triggers the sync after every launch change,
+  and the machine heartbeat catches up one that failed. The assignment adds
+  the launch's worker capability to the block as it is read; it is never
+  stored with the definition. An owner cannot change a cloud agent through
+  the management routes (`409 cloud_agent`), and a machine's controller runs
+  nothing but its cloud agents.
+- **Units.** The controller runs each agent through the supervisor, which
+  installs `switch-agent@<id>` with the same limits, OOM handling and crash
+  loop detection as before and reports each unit's state back. See the
+  [supervisor](worker/README.md#the-supervisor-socket).
+- **Workers.** An agent's worker opens its stream on the controller's relay
+  with its worker capability. The relay has Core admit it on the controller's
+  connection (`POST /v1/controllers/{id}/agents/{agent_id}/worker`), with the
+  same checks as a worker opening its own stream. Core sends the worker's
+  protocol-7 frames on the controller stream as `agent.worker`, which the
+  relay replays on the worker's stream. The worker's up-calls
+  (`/agents/{id}/connection/relay/...`, `/connection/idle`,
+  `/connection/mailbox/ack`, `/connection/cutover-manifest`, `/room-notices`,
+  `/hosted/operations/...`, `/hosted/provider-credential`,
+  `/hosted/provider-status`, `/hosted/github-credential`) go through the relay
+  with the controller's token and `X-Switch-Agent-Id`, and are fenced on the
+  relay's connection and incarnation. Idle reports from such a worker are the
+  evidence idle stop reads, as before.
+- **The machine's agent list.** `GET /hosted/machines/{id}/agents` keeps
+  working for a machine whose controller has not enrolled. For an agent
+  placed on a controller it lists the launch without its credential and
+  marked `"unavailable": "managed_by_controller"`; an older supervisor stops
+  that agent and keeps its data.
+
+## Moving cloud agents onto the agents controller
+
+This is a pilot change. Existing cloud agents are recreated, not converted.
+Do these steps in order.
+
+1. Record the settings of each cloud agent: name, provider, instructions,
+   repository, and the auto-session and approval settings.
+2. In Switch Console, remove each cloud agent. Removal keeps the machine's
+   data disk for `HOSTED_DISK_RETENTION_DAYS`; the new image accepts it (the
+   disk layout is unchanged).
+3. Build the console workspace packages and the runtime
+   (`node deploy/hosted/build-runtime.mjs <dir>`, now three files), and bake a
+   new worker AMI with `install.sh`. Set `image_id` in `controller.json` and
+   `worker_image_id` in the Terraform overlay to it, and apply Terraform. The
+   hosted controller and EC2 lifecycle are otherwise unchanged.
+4. Deploy Core with `AGENT_MANAGEMENT_ENABLED=true` and a
+   `CONTROLLER_TOKEN_SECRET`, and run its migrations (`c4a7e1d9b3f2` adds the
+   machine binding to `agent_controllers`). Deploy the hosted controller.
+5. Create each agent again in Switch Console with the settings from step 1.
+   The user's machine starts on the new image, enrolls its controller, and
+   the agents are placed on it.
+
+A machine still on the old image keeps running its agents from its agent
+list until it is replaced: its agents stay unplaced while it has no
+controller.
 
 ## Verification and rollout boundary
 

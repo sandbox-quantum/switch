@@ -53,6 +53,7 @@ if (
     != {
         "hosted-bootstrap.mjs",
         "shared-host-daemon.mjs",
+        "agent-controller.mjs",
     }
 ):
     raise SystemExit("hosted runtime manifest is invalid")
@@ -76,9 +77,11 @@ fi
 install -d -o root -g root -m 0755 /usr/local/libexec
 install -d -o root -g root -m 0755 /etc/switch-hosted
 install -d -o root -g root -m 0755 /opt/switch/agent-providers
+install -d -o root -g root -m 0755 /opt/switch/agent-controller
 install -d -o root -g root -m 0755 /data
 install -o root -g root -m 0755 "$runtime_build/hosted-bootstrap.mjs" /opt/switch/agent-providers/hosted-bootstrap.mjs
 install -o root -g root -m 0755 "$runtime_build/shared-host-daemon.mjs" /opt/switch/agent-providers/shared-host-daemon.mjs
+install -o root -g root -m 0755 "$runtime_build/agent-controller.mjs" /opt/switch/agent-controller/agent-controller.mjs
 install -o root -g root -m 0444 "$runtime_build/manifest.json" /opt/switch/agent-providers/manifest.json
 
 node_path=/opt/switch/node/bin/node
@@ -100,13 +103,15 @@ actual_provider_sha=$(sha256sum "$provider_path" | cut -d ' ' -f 1)
 }
 bootstrap_sha=$(sha256sum /opt/switch/agent-providers/hosted-bootstrap.mjs | cut -d ' ' -f 1)
 shared_sha=$(sha256sum /opt/switch/agent-providers/shared-host-daemon.mjs | cut -d ' ' -f 1)
+controller_sha=$(sha256sum /opt/switch/agent-controller/agent-controller.mjs | cut -d ' ' -f 1)
 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 install -o root -g root -m 0755 "$source_dir/switch_hosted_worker.py" /usr/local/libexec/switch-hosted-worker
 install -o root -g root -m 0644 "$source_dir/switch-hosted-worker.service" /etc/systemd/system/switch-hosted-worker.service
 install -o root -g root -m 0644 "$source_dir/switch-agent@.service" /etc/systemd/system/switch-agent@.service
+install -o root -g root -m 0644 "$source_dir/switch-agent-controller.service" /etc/systemd/system/switch-agent-controller.service
 install -o root -g root -m 0644 "$source_dir/switch-agents.slice" /etc/systemd/system/switch-agents.slice
-python3 - "$actual_node_sha" "$bootstrap_sha" "$shared_sha" "$actual_provider_sha" "$runtime_build" <<'PY'
+python3 - "$actual_node_sha" "$bootstrap_sha" "$shared_sha" "$controller_sha" "$actual_provider_sha" "$runtime_build" <<'PY'
 import hashlib
 import json
 import os
@@ -115,13 +120,14 @@ import stat
 import sys
 import tempfile
 
-node_sha, bootstrap_sha, shared_sha, provider_sha, runtime_build = sys.argv[1:]
+node_sha, bootstrap_sha, shared_sha, controller_sha, provider_sha, runtime_build = sys.argv[1:]
 value = {
     "version": 1,
     "nodePath": "/opt/switch/node/bin/node",
     "bootstrapPath": "/opt/switch/agent-providers/hosted-bootstrap.mjs",
     "sharedHostDaemonPath": "/opt/switch/agent-providers/shared-host-daemon.mjs",
     "providerBinaryPath": "/opt/switch/claude/bin/claude",
+    "controllerPath": "/opt/switch/agent-controller/agent-controller.mjs",
     "agentUser": "switch-agent",
     "agentGroup": "switch-agent",
     "path": "/opt/switch/node/bin:/opt/switch/claude/bin:/usr/local/bin:/usr/bin:/bin",
@@ -130,6 +136,7 @@ value = {
         "node": node_sha,
         "bootstrap": bootstrap_sha,
         "sharedHostDaemon": shared_sha,
+        "agentController": controller_sha,
         "provider": provider_sha,
     },
 }
