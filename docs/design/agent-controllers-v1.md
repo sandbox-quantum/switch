@@ -216,6 +216,13 @@ the agent would act on the owner's own machines); the agent detail carries it as
 `can_manage_agents`. An agent created through `create_agent` (or the gateway) starts with
 it off.
 
+**Where owners set things.** The gateway's agent page has an "Agent management" section
+with the capability switch (shown only where management runs), and the Machines page an
+edit action for a machine's name and description. In Switch Console, an agent's settings
+carry the same switch for Switch agents, and the "This computer as a machine" card shows
+and edits this computer's name and description. Console's own enrollment sends no
+description.
+
 **Refusals.** Without the capability: `403`, "Agent X is not allowed to manage agents. Ask
 your owner to enable 'can manage agents' for X ...". Everything management refuses is an
 `AgentManagementRefused` (a `ValueError`, so `400` over HTTP) whose message starts "Nothing
