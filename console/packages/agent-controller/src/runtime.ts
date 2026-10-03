@@ -26,6 +26,30 @@ import type { Provider } from './schemas';
 
 const execute = promisify(execFile);
 
+/**
+ * A cloud agent's `switch-agent@<id>` unit, as its machine's supervisor
+ * reports it: what the systemd runtime observes instead of a watcher's
+ * records. `processState` is the supervisor's (it adds `restarting`, and
+ * calls a unit that hit its start limit `crashed`).
+ */
+export type UnitObservation = {
+  installed: boolean;
+  /** The launch revision whose deployment is installed. */
+  revision: number | null;
+  processState:
+    | 'pending'
+    | 'starting'
+    | 'running'
+    | 'stopping'
+    | 'stopped'
+    | 'restarting'
+    | 'crashed'
+    | 'failed';
+  restarts: number;
+  oomKills: number;
+  exit: { code: number | null; signal: number | null; result: string | null } | null;
+};
+
 /** What is on disk and alive for one agent's watcher. */
 export type AgentObservation = {
   /** The watcher or its supervisor is running. */
@@ -38,6 +62,8 @@ export type AgentObservation = {
   /** `supervisor/failure.json`: why the watcher stopped and was not restarted. */
   failure: string | null;
   takenOver: TakenOver | null;
+  /** The agent's unit, for a runtime that runs each agent in one; null otherwise. */
+  unit: UnitObservation | null;
 };
 
 /** What an agent with no watcher root at all looks like. */
@@ -49,6 +75,7 @@ export function emptyObservation(): AgentObservation {
     health: null,
     failure: null,
     takenOver: null,
+    unit: null,
   };
 }
 
@@ -69,7 +96,39 @@ export type LaunchOptions = {
 /** What an agent's watcher reads to reach Switch: the controller's relay, and a token for it. */
 export type RelayCredentials = { endpoint: string; token: string };
 
+/**
+ * What a cloud agent's machine supervisor builds the agent's deployment from:
+ * the hosted block of its assignment, the agent's identity and desired state,
+ * and the relay credentials its worker reaches Switch with. The supervisor
+ * validates every field and derives every path itself.
+ */
+export type HostedDeploymentRequest = {
+  launch_id: string;
+  agent_id: string;
+  name: string;
+  revision: number;
+  desired_state: 'running' | 'stopped';
+  provider: string;
+  provider_credential_kind: string | null;
+  worker_capability: string;
+  switch_credentials: {
+    env: { SWITCH_API_ENDPOINT: string; SWITCH_API_TOKEN: string; SWITCH_AGENT_ID: string };
+  };
+  repository: string | null;
+  spec: Record<string, unknown>;
+  skills: Record<string, unknown>[];
+};
+
+/**
+ * `shared-host`: each agent is a room watcher this controller launches
+ * itself. `systemd`: a cloud machine's controller, where each agent is a
+ * `switch-agent@<id>` unit the machine's root supervisor installs and runs
+ * on request.
+ */
+export type RuntimeKind = 'shared-host' | 'systemd';
+
 export interface AgentRuntime {
+  readonly kind: RuntimeKind;
   observe(agentId: string): Promise<AgentObservation>;
   credentialsPath(agentId: string): string;
   /** The credentials file as written, or null when there is none or it cannot be read. */
@@ -79,9 +138,66 @@ export interface AgentRuntime {
   /** `directory` from the definition, or a workspace under the data directory. */
   workingDirectory(name: string, directory: string | null): Promise<string>;
   launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void>;
+  /** Installs a cloud agent's deployment and starts or stops its unit as it says. */
+  launchHosted(
+    agentId: string,
+    deployment: HostedDeploymentRequest,
+    options: { restart: boolean }
+  ): Promise<void>;
   /** Turns the watcher off; with `wait`, returns once it and its sessions are gone. */
   stop(agentId: string, options: { wait: boolean }): Promise<void>;
+  /** The agent is no longer assigned here: it is stopped, and what it ran from goes. */
+  remove(agentId: string): Promise<void>;
+  /**
+   * These are all the agents assigned here: anything else this machine still
+   * holds goes. Only a cloud machine holds agents beyond what this
+   * controller's own records name (its disk outlives the controller).
+   */
+  prune(keep: string[]): Promise<void>;
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness>;
+}
+
+/** An agent's relay credentials file, in the layout the shared host reads, or null. */
+export async function readRelayCredentials(
+  path: string,
+  agentId: string
+): Promise<RelayCredentials | null> {
+  const text = await readOptional(path);
+  if (text === null) return null;
+  try {
+    const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
+    const endpoint = env.SWITCH_API_ENDPOINT;
+    const token = env.SWITCH_API_TOKEN;
+    if (env.SWITCH_AGENT_ID !== agentId) return null;
+    return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeRelayCredentials(
+  directory: string,
+  path: string,
+  agentId: string,
+  credentials: RelayCredentials
+): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeAtomic(
+    path,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: credentials.endpoint,
+        SWITCH_API_TOKEN: credentials.token,
+        SWITCH_AGENT_ID: agentId,
+      },
+    })
+  );
+}
+
+export async function removeOptional(path: string): Promise<void> {
+  await unlink(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
 }
 
 /** How long a watcher asked to stop is given; its supervisor allows its own children 10 s. */
@@ -101,19 +217,13 @@ async function writeAtomic(path: string, body: string): Promise<void> {
   await rename(temporary, path);
 }
 
-async function readOptional(path: string): Promise<string | null> {
+export async function readOptional(path: string): Promise<string | null> {
   try {
     return await readFile(path, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
-}
-
-async function removeOptional(path: string): Promise<void> {
-  await unlink(path).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== 'ENOENT') throw error;
-  });
 }
 
 function alive(pid: number): boolean {
@@ -167,6 +277,8 @@ export function assertSupportedPlatform(platform: NodeJS.Platform): void {
  * not used because it relaunches the root as a session host, not a watcher.
  */
 export class SharedHostRuntime implements AgentRuntime {
+  readonly kind = 'shared-host';
+
   constructor(
     private readonly deps: {
       layout: DataLayout;
@@ -182,30 +294,15 @@ export class SharedHostRuntime implements AgentRuntime {
   }
 
   async readCredentials(agentId: string): Promise<RelayCredentials | null> {
-    const text = await readOptional(this.credentialsPath(agentId));
-    if (text === null) return null;
-    try {
-      const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
-      const endpoint = env.SWITCH_API_ENDPOINT;
-      const token = env.SWITCH_API_TOKEN;
-      if (env.SWITCH_AGENT_ID !== agentId) return null;
-      return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
-    } catch {
-      return null;
-    }
+    return readRelayCredentials(this.credentialsPath(agentId), agentId);
   }
 
   async writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void> {
-    await mkdir(this.deps.layout.agentDir(agentId), { recursive: true, mode: 0o700 });
-    await writeAtomic(
+    await writeRelayCredentials(
+      this.deps.layout.agentDir(agentId),
       this.credentialsPath(agentId),
-      JSON.stringify({
-        env: {
-          SWITCH_API_ENDPOINT: credentials.endpoint,
-          SWITCH_API_TOKEN: credentials.token,
-          SWITCH_AGENT_ID: agentId,
-        },
-      })
+      agentId,
+      credentials
     );
   }
 
@@ -280,8 +377,22 @@ export class SharedHostRuntime implements AgentRuntime {
       health,
       failure,
       takenOver: await readTakenOver(root),
+      unit: null,
     };
   }
+
+  async launchHosted(): Promise<void> {
+    throw new ReasonedError(
+      'definition_invalid',
+      'This is a cloud agent; only the agents controller of its cloud machine runs it.'
+    );
+  }
+
+  async remove(agentId: string): Promise<void> {
+    await this.stop(agentId, { wait: false });
+  }
+
+  async prune(): Promise<void> {}
 
   async launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void> {
     const root = this.deps.layout.watcherRoot(agentId);

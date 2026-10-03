@@ -10,6 +10,7 @@ import type { AgentRuntime } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
+  type Provider,
   type StatusReport,
   statusReportSchema,
 } from './schemas';
@@ -62,6 +63,8 @@ export type ControllerDeps = {
   secrets: SecretStore;
   runtime: AgentRuntime;
   locator: ProviderLocator;
+  /** The providers whose installation and login this controller reports. */
+  providers: readonly Provider[];
   fetch: Fetch;
   log: Logger;
   /** Where disk space is measured and provider checks run. */
@@ -195,6 +198,8 @@ export async function runController(
   let reportWithinS = timing.defaultReportWithinS;
   let revocation: Promise<void> | null = null;
   let reporter: StatusReporter | null = null;
+  /** The controller connection the stream is attached to now; workers attach on it. */
+  let connection: { connectionId: string; generation: number } | null = null;
 
   const relay = new LocalRelay({
     log,
@@ -211,6 +216,28 @@ export async function runController(
       },
       log,
     }),
+    workers: {
+      attach: async (agentId, worker) => {
+        const current = connection;
+        if (current === null)
+          return {
+            ok: false,
+            kind: 'unavailable',
+            message: 'The agents controller has no stream to Switch',
+          };
+        return client.attachWorker(current, agentId, worker);
+      },
+      detach: (agentId, worker) => {
+        const current = connection;
+        if (current === null) return;
+        client.detachWorker(current, agentId, worker).catch((error: unknown) =>
+          log.debug('Could not tell Switch a worker stream ended', {
+            agentId,
+            error: errorMessage(error),
+          })
+        );
+      },
+    },
     onCursor: (agentId, cursor) =>
       store.saveCursor(agentId, cursor, new Date(deps.now()).toISOString()),
     onChange: () => reporter?.request(),
@@ -260,6 +287,7 @@ export async function runController(
   };
 
   const providers = new ProviderStatuses({
+    providers: deps.providers,
     locator: deps.locator,
     runtime: deps.runtime,
     probeCwd: deps.dataDir,
@@ -322,7 +350,7 @@ export async function runController(
           client,
           assignment: () => assignment,
           restartAgent: async (entry) => {
-            const problem = definitionProblem(entry);
+            const problem = definitionProblem(entry, deps.runtime.kind);
             if (problem) return { reason: 'definition_invalid', detail: problem };
             return startAgent(
               {
@@ -420,6 +448,12 @@ export async function runController(
       case 'agent.rooms':
         relay.setRooms(frame.data.agent_id, frame.data.rooms);
         return;
+      case 'agent.worker':
+        relay.workerFrame(frame.data);
+        return;
+      case 'agent.worker_closed':
+        relay.workerClosed(frame.data);
+        return;
       case 'assignment.changed':
         void sync(`assignment.changed to revision ${frame.data.revision}`);
         return;
@@ -467,13 +501,17 @@ export async function runController(
         log.info('Switch has these agents bound to this controller', {
           agents: connection.agents,
         }),
-      onConnected: () => {
+      onConnected: (attached) => {
         log.info('Connected to Switch');
+        connection = attached;
         relay.streamAttached();
         void sync('connected');
         void runOperations();
       },
-      onDisconnected: () => relay.setUpstream(false),
+      onDisconnected: () => {
+        connection = null;
+        relay.setUpstream(false);
+      },
       onFrame,
       signal: stop.signal,
       log,

@@ -11,7 +11,7 @@ import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
 import type { RelayCredentials } from './runtime';
-import type { AgentAssignment, StatusReport } from './schemas';
+import { type AgentAssignment, PROVIDERS, type StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { ControllerStore } from './store';
 import { buildWatcherTemplate } from './template';
@@ -68,6 +68,7 @@ function deps(server = core.url): ControllerDeps {
     secrets,
     runtime,
     locator: new FakeLocator(),
+    providers: PROVIDERS,
     fetch,
     log: silentLogger,
     dataDir: dir,

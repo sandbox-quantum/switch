@@ -4,14 +4,24 @@ import {
   type AgentObservation,
   type AgentRuntime,
   emptyObservation,
+  type HostedDeploymentRequest,
   type LaunchOptions,
   type RelayCredentials,
+  type RuntimeKind,
 } from '../runtime';
 import type { Provider } from '../schemas';
 import type { LocatedProvider, ProviderLocator } from '../status';
 
 export type RuntimeCall =
   | { kind: 'launch'; agentId: string; template: SharedHostConfig; options: LaunchOptions }
+  | {
+      kind: 'launchHosted';
+      agentId: string;
+      deployment: HostedDeploymentRequest;
+      options: { restart: boolean };
+    }
+  | { kind: 'remove'; agentId: string }
+  | { kind: 'prune'; keep: string[] }
   | { kind: 'stop'; agentId: string; wait: boolean }
   | { kind: 'writeCredentials'; agentId: string; endpoint: string; token: string }
   | { kind: 'deleteCredentials'; agentId: string };
@@ -19,6 +29,8 @@ export type RuntimeCall =
 /** An `AgentRuntime` that keeps every agent in memory and records what it was asked to do. */
 export class FakeRuntime implements AgentRuntime {
   readonly calls: RuntimeCall[] = [];
+
+  constructor(readonly kind: RuntimeKind = 'shared-host') {}
   readonly agents = new Map<string, AgentObservation>();
   readonly credentials = new Map<string, RelayCredentials>();
   readiness: ProviderReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
@@ -90,11 +102,50 @@ export class FakeRuntime implements AgentRuntime {
     } satisfies Partial<AgentObservation>);
   }
 
+  async launchHosted(
+    agentId: string,
+    deployment: HostedDeploymentRequest,
+    options: { restart: boolean }
+  ): Promise<void> {
+    this.calls.push({ kind: 'launchHosted', agentId, deployment, options });
+    if (this.failNextLaunch) {
+      const error = this.failNextLaunch;
+      this.failNextLaunch = null;
+      throw error;
+    }
+    const observation = this.observation(agentId);
+    const running = deployment.desired_state === 'running';
+    Object.assign(observation, {
+      alive: running,
+      failure: null,
+      unit: {
+        installed: true,
+        revision: deployment.revision,
+        processState: running ? 'running' : 'stopped',
+        restarts: 0,
+        oomKills: 0,
+        exit: null,
+      },
+    } satisfies Partial<AgentObservation>);
+  }
+
+  /** As each real runtime removes: a watcher is turned off, a unit is removed by its supervisor. */
+  async remove(agentId: string): Promise<void> {
+    if (this.kind === 'shared-host') return this.stop(agentId, { wait: false });
+    this.calls.push({ kind: 'remove', agentId });
+    this.agents.delete(agentId);
+  }
+
+  async prune(keep: string[]): Promise<void> {
+    if (this.kind === 'systemd') this.calls.push({ kind: 'prune', keep });
+  }
+
   async stop(agentId: string, options: { wait: boolean }): Promise<void> {
     this.calls.push({ kind: 'stop', agentId, wait: options.wait });
     const observation = this.observation(agentId);
     observation.alive = false;
-    observation.flags = { enabled: false, spawn: false };
+    observation.flags = this.kind === 'shared-host' ? { enabled: false, spawn: false } : null;
+    if (observation.unit) observation.unit = { ...observation.unit, processState: 'stopped' };
     if (observation.health)
       observation.health = { ...observation.health, state: 'disabled', current: false };
   }

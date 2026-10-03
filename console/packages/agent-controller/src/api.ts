@@ -25,6 +25,8 @@ import {
   statusResponseSchema,
   type TokenResponse,
   tokenResponseSchema,
+  type WorkerIdentity,
+  workerAttachResponseSchema,
 } from './schemas';
 
 export const PROTOCOL_HEADER = 'Switch-Controller-Protocol';
@@ -261,6 +263,17 @@ export class AccessTokens {
   }
 }
 
+/**
+ * Core's answer to a worker attach. `worker`: Core refused the worker's own
+ * admission, and `body` is the refusal to hand it as it came. `controller`:
+ * this controller cannot attach anything right now (its connection moved
+ * on, the agent is not bound to it), which the worker is told to retry.
+ */
+export type WorkerAttachOutcome =
+  | { ok: true; attached: Record<string, unknown> }
+  | { ok: false; kind: 'worker'; status: number; body: string }
+  | { ok: false; kind: 'controller'; status: number; code: string; message: string };
+
 export type AssignmentPull =
   | { kind: 'unchanged' }
   | { kind: 'changed'; assignment: Assignment; etag: string | null };
@@ -431,6 +444,69 @@ export class ControllerClient {
       signal,
     });
     await parsed(response, controllerBeatResponseSchema);
+  }
+
+  /**
+   * Asks Core to admit a cloud agent's worker that opened its stream on the
+   * relay, on the controller's open connection. Answers the worker's
+   * `worker_attached` payload, or the refusal as Switch sent it: the relay
+   * hands a worker its own admission refusals (`{"detail": {code, ...}}`)
+   * unchanged, and tells it to retry anything about this controller.
+   */
+  async attachWorker(
+    connection: { connectionId: string; generation: number },
+    agentId: string,
+    worker: WorkerIdentity
+  ): Promise<WorkerAttachOutcome> {
+    const response = await this.request(
+      `${this.streamPath}/agents/${encodeURIComponent(agentId)}/worker`,
+      {
+        method: 'POST',
+        body: {
+          connection_id: connection.connectionId,
+          generation: connection.generation,
+          worker,
+        },
+      },
+      // Every answer but a refused token comes back here: a worker's own
+      // refusal is the worker's to read.
+      (status) => status !== 401
+    );
+    if (response.ok)
+      return { ok: true, attached: (await parsed(response, workerAttachResponseSchema)).attached };
+    const text = await response.text().catch(() => '');
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+    const envelope = errorEnvelopeSchema.safeParse(body);
+    if (envelope.success)
+      return {
+        ok: false,
+        kind: 'controller',
+        status: response.status,
+        code: envelope.data.error.code,
+        message: envelope.data.error.message,
+      };
+    return { ok: false, kind: 'worker', status: response.status, body: text };
+  }
+
+  /** The worker's stream on the relay ended; Core lets go of it if it is still this one. */
+  async detachWorker(
+    connection: { connectionId: string; generation: number },
+    agentId: string,
+    worker: { connectionId: string; generation: number }
+  ): Promise<void> {
+    await this.request(`${this.streamPath}/agents/${encodeURIComponent(agentId)}/worker/detach`, {
+      method: 'POST',
+      body: {
+        connection_id: connection.connectionId,
+        generation: connection.generation,
+        worker: { connection_id: worker.connectionId, generation: worker.generation },
+      },
+    });
   }
 
   /** Attaches the controller stream to an open connection; the caller reads the body. */

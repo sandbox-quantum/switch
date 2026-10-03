@@ -289,6 +289,7 @@ describe('planReconcile', () => {
       observations: new Map([['agent-1', emptyObservation()]]),
       credentialsChanged: new Set(),
       nowMs: 0,
+      runtime: 'shared-host',
     });
     expect(actions).toEqual([expect.objectContaining({ kind: 'hold', agentId: 'agent-1' })]);
   });
@@ -312,6 +313,7 @@ describe('planReconcile', () => {
       ]),
       credentialsChanged: new Set(),
       nowMs: 0,
+      runtime: 'shared-host',
     });
     expect(actions).toEqual([expect.objectContaining({ kind: 'start', restart: true })]);
   });

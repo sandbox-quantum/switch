@@ -1,4 +1,11 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  createReadStream,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -30,6 +37,12 @@ function pipeOf(...chunks: string[]): PassThrough {
 }
 
 describe('readCredential', () => {
+  it('reads a credential from a file as stdin, as a systemd unit hands it over', async () => {
+    const path = join(dir, 'credential');
+    writeFileSync(path, 'swcc_from_file\n', { mode: 0o600 });
+    expect(await readCredential(createReadStream(path), 1_000)).toBe('swcc_from_file');
+  });
+
   it('reads the credential the parent wrote, to the end of the pipe', async () => {
     expect(await readCredential(pipeOf('swcc_abc', 'def\n'), 1_000)).toBe('swcc_abcdef');
   });
