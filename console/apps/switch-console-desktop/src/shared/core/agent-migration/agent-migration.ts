@@ -123,3 +123,19 @@ export const SESSIONS_ON_MOVE =
 
 export const SESSIONS_ON_RETURN =
   'Each room picks up the conversation it had in this Console before the move; what was said while it was managed stays in the sessions the machine ran.';
+
+/**
+ * A machine cannot be turned off or removed while it runs agents this Console
+ * moved onto it: Switch keeps a managed agent on its controller after the
+ * controller is gone, where nothing would run it. The message says what to do
+ * instead, so it is shown as is.
+ */
+export class MovedAgentsHereError extends Error {
+  readonly agents: string[];
+
+  constructor(message: string, agents: string[]) {
+    super(message);
+    this.name = 'MovedAgentsHereError';
+    this.agents = agents;
+  }
+}

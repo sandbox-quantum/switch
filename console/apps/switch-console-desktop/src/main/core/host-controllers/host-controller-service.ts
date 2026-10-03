@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
+import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type {
   HostControllerEnrollment,
   HostControllerOverview,
@@ -337,10 +338,21 @@ export class HostControllerService {
     });
   }
 
-  /** The host is being removed from Console: its controllers go first. */
+  /**
+   * The host is being removed from Console: its controllers go first. Refused,
+   * with nothing changed, while any of them runs agents moved from this Console.
+   */
   async forgetHost(sshHost: string): Promise<void> {
-    for (const record of await this.deps.records.all())
-      if (record.sshHost === sshHost) await this.disable(sshHost, record.serverId, { force: true });
+    const records = (await this.deps.records.all()).filter((record) => record.sshHost === sshHost);
+    const moved: string[] = [];
+    for (const record of records)
+      moved.push(...(await this.deps.movedAgents(sshHost, record.serverId)));
+    if (moved.length)
+      throw new MovedAgentsHereError(
+        `${sshHost} runs ${moved.join(', ')} for this Console, so it cannot be removed yet. Bring the agents back first: Bring all back on the host’s page, or Stop managing on each agent.`,
+        moved
+      );
+    for (const record of records) await this.disable(sshHost, record.serverId, { force: true });
   }
 
   private async deploy(

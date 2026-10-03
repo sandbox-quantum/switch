@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type { HostControllerStateEvent } from '@shared/core/host-controllers/host-controllers';
 import {
   type HostControllerDeps,
@@ -319,6 +320,21 @@ describe('removing the host as a machine', () => {
     moved = ['builder'];
     await expect(service.disable(HOST, SERVER, { force: false })).rejects.toThrow(/builder/);
     expect(calls).toEqual([]);
+  });
+
+  it('refuses to remove the host, with nothing changed, while agents moved from this Console run there', async () => {
+    const service = new HostControllerService(deps());
+    await service.enable(HOST, SERVER, WORKSPACE);
+    calls = [];
+    moved = ['builder'];
+    const refused = service.forgetHost(HOST);
+    await expect(refused).rejects.toBeInstanceOf(MovedAgentsHereError);
+    await expect(refused).rejects.toThrow(
+      'build-box runs builder for this Console, so it cannot be removed yet. Bring the agents back first'
+    );
+    await expect(refused).rejects.toMatchObject({ agents: ['builder'] });
+    expect(calls).toEqual([]);
+    expect(records.size).toBe(1);
   });
 
   it('forgets a host that cannot be reached once its controller is revoked, when the host is removed', async () => {
