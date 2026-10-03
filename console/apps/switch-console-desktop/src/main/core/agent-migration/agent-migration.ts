@@ -133,9 +133,21 @@ function machineScript(agent: MigrationAgent): MachineScript {
   };
 }
 
-async function resolveThisComputer(agent: MigrationAgent): Promise<TargetLookup> {
-  const serverId = agent.serverId!;
-  const overview = await embeddedControllerService.overview(serverId, agent.workspaceId);
+/** A machine for a Switch server: this computer, or an SSH host. */
+export type MachineRef = { serverId: string; workspaceId: string | null; sshHost: string | null };
+
+/** Whether the machine can take a managed agent now, and the controller to place it on. */
+export function resolveMachine(machine: MachineRef): Promise<TargetLookup> {
+  return machine.sshHost
+    ? resolveSshHost(machine.sshHost, machine.serverId, machine.workspaceId)
+    : resolveThisComputer(machine.serverId, machine.workspaceId);
+}
+
+async function resolveThisComputer(
+  serverId: string,
+  workspaceId: string | null
+): Promise<TargetLookup> {
+  const overview = await embeddedControllerService.overview(serverId, workspaceId);
   const display = {
     kind: 'this-computer' as const,
     serverId,
@@ -163,7 +175,7 @@ async function resolveThisComputer(agent: MigrationAgent): Promise<TargetLookup>
     );
   if (!overview.enrollment)
     return refuse(
-      'Turn on “Run managed agents on this computer” for this server first: the agent moves onto this computer’s controller.',
+      'Turn on “Run managed agents on this computer” for this server first: managed agents run on this computer’s controller.',
       remote?.kind === 'ok'
     );
   if (overview.phase.kind !== 'running')
@@ -191,10 +203,12 @@ async function resolveThisComputer(agent: MigrationAgent): Promise<TargetLookup>
   };
 }
 
-async function resolveSshHost(agent: MigrationAgent): Promise<TargetLookup> {
-  const sshHost = agent.sshHost!;
-  const serverId = agent.serverId!;
-  const overview = await hostControllerService.overview(sshHost, serverId, agent.workspaceId);
+async function resolveSshHost(
+  sshHost: string,
+  serverId: string,
+  workspaceId: string | null
+): Promise<TargetLookup> {
+  const overview = await hostControllerService.overview(sshHost, serverId, workspaceId);
   const display = {
     kind: 'ssh-host' as const,
     sshHost,
@@ -231,7 +245,7 @@ async function resolveSshHost(agent: MigrationAgent): Promise<TargetLookup> {
     );
   if (!overview.enrollment)
     return refuse(
-      `Make ${sshHost} a machine for this server first: the agent moves onto the agents controller Console installs there.`,
+      `Make ${sshHost} a machine for this server first: managed agents run on the agents controller Console installs there.`,
       remote?.kind === 'ok'
     );
   if (overview.phase.kind === 'installing' || overview.phase.kind === 'removing')
@@ -520,7 +534,12 @@ export const agentMigrationService = new AgentMigrationService({
   },
   definitions: { build: buildDefinition },
   targets: {
-    resolve: (agent) => (agent.sshHost ? resolveSshHost(agent) : resolveThisComputer(agent)),
+    resolve: (agent) =>
+      resolveMachine({
+        serverId: agent.serverId!,
+        workspaceId: agent.workspaceId,
+        sshHost: agent.sshHost,
+      }),
   },
   management,
   machine,

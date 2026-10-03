@@ -141,3 +141,21 @@ export class MovedAgentsHereError extends Error {
     this.agents = agents;
   }
 }
+
+/**
+ * Whether a new agent created on a machine runs as a managed agent there: on
+ * a server with agent management, the create form places every agent it makes
+ * on this computer or an SSH host through that machine's controller.
+ */
+export type NewAgentMachine =
+  /** The server does not run agent management: the agent is one Console runs. */
+  | { management: false }
+  | {
+      management: true;
+      /** The machine, with the name its controller enrolled under; null when there is none. */
+      target: MigrationTarget | null;
+      /** Why the machine cannot take a managed agent now, or null when it can. */
+      blocker: string | null;
+      /** The machine does not run managed agents yet, and Console can turn that on. */
+      canEnable: boolean;
+    };
