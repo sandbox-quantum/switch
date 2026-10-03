@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
@@ -14,6 +16,8 @@ from fastapi import (
     HTTPException,
     Query,
     UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
 )
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,6 +84,7 @@ from switch_core.bridges.agent.dependencies import (
     get_session,
 )
 from switch_core.bridges.agent.protocol.agent_connections import (
+    HEARTBEAT_INTERVAL_SECONDS,
     AgentConnection,
     ClientDeclaration,
     Closure,
@@ -99,7 +104,13 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.event_buffer import Reader
-from switch_core.bridges.agent.protocol.stream import event_stream
+from switch_core.bridges.agent.protocol.stream import (
+    KEEPALIVE,
+    Frame,
+    encode_ws,
+    event_frames,
+    event_stream,
+)
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_TYPE,
     REGISTRATION_KEY_TYPES,
@@ -795,6 +806,50 @@ async def _open_event_stream(
     last_event_id: str | None,
     expected_generation: int | None,
 ) -> StreamingResponse:
+    conn = await _open_connection(
+        agent=agent,
+        protocol=protocol,
+        connection_id=connection_id,
+        scope=scope,
+        event_filter=event_filter,
+        start_from=start_from,
+        spawn_capable=spawn_capable,
+        declaration=declaration,
+        rooms=rooms,
+        last_event_id=last_event_id,
+        expected_generation=expected_generation,
+    )
+    return StreamingResponse(
+        event_stream(
+            conn=conn,
+            registry=protocol.connections,
+            buffer=protocol.event_buffer,
+            approvals=protocol.approval_outcomes,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Proxies that buffer would defeat the point of a push channel.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _open_connection(
+    *,
+    agent: Agent,
+    protocol: AgentCore,
+    connection_id: str | None,
+    scope: str,
+    event_filter: str,
+    start_from: str,
+    spawn_capable: bool,
+    declaration: ClientDeclaration,
+    rooms: str | None,
+    last_event_id: str | None,
+    expected_generation: int | None,
+) -> AgentConnection:
     if not connection_id:
         raise HTTPException(
             status_code=400,
@@ -910,22 +965,7 @@ async def _open_event_stream(
     # session rather than starting another, and an open that failed after
     # registering its connection, retried on the same id, is still counted.
     await protocol.sessions.started(agent, conn)
-
-    return StreamingResponse(
-        event_stream(
-            conn=conn,
-            registry=protocol.connections,
-            buffer=protocol.event_buffer,
-            approvals=protocol.approval_outcomes,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            # Proxies that buffer would defeat the point of a push channel.
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return conn
 
 
 @router.post("/{agent_id}/connection/beat")
@@ -976,6 +1016,173 @@ async def connection_beat(
 
     protocol.event_buffer.confirm(agent.id, conn.id, cursor)
     return {"ok": True, "rooms": sorted(conn.rooms), "cursor": conn.cursor}
+
+
+# A WebSocket close code for each refusal the SSE stream answers with an HTTP
+# status: 4000 plus the status, so a client maps both transports onto one set
+# of remedies.
+def _ws_close_code(status: int) -> int:
+    return 4000 + status
+
+
+@router.websocket("/{agent_id}/connection/ws")
+async def connection_socket(
+    websocket: WebSocket,
+    agent_id: str,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    connection_id: Annotated[str | None, Query()] = None,
+    scope: Annotated[str, Query()] = "single",
+    event_filter: Annotated[str, Query(alias="filter")] = "all",
+    start_from: Annotated[str, Query()] = "head",
+    spawn_capable: Annotated[bool, Query()] = False,
+    protocol_version: Annotated[int | None, Query(alias="protocol")] = None,
+    protocol_accepts: Annotated[int | None, Query()] = None,
+    expected_generation: Annotated[int | None, Query()] = None,
+    client: Annotated[str | None, Query()] = None,
+    client_version: Annotated[str | None, Query()] = None,
+    rooms: Annotated[str | None, Query()] = None,
+) -> None:
+    """The agent's connection over one WebSocket: events down, heartbeats up.
+
+    Opens exactly as the event stream does (same parameters, same fencing,
+    same room claims) and carries the same frames, as JSON
+    `{"event", "data", "id"}`. Authenticated once, when the socket opens.
+
+    The heartbeat runs the other way round from `/connection/beat`: the server
+    sends a `ping` frame every heartbeat interval and the client answers
+    `{"type": "pong", "cursor": n}`, which counts as a beat. A client that
+    stops answering lapses like one that stops beating. No request per beat,
+    and no token lookup.
+
+    A refusal on opening is sent as a `refused` frame carrying the status and
+    detail the SSE stream would have answered with, then the socket closes
+    with code 4000 plus that status.
+    """
+    await websocket.accept()
+    try:
+        conn = await _open_connection(
+            agent=agent,
+            protocol=protocol,
+            connection_id=connection_id,
+            scope=scope,
+            event_filter=event_filter,
+            start_from=start_from,
+            spawn_capable=spawn_capable,
+            declaration=ClientDeclaration(
+                speaks=protocol_version,
+                accepts=protocol_accepts,
+                artifact=client,
+                version=client_version,
+            ),
+            rooms=rooms,
+            last_event_id=None,
+            expected_generation=expected_generation,
+        )
+    except HTTPException as exc:
+        await websocket.send_json(
+            {
+                "event": "refused",
+                "data": {"status": exc.status_code, "detail": exc.detail},
+            }
+        )
+        await websocket.close(code=_ws_close_code(exc.status_code))
+        return
+
+    frames = event_frames(
+        conn=conn,
+        registry=protocol.connections,
+        buffer=protocol.event_buffer,
+        approvals=protocol.approval_outcomes,
+    )
+    # Bounded, so a client that reads slowly holds the stream back rather
+    # than growing this queue.
+    outbox: asyncio.Queue[Frame] = asyncio.Queue(maxsize=_SOCKET_OUTBOX)
+    pump = asyncio.create_task(_pump_frames(frames, outbox))
+    pongs = asyncio.create_task(
+        _receive_pongs(websocket, protocol, agent.id, conn.id, conn.stream_generation)
+    )
+    loop = asyncio.get_running_loop()
+    next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+    try:
+        # One writer: a WebSocket must not be sent to from two tasks at once,
+        # so frames and pings both go out from this loop.
+        while not pump.done() or not outbox.empty():
+            if pongs.done():
+                # The client closed, or a pong was refused as a beat; either
+                # way this socket is finished.
+                return
+            try:
+                frame = await asyncio.wait_for(
+                    outbox.get(), timeout=max(0.0, next_ping - loop.time())
+                )
+            except TimeoutError:
+                frame = None
+            if frame is not None and frame is not KEEPALIVE:
+                await websocket.send_json(encode_ws(frame))
+            if loop.time() >= next_ping:
+                await websocket.send_json({"event": "ping", "data": {}})
+                next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+    except WebSocketDisconnect:
+        return
+    finally:
+        # The pump owns the stream: cancelling it runs the stream's own
+        # cleanup (detaching it from the connection) inside that task.
+        pump.cancel()
+        pongs.cancel()
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass  # the client closed it first
+
+
+# Frames buffered between the stream and the socket.
+_SOCKET_OUTBOX = 64
+
+
+async def _pump_frames(
+    frames: AsyncGenerator[Frame], outbox: asyncio.Queue[Frame]
+) -> None:
+    async for frame in frames:
+        await outbox.put(frame)
+
+
+async def _receive_pongs(
+    websocket: WebSocket,
+    protocol: AgentCore,
+    agent_id: str,
+    connection_id: str,
+    generation: int,
+) -> None:
+    """Turn each pong into a beat, until the client goes or a beat is refused.
+
+    The same refusals as `/connection/beat`; the event stream reports the
+    reason (taken over, lapsed) on its own, so this only stops listening.
+    """
+    while True:
+        try:
+            message = await websocket.receive_json()
+        except (WebSocketDisconnect, ValueError, RuntimeError):
+            # Gone, or sent something that is not JSON: either way no more
+            # beats are coming on this socket.
+            return
+        if not isinstance(message, dict) or message.get("type") != "pong":
+            continue
+        raw = message.get("cursor", 0)
+        cursor = raw if isinstance(raw, int) and raw >= 0 else 0
+        cursor = min(cursor, protocol.event_buffer.head(agent_id))
+        try:
+            conn = protocol.connections.beat(
+                agent_id, connection_id, cursor, generation
+            )
+        except (
+            NoStreamAttachedError,
+            SupersededConnectionError,
+            UnfencedBeatError,
+            UnknownConnectionError,
+        ):
+            return
+        protocol.event_buffer.confirm(agent_id, conn.id, cursor)
 
 
 def _current_connection(

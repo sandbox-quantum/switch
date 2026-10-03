@@ -4,9 +4,10 @@ import hashlib
 import logging
 
 import jwt
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from jwt import PyJWKClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import HTTPConnection
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -279,9 +280,12 @@ def _is_public_path(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in PUBLIC_PATH_PREFIXES)
 
 
-def get_agent_from_scope(request: Request) -> Agent:
-    """Get authenticated agent from request scope (set by middleware)."""
-    agent: object = request.scope.get("agent")
+def get_agent_from_scope(connection: HTTPConnection) -> Agent:
+    """Get authenticated agent from the connection's scope (set by middleware).
+
+    Any HTTP connection, so a WebSocket route can use it too.
+    """
+    agent: object = connection.scope.get("agent")
     if not isinstance(agent, Agent):
         raise HTTPException(status_code=401, detail="Not authenticated")
     return agent

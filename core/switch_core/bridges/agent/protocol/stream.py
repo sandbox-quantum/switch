@@ -16,7 +16,8 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -52,13 +53,47 @@ KEEPALIVE_INTERVAL_SECONDS = 15.0
 CATCH_UP_BATCH = 200
 
 
-def _frame(event: str, data: dict[str, Any], *, seq: int | None = None) -> bytes:
+@dataclass(frozen=True)
+class Frame:
+    """One message on an agent's event stream, before it is encoded.
+
+    The same frames go out as Server-Sent Events or as WebSocket messages; the
+    loop that decides what to send does not know which.
+    """
+
+    event: str
+    data: dict[str, Any]
+    seq: int | None = None
+
+
+# Not a message: the loop's signal that it waited a keepalive interval with
+# nothing to send. SSE turns it into a comment so proxies keep the response
+# open; a WebSocket has its own ping and drops it.
+KEEPALIVE = Frame("keepalive", {})
+
+
+def _frame(event: str, data: dict[str, Any], *, seq: int | None = None) -> Frame:
+    return Frame(event, data, seq)
+
+
+def encode_sse(frame: Frame) -> bytes:
+    if frame is KEEPALIVE:
+        return b": keepalive\n\n"
     lines = []
-    if seq is not None:
-        lines.append(f"id: {seq}")
-    lines.append(f"event: {event}")
-    lines.append(f"data: {json.dumps(data, separators=(',', ':'))}")
+    if frame.seq is not None:
+        lines.append(f"id: {frame.seq}")
+    lines.append(f"event: {frame.event}")
+    lines.append(f"data: {json.dumps(frame.data, separators=(',', ':'))}")
     return ("\n".join(lines) + "\n\n").encode()
+
+
+def encode_ws(frame: Frame) -> dict[str, Any]:
+    """A frame as a WebSocket message. `id` is the sequence number SSE sends
+    as the event id, so a client resumes from it the same way."""
+    message: dict[str, Any] = {"event": frame.event, "data": frame.data}
+    if frame.seq is not None:
+        message["id"] = frame.seq
+    return message
 
 
 def _connection_state(conn: AgentConnection) -> dict[str, Any]:
@@ -111,6 +146,33 @@ def event_stream(
     buffer: EventBuffer,
     approvals: ApprovalOutcomes | None,
 ) -> AsyncIterator[bytes]:
+    """The connection's frames as Server-Sent Events.
+
+    A plain function rather than a generator, so the frames are created, and
+    the connection's generation captured, at the call: a stream replaced
+    before its first read must not pick up its successor's.
+    """
+    return _as_sse(
+        event_frames(conn=conn, registry=registry, buffer=buffer, approvals=approvals)
+    )
+
+
+async def _as_sse(frames: AsyncGenerator[Frame]) -> AsyncIterator[bytes]:
+    try:
+        async for frame in frames:
+            yield encode_sse(frame)
+    finally:
+        await frames.aclose()
+
+
+def event_frames(
+    *,
+    conn: AgentConnection,
+    registry: AgentConnectionRegistry,
+    buffer: EventBuffer,
+    approvals: ApprovalOutcomes | None,
+) -> AsyncGenerator[Frame]:
+    """The connection's frames, for a transport to encode."""
     return _event_stream(
         conn=conn,
         registry=registry,
@@ -127,8 +189,8 @@ async def _event_stream(
     buffer: EventBuffer,
     approvals: ApprovalOutcomes | None,
     generation: int,
-) -> AsyncIterator[bytes]:
-    """Yield SSE frames for a connection until its stream is superseded or it dies."""
+) -> AsyncGenerator[Frame]:
+    """Yield frames for a connection until its stream is superseded or it dies."""
     if conn.stream_generation != generation:
         return
     agent_id = conn.agent_id
@@ -306,7 +368,7 @@ async def _event_stream(
                 # cursor still where it started.
                 conn.wake.clear()
                 if not conn.rooms and not await _wait_for_wake(conn):
-                    yield b": keepalive\n\n"
+                    yield KEEPALIVE
                 continue
 
             # Where counting starts for a room nothing is counting yet. It is
@@ -411,7 +473,7 @@ async def _event_stream(
                 continue
 
             if not await _wait_for_work(bell, conn):
-                yield b": keepalive\n\n"
+                yield KEEPALIVE
     finally:
         if unsubscribe_outcomes is not None:
             unsubscribe_outcomes()
