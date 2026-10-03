@@ -1,0 +1,22 @@
+[
+  {
+    "event": "agent.worker",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a2",
+      "connection_id": "00000000-0000-4000-8000-0000000000c9",
+      "generation": 41,
+      "event": "operation",
+      "data": { "id": "00000000-0000-4000-8000-0000000000f3" }
+    }
+  },
+  {
+    "event": "agent.worker_closed",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a2",
+      "connection_id": "00000000-0000-4000-8000-0000000000c9",
+      "generation": 41,
+      "code": "launch_superseded",
+      "reason": "the hosted launch moved to a newer revision; this worker's capability is obsolete"
+    }
+  }
+]

@@ -82,6 +82,21 @@ _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 _SERVED_ON_THE_CONTROLLER_STREAM = re.compile(
     r"/(events|notifications|rooms/[^/]+/events|connection/.*|watch/heartbeat)"
 )
+# A cloud agent worker's up-calls under `/agents/{agent_id}/connection/`. Its
+# worker attached through the controller's relay, which forwards these; they
+# are fenced on the worker the relay attached, not on a connection the agent
+# would hold of its own.
+_WORKER_UPCALLS = re.compile(
+    r"/connection/(relay/[^/]+|idle|mailbox/ack|cutover-manifest)"
+)
+# The cloud agent routes outside `/agents/` a controller acts as its agent on,
+# with the agent named in `X-Switch-Agent-Id`: a cloud agent's worker and
+# bootstrap call them through the relay. `/hosted/machines/...` is the
+# machine supervisor's, authenticated by the machine capability.
+_HOSTED_AGENT_PATH = re.compile(
+    r"/hosted/(provider-credential|provider-status|github-credential"
+    r"|operations/[^/]+/(claim|result))"
+)
 
 
 class OIDCTokenValidator:
@@ -423,7 +438,11 @@ class BearerAuthMiddleware:
             )(scope, receive, send)
             return
 
-        if path_agent is not None and _SERVED_ON_THE_CONTROLLER_STREAM.fullmatch(rest):
+        if (
+            path_agent is not None
+            and _SERVED_ON_THE_CONTROLLER_STREAM.fullmatch(rest)
+            and not _WORKER_UPCALLS.fullmatch(rest)
+        ):
             await _controller_refusal(
                 MANAGED_BY_CONTROLLER,
                 "A controller receives its agents' events on its own stream, "
@@ -543,6 +562,8 @@ def _controller_refusal(code: str, message: str, status_code: int) -> Response:
 
 def _is_agent_route(path: str) -> bool:
     if path.startswith(_AGENT_SESSIONS_PREFIX):
+        return True
+    if _HOSTED_AGENT_PATH.fullmatch(path):
         return True
     match = _AGENT_PATH.fullmatch(path)
     return match is not None and match["segment"] not in _REGISTRATION_SEGMENTS

@@ -32,12 +32,16 @@ from switch_core.management.schemas import (
     OperationResultRequest,
     StatusReport,
     TokenRequest,
+    WorkerAttachRequest,
+    WorkerDetachRequest,
 )
 from tests.switch_core.management.harness import (
     FIXTURES,
+    EnrolledController,
     Harness,
     add_member,
     add_room,
+    bearer,
     build_harness,
     cookies_for,
     create_managed_agent,
@@ -50,6 +54,12 @@ from tests.switch_core.management.harness import (
     provider,
     report_status,
     take,
+)
+from tests.switch_core.management.hosted_harness import (
+    add_cloud_agent,
+    add_cloud_machine,
+    build_hosted_harness,
+    host_headers,
 )
 
 
@@ -87,6 +97,7 @@ def harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
 class TestRequestFixturesParse:
     def test_each_request_fixture_is_a_valid_request(self) -> None:
         EnrollRequest.model_validate(_fixture("enroll_request.json"))
+        EnrollRequest.model_validate(_fixture("enroll_machine_request.json"))
         TokenRequest.model_validate(_fixture("token_request.json"))
         StatusReport.model_validate(_fixture("status_request.json"))
         OperationResultRequest.model_validate(
@@ -399,6 +410,85 @@ class TestStreamFrames:
 
         names = [name for name, _ in provoked]
         assert sorted(names) == sorted(recorded), names
+        for name, data in provoked:
+            assert_same_shape(
+                {"event": name, "data": data}, recorded[name], f"$[{name}]"
+            )
+
+
+class TestCloudMachineMessages:
+    """A cloud machine's enrollment, its controller's assignment, and its
+    agents' workers attaching through the relay."""
+
+    def test_each_request_fixture_is_a_valid_request(self) -> None:
+        WorkerAttachRequest.model_validate(_fixture("worker_attach_request.json"))
+        WorkerDetachRequest.model_validate(_fixture("worker_detach_request.json"))
+
+    async def test_enroll_assign_attach_and_frames(
+        self, session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+    ) -> None:
+        harness = build_hosted_harness(session_factory, tmp_path)
+        machine = await add_cloud_machine(harness)
+        agent = await add_cloud_agent(harness, machine)
+        async with harness.client() as client:
+            enroll_body = _fixture("enroll_machine_request.json")
+            enroll_body["proof"]["machine_id"] = machine.machine_id
+            enroll_body["proof"]["capability"] = machine.capability
+            enrolled = await client.post(
+                "/v1/management/controllers/enroll",
+                json=enroll_body,
+                headers=host_headers(),
+            )
+            assert enrolled.status_code == 201, enrolled.text
+            controller_id = enrolled.json()["controller_id"]
+            token = (
+                await client.post(
+                    f"/v1/management/controllers/{controller_id}/token",
+                    json={"credential": enrolled.json()["credential"]},
+                )
+            ).json()["access_token"]
+            pulled = await client.get(
+                f"/v1/management/controllers/{controller_id}/assignment",
+                headers=bearer(token),
+            )
+            capability = pulled.json()["agents"][0]["definition"]["hosted"][
+                "worker_capability"
+            ]
+            controller = EnrolledController(
+                controller_id=controller_id,
+                credential="",
+                access_token=token,
+                owner=machine.owner,
+            )
+            opened = await open_connection(client, controller, {agent.agent_id: "head"})
+            stream = await open_stream(harness, controller, opened)
+            await take(stream, 2)
+            attach_body = _fixture("worker_attach_request.json")
+            attach_body["connection_id"] = opened["connection_id"]
+            attach_body["generation"] = opened["generation"]
+            attach_body["worker"]["capability"] = capability
+            path = f"/v1/controllers/{controller_id}/agents/{agent.agent_id}/worker"
+            attached = await client.post(path, json=attach_body, headers=bearer(token))
+            assert attached.status_code == 200, attached.text
+            harness.protocol.connections.ring_worker(
+                agent.agent_id, "operation", {"id": "op"}
+            )
+            provoked = await take(stream, 1)
+            harness.protocol.connections.supersede(agent.agent_id, 2)
+            provoked += await take(stream, 1)
+            detach_body = _fixture("worker_detach_request.json")
+            detach_body["connection_id"] = opened["connection_id"]
+            detach_body["generation"] = opened["generation"]
+            detached = await client.post(
+                f"{path}/detach", json=detach_body, headers=bearer(token)
+            )
+            assert detached.status_code == 204, detached.text
+        assert_same_shape(pulled.json(), _fixture("assignment_hosted_response.json"))
+        assert_same_shape(attached.json(), _fixture("worker_attach_response.json"))
+        recorded = {
+            entry["event"]: entry for entry in _fixture("worker_stream_frames.json")
+        }
+        assert [name for name, _ in provoked] == list(recorded)
         for name, data in provoked:
             assert_same_shape(
                 {"event": name, "data": data}, recorded[name], f"$[{name}]"

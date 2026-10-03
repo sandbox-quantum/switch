@@ -1,0 +1,11 @@
+{
+  "attached": {
+    "launch_revision": 1,
+    "limits": { "sessions_per_agent": 8 },
+    "idle": { "report_every_s": 30, "fresh_for_s": 75 },
+    "credential_revision": "2026-01-01 00:00:00+00:00",
+    "queued_operations": [],
+    "relay_fence": 0,
+    "cancelled": []
+  }
+}

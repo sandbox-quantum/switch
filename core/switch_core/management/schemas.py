@@ -15,7 +15,7 @@ same files.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -97,12 +97,53 @@ class DefinitionV1(_GatewayBody):
         return value
 
 
+class HostedDefinition(BaseModel):
+    """What a cloud agent's controller needs beyond the v1 definition.
+
+    Written by Management from the agent's cloud launch, never submitted by a
+    person: the gateway's `DefinitionV1` refuses a `hosted` key. It is what
+    the machine's supervisor builds the agent's deployment from, so it
+    changes only when the launch moves to a new revision (see
+    `hosted_sync.py`). The worker capability is not stored here; the
+    assignment adds it as it is read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    machine_id: str
+    launch_id: str
+    launch_revision: int = Field(ge=1)
+    provider_credential_kind: str | None
+    repository: str | None
+    spec: dict[str, Any]
+    skills: list[dict[str, Any]]
+
+
+class StoredDefinition(DefinitionV1):
+    """A definition as `agent_definitions.definition` holds it: v1, plus the
+    `hosted` block for a cloud agent."""
+
+    hosted: HostedDefinition | None = None
+
+
 # ── Controller-facing requests ────────────────────────────────────────────────
 
 
 class EnrollmentCodeProof(_ControllerBody):
     kind: Literal["enrollment_code"]
     code: str
+
+
+class MachineSecretProof(_ControllerBody):
+    """A cloud machine's supervisor, proving the machine with its capability.
+
+    The supervisor also sends `X-Switch-Host-Boot-Id` and
+    `X-Switch-Host-Instance-Id`, as on its own routes.
+    """
+
+    kind: Literal["machine_secret"]
+    machine_id: str = Field(min_length=1, max_length=200)
+    capability: str = Field(min_length=16, max_length=4096)
 
 
 class ControllerDescription(_ControllerBody):
@@ -113,9 +154,52 @@ class ControllerDescription(_ControllerBody):
 
 
 class EnrollRequest(_ControllerBody):
-    proof: EnrollmentCodeProof
+    proof: Annotated[
+        EnrollmentCodeProof | MachineSecretProof, Field(discriminator="kind")
+    ]
     controller: ControllerDescription
     public_key: PublicKey | None = None
+
+
+class WorkerIdentity(_ControllerBody):
+    """A cloud agent's worker as it opened its stream on the controller's relay.
+
+    `connection_id` and `generation` are the relay's own: what the worker was
+    told in its `connection_state`, and what it names on every up-call.
+    The rest is what it sent in its `X-Switch-*` headers and protocol
+    declaration.
+    """
+
+    connection_id: str = Field(min_length=1, max_length=128)
+    generation: int
+    spawn_capable: bool
+    protocol: int | None
+    protocol_accepts: int | None
+    capability: str | None = Field(max_length=4096)
+    boot_id: str | None = Field(max_length=128)
+    instance_id: str | None = Field(max_length=128)
+    state_version: int | None
+
+
+class WorkerAttachRequest(_ControllerBody):
+    """Attach a cloud agent's worker, on the controller's open connection."""
+
+    connection_id: str
+    generation: int
+    worker: WorkerIdentity
+
+
+class WorkerReference(_ControllerBody):
+    connection_id: str = Field(min_length=1, max_length=128)
+    generation: int
+
+
+class WorkerDetachRequest(_ControllerBody):
+    """The worker's stream on the relay ended."""
+
+    connection_id: str
+    generation: int
+    worker: WorkerReference
 
 
 class TokenRequest(_ControllerBody):
@@ -307,29 +391,40 @@ class CreateOperationRequest(_GatewayBody):
 # ── Wire shapes ───────────────────────────────────────────────────────────────
 
 
-def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
+def assignment_entry(
+    row: AgentDefinitionRow, agent: Agent, worker_capability: str | None
+) -> dict[str, Any]:
     """An `AgentAssignment`: the stored v1 definition, plus the agent's `name`,
     `display_name` and `icon_url` read from its own row.
 
     The definition is the v1 shape, `directory` included, rather than the
     target contract's (which nests it as `local.directory` and adds fields v1
-    does not have); `agent-controllers-v1.md` defines it this way."""
+    does not have); `agent-controllers-v1.md` defines it this way.
+
+    A cloud agent's definition carries its `hosted` block too, with
+    `worker_capability` added: the capability for the launch revision the
+    block names, or null when the launch has moved past it and the block is
+    about to be replaced."""
     definition = row.definition
+    entry: dict[str, Any] = {
+        "name": agent.name,
+        "display_name": agent.display_name,
+        "icon_url": agent.icon_url,
+        "provider": definition["provider"],
+        "model": definition.get("model"),
+        "instructions": definition.get("instructions", ""),
+        "auto_session": definition.get("auto_session", True),
+        "auto_approve": definition.get("auto_approve", False),
+        "directory": definition.get("directory"),
+    }
+    hosted = definition.get("hosted")
+    if hosted is not None:
+        entry["hosted"] = {**hosted, "worker_capability": worker_capability}
     return {
         "agent_id": row.agent_id,
         "revision": row.revision,
         "desired_state": row.desired_state,
-        "definition": {
-            "name": agent.name,
-            "display_name": agent.display_name,
-            "icon_url": agent.icon_url,
-            "provider": definition["provider"],
-            "model": definition.get("model"),
-            "instructions": definition.get("instructions", ""),
-            "auto_session": definition.get("auto_session", True),
-            "auto_approve": definition.get("auto_approve", False),
-            "directory": definition.get("directory"),
-        },
+        "definition": entry,
     }
 
 

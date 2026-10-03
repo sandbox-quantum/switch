@@ -28,6 +28,7 @@ class AgentControllerStore:
         version: str | None,
         public_key: dict[str, Any] | None,
         api_key_id: str,
+        hosted_machine_id: str | None,
     ) -> AgentController:
         controller = AgentController(
             owner_id=owner_id,
@@ -37,6 +38,7 @@ class AgentControllerStore:
             version=version,
             public_key=public_key,
             api_key_id=api_key_id,
+            hosted_machine_id=hosted_machine_id,
         )
         session.add(controller)
         await session.flush()
@@ -61,6 +63,19 @@ class AgentControllerStore:
             select(AgentController).where(
                 AgentController.tenant_id == tenant_id,
                 AgentController.api_key_id == api_key_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def live_for_machine(
+        self, session: AsyncSession, tenant_id: str, machine_id: str
+    ) -> AgentController | None:
+        """The cloud machine's controller that is not revoked, if it has one."""
+        result = await session.execute(
+            select(AgentController).where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.hosted_machine_id == machine_id,
+                AgentController.revoked_at.is_(None),
             )
         )
         return result.scalar_one_or_none()
@@ -156,6 +171,31 @@ class AgentControllerStore:
                 AgentController.id == controller_id,
             )
             .values(api_key_id=api_key_id)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def reenroll(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        api_key_id: str,
+        name: str,
+        platform: dict[str, Any],
+        version: str,
+    ) -> None:
+        """A cloud machine's controller enrolling again: its new credential and
+        what it says it is now."""
+        await session.execute(
+            update(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+            )
+            .values(
+                api_key_id=api_key_id, name=name, platform=platform, version=version
+            )
             .execution_options(synchronize_session=False)
         )
 

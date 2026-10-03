@@ -27,7 +27,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import ControllerPrincipal
-from switch_core.bridges.agent.dependencies import get_protocol, get_session
+from switch_core.bridges.agent.dependencies import (
+    get_config,
+    get_protocol,
+    get_session,
+)
+from switch_core.bridges.agent.hosted_controller_workers import (
+    ControllerWorkerIdentity,
+    attach_controller_worker,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
@@ -38,12 +46,18 @@ from switch_core.bridges.agent.protocol.controller_stream import (
     controller_event_stream,
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_INTERVAL_SECONDS
+from switch_core.config import SwitchConfig
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.hosted_machine_store import (
+    MachineAuthError,
+    authenticate_machine,
+)
 from switch_core.management import reason_codes
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.dependencies import (
     get_authenticator,
     get_controller_principal,
+    get_hosted_settings,
     get_management,
     get_management_session_factory,
     require_controller,
@@ -54,13 +68,17 @@ from switch_core.management.schemas import (
     ControllerBeatRequest,
     ControllerConnectionRequest,
     EnrollRequest,
+    MachineSecretProof,
     OperationResultRequest,
     ProgressRequest,
     StatusReport,
     TokenRequest,
+    WorkerAttachRequest,
+    WorkerDetachRequest,
     wire_time,
 )
 from switch_core.management.service import ManagementService
+from switch_core.providers.hosted import HostedControllerSettings
 
 logger = logging.getLogger(__name__)
 
@@ -136,13 +154,19 @@ def _etag_matches(if_none_match: str | None, revision: int) -> bool:
 
 @router.post("/v1/management/controllers/enroll", status_code=201)
 async def enroll_controller(
+    request: Request,
     body: EnrollRequest,
     management: Management,
     authenticator: Annotated[ManagementAuthenticator, Depends(get_authenticator)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_management_session_factory)
     ],
+    hosted: Annotated[HostedControllerSettings | None, Depends(get_hosted_settings)],
 ) -> dict[str, str]:
+    if isinstance(body.proof, MachineSecretProof):
+        return await _enroll_machine(
+            request, body, body.proof, management, session_factory, hosted
+        )
     tenant_id = await authenticator.tenant_of_secret(body.proof.code)
     if tenant_id is None:
         raise ManagementError(
@@ -155,6 +179,55 @@ async def enroll_controller(
             session,
             tenant_id,
             code=body.proof.code,
+            description=body.controller,
+            public_key=body.public_key,
+        )
+    return {"controller_id": controller.id, "credential": credential}
+
+
+_MACHINE_REFUSALS = {
+    401: reason_codes.INVALID_CREDENTIAL,
+    400: reason_codes.VALIDATION_ERROR,
+    410: reason_codes.MACHINE_RETIRED,
+}
+
+
+async def _enroll_machine(
+    request: Request,
+    body: EnrollRequest,
+    proof: MachineSecretProof,
+    management: ManagementService,
+    session_factory: async_sessionmaker[AsyncSession],
+    hosted: HostedControllerSettings | None,
+) -> dict[str, str]:
+    """A cloud machine's supervisor enrolling the machine's controller.
+
+    The machine capability and host identity are checked exactly as on the
+    supervisor's own routes, in the tenant the cloud machines run in.
+    """
+    if hosted is None:
+        raise ManagementError(
+            401,
+            reason_codes.INVALID_CREDENTIAL,
+            "This server runs no cloud machines.",
+        )
+    async with tenant_session(session_factory, hosted.tenant_id) as session:
+        try:
+            machine = await authenticate_machine(
+                session,
+                proof.machine_id,
+                capability=proof.capability,
+                boot_id=request.headers.get("x-switch-host-boot-id"),
+                instance_id=request.headers.get("x-switch-host-instance-id"),
+            )
+        except MachineAuthError as exc:
+            raise ManagementError(
+                exc.status, _MACHINE_REFUSALS[exc.status], str(exc)
+            ) from exc
+        controller, credential = await management.enroll_machine(
+            session,
+            hosted.tenant_id,
+            machine=machine,
             description=body.controller,
             public_key=body.public_key,
         )
@@ -419,3 +492,89 @@ async def connection_beat(
         presence.resume_from(conn, agent_id, confirmed)
     presence.replace_placements(conn, body.placements)
     return {"agents": sorted(agents)}
+
+
+@router.post("/v1/controllers/{controller_id}/agents/{agent_id}/worker")
+async def attach_worker(
+    agent_id: str,
+    body: WorkerAttachRequest,
+    principal: PathController,
+    protocol: Protocol,
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, Any]:
+    """Attach a cloud agent's worker that opened its stream on this controller's relay.
+
+    Refused in the management envelope when the controller connection is not
+    open with its stream attached, or the agent is not bound to it: the
+    relay then asks its worker to retry. The worker's own admission is
+    refused as Core refuses a worker opening its own stream
+    (`{"detail": {code, message}}`), which the relay hands the worker as it
+    came. Answers `{attached}`, the `worker_attached` payload.
+    """
+    presence = protocol.connections.controllers
+    try:
+        conn = presence.require(
+            principal.controller_id, body.connection_id, body.generation
+        )
+    except ControllerConnectionError as exc:
+        raise _connection_refusal(exc) from exc
+    if not conn.stream_attached:
+        raise ManagementError(
+            409,
+            reason_codes.NO_STREAM,
+            "The controller connection has no stream attached; a worker attaches "
+            "only while the controller's stream is up.",
+            retryable=True,
+        )
+    binding = presence.binding(agent_id)
+    if binding is None or binding.controller_id != principal.controller_id:
+        raise ManagementError(
+            403,
+            reason_codes.NOT_ASSIGNED,
+            f"Agent {agent_id} is not assigned to this controller.",
+        )
+    worker = body.worker
+    attached = await attach_controller_worker(
+        protocol=protocol,
+        config=config,
+        conn=conn,
+        agent_id=agent_id,
+        identity=ControllerWorkerIdentity(
+            connection_id=worker.connection_id,
+            generation=worker.generation,
+            spawn_capable=worker.spawn_capable,
+            protocol=worker.protocol,
+            protocol_accepts=worker.protocol_accepts,
+            capability=worker.capability,
+            boot_id=worker.boot_id,
+            instance_id=worker.instance_id,
+            state_version=worker.state_version,
+        ),
+    )
+    return {"attached": attached}
+
+
+@router.post(
+    "/v1/controllers/{controller_id}/agents/{agent_id}/worker/detach",
+    status_code=204,
+)
+async def detach_worker(
+    agent_id: str,
+    body: WorkerDetachRequest,
+    principal: PathController,
+    protocol: Protocol,
+) -> Response:
+    """The worker's stream on the relay ended. Detaching a worker that is not
+    the attached one changes nothing, so a late detach cannot undo a newer
+    attach."""
+    presence = protocol.connections.controllers
+    try:
+        presence.require(principal.controller_id, body.connection_id, body.generation)
+    except ControllerConnectionError as exc:
+        raise _connection_refusal(exc) from exc
+    binding = presence.binding(agent_id)
+    if binding is not None and binding.controller_id == principal.controller_id:
+        presence.detach_worker(
+            agent_id, body.worker.connection_id, body.worker.generation
+        )
+    return Response(status_code=204)

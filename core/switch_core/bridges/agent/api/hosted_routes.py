@@ -198,7 +198,9 @@ async def claim_operation(
             409, "operation_not_claimable", "This operation cannot be claimed."
         )
     operation.state = "claimed"
-    operation.claimed_by = f"{protocol.event_buffer.boot}:{conn.id}:{body.generation}"
+    operation.claimed_by = (
+        f"{protocol.event_buffer.boot}:{conn.holder}:{body.generation}"
+    )
     operation.claimed_boot_id = conn.worker.boot_id
     operation.updated_at = datetime.now(UTC)
     await session.commit()

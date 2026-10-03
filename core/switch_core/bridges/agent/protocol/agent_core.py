@@ -36,6 +36,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     reparent_agent,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_placement import HostedPlacement
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -269,6 +270,9 @@ class AgentCore:
     # still exists. Set by the process wiring when something outside Core keeps
     # state about agents that a cascade alone would drop without telling anyone.
     _agent_removal_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # Told when a cloud machine's agents changed, so agent management can
+    # place them on the machine's controller. None with management off.
+    _hosted_placement: HostedPlacement | None = None
 
     def __init__(
         self,
@@ -804,6 +808,55 @@ class AgentCore:
         self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._agent_removal_listener = listener
+
+    def set_hosted_placement(self, placement: HostedPlacement) -> None:
+        self._hosted_placement = placement
+
+    async def hosted_machine_changed(self, machine_id: str) -> None:
+        """Tell agent management what runs on this cloud machine changed.
+
+        Called after the change committed. A failure is logged, not raised:
+        the change itself stands, the caller's answer describes it, and the
+        machine's next heartbeat syncs again (`hosted_machine_seen`).
+        """
+        if self._hosted_placement is None:
+            return
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError("hosted_machine_changed needs a bound tenant")
+        try:
+            await self._hosted_placement.machine_changed(tenant_id, machine_id)
+        except Exception:
+            logger.error(
+                "Could not place the agents of cloud machine %s on its controller; "
+                "its next heartbeat retries",
+                machine_id,
+                exc_info=True,
+            )
+
+    async def hosted_machine_seen(self, machine_id: str, agents_version: int) -> None:
+        """A cloud machine's supervisor beat at `agents_version`.
+
+        Logged rather than raised, like `hosted_machine_changed`: the heartbeat
+        it rides on has been recorded, and the next one retries.
+        """
+        if self._hosted_placement is None:
+            return
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError("hosted_machine_seen needs a bound tenant")
+        try:
+            await self._hosted_placement.machine_seen(
+                tenant_id, machine_id, agents_version
+            )
+        except Exception:
+            logger.error(
+                "Could not place the agents of cloud machine %s on its controller "
+                "at agents version %s; its next heartbeat retries",
+                machine_id,
+                agents_version,
+                exc_info=True,
+            )
 
     async def _create_bridge_identities(
         self, tenant_id: str, agent_name: str, description: str

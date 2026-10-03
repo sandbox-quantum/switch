@@ -28,6 +28,59 @@ class HostedMachineConflict(Exception):
     """A machine cannot take the requested change; the message is the 409 detail."""
 
 
+RETIRED_MACHINE_STATES = frozenset({"retained", "deleting", "deleted"})
+
+
+class MachineAuthError(Exception):
+    """A machine credential that is refused; `status` and the message are the answer."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+async def authenticate_machine(
+    session: AsyncSession,
+    machine_id: str,
+    *,
+    capability: str,
+    boot_id: str | None,
+    instance_id: str | None,
+) -> HostedMachine:
+    """The machine, locked, once its capability and host identity check out.
+
+    The capability is checked before the lock is taken, so a wrong one is
+    refused without waiting on the machine, and again under it, since
+    issuing rotates it. A machine that is retained or being deleted is
+    refused with 410: its supervisor stops its agents and waits.
+
+    Raises:
+        MachineAuthError: 401 for a capability that does not match, 400 when
+            the boot or instance id is missing, 410 for a retired machine.
+    """
+    store = HostedMachineStore()
+    machine = await store.get(session, machine_id)
+    if (
+        not capability
+        or machine is None
+        or not store.capability_matches(machine, capability)
+    ):
+        raise MachineAuthError(401, "invalid machine capability")
+    if not boot_id or not instance_id:
+        raise MachineAuthError(
+            400, "X-Switch-Host-Boot-Id and X-Switch-Host-Instance-Id are required."
+        )
+    machine = await store.locked(session, machine_id)
+    if machine is None or not store.capability_matches(machine, capability):
+        raise MachineAuthError(401, "invalid machine capability")
+    if (
+        machine.state in RETIRED_MACHINE_STATES
+        or machine.desired_state in RETIRED_MACHINE_STATES
+    ):
+        raise MachineAuthError(410, "machine retired")
+    return machine
+
+
 def capability_hash(capability: str) -> str:
     return hashlib.sha256(capability.encode()).hexdigest()
 

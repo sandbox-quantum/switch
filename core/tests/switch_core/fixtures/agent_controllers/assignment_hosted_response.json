@@ -1,0 +1,40 @@
+{
+  "revision": 1,
+  "agents": [
+    {
+      "agent_id": "00000000-0000-4000-8000-0000000000a2",
+      "revision": 1,
+      "desired_state": "running",
+      "definition": {
+        "name": "cloud-helper",
+        "display_name": null,
+        "icon_url": null,
+        "provider": "claude",
+        "model": "sonnet",
+        "instructions": "Help with the repository.",
+        "auto_session": true,
+        "auto_approve": false,
+        "directory": null,
+        "hosted": {
+          "machine_id": "00000000-0000-4000-8000-0000000000d1",
+          "launch_id": "00000000-0000-4000-8000-0000000000f2",
+          "launch_revision": 1,
+          "provider_credential_kind": "setup-token",
+          "repository": "example/project",
+          "spec": {
+            "name": "cloud-helper",
+            "definition": "---\nname: cloud-helper\n---\nHelp.",
+            "instructions": "Help with the repository.",
+            "definition_attributes": { "model": "sonnet" },
+            "auto_session": true,
+            "auto_approve": false
+          },
+          "skills": [
+            { "slug": "github", "files": { "SKILL.md": "# GitHub\n" } }
+          ],
+          "worker_capability": "example-worker-capability-not-real"
+        }
+      }
+    }
+  ]
+}

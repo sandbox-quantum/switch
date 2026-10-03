@@ -35,6 +35,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     Binding,
     ControllerPresence,
 )
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -42,6 +43,7 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerOperation,
     ApiKey,
+    HostedMachine,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -54,6 +56,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
+from switch_core.management.hosted_sync import HostedPlacements
 from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.placement import (
     ControllerState,
@@ -67,6 +70,7 @@ from switch_core.management.schemas import (
     DefinitionV1,
     PublicKey,
     StatusReport,
+    StoredDefinition,
     assignment_entry,
     controller_view,
     managed_agent_view,
@@ -93,6 +97,9 @@ class ManagementSettings:
     # against (`GATEWAY_PUBLIC_URL`). None when the deployment has not said,
     # and then nothing can tell an owner what `--server` to enroll with.
     server_url: str | None
+    # The server's encryption key, which a cloud launch's worker capability
+    # is stored under; the assignment decrypts it for the machine's controller.
+    secret_key: str
 
 
 @dataclass(frozen=True)
@@ -114,6 +121,7 @@ class ManagementService:
         api_keys: ApiKeyStore,
         agents: AgentStore,
         presence: ControllerPresence,
+        hosted: HostedPlacements,
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
@@ -124,6 +132,7 @@ class ManagementService:
         self.operations = operations
         self.api_keys = api_keys
         self.agents = agents
+        self.hosted = hosted
         self._clock = clock
 
     def now(self) -> datetime:
@@ -180,6 +189,7 @@ class ManagementService:
             version=description.version,
             public_key=public_key.model_dump() if public_key is not None else None,
             api_key_id=key.id,
+            hosted_machine_id=None,
         )
         await session.commit()
         logger.info(
@@ -222,6 +232,13 @@ class ManagementService:
             reason_codes.ENROLLMENT_CODE_INVALID,
             "The enrollment code is invalid, already used, or expired.",
         )
+        if description.kind == "ec2":
+            raise ManagementError(
+                422,
+                reason_codes.VALIDATION_ERROR,
+                "A controller of kind ec2 runs a cloud machine and enrolls with "
+                "that machine's secret, not an enrollment code.",
+            )
         key = await self.api_keys.get_by_hash(session, tokens.hash_secret(code))
         if key is None or key.type != CONTROLLER_ENROLLMENT_KEY_TYPE:
             raise invalid
@@ -245,6 +262,7 @@ class ManagementService:
             version=description.version,
             public_key=public_key.model_dump() if public_key is not None else None,
             api_key_id=controller_key.id,
+            hosted_machine_id=None,
         )
         await self.controllers.complete_enrollment(
             session, tenant_id, consumed.id, controller.id
@@ -256,6 +274,79 @@ class ManagementService:
             controller.id,
             controller.kind,
             consumed.owner_id,
+        )
+        return controller, credential
+
+    async def enroll_machine(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        *,
+        machine: HostedMachine,
+        description: ControllerDescription,
+        public_key: PublicKey | None,
+    ) -> tuple[AgentController, str]:
+        """Enroll a cloud machine's controller: one per machine, kept across boots.
+
+        `machine` is the machine whose capability was just verified, locked
+        in `session`. A machine that already has a live controller keeps it,
+        with a new credential that replaces the old one (a reboot or a new
+        generation enrolls again, and nothing else may act for the machine);
+        one whose controller was revoked, or that never had one, gets a new
+        controller. Either way every cloud agent on the machine is placed on
+        it. Commits, then tells Core and nudges.
+        """
+        if description.kind != "ec2":
+            raise ManagementError(
+                422,
+                reason_codes.VALIDATION_ERROR,
+                "A cloud machine enrolls a controller of kind ec2.",
+            )
+        key, credential = await self._new_hash_only_key(
+            session,
+            owner_id=machine.owner_id,
+            key_type=CONTROLLER_KEY_TYPE,
+            label=f"controller {description.name}",
+        )
+        controller = await self.controllers.live_for_machine(
+            session, tenant_id, machine.id
+        )
+        if controller is not None:
+            previous_key_id = controller.api_key_id
+            await self.controllers.reenroll(
+                session,
+                tenant_id,
+                controller.id,
+                api_key_id=key.id,
+                name=description.name,
+                platform=description.platform.model_dump(),
+                version=description.version,
+            )
+            if previous_key_id is not None:
+                await self.api_keys.delete(session, previous_key_id)
+            action = "enrolled again"
+        else:
+            controller = await self.controllers.create(
+                session,
+                owner_id=machine.owner_id,
+                name=description.name,
+                kind="ec2",
+                platform=description.platform.model_dump(),
+                version=description.version,
+                public_key=public_key.model_dump() if public_key is not None else None,
+                api_key_id=key.id,
+                hosted_machine_id=machine.id,
+            )
+            action = "enrolled"
+        change = await self.hosted.place(session, tenant_id, machine, controller.id)
+        await session.commit()
+        self.hosted.announce(tenant_id, change)
+        logger.info(
+            "Cloud machine %s %s its agents controller %s (%d agent(s) placed)",
+            machine.id,
+            action,
+            controller.id,
+            len(change.placed),
         )
         return controller, credential
 
@@ -328,7 +419,12 @@ class ManagementService:
         )
         return {
             "revision": controller.assignment_revision,
-            "agents": [assignment_entry(row, agent) for row, agent in rows],
+            "agents": [
+                assignment_entry(
+                    row, agent, await self.hosted.worker_capability(session, row)
+                )
+                for row, agent in rows
+            ],
         }
 
     async def assignment_revision(
@@ -542,19 +638,26 @@ class ManagementService:
         )
         if controller.revoked_at is not None:
             return
-        key_id = controller.api_key_id
-        await self.controllers.mark_revoked(
-            session, tenant_id, controller_id, self.now()
-        )
-        if key_id is not None:
-            await self.api_keys.delete(session, key_id)
-        await self.operations.cancel_open(
-            session, tenant_id, controller_id=controller_id, agent_id=None
-        )
+        await self._revoke_rows(session, tenant_id, controller)
         await session.commit()
         logger.info("Revoked agent controller %s", controller_id)
         self.notifier.credential_revoked(controller_id)
         self.presence.revoke_controller(controller_id)
+
+    async def _revoke_rows(
+        self, session: AsyncSession, tenant_id: str, controller: AgentController
+    ) -> None:
+        """Mark revoked, delete the credential and cancel open operations; the
+        caller commits, then nudges and tells Core."""
+        key_id = controller.api_key_id
+        await self.controllers.mark_revoked(
+            session, tenant_id, controller.id, self.now()
+        )
+        if key_id is not None:
+            await self.api_keys.delete(session, key_id)
+        await self.operations.cancel_open(
+            session, tenant_id, controller_id=controller.id, agent_id=None
+        )
 
     # ── Managed agents, owner side ────────────────────────────────────────────
 
@@ -633,6 +736,13 @@ class ManagementService:
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
         )
+        if controller.kind == "ec2":
+            raise ManagementError(
+                409,
+                reason_codes.CLOUD_AGENT,
+                "A cloud machine's controller runs only that machine's cloud "
+                "agents; create a cloud agent instead.",
+            )
         if check_placement:
             require_placement(
                 controller,
@@ -743,6 +853,7 @@ class ManagementService:
     ) -> dict[str, Any]:
         """Adopt an agent the caller owns, or replace its definition and placement."""
         agent = await self._owned_agent(session, owner_id, agent_id)
+        refuse_cloud_agent(agent)
         existing = await self.definitions.get_for_agent(session, tenant_id, agent_id)
         return await self._apply(
             session, tenant_id, owner_id, agent, existing, target, protocol
@@ -764,6 +875,7 @@ class ManagementService:
         existing, agent = await self._owned_definition(
             session, tenant_id, owner_id, agent_id
         )
+        refuse_cloud_agent(agent)
         target = _Placement(
             controller_id=controller_id
             if controller_id_given
@@ -860,9 +972,10 @@ class ManagementService:
     ) -> None:
         """Stop managing the agent. Its controller stops it; the agent itself
         is not deleted."""
-        row, _agent = await self._owned_definition(
+        row, agent = await self._owned_definition(
             session, tenant_id, owner_id, agent_id
         )
+        refuse_cloud_agent(agent)
         await self.definitions.delete(session, tenant_id, agent_id)
         if row.controller_id is not None:
             await self.operations.cancel_open(
@@ -1006,10 +1119,22 @@ def binding_of(
         agent_id=row.agent_id,
         controller_id=controller.id,
         tenant_id=tenant_id,
-        auto_session=DefinitionV1.model_validate(row.definition).auto_session,
+        auto_session=StoredDefinition.model_validate(row.definition).auto_session,
         controller_name=controller.name,
         running=row.desired_state == "running",
     )
+
+
+def refuse_cloud_agent(agent: Agent) -> None:
+    """A cloud agent's definition and placement follow its cloud launch, which
+    the owner changes through the cloud agent routes, not these."""
+    if hosted_launch_of(agent.metadata_) is not None:
+        raise ManagementError(
+            409,
+            reason_codes.CLOUD_AGENT,
+            f"Agent {agent.name} is a cloud agent; change it from its cloud agent "
+            "card in Switch Console.",
+        )
 
 
 def placement_from(

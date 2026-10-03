@@ -34,7 +34,12 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
-from switch_core.db.stores.hosted_machine_store import HostedMachineStore, lock_launch
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineStore,
+    MachineAuthError,
+    authenticate_machine,
+    lock_launch,
+)
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 
@@ -44,7 +49,6 @@ router = APIRouter(prefix="/hosted/machines")
 
 HEARTBEAT_EVERY_S = 15
 DISK_FULL_BELOW_BYTES = 1 << 30
-RETIRED_STATES = {"retained", "deleting", "deleted"}
 WORKER_ATTACH_TIMEOUT = timedelta(minutes=10)
 IDENTITY_REGISTRATION_GRACE = timedelta(minutes=1)
 
@@ -64,14 +68,6 @@ def _settings(config: SwitchConfig) -> HostedControllerSettings:
     )
 
 
-def _capability_valid(machine: HostedMachine | None, capability: str) -> bool:
-    return (
-        bool(capability)
-        and machine is not None
-        and HostedMachineStore.capability_matches(machine, capability)
-    )
-
-
 async def machine_request(
     machine_id: str,
     request: Request,
@@ -84,24 +80,16 @@ async def machine_request(
     capability = supplied[7:] if supplied.startswith("Bearer ") else ""
     with tenant_scope(settings.tenant_id):
         async with factory() as session:
-            machine = await HostedMachineStore().get(session, machine_id)
-            if not _capability_valid(machine, capability):
-                raise HTTPException(401, "invalid machine capability")
-            if not request.headers.get(
-                "x-switch-host-boot-id"
-            ) or not request.headers.get("x-switch-host-instance-id"):
-                raise HTTPException(
-                    400,
-                    "X-Switch-Host-Boot-Id and X-Switch-Host-Instance-Id are required.",
+            try:
+                machine = await authenticate_machine(
+                    session,
+                    machine_id,
+                    capability=capability,
+                    boot_id=request.headers.get("x-switch-host-boot-id"),
+                    instance_id=request.headers.get("x-switch-host-instance-id"),
                 )
-            machine = await HostedMachineStore().locked(session, machine_id)
-            if machine is None or not _capability_valid(machine, capability):
-                raise HTTPException(401, "invalid machine capability")
-            if (
-                machine.state in RETIRED_STATES
-                or machine.desired_state in RETIRED_STATES
-            ):
-                raise HTTPException(410, "machine retired")
+            except MachineAuthError as exc:
+                raise HTTPException(exc.status, str(exc)) from exc
             yield MachineRequest(session, machine, settings)
 
 
@@ -220,12 +208,37 @@ async def _agent_entry(
     }
 
 
+def _controller_entry(launch: HostedLaunch) -> dict:
+    """A launch placed on the machine's agents controller, which runs it.
+
+    Listed without its credential and marked unavailable, so a supervisor
+    that still reads this list (an image from before controllers) stops its
+    unit and keeps its data, while the launch itself is left as it is.
+    """
+    return {
+        "launch_id": launch.id,
+        "agent_id": launch.agent_id,
+        "name": launch.name,
+        "revision": launch.revision,
+        "desired_state": launch.desired_state,
+        "unavailable": "managed_by_controller",
+    }
+
+
 @router.get("/{machine_id}/agents")
 async def agents(
     response: Response,
     current: Annotated[MachineRequest, Depends(machine_request)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
+    """The machine's agents, for a supervisor that runs them itself.
+
+    A launch whose agent is placed on the machine's agents controller is run
+    by that controller; it is listed without the agent's credential (see
+    `_controller_entry`). Launches of a machine whose controller has not
+    enrolled, or of a server without agent management, are listed as before.
+    """
     response.headers["Cache-Control"] = "no-store"
     session, machine = current.session, current.machine
     now = datetime.now(UTC)
@@ -238,6 +251,9 @@ async def agents(
             or launch.desired_state == "deleted"
             or launch.agent_id is None
         ):
+            continue
+        if protocol.connections.controllers.is_bound(launch.agent_id):
+            entries.append(_controller_entry(launch))
             continue
         agent = await session.get(Agent, launch.agent_id)
         if agent is None:
@@ -387,6 +403,7 @@ async def heartbeat(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     session, machine = current.session, current.machine
+    machine_id = machine.id
     now = datetime.now(UTC)
     machine.heartbeat = body.model_dump(mode="json")
     machine.heartbeat_at = now
@@ -421,10 +438,12 @@ async def heartbeat(
         launch.process_reported_at = now
         if launch.desired_state != "deleted":
             _apply_process_state(launch, report, protocol, now)
+    agents_version = machine.agents_version
     result = {
-        "agents_version": machine.agents_version,
+        "agents_version": agents_version,
         "machine_desired_state": machine.desired_state,
         "heartbeat_every_s": HEARTBEAT_EVERY_S,
     }
     await session.commit()
+    await protocol.hosted_machine_seen(machine_id, agents_version)
     return result
