@@ -49,8 +49,16 @@ export type PlacedManagedAgent = {
 export type EmbeddedControllerRemote =
   | {
       kind: 'ok';
-      /** Null when the server no longer lists this controller. */
-      controller: { state: 'online' | 'unknown' | 'revoked'; lastSeenAt: string | null } | null;
+      /**
+       * Null when the server no longer lists this controller. `name` and
+       * `description` are the machine's as its owner set them on the server.
+       */
+      controller: {
+        name: string;
+        description: string | null;
+        state: 'online' | 'unknown' | 'revoked';
+        lastSeenAt: string | null;
+      } | null;
       agents: PlacedManagedAgent[];
     }
   /** The server does not run agent management (its management routes are not mounted). */
@@ -66,6 +74,12 @@ export type EmbeddedControllerOverview = {
   /** The server's side, read for the enrolled workspace, or for the one asked about when not enrolled. Null when there was no workspace to ask in. */
   remote: EmbeddedControllerRemote | null;
 };
+
+/** A new name and/or description for this computer as a machine; a key left out stays as it is. */
+export type MachineDetailsChange = { name?: string; description?: string | null };
+
+export const MAX_MACHINE_NAME = 200;
+export const MAX_MACHINE_DESCRIPTION = 500;
 
 export type EmbeddedControllerStateEvent = {
   serverId: string;

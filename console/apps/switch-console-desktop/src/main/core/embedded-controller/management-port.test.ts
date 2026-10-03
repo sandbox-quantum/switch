@@ -4,6 +4,7 @@ class AgentManagementUnavailableError extends Error {}
 const fetchManagementControllers = vi.hoisted(() => vi.fn());
 const fetchManagedAgents = vi.hoisted(() => vi.fn());
 const revokeManagementController = vi.hoisted(() => vi.fn());
+const updateManagementController = vi.hoisted(() => vi.fn());
 const enrollConsoleController = vi.hoisted(() => vi.fn());
 const managementErrorCode = vi.hoisted(() => vi.fn((): string | null => null));
 
@@ -15,6 +16,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   managementErrorCode,
   managementErrorMessage: (error: unknown) => (error as Error).message,
   revokeManagementController,
+  updateManagementController,
 }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
   withReachableWorkspaceSession: async (
@@ -48,6 +50,7 @@ describe('placedOn', () => {
           {
             id: 'controller-1',
             name: 'box',
+            description: 'The office box',
             kind: 'console',
             state: 'online',
             lastSeenAt: '2026-01-01T00:00:00Z',
@@ -63,7 +66,12 @@ describe('placedOn', () => {
       )
     ).toEqual({
       kind: 'ok',
-      controller: { state: 'online', lastSeenAt: '2026-01-01T00:00:00Z' },
+      controller: {
+        name: 'box',
+        description: 'The office box',
+        state: 'online',
+        lastSeenAt: '2026-01-01T00:00:00Z',
+      },
       agents: [
         {
           agentId: 'd',
@@ -119,6 +127,20 @@ describe('gatewayManagementPort', () => {
       agents: [],
     });
     expect(fetchManagedAgents).not.toHaveBeenCalled();
+  });
+
+  it('renames and describes the controller, and says what failed', async () => {
+    updateManagementController.mockResolvedValue(undefined);
+    await gatewayManagementPort.update('workspace-1', 'c-1', { name: 'laptop', description: null });
+    expect(updateManagementController).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'server-1' }),
+      'c-1',
+      { name: 'laptop', description: null }
+    );
+    updateManagementController.mockRejectedValue(new Error('Controller not found'));
+    await expect(
+      gatewayManagementPort.update('workspace-1', 'c-1', { name: 'laptop' })
+    ).rejects.toThrow(/Could not change this computer in Switch: Controller not found/);
   });
 
   it('treats a controller the server does not know as already revoked, and raises anything else', async () => {

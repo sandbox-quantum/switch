@@ -87,6 +87,10 @@ const {
   managementErrorCode,
   managementErrorMessage,
   revokeManagementController,
+  updateManagementController,
+  fetchManagementControllers,
+  fetchAgentManagementAccess,
+  updateCanManageAgents,
 } = await import('./gateway-client');
 
 const SERVER = {
@@ -1680,6 +1684,55 @@ describe('agent management calls', () => {
     const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/management/controllers/controller-1');
     expect(init.method).toBe('DELETE');
+  });
+
+  it('reads machine descriptions and renames or describes a machine', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'controller-1',
+          name: 'box',
+          description: 'The office box',
+          kind: 'console',
+          state: 'online',
+          last_seen_at: null,
+          revoked_at: null,
+        },
+      ])
+    );
+    expect((await fetchManagementControllers(SERVER))[0]?.description).toBe('The office box');
+
+    fetchMock.mockImplementation(async () => respond(200, {}));
+    await updateManagementController(SERVER, 'controller-1', { name: 'laptop', description: null });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/controllers/controller-1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
+  });
+
+  it("reads an agent's 'can manage agents', and whether management runs at all", async () => {
+    // The agent's detail, then the management probe.
+    fetchMock
+      .mockImplementationOnce(async () => respond(200, { id: 'agent-1', can_manage_agents: true }))
+      .mockImplementationOnce(async () => respond(404, { detail: 'Not Found' }));
+    expect(await fetchAgentManagementAccess(SERVER, 'agent-1')).toEqual({
+      available: false,
+      canManageAgents: true,
+    });
+    fetchMock
+      .mockImplementationOnce(async () => respond(200, { id: 'agent-1', can_manage_agents: false }))
+      .mockImplementationOnce(async () => respond(200, []));
+    expect(await fetchAgentManagementAccess(SERVER, 'agent-1')).toEqual({
+      available: true,
+      canManageAgents: false,
+    });
+
+    fetchMock.mockImplementation(async () => respond(200, {}));
+    await updateCanManageAgents(SERVER, 'agent-1', true);
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/agents/agent-1/can-manage-agents');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ enabled: true });
   });
 
   it('maps managed agents, provider and last report included', async () => {

@@ -13,6 +13,7 @@ import {
   deleteTemplate,
   exportRoomYaml,
   fetchAddressingPolicy,
+  fetchAgentManagementAccess,
   fetchAgentRooms,
   fetchAgents,
   fetchAllExternalUsers,
@@ -40,6 +41,7 @@ import {
   type TemplateRun,
   type TemplateVisibility,
   updateAddressingPolicy,
+  updateCanManageAgents,
   updateAgentDisplayName,
   updateAgentIcon,
   updateRoom,
@@ -645,6 +647,26 @@ export const workspacesController = createRPCController({
   }): Promise<void> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAddressingPolicy(server, params.agentId, params.policy)
+    ),
+
+  /** The agent's "can manage agents" capability, and whether the server runs
+   * agent management, where alone it does anything. */
+  getAgentManagementAccess: (params: {
+    workspaceId: string;
+    agentId: string;
+  }): Promise<{ available: boolean; canManageAgents: boolean }> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchAgentManagementAccess(server, params.agentId)
+    ),
+
+  /** Turn the agent's "can manage agents" capability on or off; owner only. */
+  updateCanManageAgents: (params: {
+    workspaceId: string;
+    agentId: string;
+    enabled: boolean;
+  }): Promise<void> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateCanManageAgents(server, params.agentId, params.enabled)
     ),
 
   /** Give this user's icon-less agents the avatar their name generates. Runs

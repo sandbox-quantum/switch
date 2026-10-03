@@ -1012,6 +1012,47 @@ export async function updateAddressingPolicy(
 }
 
 /**
+ * An agent's "can manage agents" capability, and whether the server runs agent
+ * management at all (with it off the capability does nothing, and is not worth
+ * showing). The capability lets the agent list its owner's machines and managed
+ * agents and create managed agents on them.
+ */
+export async function fetchAgentManagementAccess(
+  server: SwitchServer,
+  agentId: string
+): Promise<{ available: boolean; canManageAgents: boolean }> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as { can_manage_agents?: boolean };
+  let available = true;
+  try {
+    await managementFetch(server, '/controllers', { authenticated: true });
+  } catch (error) {
+    if (!(error instanceof AgentManagementUnavailableError)) throw error;
+    available = false;
+  }
+  return { available, canManageAgents: json.can_manage_agents === true };
+}
+
+/**
+ * Turn an agent's "can manage agents" capability on or off
+ * (`PUT /agents/{id}/can-manage-agents`). Only the agent's owner may; anyone
+ * else's request surfaces as a `GatewayError`.
+ */
+export async function updateCanManageAgents(
+  server: SwitchServer,
+  agentId: string,
+  enabled: boolean
+): Promise<void> {
+  await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/can-manage-agents`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { enabled },
+  });
+}
+
+/**
  * Set (or clear, with `iconUrl = null`) an agent's icon (`PUT /agents/{id}/icon`).
  * Only the agent's owner (or an admin) may change it; a non-owner request
  * surfaces as a `GatewayError`, as does a URL the gateway rejects — it accepts
@@ -2533,6 +2574,8 @@ export type ControllerPlatform = { os: string; arch: string; os_version: string 
 export type ManagementController = {
   id: string;
   name: string;
+  /** What its owner says the machine is for; null when none was given. */
+  description: string | null;
   kind: string;
   state: 'online' | 'unknown' | 'revoked';
   lastSeenAt: string | null;
@@ -2558,6 +2601,7 @@ export type ManagedAgent = {
 type ManagementControllerJson = {
   id: string;
   name: string;
+  description: string | null;
   kind: string;
   state: 'online' | 'unknown' | 'revoked';
   last_seen_at: string | null;
@@ -2605,6 +2649,7 @@ export async function fetchManagementControllers(
   return ((await res.json()) as ManagementControllerJson[]).map((json) => ({
     id: json.id,
     name: json.name,
+    description: json.description ?? null,
     kind: json.kind,
     state: json.state,
     lastSeenAt: json.last_seen_at,
@@ -2631,6 +2676,23 @@ export async function fetchManagedAgents(server: SwitchServer): Promise<ManagedA
         }
       : null,
   }));
+}
+
+/**
+ * Rename a controller and/or change its description
+ * (`PATCH /gateway/management/controllers/{id}`). A key left out is left as it
+ * is; `description: null` clears it.
+ */
+export async function updateManagementController(
+  server: SwitchServer,
+  controllerId: string,
+  changes: { name?: string; description?: string | null }
+): Promise<void> {
+  await managementFetch(server, `/controllers/${encodeURIComponent(controllerId)}`, {
+    authenticated: true,
+    method: 'PATCH',
+    body: changes,
+  });
 }
 
 /**

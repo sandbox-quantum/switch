@@ -146,6 +146,7 @@ beforeEach(() => {
       credential: CREDENTIAL,
     })),
     read: vi.fn<ManagementPort['read']>(async () => ({ kind: 'ok', controller: null, agents: [] })),
+    update: vi.fn<ManagementPort['update']>(async () => {}),
     revoke: vi.fn<ManagementPort['revoke']>(async () => 'revoked'),
   };
 });
@@ -386,6 +387,27 @@ describe('EmbeddedControllerService', () => {
     await created.enable(SERVER, WORKSPACE);
     await created.overview(SERVER, 'workspace-in-scope');
     expect(management.read).toHaveBeenLastCalledWith(WORKSPACE, 'controller-1');
+  });
+
+  it('renames and describes this computer on the server, through the enrolled workspace', async () => {
+    const svc = await enabled();
+    await svc.updateDetails(SERVER, { name: '  laptop ', description: '  My laptop ' });
+    await svc.updateDetails(SERVER, { description: '   ' });
+    expect(management.update.mock.calls).toEqual([
+      [WORKSPACE, 'controller-1', { name: 'laptop', description: 'My laptop' }],
+      [WORKSPACE, 'controller-1', { description: null }],
+    ]);
+    await expect(svc.updateDetails(SERVER, { name: '  ' })).rejects.toThrow(
+      'A machine needs a name.'
+    );
+    expect(management.update).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses to change a computer that is not enrolled', async () => {
+    await expect(service().updateDetails(SERVER, { name: 'laptop' })).rejects.toThrow(
+      /not enrolled/
+    );
+    expect(management.update).not.toHaveBeenCalled();
   });
 
   it('forgets a server being removed even when the revoke fails', async () => {
