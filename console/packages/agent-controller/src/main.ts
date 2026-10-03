@@ -34,8 +34,11 @@ const SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 const USAGE = `Usage: switch-agent-controller <command> [options]
 
 Commands:
-  enroll --server <agent-bridge-url> --code <code> [--name <name>] [--data-dir <dir>]
-      Enroll this machine with a one-time code from Switch.
+  enroll --server <agent-bridge-url> --code <code> [--name <name>]
+      [--description <text>] [--data-dir <dir>]
+      Enroll this machine with a one-time code from Switch. --name defaults to
+      the host name; --description says what the machine is for (optional,
+      at most 500 characters, editable later in the gateway).
   run [--data-dir <dir>] [--shared-host-bundle <path>]
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
       [--credential-stdin]
@@ -78,6 +81,7 @@ async function enrollCommand(args: string[]): Promise<number> {
       server: { type: 'string' },
       code: { type: 'string' },
       name: { type: 'string' },
+      description: { type: 'string' },
       'data-dir': { type: 'string' },
     },
     strict: true,
@@ -86,6 +90,9 @@ async function enrollCommand(args: string[]): Promise<number> {
   if (!values.code) throw new UsageError('enroll needs --code <code>.');
   const server = normalizeServerUrl(values.server);
   const name = values.name ?? hostname();
+  const description = values.description?.trim() || undefined;
+  if (description !== undefined && description.length > 500)
+    throw new UsageError('--description must be at most 500 characters.');
   const { dataDir, store, secrets } = await openState(values['data-dir']);
   try {
     const existing = store.identity();
@@ -95,7 +102,13 @@ async function enrollCommand(args: string[]): Promise<number> {
       );
     const enrolled = await enroll(fetch, server, {
       proof: { kind: 'enrollment_code', code: values.code },
-      controller: { kind: 'daemon', name, platform: contractPlatform(), version: VERSION },
+      controller: {
+        kind: 'daemon',
+        name,
+        ...(description !== undefined ? { description } : {}),
+        platform: contractPlatform(),
+        version: VERSION,
+      },
     });
     await secrets.set(CONTROLLER_CREDENTIAL, enrolled.credential);
     store.saveIdentity({
