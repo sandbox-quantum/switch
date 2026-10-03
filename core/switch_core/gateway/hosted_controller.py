@@ -210,6 +210,7 @@ async def _resume_removals(
             await session.rollback()
             continue
         await session.commit()
+        await protocol.hosted_machine_changed(machine.id)
 
 
 async def _sweep(

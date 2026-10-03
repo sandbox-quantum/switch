@@ -355,6 +355,7 @@ async def _identity_failed(
     launch.updated_at = datetime.now(UTC)
     machines.bump_agents(machine)
     await session.commit()
+    await protocol.hosted_machine_changed(machine.id)
     return launch
 
 
@@ -419,6 +420,7 @@ async def register_identity(
     launch.updated_at = datetime.now(UTC)
     machines.bump_agents(machine)
     await session.commit()
+    await protocol.hosted_machine_changed(machine.id)
     return launch
 
 
@@ -509,6 +511,8 @@ async def lifecycle(
     )
     if launch.desired_state == "running":
         launch = await register_identity(session, protocol, launch.id)
+    else:
+        await protocol.hosted_machine_changed(machine.id)
     response = await launch_summary(session, launch)
     return {**response, "access_warning": ACCESS_WARNING if remaining else None}
 
@@ -597,6 +601,7 @@ async def remove(
     launch, machine = await locked_owned(session, launch.id, launch.owner_id)
     await finish_removal(session, protocol, config, launch, machine, now)
     await session.commit()
+    await protocol.hosted_machine_changed(machine.id)
     remaining = await revoke_pending(
         session, config, (GitHubIssuedToken.launch_id == launch.id,)
     )

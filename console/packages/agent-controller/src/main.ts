@@ -1,4 +1,5 @@
 import { hostname } from 'node:os';
+import { isAbsolute } from 'node:path';
 import { parseArgs } from 'node:util';
 import packageJson from '../package.json' with { type: 'json' };
 import { ControllerApiError, enroll, normalizeServerUrl } from './api';
@@ -20,12 +21,20 @@ import {
   workspaceSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage } from './log';
-import { dataLayout, ensureDataDir, resolveDataDir } from './paths';
+import { type DataLayout, dataLayout, ensureDataDir, resolveDataDir } from './paths';
 import { definitionProblem } from './reconcile';
-import { assertSupportedPlatform, emptyObservation, SharedHostRuntime } from './runtime';
+import {
+  type AgentRuntime,
+  assertSupportedPlatform,
+  emptyObservation,
+  SharedHostRuntime,
+} from './runtime';
+import { PROVIDERS } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
 import { ControllerStore } from './store';
+import { SocketSupervisor } from './supervisor-client';
+import { SystemdRuntime } from './systemd-runtime';
 
 export const VERSION: string = packageJson.version;
 
@@ -39,12 +48,17 @@ Commands:
   run [--data-dir <dir>] [--shared-host-bundle <path>]
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
       [--credential-stdin]
+      [--systemd-socket <path> --hosted-agents-dir <dir>]
       Run the agents assigned to this machine and report their status.
       --controller-id and --server adopt an identity enrolled elsewhere when
       the data directory holds none, and move the same identity to a new
       server URL when it holds that one. --credential-stdin reads the
       controller credential from stdin and keeps it in memory only.
+      --systemd-socket and --hosted-agents-dir run a cloud machine's agents,
+      each in a unit its root supervisor installs on request over that
+      socket, instead of as watchers this controller launches.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
+      [--systemd-socket <path> --hosted-agents-dir <dir>]
       Show this controller's identity and its agents, from local state only.
 
 The data directory defaults to SWITCH_CONTROLLER_DATA_DIR, then the OS default.
@@ -57,6 +71,45 @@ Exit codes: 0 stopped, 1 error that may pass, 2 configuration error,
 
 function bundlePath(flag: string | undefined): string {
   return resolveSharedHostBundle(flag, process.env, workspaceSharedHostBundle);
+}
+
+const RUNTIME_OPTIONS = {
+  'shared-host-bundle': { type: 'string' },
+  'systemd-socket': { type: 'string' },
+  'hosted-agents-dir': { type: 'string' },
+} as const;
+
+/**
+ * The runtime the flags name: a cloud machine's units, run by its supervisor
+ * (`--systemd-socket` with `--hosted-agents-dir`), or watchers this
+ * controller launches from the shared-host bundle.
+ */
+function runtimeFor(
+  values: {
+    'shared-host-bundle'?: string;
+    'systemd-socket'?: string;
+    'hosted-agents-dir'?: string;
+  },
+  layout: DataLayout
+): AgentRuntime {
+  const socket = values['systemd-socket'];
+  const agentsDir = values['hosted-agents-dir'];
+  if ((socket === undefined) !== (agentsDir === undefined))
+    throw new UsageError('--systemd-socket and --hosted-agents-dir go together; pass both.');
+  if (socket !== undefined && agentsDir !== undefined) {
+    if (values['shared-host-bundle'] !== undefined)
+      throw new UsageError(
+        '--shared-host-bundle runs agents as watchers; a cloud machine (--systemd-socket) runs none.'
+      );
+    if (!isAbsolute(socket) || !isAbsolute(agentsDir))
+      throw new UsageError('--systemd-socket and --hosted-agents-dir take absolute paths.');
+    return new SystemdRuntime({
+      layout,
+      supervisor: new SocketSupervisor(socket),
+      agentsDir,
+    });
+  }
+  return new SharedHostRuntime({ layout, bundlePath: bundlePath(values['shared-host-bundle']) });
 }
 
 async function openState(dataDirFlag: string | undefined) {
@@ -119,7 +172,7 @@ async function runCommand(args: string[]): Promise<number> {
     args,
     options: {
       'data-dir': { type: 'string' },
-      'shared-host-bundle': { type: 'string' },
+      ...RUNTIME_OPTIONS,
       'controller-id': { type: 'string' },
       server: { type: 'string' },
       name: { type: 'string' },
@@ -140,8 +193,14 @@ async function runCommand(args: string[]): Promise<number> {
   const credential = values['credential-stdin']
     ? await readCredential(process.stdin, CREDENTIAL_STDIN_TIMEOUT_MS)
     : null;
-  const sharedHostBundle = bundlePath(values['shared-host-bundle']);
   const { dataDir, layout, store, secrets: fileSecrets } = await openState(values['data-dir']);
+  let runtime: AgentRuntime;
+  try {
+    runtime = runtimeFor(values, layout);
+  } catch (error) {
+    store.close();
+    throw error;
+  }
   const secrets =
     credential === null
       ? fileSecrets
@@ -180,8 +239,11 @@ async function runCommand(args: string[]): Promise<number> {
       {
         store,
         secrets,
-        runtime: new SharedHostRuntime({ layout, bundlePath: sharedHostBundle }),
+        runtime,
         locator: new PathProviderLocator(process.env.PATH),
+        // A cloud machine's providers are signed in by each agent's bootstrap
+        // from its owner's connection; there is no machine-wide login to report.
+        providers: runtime.kind === 'systemd' ? [] : PROVIDERS,
         fetch,
         log,
         dataDir,
@@ -202,7 +264,7 @@ async function runCommand(args: string[]): Promise<number> {
 async function statusCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    options: { 'data-dir': { type: 'string' }, ...RUNTIME_OPTIONS },
     strict: true,
   });
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
@@ -237,13 +299,10 @@ async function statusCommand(args: string[]): Promise<number> {
     out.push(
       `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
     );
-    const runtime = new SharedHostRuntime({
-      layout,
-      bundlePath: bundlePath(values['shared-host-bundle']),
-    });
+    const runtime = runtimeFor(values, layout);
     for (const entry of cached.assignment.agents) {
       const row = store.agent(entry.agent_id);
-      const observation = definitionProblem(entry)
+      const observation = definitionProblem(entry, runtime.kind)
         ? emptyObservation()
         : await runtime.observe(entry.agent_id);
       // Whether events flow is the running controller's to know; this reads only disk.

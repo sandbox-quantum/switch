@@ -12,9 +12,12 @@ import logging
 import os
 import pwd
 import re
+import selectors
 import shutil
 import signal
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -44,16 +47,25 @@ FLOCK = "/usr/bin/flock"
 GIT = "/usr/bin/git"
 UNIT_NODE_PATH = "/opt/switch/node/bin/node"
 UNIT_BOOTSTRAP_PATH = "/opt/switch/agent-providers/hosted-bootstrap.mjs"
+UNIT_CONTROLLER_PATH = "/opt/switch/agent-controller/agent-controller.mjs"
 AGENT_SLICE = "switch-agents.slice"
-SUPERVISOR_VERSION = "2.0.0"
+CONTROLLER_UNIT = "switch-agent-controller.service"
+SUPERVISOR_VERSION = "3.0.0"
 MARKER_LAYOUT = "per-user-v1"
 ONE_AGENT_LAYOUT_MESSAGE = "data volume uses the one-agent layout; see 'Moving to one machine per user' in deploy/hosted/README.md"
 OBSOLETE_EXIT_CODE = 75
 OBSERVE_SECONDS = 3
 DEFAULT_HEARTBEAT_SECONDS = 15
 RETIRED_HEARTBEAT_SECONDS = 60
-LIST_RETRY_SECONDS = 15
-RECONCILE_RETRY_MAX_SECONDS = 300
+# The agents controller's exit codes (console/packages/agent-controller).
+CONTROLLER_REVOKED_EXIT = 3
+CONTROLLER_RETRY_SECONDS = 15
+CONTROLLER_RETRY_MAX_SECONDS = 300
+# A controller that ran this long before it stopped starts again at once.
+CONTROLLER_STABLE_SECONDS = 600
+MAX_REQUEST_BYTES = 256 * 1024
+REQUEST_READ_SECONDS = 10
+RELAY_TOKEN_PREFIX = "swlr_"
 HTTP_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 300
 GIT_KILL_WAIT_SECONDS = 10
@@ -105,6 +117,14 @@ class GitAbandoned(WorkerError):
 
 class ReconcileIncomplete(WorkerError):
     pass
+
+
+class RequestRefused(Exception):
+    """A controller request the supervisor will not carry out; `code` says why."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class MachineRetired(Exception):
@@ -161,16 +181,6 @@ def _agent_id(value: Any) -> str:
     raise WorkerError("Agent ID must be a lowercase UUID.")
 
 
-def _unavailable_code(entry: dict[str, Any]) -> str | None:
-    code = entry.get("unavailable")
-    if code is None:
-        return None
-    _text(code, "Unavailable code", maximum=128)
-    _agent_id(entry["agent_id"])
-    _identifier(entry["launch_id"], "Launch ID")
-    return code
-
-
 def _is_agent_id(value: str) -> bool:
     try:
         _agent_id(value)
@@ -200,6 +210,7 @@ class RuntimeConfig:
     bootstrap_path: str
     shared_host_daemon_path: str
     provider_binary_path: str
+    controller_path: str
     agent_user: str
     agent_group: str
     path: str
@@ -299,6 +310,37 @@ class Paths:
     def pending_install(self, agent_id: str) -> Path:
         return self.bundle.parent / f"pending-{agent_id}.json"
 
+    @property
+    def held_record(self) -> Path:
+        """The agents the controller installed, for a supervisor restarted in this boot."""
+        return self.bundle.parent / "held.json"
+
+    @property
+    def supervisor_socket(self) -> Path:
+        return self.runtime / "supervisor.sock"
+
+    @property
+    def controller_data(self) -> Path:
+        """The agents controller's data directory: owned by the agent account, in memory."""
+        return self.runtime / "controller"
+
+    @property
+    def controller_record(self) -> Path:
+        return self.bundle.parent / "controller.json"
+
+    @property
+    def controller_data_owner(self) -> Path:
+        """Which controller identity the data directory was prepared for."""
+        return self.bundle.parent / "controller-data-owner"
+
+    @property
+    def controller_env(self) -> Path:
+        return self.bundle.parent / "controller.env"
+
+    @property
+    def controller_credential(self) -> Path:
+        return self.bundle.parent / "controller-credential"
+
 
 def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfig:
     value = _load_json(
@@ -337,6 +379,7 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
             "bootstrapPath",
             "sharedHostDaemonPath",
             "providerBinaryPath",
+            "controllerPath",
             "agentUser",
             "agentGroup",
             "path",
@@ -362,6 +405,9 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
         provider_binary_path=_absolute_path(
             runtime_value["providerBinaryPath"], "provider executable"
         ),
+        controller_path=_absolute_path(
+            runtime_value["controllerPath"], "agents controller"
+        ),
         agent_user=_identifier(runtime_value["agentUser"], "agent user"),
         agent_group=_identifier(runtime_value["agentGroup"], "agent group"),
         path=_text(runtime_value["path"], "runtime PATH"),
@@ -375,6 +421,10 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
     ):
         raise WorkerError(
             "Pinned runtime paths do not match the switch-agent@ unit ExecStart."
+        )
+    if runtime.controller_path != UNIT_CONTROLLER_PATH:
+        raise WorkerError(
+            "Pinned controller path does not match the switch-agent-controller unit."
         )
     secret_id = _text(value["assignmentSecretId"], "worker secret ID")
     return WorkerConfig(
@@ -432,7 +482,7 @@ def _secret_arn_region(value: str) -> str:
 def _artifact_hashes(value: Any) -> dict[str, str]:
     value = _strict(
         value,
-        {"node", "bootstrap", "sharedHostDaemon", "provider"},
+        {"node", "bootstrap", "sharedHostDaemon", "agentController", "provider"},
         set(),
         "runtime artifact hashes",
     )
@@ -514,7 +564,12 @@ def _validate_skills(value: Any) -> None:
         raise WorkerError("Deployment skills exceed the size limit.")
 
 
+RELAY_ENDPOINT_RE = re.compile(r"^http://127\.0\.0\.1:([1-9][0-9]{0,4})$")
+
+
 def _validate_switch_credentials(value: Any, agent_id: str) -> dict[str, Any]:
+    """The agent's credentials: the agents controller's loopback relay and a
+    token it minted. No Switch credential is written on the machine."""
     value = _strict(value, {"env"}, set(), "Switch credentials")
     env = _strict(
         value["env"],
@@ -522,8 +577,17 @@ def _validate_switch_credentials(value: Any, agent_id: str) -> dict[str, Any]:
         set(),
         "Switch credential environment",
     )
-    _https_endpoint(env["SWITCH_API_ENDPOINT"], "Switch API endpoint")
-    _text(env["SWITCH_API_TOKEN"], "Switch API token", maximum=16 * 1024)
+    endpoint = env["SWITCH_API_ENDPOINT"]
+    match = RELAY_ENDPOINT_RE.fullmatch(endpoint) if isinstance(endpoint, str) else None
+    if match is None or int(match.group(1)) > 65535:
+        raise WorkerError(
+            "Switch credentials must name the agents controller's loopback relay."
+        )
+    token = _text(env["SWITCH_API_TOKEN"], "relay token", maximum=1024)
+    if not token.startswith(RELAY_TOKEN_PREFIX) or any(
+        character.isspace() for character in token
+    ):
+        raise WorkerError("Switch credentials must carry a token the relay minted.")
     if env["SWITCH_AGENT_ID"] != agent_id:
         raise WorkerError("Switch credentials belong to a different agent.")
     return value
@@ -795,10 +859,11 @@ class CoreClient:
         identity: MachineIdentity,
         opener: Callable[[urllib.request.Request, float], Any],
     ) -> None:
+        self._endpoint = bundle.api_endpoint.rstrip("/")
+        self._machine_id = bundle.machine_id
+        self._capability = bundle.machine_capability
         self._base = (
-            bundle.api_endpoint.rstrip("/")
-            + "/hosted/machines/"
-            + quote(bundle.machine_id, safe="")
+            self._endpoint + "/hosted/machines/" + quote(bundle.machine_id, safe="")
         )
         self._headers = {
             "Authorization": "Bearer " + bundle.machine_capability,
@@ -808,16 +873,68 @@ class CoreClient:
         }
         self._opener = opener
 
-    def agents(self) -> dict[str, Any]:
-        value = self._request("/agents", None)
-        if (
-            not isinstance(value, dict)
-            or isinstance(value.get("agents_version"), bool)
-            or not isinstance(value.get("agents_version"), int)
-            or not isinstance(value.get("agents"), list)
-        ):
-            raise CoreUnavailable("Switch returned an invalid agent list.")
-        return value
+    def enroll_controller(self, controller: dict[str, Any]) -> tuple[str, str]:
+        """Enroll the machine's agents controller with the machine capability.
+
+        Returns the controller id and its credential. Enrolling again
+        replaces the controller this machine held before.
+        """
+        body = {
+            "proof": {
+                "kind": "machine_secret",
+                "machine_id": self._machine_id,
+                "capability": self._capability,
+            },
+            "controller": controller,
+        }
+        headers = {
+            name: value
+            for name, value in self._headers.items()
+            if name != "Authorization"
+        }
+        headers["Content-Type"] = "application/json"
+        headers["Switch-Controller-Protocol"] = "1"
+        request = urllib.request.Request(
+            self._endpoint + "/v1/management/controllers/enroll",
+            data=json.dumps(body, separators=(",", ":")).encode(),
+            headers=headers,
+            method="POST",
+        )
+        suffix = "controller enrollment"
+        try:
+            with self._opener(request, HTTP_TIMEOUT_SECONDS) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except urllib.error.HTTPError as error:
+            error.close()
+            if error.code == 410:
+                raise MachineRetired() from None
+            if error.code == 404:
+                raise WorkerError(
+                    "Switch has no agent management (AGENT_MANAGEMENT_ENABLED is off); "
+                    "this machine image needs it to run its agents."
+                ) from None
+            if error.code >= 500 or error.code == 429:
+                raise CoreUnavailable(
+                    f"Switch returned HTTP {error.code} for {suffix}."
+                ) from None
+            raise WorkerError(
+                f"Switch refused the {suffix} with HTTP {error.code}."
+            ) from None
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            raise CoreUnavailable(
+                f"Switch is unreachable for {suffix}: {type(error).__name__}."
+            ) from None
+        try:
+            value = json.loads(raw)
+            controller_id = _identifier(value["controller_id"], "controller ID")
+            credential = value["credential"]
+            if not isinstance(credential, str) or not CAPABILITY_RE.fullmatch(
+                credential
+            ):
+                raise ValueError()
+        except (KeyError, TypeError, ValueError, WorkerError, UnicodeError):
+            raise CoreUnavailable(f"Switch answered the {suffix} invalidly.") from None
+        return controller_id, credential
 
     def heartbeat(self, body: dict[str, Any]) -> dict[str, Any]:
         value = self._request("/heartbeat", body)
@@ -955,6 +1072,24 @@ class Systemd:
 
     def stop_all(self) -> None:
         self._commands.run([SYSTEMCTL, "stop", "switch-agent@*.service"], capture=False)
+
+    def show_unit(self, unit: str) -> dict[str, str]:
+        output = self._commands.run(
+            [SYSTEMCTL, "show", "-p", ",".join(SHOW_PROPERTIES), unit]
+        )
+        values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        if not set(SHOW_PROPERTIES) <= set(values):
+            raise WorkerError(f"systemctl show returned no state for {unit}.")
+        return values
+
+    def start_unit(self, unit: str) -> None:
+        self._commands.run([SYSTEMCTL, "start", unit], capture=False)
+
+    def stop_unit(self, unit: str) -> None:
+        self._commands.run([SYSTEMCTL, "stop", unit], capture=False)
+
+    def reset_failed_unit(self, unit: str) -> None:
+        self._commands.result([SYSTEMCTL, "reset-failed", unit], capture=False)
 
     def limit_slice(self, memory_max: int) -> None:
         self._commands.run(
@@ -1602,12 +1737,17 @@ def _quarantine_stale_ownership(
 
 
 def _write_root_json(path: Path, value: Any) -> None:
+    _write_root_text(path, json.dumps(value, separators=(",", ":")))
+
+
+def _write_root_text(path: Path, text: str) -> None:
+    """Replace `path` atomically with a root-only (0600) file holding `text`."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, separators=(",", ":"))
+            handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
@@ -1859,6 +1999,7 @@ def verify_pinned_runtime(config: WorkerConfig) -> str:
         "node": config.runtime.node_path,
         "bootstrap": config.runtime.bootstrap_path,
         "sharedHostDaemon": config.runtime.shared_host_daemon_path,
+        "agentController": config.runtime.controller_path,
         "provider": config.runtime.provider_binary_path,
     }
     hashes = dict(config.runtime.artifact_sha256)
@@ -1945,6 +2086,301 @@ class ObservedState:
     since: str
 
 
+class ControllerUnit:
+    """The machine's agents controller: enrolled at boot, run as its own unit.
+
+    The supervisor enrolls the controller with the machine capability, keeps
+    the controller id and credential in memory and on the runtime tmpfs (root
+    only, so a supervisor restarted in the same boot finds them), and runs
+    `switch-agent-controller.service` as the agent account. The credential
+    reaches the controller on stdin, from a root-only tmpfs file systemd
+    opens for it before the controller starts and the supervisor deletes as
+    soon as it has; it is never on disk, in an argument or in the
+    environment.
+
+    A controller that stops is started again, after a backoff that doubles
+    to five minutes. One that stops because Switch revoked it (exit 3) is
+    enrolled afresh first, which also replaces it in Switch. A new boot
+    always enrolls afresh: its runtime directory is empty.
+    """
+
+    def __init__(
+        self,
+        *,
+        client: CoreClient,
+        systemd: Systemd,
+        paths: Paths,
+        uid: int,
+        gid: int,
+        api_endpoint: str,
+        identity: MachineIdentity,
+        name: str,
+        monotonic: Callable[[], float],
+    ) -> None:
+        self._client = client
+        self._systemd = systemd
+        self._paths = paths
+        self._uid = uid
+        self._gid = gid
+        self._api_endpoint = api_endpoint
+        self._identity = identity
+        self._name = name
+        self._monotonic = monotonic
+        self._next_start = 0.0
+        self._failures = 0
+        self._started_at: float | None = None
+
+    def ensure(self) -> None:
+        """Start the controller if it is not running and it is time to.
+
+        A controller running without a record of its credential (the record
+        was lost from the runtime directory) is stopped and enrolled again:
+        the credential it holds is one nothing here can hand it again.
+        """
+        properties = self._systemd.show_unit(CONTROLLER_UNIT)
+        if properties["ActiveState"] in {"active", "activating", "reloading"}:
+            if self._record() is not None:
+                return
+            logger.warning(
+                "The agents controller runs without a credential record; "
+                "restarting it with a new enrollment."
+            )
+            self.stop()
+        now = self._monotonic()
+        if now < self._next_start:
+            return
+        if self._started_at is not None:
+            ran_for = now - self._started_at
+            self._started_at = None
+            if ran_for >= CONTROLLER_STABLE_SECONDS:
+                self._failures = 0
+            code = int(properties["ExecMainCode"] or 0)
+            status = int(properties["ExecMainStatus"] or 0)
+            if code == 1 and status == CONTROLLER_REVOKED_EXIT:
+                logger.warning(
+                    "Switch revoked this machine's agents controller; enrolling it again."
+                )
+                self.forget()
+            else:
+                logger.warning(
+                    "The agents controller stopped (%s, status %s); starting it again.",
+                    properties["Result"],
+                    status,
+                )
+        try:
+            record = self._record() or self._enroll()
+            self._start(record)
+        except CoreUnavailable as error:
+            self._backoff(f"Enrolling the agents controller failed: {error}")
+            return
+        except (WorkerError, OSError) as error:
+            if isinstance(error, WorkerError) and "agent management" in str(error):
+                raise
+            self._backoff(f"Starting the agents controller failed: {error}")
+            return
+        self._started_at = self._monotonic()
+
+    def stop(self) -> None:
+        self._systemd.stop_unit(CONTROLLER_UNIT)
+        self._systemd.reset_failed_unit(CONTROLLER_UNIT)
+        self._started_at = None
+
+    def forget(self) -> None:
+        """Drop the controller identity, so the next start enrolls afresh."""
+        self._paths.controller_record.unlink(missing_ok=True)
+
+    def _backoff(self, message: str) -> None:
+        self._failures += 1
+        delay = min(
+            CONTROLLER_RETRY_SECONDS * 2 ** (self._failures - 1),
+            CONTROLLER_RETRY_MAX_SECONDS,
+        )
+        logger.error("%s; retrying in %s seconds.", message, delay)
+        self._next_start = self._monotonic() + delay
+
+    def _record(self) -> dict[str, str] | None:
+        path = self._paths.controller_record
+        if not path.exists() and not path.is_symlink():
+            return None
+        try:
+            details = path.lstat()
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_uid != ROOT_UID
+                or details.st_mode & 0o077
+            ):
+                raise ValueError()
+            value = _strict(
+                _read_json_nofollow(path, maximum=16 * 1024),
+                {"controllerId", "credential", "bootId"},
+                set(),
+                "controller record",
+            )
+            controller_id = _identifier(value["controllerId"], "controller ID")
+            credential = value["credential"]
+            if not isinstance(credential, str) or not CAPABILITY_RE.fullmatch(
+                credential
+            ):
+                raise ValueError()
+        except (OSError, ValueError, WorkerError):
+            logger.error("The agents controller record is invalid; enrolling again.")
+            path.unlink(missing_ok=True)
+            return None
+        if value["bootId"] != self._identity.boot_id:
+            path.unlink(missing_ok=True)
+            return None
+        return {"controllerId": controller_id, "credential": credential}
+
+    def _enroll(self) -> dict[str, str]:
+        controller_id, credential = self._client.enroll_controller(
+            {
+                "kind": "ec2",
+                "name": self._name,
+                "platform": {
+                    "os": "linux",
+                    "arch": "arm64" if os.uname().machine == "aarch64" else "x64",
+                    "os_version": os.uname().release,
+                },
+                "version": SUPERVISOR_VERSION,
+            }
+        )
+        record = {
+            "controllerId": controller_id,
+            "credential": credential,
+            "bootId": self._identity.boot_id,
+        }
+        previous = self._identity_of_data()
+        _write_root_json(self._paths.controller_record, record)
+        # A new identity starts from an empty data directory: the controller
+        # refuses one that belongs to another controller.
+        if previous != controller_id and self._paths.controller_data.exists():
+            _remove_tree(self._paths.controller_data)
+        _write_root_text(self._paths.controller_data_owner, controller_id + "\n")
+        logger.warning("Enrolled this machine's agents controller %s.", controller_id)
+        return {"controllerId": controller_id, "credential": credential}
+
+    def _identity_of_data(self) -> str | None:
+        """Which controller the data directory was last prepared for."""
+        try:
+            return self._paths.controller_data_owner.read_text().strip() or None
+        except OSError:
+            return None
+
+    def _start(self, record: dict[str, str]) -> None:
+        data = self._paths.controller_data
+        if not data.exists():
+            data.mkdir(mode=0o700)
+        os.chown(data, self._uid, self._gid)
+        os.chmod(data, 0o700)
+        environment = (
+            f"SWITCH_CONTROLLER_ID={record['controllerId']}\n"
+            f"SWITCH_CONTROLLER_SERVER={self._api_endpoint}\n"
+        )
+        if any(character in environment for character in "\\\"'\x00"):
+            raise WorkerError("The agents controller environment is invalid.")
+        _write_root_text(self._paths.controller_env, environment)
+        _write_root_text(self._paths.controller_credential, record["credential"] + "\n")
+        try:
+            self._systemd.reset_failed_unit(CONTROLLER_UNIT)
+            self._systemd.start_unit(CONTROLLER_UNIT)
+        finally:
+            # The unit is Type=exec: once start returns, the controller has
+            # been executed with the file already open as its stdin.
+            self._paths.controller_credential.unlink(missing_ok=True)
+
+
+class RequestServer:
+    """The supervisor's socket for the machine's agents controller.
+
+    `/run/switch-hosted/supervisor.sock`, owned by root and the agent group,
+    mode 0660, so only root and the agent account can connect; the peer's
+    uid is checked as well. One request per connection: a JSON object on
+    one line, answered with one line.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        gid: int,
+        allowed_uids: set[int],
+        handler: Callable[[Any], dict[str, Any]],
+    ) -> None:
+        self._path = path
+        self._allowed = allowed_uids
+        self._handler = handler
+        if path.exists() or path.is_symlink():
+            details = path.lstat()
+            if not stat.S_ISSOCK(details.st_mode) or details.st_uid != ROOT_UID:
+                raise WorkerError(f"{path} is not the supervisor's socket.")
+            path.unlink()
+        self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._socket.bind(str(path))
+        os.chown(path, 0, gid)
+        os.chmod(path, 0o660)
+        self._socket.listen(8)
+        self._socket.setblocking(False)
+        self._selector = selectors.DefaultSelector()
+        self._selector.register(self._socket, selectors.EVENT_READ)
+
+    def close(self) -> None:
+        self._selector.close()
+        self._socket.close()
+        self._path.unlink(missing_ok=True)
+
+    def serve(self, timeout: float) -> None:
+        """Answer the requests that arrive within `timeout` seconds."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            if not self._selector.select(remaining):
+                return
+            try:
+                connection, _address = self._socket.accept()
+            except BlockingIOError:
+                continue
+            with connection:
+                self._answer(connection)
+
+    def _answer(self, connection: socket.socket) -> None:
+        connection.setblocking(True)
+        connection.settimeout(REQUEST_READ_SECONDS)
+        try:
+            _pid, uid, _gid = struct.unpack(
+                "3i",
+                connection.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+                ),
+            )
+            if uid not in self._allowed:
+                logger.warning("Refused a supervisor request from uid %s.", uid)
+                return
+            raw = b""
+            while b"\n" not in raw:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    break
+                raw += chunk
+                if len(raw) > MAX_REQUEST_BYTES:
+                    raise ValueError("request too large")
+            try:
+                request = json.loads(raw.split(b"\n", 1)[0])
+            except (json.JSONDecodeError, UnicodeError):
+                answer: dict[str, Any] = {
+                    "ok": False,
+                    "error": {"code": "invalid_request", "message": "Not JSON."},
+                }
+            else:
+                answer = self._handler(request)
+            connection.sendall(
+                json.dumps(answer, separators=(",", ":")).encode() + b"\n"
+            )
+        except (OSError, ValueError) as error:
+            logger.warning("A supervisor request failed: %s", type(error).__name__)
+
+
 class Supervisor:
     def __init__(
         self,
@@ -1959,9 +2395,9 @@ class Supervisor:
         client: CoreClient,
         systemd: Systemd,
         git: GitRunner,
+        controller: ControllerUnit,
         clock: Callable[[], datetime],
         monotonic: Callable[[], float],
-        sleep: Callable[[float], None],
         statvfs: Callable[[str], Any],
         meminfo: Path,
         ownership_blocked: set[str],
@@ -1977,30 +2413,25 @@ class Supervisor:
         self._client = client
         self._systemd = systemd
         self._git = git
+        self._controller = controller
         self._clock = clock
         self._monotonic = monotonic
-        self._sleep = sleep
         self._statvfs = statvfs
         self._meminfo = meminfo
-        self._held: list[HeldAgent] = []
         self._states: dict[str, ObservedState] = {}
         self._touched: set[str] = set()
-        self._obsolete_exits: dict[str, str] = {}
-        self._agents_version: int | None = None
-        self._reconcile_failures = 0
         self._pending_prunes: set[Path] = set()
-        self._need_list = True
-        self._next_list = 0.0
         self._next_heartbeat = 0.0
         self._heartbeat_every = DEFAULT_HEARTBEAT_SECONDS
         self._retired = False
         self._records = self._load_records()
+        self._held: dict[str, HeldAgent] = self._load_held()
 
-    def run(self) -> None:
+    def run(self, server: RequestServer) -> None:
         self.limit_slice()
         while True:
             self.tick()
-            self._sleep(OBSERVE_SECONDS)
+            server.serve(OBSERVE_SECONDS)
 
     def limit_slice(self) -> None:
         total, _available = read_meminfo(self._meminfo)
@@ -2015,49 +2446,12 @@ class Supervisor:
                 self._observe()
                 self._send_heartbeat()
             return
-        if self._need_list and now >= self._next_list:
-            self._refresh()
-            if self._retired:
-                return
+        self._controller.ensure()
+        if self._pending_prunes:
+            self._prune_mirrors()
         changed = self._observe()
         if changed or self._monotonic() >= self._next_heartbeat:
             self._send_heartbeat()
-        if (
-            self._need_list
-            and self._monotonic() >= self._next_list
-            and not self._retired
-        ):
-            self._refresh()
-
-    def _refresh(self) -> None:
-        try:
-            listing = self._client.agents()
-        except MachineRetired:
-            self._retire()
-            return
-        except CoreUnavailable as error:
-            logger.warning("Agent list fetch failed; retrying: %s", error)
-            self._next_list = self._monotonic() + LIST_RETRY_SECONDS
-            return
-        try:
-            self.reconcile(listing["agents"])
-        except (WorkerError, OSError) as error:
-            self._reconcile_failures += 1
-            delay = min(
-                LIST_RETRY_SECONDS * 2 ** (self._reconcile_failures - 1),
-                RECONCILE_RETRY_MAX_SECONDS,
-            )
-            logger.error(
-                "Agents version %s was not fully applied; retrying in %s seconds: %s",
-                listing["agents_version"],
-                delay,
-                error,
-            )
-            self._next_list = self._monotonic() + delay
-            return
-        self._reconcile_failures = 0
-        self._need_list = False
-        self._agents_version = listing["agents_version"]
 
     def _send_heartbeat(self) -> None:
         interval = RETIRED_HEARTBEAT_SECONDS if self._retired else self._heartbeat_every
@@ -2080,129 +2474,275 @@ class Supervisor:
             every = DEFAULT_HEARTBEAT_SECONDS
         self._heartbeat_every = every
         if self._retired:
-            logger.warning("Switch accepts this machine again; resuming agents.")
+            logger.warning(
+                "Switch accepts this machine again; starting its agents controller."
+            )
             self._retired = False
-            self._need_list = True
-            self._next_list = 0.0
-        if response["agents_version"] != self._agents_version:
-            self._need_list = True
         self._next_heartbeat = self._monotonic() + self._heartbeat_every
 
     def _retire(self) -> None:
         if not self._retired:
-            logger.warning("Switch retired this machine; stopping all agents.")
+            logger.warning(
+                "Switch retired this machine; stopping its agents controller and agents."
+            )
+            self._controller.stop()
             self._systemd.stop_all()
-            self._touched.update(held.agent_id for held in self._held)
+            self._touched.update(self._held)
             self._retired = True
         self._next_heartbeat = self._monotonic() + RETIRED_HEARTBEAT_SECONDS
 
-    def reconcile(self, entries: list[Any]) -> None:
-        failures: list[str] = []
+    # ── Requests from the agents controller ───────────────────────────────────
+
+    def handle_request(self, request: Any) -> dict[str, Any]:
+        """Carry out one request from the agents controller; never raises."""
+        try:
+            if not isinstance(request, dict) or not isinstance(request.get("op"), str):
+                raise RequestRefused("invalid_request", "A request names its op.")
+            op = request["op"]
+            if op == "install":
+                restart = request.get("restart")
+                if set(request) != {"op", "agent", "restart"} or not isinstance(
+                    restart, bool
+                ):
+                    raise RequestRefused(
+                        "invalid_request", "install takes agent and restart."
+                    )
+                unit = self.install(request["agent"], restart=restart)
+            elif op == "stop":
+                wait = request.get("wait")
+                if set(request) != {"op", "agent_id", "wait"} or not isinstance(
+                    wait, bool
+                ):
+                    raise RequestRefused(
+                        "invalid_request", "stop takes agent_id and wait."
+                    )
+                unit = self.stop_agent(self._requested_agent(request), wait=wait)
+            elif op == "remove":
+                if set(request) != {"op", "agent_id"}:
+                    raise RequestRefused("invalid_request", "remove takes agent_id.")
+                self.remove_requested(self._requested_agent(request))
+                unit = None
+            elif op == "prune":
+                keep = request.get("keep")
+                if set(request) != {"op", "keep"} or not isinstance(keep, list):
+                    raise RequestRefused("invalid_request", "prune takes keep.")
+                self.prune({self._requested_agent({"agent_id": item}) for item in keep})
+                unit = None
+            elif op == "state":
+                if set(request) != {"op", "agent_id"}:
+                    raise RequestRefused("invalid_request", "state takes agent_id.")
+                unit = self.unit_report(self._requested_agent(request))
+            else:
+                raise RequestRefused("invalid_request", f"Unknown op {op!r}.")
+        except RequestRefused as refused:
+            return {
+                "ok": False,
+                "error": {"code": refused.code, "message": str(refused)},
+            }
+        except (WorkerError, OSError, ValueError) as error:
+            logger.error("A controller request failed: %s", error)
+            return {
+                "ok": False,
+                "error": {"code": "internal", "message": str(error)[:512]},
+            }
+        answer: dict[str, Any] = {"ok": True}
+        if unit is not None:
+            answer["unit"] = unit
+        return answer
+
+    @staticmethod
+    def _requested_agent(request: dict[str, Any]) -> str:
+        try:
+            return _agent_id(request.get("agent_id"))
+        except WorkerError as error:
+            raise RequestRefused("invalid_request", str(error)) from None
+
+    def install(self, entry: Any, *, restart: bool) -> dict[str, Any]:
+        """Install an agent's deployment and start or stop its unit as it says.
+
+        The deployment is built here, from the entry, by the same validation
+        and with the same layout the agent list used to get: nothing in the
+        entry is a path.
+        """
+        if self._retired:
+            raise RequestRefused(
+                "retired", "Switch retired this machine; its agents stay stopped."
+            )
+        if not isinstance(entry, dict):
+            raise RequestRefused("invalid_request", "An agent entry is an object.")
         remove_runtime_orphans(self._paths.agents_runtime)
-        counts: dict[str, int] = {}
-        for entry in entries:
-            if isinstance(entry, dict) and isinstance(entry.get("agent_id"), str):
-                counts[entry["agent_id"]] = counts.get(entry["agent_id"], 0) + 1
-        held: list[HeldAgent] = []
-        for entry in entries:
-            if (
-                not isinstance(entry, dict)
-                or not isinstance(entry.get("launch_id"), str)
-                or not isinstance(entry.get("agent_id"), str)
-                or isinstance(entry.get("revision"), bool)
-                or not isinstance(entry.get("revision"), int)
-            ):
-                logger.error(
-                    "Ignoring an agent entry without launch, agent and revision."
-                )
-                continue
-            agent_id = entry["agent_id"]
-            try:
-                if counts[agent_id] > 1:
-                    raise WorkerError("The agent is listed more than once.")
-                if agent_id in self._ownership_blocked:
-                    logger.error(
-                        "Agent %s has invalid saved ownership; it stays stopped.",
-                        agent_id,
-                    )
-                    held.append(
-                        HeldAgent(
-                            entry["launch_id"],
-                            agent_id,
-                            entry["revision"],
-                            None,
-                            Failure("failed", OWNERSHIP_INVALID),
-                        )
-                    )
-                    self._disable(agent_id, failures)
-                    continue
-                unavailable = _unavailable_code(entry)
-                if unavailable is not None:
-                    logger.warning(
-                        "Agent %s is unavailable (%s); stopping it and keeping its data.",
-                        agent_id,
-                        unavailable,
-                    )
-                    held.append(
-                        HeldAgent(
-                            entry["launch_id"],
-                            agent_id,
-                            entry["revision"],
-                            "stopped",
-                            Failure("stopped", INVALID_CONFIG),
-                        )
-                    )
-                    self._disable(agent_id, failures)
-                    continue
-                plan = build_agent_plan(entry, self._runtime, self._paths)
-            except WorkerError as error:
-                logger.error(
-                    "Agent %s has an invalid configuration: %s", agent_id, error
-                )
-                held.append(
-                    HeldAgent(
-                        entry["launch_id"],
-                        agent_id,
-                        entry["revision"],
-                        None,
-                        Failure("failed", INVALID_CONFIG),
-                    )
-                )
-                self._disable(agent_id, failures)
-                continue
-            failure: Failure | None = None
-            try:
-                self._apply(plan)
-            except (WorkerError, OSError) as error:
-                logger.error("Agent %s could not be set up: %s", agent_id, error)
-                failure = Failure("failed", SETUP_FAILED)
-                failures.append(agent_id)
-            held.append(
+        try:
+            agent_id = _agent_id(entry.get("agent_id"))
+            launch_id = _identifier(entry.get("launch_id"), "launch ID")
+            revision = _positive_integer(entry.get("revision"), "launch revision")
+        except WorkerError as error:
+            raise RequestRefused("invalid_request", str(error)) from None
+        if agent_id in self._ownership_blocked:
+            self._hold(
                 HeldAgent(
-                    plan.launch_id,
-                    plan.agent_id,
-                    plan.revision,
-                    plan.desired_state,
-                    failure,
+                    launch_id,
+                    agent_id,
+                    revision,
+                    None,
+                    Failure("failed", OWNERSHIP_INVALID),
                 )
             )
-        self._held = held
-        listed = {agent.agent_id for agent in held} | set(counts)
-        for agent_id in sorted(self._agents_on_disk() - listed):
+            self._disable(agent_id, [])
+            raise RequestRefused(
+                "ownership_invalid",
+                "This agent's saved ownership records are invalid; it stays stopped.",
+            )
+        try:
+            plan = build_agent_plan(entry, self._runtime, self._paths)
+        except WorkerError as error:
+            logger.error("Agent %s has an invalid configuration: %s", agent_id, error)
+            self._hold(
+                HeldAgent(
+                    launch_id,
+                    agent_id,
+                    revision,
+                    None,
+                    Failure("failed", INVALID_CONFIG),
+                )
+            )
+            self._disable(agent_id, [])
+            raise RequestRefused("invalid_config", str(error)) from None
+        try:
+            self._apply(plan, restart=restart)
+        except (WorkerError, OSError) as error:
+            logger.error("Agent %s could not be set up: %s", agent_id, error)
+            self._hold(
+                HeldAgent(
+                    launch_id,
+                    agent_id,
+                    revision,
+                    plan.desired_state,
+                    Failure("failed", SETUP_FAILED),
+                )
+            )
+            raise RequestRefused("setup_failed", str(error)[:512]) from None
+        self._hold(
+            HeldAgent(
+                plan.launch_id, plan.agent_id, plan.revision, plan.desired_state, None
+            )
+        )
+        return self.unit_report(agent_id)
+
+    def stop_agent(self, agent_id: str, *, wait: bool) -> dict[str, Any]:
+        self._stop(agent_id, wait=wait)
+        held = self._held.get(agent_id)
+        if held is not None and held.desired_state != "stopped":
+            held.desired_state = "stopped"
+            self._save_held()
+        return self.unit_report(agent_id)
+
+    def remove_requested(self, agent_id: str) -> None:
+        try:
+            self.remove_agent(agent_id)
+        except (WorkerError, OSError) as error:
+            logger.error("Agent %s removal failed: %s", agent_id, error)
+            raise RequestRefused("remove_failed", str(error)[:512]) from None
+        self._prune_mirrors()
+
+    def prune(self, keep: set[str]) -> None:
+        """Remove every agent on this machine that the controller does not keep.
+
+        The controller states the whole of its assignment, so an agent that
+        left it while the controller was not running (removed in Switch
+        across a reboot, say) is not left on the disk.
+        """
+        failures = []
+        for agent_id in sorted((self._agents_on_disk() | set(self._held)) - keep):
             try:
                 self.remove_agent(agent_id)
             except (WorkerError, OSError) as error:
                 logger.error("Agent %s removal failed; will retry: %s", agent_id, error)
                 failures.append(agent_id)
         self._prune_mirrors()
-        if self._pending_prunes:
-            failures.append("worktree prune")
-        for agent_id in set(self._states) - {agent.agent_id for agent in held}:
-            del self._states[agent_id]
         if failures:
-            raise ReconcileIncomplete(
-                "Work is left to retry for: " + ", ".join(failures) + "."
+            raise RequestRefused(
+                "remove_failed", "Could not remove: " + ", ".join(failures) + "."
             )
+
+    def unit_report(self, agent_id: str) -> dict[str, Any]:
+        """The agent's unit, as the controller's status reports it."""
+        held = self._held.get(agent_id) or HeldAgent("", agent_id, 0, None, None)
+        if held.failure is not None:
+            process_state, restarts = held.failure.process_state, 0
+            exit_value: dict[str, Any] | None = {
+                "code": None,
+                "signal": None,
+                "result": held.failure.result,
+            }
+        else:
+            process_state, restarts, exit_value = self._unit_state(held)
+        return {
+            "installed": (self._paths.agents_runtime / agent_id).is_dir(),
+            "revision": self._installed_revision(agent_id),
+            "process_state": process_state,
+            "restarts": restarts,
+            "oom_kills": self._records.get(agent_id, {}).get("oomKills", 0),
+            "exit": exit_value,
+        }
+
+    def _hold(self, held: HeldAgent) -> None:
+        self._held[held.agent_id] = held
+        self._save_held()
+
+    def _load_held(self) -> dict[str, HeldAgent]:
+        path = self._paths.held_record
+        if not path.exists() and not path.is_symlink():
+            return {}
+        try:
+            value = _strict(
+                _read_json_nofollow(path, maximum=MAX_SECRET_BYTES),
+                {"version", "agents"},
+                set(),
+                "held agents",
+            )
+            if value["version"] != 1 or not isinstance(value["agents"], list):
+                raise ValueError()
+            held = {}
+            for item in value["agents"]:
+                item = _strict(
+                    item,
+                    {"launchId", "agentId", "revision", "desiredState"},
+                    set(),
+                    "held agent",
+                )
+                if item["desiredState"] not in {"running", "stopped", None}:
+                    raise ValueError()
+                agent_id = _agent_id(item["agentId"])
+                held[agent_id] = HeldAgent(
+                    _identifier(item["launchId"], "launch ID"),
+                    agent_id,
+                    _positive_integer(item["revision"], "revision"),
+                    item["desiredState"],
+                    None,
+                )
+            return held
+        except (OSError, ValueError, WorkerError):
+            logger.error("The held agents record is invalid; starting from none.")
+            path.unlink(missing_ok=True)
+            return {}
+
+    def _save_held(self) -> None:
+        _write_root_json(
+            self._paths.held_record,
+            {
+                "version": 1,
+                "agents": [
+                    {
+                        "launchId": held.launch_id,
+                        "agentId": held.agent_id,
+                        "revision": held.revision,
+                        "desiredState": held.desired_state,
+                    }
+                    for held in self._held.values()
+                    if held.failure is None
+                ],
+            },
+        )
 
     def _disable(self, agent_id: str, failures: list[str]) -> None:
         if not _is_agent_id(agent_id):
@@ -2232,7 +2772,15 @@ class Supervisor:
                     continue
             self._pending_prunes.discard(mirror)
 
-    def _apply(self, plan: AgentPlan) -> None:
+    def _apply(self, plan: AgentPlan, *, restart: bool) -> None:
+        """Install the plan's runtime files and bring the unit to its desired state.
+
+        Files that differ from those installed (a new revision, new relay
+        credentials) are replaced, and the unit restarted or stopped. With
+        the same files the unit is only corrected: started when inactive,
+        or restarted when `restart` asks for it. A unit that failed is not
+        started again by a correction; a new revision or a restart does.
+        """
         agent_id = plan.agent_id
         for leaf in ("home", "tmp"):
             _agent_directories(
@@ -2244,29 +2792,23 @@ class Supervisor:
             self._uid,
             self._gid,
         )
-        if self._installed_revision(agent_id) != plan.revision:
+        files = {
+            "switch.json": json.dumps(plan.switch_credentials, separators=(",", ":")),
+            "deployment.json": json.dumps(plan.deployment, separators=(",", ":")),
+            "worker-capability": plan.worker_capability,
+            "env": agent_environment(
+                self._runtime,
+                self._identity,
+                self._machine_id,
+                self._paths,
+                agent_id,
+            ),
+        }
+        if self._installed_files(agent_id) != files:
             pending = self._paths.pending_install(agent_id)
             _write_root_json(pending, {"revision": plan.revision})
             install_runtime_files(
-                self._paths.agents_runtime,
-                agent_id,
-                {
-                    "switch.json": json.dumps(
-                        plan.switch_credentials, separators=(",", ":")
-                    ),
-                    "deployment.json": json.dumps(
-                        plan.deployment, separators=(",", ":")
-                    ),
-                    "worker-capability": plan.worker_capability,
-                    "env": agent_environment(
-                        self._runtime,
-                        self._identity,
-                        self._machine_id,
-                        self._paths,
-                        agent_id,
-                    ),
-                },
-                self._gid,
+                self._paths.agents_runtime, agent_id, files, self._gid
             )
             if plan.desired_state == "running":
                 self._systemd.reset_failed(agent_id)
@@ -2277,17 +2819,41 @@ class Supervisor:
             self._reset_oom_kills(agent_id, plan.revision)
             pending.unlink()
             return
-        active = self._systemd.show(agent_id)["ActiveState"]
-        if plan.desired_state == "running" and active == "inactive":
+        if plan.desired_state == "stopped":
+            active = self._systemd.show(agent_id)["ActiveState"]
+            if active in {"active", "activating", "reloading", "failed"}:
+                self._stop(agent_id, wait=False)
+            return
+        if restart:
+            self._systemd.reset_failed(agent_id)
+            self._systemd.restart(agent_id)
+            self._touched.add(agent_id)
+            return
+        if self._systemd.show(agent_id)["ActiveState"] == "inactive":
             self._systemd.start(agent_id)
             self._touched.add(agent_id)
-        elif plan.desired_state == "stopped" and active in {
-            "active",
-            "activating",
-            "reloading",
-            "failed",
-        }:
-            self._stop(agent_id, wait=False)
+
+    def _installed_files(self, agent_id: str) -> dict[str, str] | None:
+        """The agent's runtime files as installed, or None when they are not."""
+        pending = self._paths.pending_install(agent_id)
+        if pending.exists() or pending.is_symlink():
+            return None
+        directory = self._paths.agents_runtime / agent_id
+        if not directory.is_dir() or directory.is_symlink():
+            return None
+        files = {}
+        for name in ("switch.json", "deployment.json", "worker-capability", "env"):
+            try:
+                descriptor = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError:
+                return None
+            try:
+                files[name] = os.read(descriptor, MAX_SECRET_BYTES + 1).decode()
+            except (OSError, UnicodeError):
+                return None
+            finally:
+                os.close(descriptor)
+        return files
 
     def _reset_oom_kills(self, agent_id: str, revision: int) -> None:
         record = self._records.get(agent_id)
@@ -2368,7 +2934,8 @@ class Supervisor:
             self._save_records()
         self._states.pop(agent_id, None)
         self._touched.discard(agent_id)
-        self._obsolete_exits.pop(agent_id, None)
+        if self._held.pop(agent_id, None) is not None:
+            self._save_held()
         self._ownership_blocked.discard(agent_id)
         logger.warning("Removed agent %s from this machine.", agent_id)
 
@@ -2415,7 +2982,7 @@ class Supervisor:
     def _observe(self) -> bool:
         changed = False
         now = self._clock().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for held in self._held:
+        for held in list(self._held.values()):
             observed: tuple[str, int, dict[str, Any] | None]
             if held.failure is not None:
                 observed = (
@@ -2454,7 +3021,7 @@ class Supervisor:
         status = int(properties["ExecMainStatus"] or 0)
         exited_at = properties["ExecMainExitTimestampMonotonic"] or "0"
         ran = exited_at != "0"
-        if result == "oom-kill" and ran:
+        if result == "oom-kill" and ran and agent_id in self._held:
             key = f"{self._identity.boot_id}:{exited_at}"
             record = self._records.get(agent_id, {"oomKills": 0, "lastOomExit": ""})
             if record["lastOomExit"] != key:
@@ -2464,14 +3031,6 @@ class Supervisor:
                     "revision": held.revision,
                 }
                 self._save_records()
-        if code == 1 and status == OBSOLETE_EXIT_CODE and ran:
-            if self._obsolete_exits.get(agent_id) != exited_at:
-                self._obsolete_exits[agent_id] = exited_at
-                logger.warning(
-                    "Agent %s reported an obsolete worker; refetching.", agent_id
-                )
-                self._need_list = True
-                self._next_list = 0.0
         if active in {"active", "reloading"}:
             process_state = "running"
         elif active == "activating":
@@ -2502,7 +3061,7 @@ class Supervisor:
         disk = self._statvfs(str(self._paths.data))
         total_memory, available_memory = read_meminfo(self._meminfo)
         agents = []
-        for held in self._held:
+        for held in self._held.values():
             observed = self._states.get(held.agent_id)
             if observed is None:
                 continue
@@ -2581,7 +3140,9 @@ def main(argv: list[str] | None = None) -> int:
             paths,
         )
         prepare_layout(paths, uid, gid)
-        Supervisor(
+        client = CoreClient(bundle, identity, default_opener())
+        systemd = Systemd(commands)
+        supervisor = Supervisor(
             runtime=config.runtime,
             identity=identity,
             machine_id=bundle.machine_id,
@@ -2589,16 +3150,36 @@ def main(argv: list[str] | None = None) -> int:
             paths=paths,
             uid=uid,
             gid=gid,
-            client=CoreClient(bundle, identity, default_opener()),
-            systemd=Systemd(commands),
+            client=client,
+            systemd=systemd,
             git=GitRunner(setpriv_prefix(uid, gid), FLOCK, GIT),
+            controller=ControllerUnit(
+                client=client,
+                systemd=systemd,
+                paths=paths,
+                uid=uid,
+                gid=gid,
+                api_endpoint=bundle.api_endpoint,
+                identity=identity,
+                name=f"cloud-machine-{config.slot_id}",
+                monotonic=time.monotonic,
+            ),
             clock=lambda: datetime.now(UTC),
             monotonic=time.monotonic,
-            sleep=time.sleep,
             statvfs=os.statvfs,
             meminfo=MEMINFO_PATH,
             ownership_blocked=ownership_blocked,
-        ).run()
+        )
+        server = RequestServer(
+            paths.supervisor_socket,
+            gid=gid,
+            allowed_uids={ROOT_UID, uid},
+            handler=supervisor.handle_request,
+        )
+        try:
+            supervisor.run(server)
+        finally:
+            server.close()
         return 0
     finally:
         root_lock.close()

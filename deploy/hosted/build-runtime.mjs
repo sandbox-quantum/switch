@@ -13,12 +13,16 @@ const require = createRequire(new URL('../../console/package.json', import.meta.
 const { build } = require('esbuild');
 const output = resolve(process.argv[2]);
 await mkdir(output, { recursive: true });
-const names = ['hosted-bootstrap', 'shared-host-daemon'];
+const names = ['hosted-bootstrap', 'shared-host-daemon', 'agent-controller'];
 await build({
   absWorkingDir: repository,
   entryPoints: {
     'hosted-bootstrap': 'console/packages/agent-providers/src/host/hosted-bootstrap-cli.ts',
     'shared-host-daemon': 'console/packages/agent-providers/src/host/shared-daemon.ts',
+    // The machine's agents controller. It imports the workspace packages
+    // through their built `dist/`, so build them first
+    // (`pnpm -r --filter './packages/**' run build` in console/).
+    'agent-controller': 'console/packages/agent-controller/src/cli.ts',
   },
   outdir: output,
   outExtension: { '.js': '.mjs' },

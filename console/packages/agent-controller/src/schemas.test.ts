@@ -12,6 +12,7 @@ import {
   enrollRequestSchema,
   enrollResponseSchema,
   errorEnvelopeSchema,
+  machineEnrollRequestSchema,
   operationListSchema,
   operationResultSchema,
   operationSchema,
@@ -19,6 +20,9 @@ import {
   statusResponseSchema,
   tokenRequestSchema,
   tokenResponseSchema,
+  workerAttachRequestSchema,
+  workerAttachResponseSchema,
+  workerDetachRequestSchema,
 } from './schemas';
 import { STREAM_FRAME_SCHEMAS } from './stream';
 
@@ -45,12 +49,14 @@ const FIXTURES = join(
  * fails the test, so a message added on one side is noticed on the other.
  */
 const SCHEMA_FOR: Record<string, z.ZodType> = {
+  'assignment_hosted_response.json': assignmentSchema,
   'assignment_response.json': assignmentSchema,
   'controller_beat_request.json': controllerBeatRequestSchema,
   'controller_beat_response.json': controllerBeatResponseSchema,
   'controller_connection_request.json': controllerConnectionRequestSchema,
   'controller_connection_response.json': controllerConnectionResponseSchema,
   'credential_rotate_response.json': credentialRotateResponseSchema,
+  'enroll_machine_request.json': machineEnrollRequestSchema,
   'enroll_request.json': enrollRequestSchema,
   'enroll_response.json': enrollResponseSchema,
   'error_response.json': errorEnvelopeSchema,
@@ -62,6 +68,9 @@ const SCHEMA_FOR: Record<string, z.ZodType> = {
   'status_response.json': statusResponseSchema,
   'token_request.json': tokenRequestSchema,
   'token_response.json': tokenResponseSchema,
+  'worker_attach_request.json': workerAttachRequestSchema,
+  'worker_attach_response.json': workerAttachResponseSchema,
+  'worker_detach_request.json': workerDetachRequestSchema,
 };
 
 /** `stream_frames.json` is a list of `{event, data}`; each is read as the stream reads it. */
@@ -78,6 +87,7 @@ const streamFramesSchema = z.array(
   })
 );
 SCHEMA_FOR['stream_frames.json'] = streamFramesSchema;
+SCHEMA_FOR['worker_stream_frames.json'] = streamFramesSchema;
 
 const fixtureFiles = existsSync(FIXTURES)
   ? readdirSync(FIXTURES).filter((name) => name.endsWith('.json'))
@@ -102,9 +112,9 @@ describe('Core contract fixtures', () => {
   );
 
   it.skipIf(!existsSync(FIXTURES))('covers every stream event the controller handles', () => {
-    const frames = JSON.parse(readFileSync(join(FIXTURES, 'stream_frames.json'), 'utf8')) as {
-      event: string;
-    }[];
+    const frames = ['stream_frames.json', 'worker_stream_frames.json'].flatMap(
+      (name) => JSON.parse(readFileSync(join(FIXTURES, name), 'utf8')) as { event: string }[]
+    );
     expect(new Set(frames.map((frame) => frame.event))).toEqual(
       new Set(Object.keys(STREAM_FRAME_SCHEMAS))
     );

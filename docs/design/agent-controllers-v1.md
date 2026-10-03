@@ -26,7 +26,7 @@ where it deliberately stops short.
 | Controllers act as agents on `/agents/{id}/...` with a controller token | **Not in v1.** The controller fetches a per-agent API key from Management for each bound agent. Every fetch **rotates** the key, which invalidates any earlier holder | The watcher and session hosts read the agent token once, from the credentials file, and cannot refresh a short-lived token. Moving to scoped tokens needs a runtime change first |
 | One SSE stream per controller carrying agent events | **The controller stream carries only nudges** (`assignment.changed`, `operation.pending`, `credential.revoked`). Agent events stay on per-agent watcher streams | Avoids touching message delivery. That is roadmap step 7 |
 | Connector tokens, sealed provider logins | Not in v1 | Later steps |
-| Enrollment by EC2 machine secret | Not in v1. Supported: Console sign-in (gateway) and one-time code (headless) | |
+| Enrollment by EC2 machine secret | Added after v1: see "Cloud machines" at the end. Also supported: Console sign-in (gateway) and one-time code (headless) | |
 | Operations | `agent.restart` and `provider.recheck` only. Core rejects other kinds with `400 operation_unsupported` | |
 | Per-tenant flag | Deployment-wide env flag | No per-tenant flag mechanism exists yet |
 
@@ -353,3 +353,99 @@ stream. The flag and everything else above stay as they are.
   disables it). `ControllerPresence` drops a controller's entry when it is
   revoked and an agent's when it is bound, moved, unbound or deleted; the
   binding check itself is never cached.
+
+---
+
+## Cloud machines: EC2 on the agents controller
+
+Decided after step 10. A Switch cloud machine (one EC2 VM per user,
+`deploy/hosted/`) runs its agents through an agents controller, and its cloud
+agents become managed agents placed on it. The deploy controller, the EC2
+lifecycle and the cloud agent routes Switch Console calls are unchanged.
+
+### What stays where
+
+- **The machine's root supervisor** keeps the machine's work: storage, the
+  ownership marker and quarantine, the agents' memory slice, retirement on
+  410, and the machine heartbeat (disk, memory, runtime fingerprint, each
+  unit's process state), from which Core derives the machine's and each
+  launch's state and decides idle stops.
+- **The machine's agents controller** decides what runs: it pulls the
+  assignment, holds the one stream for all the machine's agents, serves each
+  agent's watcher through its loopback relay, and reports status.
+- **The cloud launch** stays the record of the agent's machine, limits,
+  billing and lifecycle.
+
+### Enrollment (`machine_secret`)
+
+- `POST /v1/management/controllers/enroll` with
+  `{proof: {kind: "machine_secret", machine_id, capability}}` and the host
+  headers. The capability is checked against the machine as on its own routes
+  (`authenticate_machine`), in the cloud machines' tenant.
+- One controller per machine: `agent_controllers.hosted_machine_id`, unique
+  among controllers that are not revoked, kind `ec2` only. Enrolling again
+  keeps the row and rotates its credential, so a reboot leaves the agents
+  placed where they were (no revision churn, no rows piling up). A revoked
+  machine controller is replaced by a new row, since a revoked controller id
+  can never open a stream again.
+- The supervisor keeps the credential on the runtime tmpfs and hands it to
+  the controller unit on stdin from a root-only tmpfs file that systemd opens
+  before the controller starts and the supervisor deletes right after.
+
+### Placement (`management/hosted_sync.py`)
+
+- Every launch with an agent has a definition: the v1 fields from the launch
+  spec, and a `hosted` block (`HostedDefinition`, documented in the contract)
+  the supervisor builds the deployment from. The worker capability is added
+  by the assignment as it is read; no secret is stored in the definition.
+- The block is rebuilt only when the launch revision moves. This keeps the
+  supervisor's old semantics: an edited instruction applies at the next
+  start, and a change to one agent never restarts another.
+- It is placed on the machine's live controller, or left unplaced while the
+  machine has none, in which case the agent is not controller-backed and an
+  old image keeps running it from its agent list.
+- Core never imports Management: it calls a `HostedPlacement` that
+  Management registers (`machine_changed` after every launch change,
+  `machine_seen` on every machine heartbeat, which syncs only an agents
+  version not synced yet, so a failed sync is caught up within a heartbeat).
+- A placed launch that is queued moves to provisioning, as the supervisor's
+  first read of its list used to do, so the attach timeout applies.
+- Owners cannot change a cloud agent through the management routes
+  (`409 cloud_agent`), and an `ec2` controller takes no local agent.
+
+### Units (`SystemdRuntime`)
+
+- The controller's systemd runtime asks the supervisor, over a unix socket,
+  to install, stop, remove and report on each `switch-agent@<id>` unit, and to
+  prune agents its assignment no longer names. The request is the agent
+  list's old entry shape, with the controller relay's credentials; the
+  supervisor validates it, derives every path, and accepts only a loopback
+  relay endpoint and a relay token as the agent's Switch credentials.
+- Install replaces the runtime files and restarts the unit when they differ
+  (a new revision, a relay that came back on another port), and otherwise
+  only corrects the unit's state; `restart` forces a restart
+  (`agent.restart`). The supervisor does not verify a request against Core:
+  the socket is root:switch-agent 0660 with the peer uid checked, and code
+  that runs as the agent account could already run anything a unit runs.
+
+### Workers on the controller stream
+
+- The relay has Core admit a worker on the controller connection
+  (`ControllerWorker`, in `ControllerPresence`), with the admission a worker
+  opening its own stream gets. A `ControllerWorker` has the attributes the
+  hosted code reads of an `AgentConnection` bound to a worker (a
+  `WorkerHandle`), so relays, the wake mailbox, idle evidence, operations and
+  the cutover manifest run unchanged for both.
+- Its id and generation are the relay's local connection id and incarnation:
+  what the worker names on its up-calls, so the relay forwards them
+  untouched. Its holder is `controller:{controller_id}:{agent_id}`.
+- Frames are queued on it and written on the controller stream as
+  `agent.worker`; a superseded launch revision ends it with
+  `agent.worker_closed`. It lasts as long as the controller connection's
+  stream, and the relay ends every worker stream when the controller stream
+  drops, so the workers attach again on the next one.
+- The worker's up-calls are accepted from the controller acting as the agent
+  (the bearer middleware lets the worker connection routes and the cloud
+  agent `/hosted/...` routes through), and `require_worker` fences them on the
+  controller worker.
+

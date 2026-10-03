@@ -34,8 +34,13 @@ from switch_core.management.bindings import load_bindings
 from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
+from switch_core.management.hosted_sync import HostedPlacements
 from switch_core.management.notifier import ControllerNotifier
-from switch_core.management.service import ManagementService, ManagementSettings
+from switch_core.management.service import (
+    ManagementService,
+    ManagementSettings,
+    binding_of,
+)
 
 GATEWAY_PREFIX = "/management"
 
@@ -49,6 +54,9 @@ class Management:
     service: ManagementService
     authenticator: ManagementAuthenticator
     session_factory: async_sessionmaker[AsyncSession]
+    # The cloud machines' settings file; a cloud machine's controller enrolls
+    # into its tenant. None on a server that runs no cloud machines.
+    hosted_controller_config_path: str | None
 
     def install(
         self,
@@ -61,10 +69,12 @@ class Management:
             service=self.service,
             authenticator=self.authenticator,
             session_factory=self.session_factory,
+            hosted_controller_config_path=self.hosted_controller_config_path,
         )
         agent_bridge_app.include_router(controller_router)
         gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
         protocol.set_agent_removal_listener(self.agent_removed)
+        protocol.set_hosted_placement(self.service.hosted)
 
     async def agent_removed(self, tenant_id: str, agent_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -84,26 +94,42 @@ def build_management(
     token_secret: str,
     status_interval_seconds: int,
     server_url: str | None,
+    secret_key: str,
+    hosted_controller_config_path: str | None,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
     clock: Callable[[], datetime],
 ) -> Management:
     controllers = AgentControllerStore()
+    definitions = AgentDefinitionStore()
+    operations = AgentControllerOperationStore()
+    notifier = ControllerNotifier()
     presence.use_auth_cache(auth_cache)
     service = ManagementService(
         settings=ManagementSettings(
             token_secret=token_secret,
             status_interval_seconds=status_interval_seconds,
             server_url=server_url,
+            secret_key=secret_key,
         ),
-        notifier=ControllerNotifier(),
+        notifier=notifier,
         controllers=controllers,
-        definitions=AgentDefinitionStore(),
-        operations=AgentControllerOperationStore(),
+        definitions=definitions,
+        operations=operations,
         api_keys=ApiKeyStore(),
         agents=AgentStore(),
         presence=presence,
+        hosted=HostedPlacements(
+            session_factory=session_factory,
+            controllers=controllers,
+            definitions=definitions,
+            operations=operations,
+            presence=presence,
+            notifier=notifier,
+            secret_key=secret_key,
+            binding_of=binding_of,
+        ),
         clock=clock,
     )
     authenticator = ManagementAuthenticator(
@@ -114,7 +140,10 @@ def build_management(
         auth_cache=auth_cache,
     )
     return Management(
-        service=service, authenticator=authenticator, session_factory=session_factory
+        service=service,
+        authenticator=authenticator,
+        session_factory=session_factory,
+        hosted_controller_config_path=hosted_controller_config_path,
     )
 
 
@@ -134,6 +163,8 @@ def create_management(
         token_secret=config.controller_token_secret,
         status_interval_seconds=config.controller_status_interval_seconds,
         server_url=config.gateway_public_url,
+        secret_key=config.jwt_secret_key,
+        hosted_controller_config_path=config.hosted_controller_config_path,
         session_factory=session_factory,
         presence=presence,
         # The agent API-key cache's bound: the longest a controller revoked

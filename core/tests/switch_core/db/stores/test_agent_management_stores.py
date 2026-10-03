@@ -71,6 +71,7 @@ async def _controller(
         version="0.1.0",
         public_key=None,
         api_key_id=key.id,
+        hosted_machine_id=None,
     )
 
 
@@ -192,6 +193,7 @@ class TestControllers:
                     version=None,
                     public_key=None,
                     api_key_id=key.id,
+                    hosted_machine_id=None,
                 )
 
 
@@ -436,4 +438,5 @@ async def test_a_write_with_no_tenant_bound_is_refused(
                 version=None,
                 public_key=None,
                 api_key_id=key.id,
+                hosted_machine_id=None,
             )

@@ -11,7 +11,7 @@ import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
 import type { RelayCredentials } from './runtime';
-import type { AgentAssignment, StatusReport } from './schemas';
+import { type AgentAssignment, PROVIDERS, type StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { ControllerStore } from './store';
 import { buildWatcherTemplate } from './template';
@@ -68,6 +68,7 @@ function deps(server = core.url): ControllerDeps {
     secrets,
     runtime,
     locator: new FakeLocator(),
+    providers: PROVIDERS,
     fetch,
     log: silentLogger,
     dataDir: dir,
@@ -180,6 +181,97 @@ afterEach(async () => {
   await core.stop();
   store.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+const CLOUD_AGENT = '00000000-0000-4000-8000-0000000000a2';
+
+function cloudAgent(): AgentAssignment {
+  return {
+    agent_id: CLOUD_AGENT,
+    revision: 1,
+    desired_state: 'running',
+    definition: {
+      ...agent(1).definition,
+      name: 'cloud-helper',
+      hosted: {
+        machine_id: 'machine-1',
+        launch_id: 'launch-1',
+        launch_revision: 2,
+        provider_credential_kind: 'setup-token',
+        repository: 'example/project',
+        spec: { instructions: '', auto_session: true, auto_approve: false },
+        skills: [],
+        worker_capability: 'worker-capability-placeholder-0123',
+      },
+    },
+  };
+}
+
+describe('runController on a cloud machine', () => {
+  it('installs its cloud agents with relay credentials and attaches their workers on its connection', async () => {
+    runtime = new FakeRuntime('systemd');
+    core.rooms.set(CLOUD_AGENT, ['room-a']);
+    core.setAssignment({ revision: 1, agents: [cloudAgent()] });
+    running = runController({ ...deps(), providers: [] }, stop.signal);
+
+    await waitFor(
+      () => runtime.calls.some((call) => call.kind === 'launchHosted'),
+      'the cloud agent installed'
+    );
+    const install = runtime.calls.find((call) => call.kind === 'launchHosted')!;
+    if (install.kind !== 'launchHosted') throw new Error('unreachable');
+    const credentials = runtime.credentials.get(CLOUD_AGENT)!;
+    expect(install.deployment).toMatchObject({
+      launch_id: 'launch-1',
+      agent_id: CLOUD_AGENT,
+      revision: 2,
+      desired_state: 'running',
+      worker_capability: 'worker-capability-placeholder-0123',
+      switch_credentials: {
+        env: {
+          SWITCH_API_ENDPOINT: credentials.endpoint,
+          SWITCH_API_TOKEN: credentials.token,
+          SWITCH_AGENT_ID: CLOUD_AGENT,
+        },
+      },
+    });
+    await waitFor(
+      () => runtime.calls.some((call) => call.kind === 'prune'),
+      'the assignment stated to the supervisor'
+    );
+
+    const frames: string[] = [];
+    const controller = new AbortController();
+    watchers.push(controller);
+    new SwitchEventStream({
+      creds: { agentId: CLOUD_AGENT, apiEndpoint: credentials.endpoint, token: credentials.token },
+      connectionId: 'worker-connection',
+      worker: {
+        capability: 'worker-capability-placeholder-0123',
+        bootId: 'boot-1',
+        instanceId: 'i-0123456789abcdef0',
+        stateVersion: 1,
+      },
+      onWorkerFrame: (name) => void frames.push(name),
+      scope: 'all',
+      filter: 'addressed',
+      spawnCapable: true,
+      rooms: [],
+      onEvent: () => {},
+      onGap: () => {},
+      onEvicted: () => {},
+      log: quiet,
+      signal: controller.signal,
+    }).start();
+    await waitFor(() => frames.includes('worker_attached'), 'the worker attached', 15_000);
+    const attach = core.requests.find((request) =>
+      request.path.endsWith(`/agents/${CLOUD_AGENT}/worker`)
+    )!;
+    expect((attach.body as { connection_id: string }).connection_id).toBe(core.connection?.id);
+    core.pushWorker(CLOUD_AGENT, 'operation', { id: 'operation-1' });
+    await waitFor(() => frames.includes('operation'), 'the operation doorbell');
+    expect(core.statusReports.at(-1)?.providers).toEqual([]);
+  }, 20_000);
 });
 
 describe('runController', () => {

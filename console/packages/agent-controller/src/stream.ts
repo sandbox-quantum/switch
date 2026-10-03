@@ -19,6 +19,10 @@ import {
   agentRoomsFrameSchema,
   type AgentSessionCommandFrame,
   agentSessionCommandFrameSchema,
+  type AgentWorkerClosedFrame,
+  agentWorkerClosedFrameSchema,
+  type AgentWorkerFrame,
+  agentWorkerFrameSchema,
   assignmentChangedSchema,
   type ConnectionState,
   connectionStateSchema,
@@ -94,6 +98,8 @@ export const STREAM_FRAME_SCHEMAS = {
   'agent.attached': agentAttachedFrameSchema,
   'agent.detached': agentDetachedFrameSchema,
   'agent.rooms': agentRoomsFrameSchema,
+  'agent.worker': agentWorkerFrameSchema,
+  'agent.worker_closed': agentWorkerClosedFrameSchema,
   'assignment.changed': assignmentChangedSchema,
   'operation.pending': operationPendingSchema,
   'credential.revoked': credentialRevokedSchema,
@@ -109,6 +115,8 @@ export type ControllerFrame =
   | { type: 'agent.attached'; data: AgentAttachedFrame }
   | { type: 'agent.detached'; data: AgentDetachedFrame }
   | { type: 'agent.rooms'; data: AgentRoomsFrame }
+  | { type: 'agent.worker'; data: AgentWorkerFrame }
+  | { type: 'agent.worker_closed'; data: AgentWorkerClosedFrame }
   | { type: 'assignment.changed'; data: { revision: number } }
   | { type: 'operation.pending'; data: OperationPending }
   | { type: 'credential.revoked'; data: Record<string, never> };
@@ -126,8 +134,8 @@ export type ControllerStreamOptions = {
   placements: () => AgentPlacements;
   /** A connection was opened: Core attached these agents to it. */
   onOpened: (connection: ControllerConnection) => Promise<void> | void;
-  /** The stream is attached and reading. */
-  onConnected: () => void;
+  /** The stream is attached to this connection and reading. */
+  onConnected: (connection: { connectionId: string; generation: number }) => void;
   /** The stream is down and about to be reopened. */
   onDisconnected: (error: string) => void;
   /** Each frame, in order; the next is not read until this one is handled. */
@@ -283,7 +291,10 @@ class ControllerStream {
       return;
     }
     attempt.attachedAt = Date.now();
-    this.options.onConnected();
+    this.options.onConnected({
+      connectionId: current.connectionId,
+      generation: current.generation,
+    });
     attempt.beating = this.beat(current, attempt);
     await this.read(response.body!, attempt);
   }

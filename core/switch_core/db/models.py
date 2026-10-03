@@ -2969,6 +2969,11 @@ class AgentController(TenantScoped, Base):
     `status_seq` its sequence number: a report with a sequence at or below it is
     ignored. `assignment_revision` bumps on every change to the set of agents
     the controller should run, and is what its ETag carries.
+
+    `hosted_machine_id` binds a controller of kind `ec2` to the cloud machine
+    it enrolled from with that machine's capability. At most one controller
+    that is not revoked holds a machine: enrolling again (a reboot, a new
+    generation) revokes the one before.
     """
 
     __tablename__ = "agent_controllers"
@@ -2984,12 +2989,26 @@ class AgentController(TenantScoped, Base):
             "kind IN ('console', 'daemon', 'ec2')", name="ck_agent_controllers_kind"
         ),
         Index("ix_agent_controllers_owner_id", "owner_id"),
+        Index(
+            "uq_agent_controllers_hosted_machine",
+            "tenant_id",
+            "hosted_machine_id",
+            unique=True,
+            postgresql_where=text(
+                "hosted_machine_id IS NOT NULL AND revoked_at IS NULL"
+            ),
+        ),
+        CheckConstraint(
+            "hosted_machine_id IS NULL OR kind = 'ec2'",
+            name="ck_agent_controllers_hosted_machine_kind",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
+    hosted_machine_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     platform: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     version: Mapped[str | None] = mapped_column(Text, nullable=True)
     public_key: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

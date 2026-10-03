@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
-import { type AgentAssignment, statusReportSchema } from './schemas';
+import { type AgentAssignment, PROVIDERS, statusReportSchema } from './schemas';
 import {
   mapAgentProcess,
   PathProviderLocator,
@@ -229,6 +229,7 @@ describe('ProviderStatuses', () => {
     const locator = new FakeLocator();
     locator.missing.add('cursor');
     const statuses = new ProviderStatuses({
+      providers: PROVIDERS,
       locator,
       runtime,
       probeCwd: '/tmp',
@@ -290,6 +291,7 @@ describe('StatusCollector', () => {
     let clock = NOW;
     const runtime = new FakeRuntime();
     const providers = new ProviderStatuses({
+      providers: PROVIDERS,
       locator: new FakeLocator(),
       runtime,
       probeCwd: dir,

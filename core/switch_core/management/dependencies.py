@@ -8,6 +8,7 @@ established. What is here is what only management has.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import Request
@@ -18,6 +19,7 @@ from switch_core.management import reason_codes
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.errors import ManagementError
 from switch_core.management.service import ManagementService
+from switch_core.providers.hosted import HostedControllerSettings
 
 _state: dict[str, Any] = {}
 
@@ -27,10 +29,12 @@ def init_management_dependencies(
     service: ManagementService,
     authenticator: ManagementAuthenticator,
     session_factory: async_sessionmaker[AsyncSession],
+    hosted_controller_config_path: str | None,
 ) -> None:
     _state["service"] = service
     _state["authenticator"] = authenticator
     _state["session_factory"] = session_factory
+    _state["hosted_controller_config_path"] = hosted_controller_config_path
 
 
 def get_management() -> ManagementService:
@@ -43,6 +47,16 @@ def get_authenticator() -> ManagementAuthenticator:
 
 def get_management_session_factory() -> async_sessionmaker[AsyncSession]:
     return _state["session_factory"]  # type: ignore[no-any-return]
+
+
+def get_hosted_settings() -> HostedControllerSettings | None:
+    """The cloud machines' settings, read as each enrollment needs them (the
+    file is mounted from a secret that can change), or None on a server that
+    runs no cloud machines."""
+    path = _state["hosted_controller_config_path"]
+    if not path:
+        return None
+    return HostedControllerSettings.model_validate_json(Path(path).read_text())
 
 
 def get_controller_principal(request: Request) -> ControllerPrincipal:

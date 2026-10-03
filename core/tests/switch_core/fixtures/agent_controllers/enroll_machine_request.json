@@ -1,0 +1,13 @@
+{
+  "proof": {
+    "kind": "machine_secret",
+    "machine_id": "00000000-0000-4000-8000-0000000000d1",
+    "capability": "example-machine-capability-not-real"
+  },
+  "controller": {
+    "kind": "ec2",
+    "name": "cloud-machine-slot-a",
+    "platform": { "os": "linux", "arch": "x64", "os_version": "6.1.0" },
+    "version": "2.1.0"
+  }
+}
