@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
+import type { PluginFs, RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { eq } from 'drizzle-orm';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
@@ -25,7 +25,9 @@ import {
   normalizeRemoteDir,
   type RemoteDirInspection,
 } from '@shared/core/remote-hosts/remote-dir';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
+import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { writeAgentConfigFile } from './agent-config-file';
 import type { AgentTemplateOrigin } from './agent-config-file';
@@ -166,30 +168,46 @@ export async function addAgent(input: AddAgentParams): Promise<AddAgentResult> {
   }
 }
 
-async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
+export type NewAgentChecks =
+  | {
+      kind: 'ok';
+      server: SwitchServer;
+      workspace: Workspace;
+      /** The Switch agent a same-server credentials file here already names, known to this install. */
+      slotAgentId: string | null;
+    }
+  | Exclude<AddAgentResult, { kind: 'created' }>;
+
+/**
+ * Everything checked before an agent's identity is minted, so a refusal leaves
+ * nothing behind on the server. Shared by the Console-run and the managed
+ * create paths: a managed agent can be brought back to this Console later, into
+ * the same directory and credentials slot.
+ */
+export async function checkNewAgent(params: AddAgentParams): Promise<NewAgentChecks> {
   if (params.sshHost === null && !checkIsValidDirectory(params.dir)) {
-    return reportFailedCreate(params, {
+    return {
       kind: 'error',
       message: `Invalid directory: ${params.dir}`,
-    });
+    };
   }
   // The one case the probe below cannot be asked about: a relative path has no
   // meaning until a session picks a starting directory, so there is nothing on
   // the host to inspect.
   if (params.sshHost !== null && !isAbsoluteRemoteDir(params.dir)) {
-    return reportFailedCreate(params, {
+    return {
       kind: 'directory-unusable',
       sshHost: params.sshHost,
       inspection: { dir: params.dir, status: 'relative' },
-    });
+    };
   }
 
   const server = await getServer(params.serverId);
   if (!server) {
-    return reportFailedCreate(params, {
+    return {
       kind: 'error',
       message: `No Switch server with id ${params.serverId}`,
-    });
+    };
   }
   const targetWorkspace = await requireWorkspaceForServer(params.serverId);
 
@@ -198,7 +216,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   // same-named agents here would share one `.switch/agents/<name>.json`.
   const existingLocation = await getLocationByHostDir(params.sshHost, params.dir);
   if (existingLocation && (await agentNameTaken(existingLocation.id, params.name, null))) {
-    return reportFailedCreate(params, { kind: 'name-conflict' });
+    return { kind: 'name-conflict' };
   }
 
   // And the check above only sees agents THIS install manages. A second Switch
@@ -214,10 +232,10 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     server.apiUrl
   );
   if (foreignEndpoint !== null) {
-    return reportFailedCreate(params, {
+    return {
       kind: 'credentials-conflict',
       endpoint: foreignEndpoint,
-    });
+    };
   }
 
   // The cross-deployment check above passes when the slot belongs to the SAME
@@ -238,7 +256,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       .where(eq(agentsTable.switchAgentId, slotAgentId))
       .limit(1);
     if (!knownLocally) {
-      return reportFailedCreate(params, { kind: 'already-configured' });
+      return { kind: 'already-configured' };
     }
   }
 
@@ -249,13 +267,48 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   if (params.sshHost !== null) {
     const inspection = await inspectRemoteDir(params.sshHost, params.dir);
     if (!isUsableRemoteDir(inspection)) {
-      return reportFailedCreate(params, {
+      return {
         kind: 'directory-unusable',
         sshHost: params.sshHost,
         inspection,
-      });
+      };
     }
   }
+
+  return { kind: 'ok', server, workspace: targetWorkspace, slotAgentId };
+}
+
+/**
+ * The config file is the agent's whole configuration: each launch builds what
+ * the provider needs from it. A definition an earlier agent of this name left
+ * behind is recorded as accounted for, so nothing takes it for an edit to this
+ * one.
+ */
+export async function writeNewAgentConfigFile(
+  workdirFs: PluginFs,
+  params: AddAgentParams
+): Promise<void> {
+  await writeAgentConfigFile(
+    workdirFs,
+    params.name,
+    await acknowledgeDefinition({
+      workdirFs,
+      repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
+      name: params.name,
+      config: {
+        description: params.description,
+        instructions: params.instructions,
+        settings: params.definitionAttributes,
+        ...(params.templateOrigin ? { template: params.templateOrigin } : {}),
+      },
+    })
+  );
+}
+
+async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
+  const checked = await checkNewAgent(params);
+  if (checked.kind !== 'ok') return reportFailedCreate(params, checked);
+  const { server, workspace: targetWorkspace, slotAgentId } = checked;
 
   const registered = await withWorkspaceSession(targetWorkspace.id, (target) =>
     registerAgentIdentity(target, {
@@ -282,25 +335,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       agentId: registered.id,
       expectedAgentId: slotAgentId ?? undefined,
     });
-    // The config file is the agent's whole configuration: each launch builds
-    // what the provider needs from it. A definition an earlier agent of this
-    // name left behind is recorded as accounted for, so nothing takes it for an
-    // edit to this one.
-    await writeAgentConfigFile(
-      workdir.fs,
-      params.name,
-      await acknowledgeDefinition({
-        workdirFs: workdir.fs,
-        repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
-        name: params.name,
-        config: {
-          description: params.description,
-          instructions: params.instructions,
-          settings: params.definitionAttributes,
-          ...(params.templateOrigin ? { template: params.templateOrigin } : {}),
-        },
-      })
-    );
+    await writeNewAgentConfigFile(workdir.fs, params);
   } finally {
     workdir.close();
   }

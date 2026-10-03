@@ -2696,6 +2696,31 @@ export async function putManagedAgent(
   });
 }
 
+/**
+ * Register a new agent for the signed-in user and place it on one of their
+ * controllers (`POST /gateway/management/agents`). Switch checks the placement
+ * before registering anything, so a refusal leaves no agent behind. Returns the
+ * new agent's Switch id.
+ */
+export async function createManagedAgent(
+  server: SwitchServer,
+  body: {
+    name: string;
+    description: string;
+    display_name: string | null;
+    controller_id: string;
+    desired_state: 'running' | 'stopped';
+    definition: ManagedAgentDefinitionBody;
+  }
+): Promise<string> {
+  const res = await managementFetch(server, '/agents', {
+    authenticated: true,
+    method: 'POST',
+    body,
+  });
+  return ((await res.json()) as ManagedAgentJson).agent_id;
+}
+
 /** Change only a managed agent's desired state (`PATCH /gateway/management/agents/{id}`). */
 export async function setManagedAgentDesiredState(
   server: SwitchServer,
