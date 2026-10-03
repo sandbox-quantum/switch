@@ -244,6 +244,39 @@ describe('SystemdRuntime', () => {
   });
 });
 
+describe('an obsolete worker', () => {
+  it('waits for its next revision rather than failing', () => {
+    const exit = { code: 75, signal: null, result: 'exit-code' };
+    const failure = failureOf('failed', exit);
+    expect(failure).toMatch(/new revision/);
+    expect(
+      mapAgentProcess({
+        assignment: cloudAgent(),
+        row: {
+          agentId: AGENT,
+          appliedRevision: 1,
+          changedAt: '2026-01-01T00:00:00Z',
+          failure: null,
+        },
+        observation: {
+          ...emptyObservation(),
+          failure,
+          unit: {
+            installed: true,
+            revision: 3,
+            processState: 'failed',
+            restarts: 0,
+            oomKills: 0,
+            exit,
+          },
+        },
+        relayAttached: false,
+        nowMs: 0,
+      })
+    ).toMatchObject({ process: 'pending', attached: false });
+  });
+});
+
 describe('failureOf', () => {
   it('names nothing while the unit is not down for good', () => {
     expect(failureOf('running', null)).toBeNull();

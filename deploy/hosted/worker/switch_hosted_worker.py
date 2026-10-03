@@ -3001,7 +3001,7 @@ class Supervisor:
         status = int(properties["ExecMainStatus"] or 0)
         exited_at = properties["ExecMainExitTimestampMonotonic"] or "0"
         ran = exited_at != "0"
-        if result == "oom-kill" and ran:
+        if result == "oom-kill" and ran and agent_id in self._held:
             key = f"{self._identity.boot_id}:{exited_at}"
             record = self._records.get(agent_id, {"oomKills": 0, "lastOomExit": ""})
             if record["lastOomExit"] != key:

@@ -20,6 +20,7 @@ import {
   writeRelayCredentials,
 } from './runtime';
 import type { Provider } from './schemas';
+import { OBSOLETE_EXIT_CODE } from './status';
 import type { Supervisor } from './supervisor-client';
 
 const execute = promisify(execFile);
@@ -184,6 +185,8 @@ export function failureOf(
           ? ` (${exit.result})`
           : ''
     : '';
+  if (exit?.code === OBSOLETE_EXIT_CODE)
+    return 'The agent stopped because its cloud launch moved to a new revision; it starts again when this controller is assigned it.';
   if (state === 'crashed')
     return `The agent's unit kept failing and hit its restart limit${how}; it stays down until it is restarted.`;
   if (state === 'failed') return `The agent's unit stopped with an error${how}.`;

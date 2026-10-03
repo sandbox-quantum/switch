@@ -349,6 +349,33 @@ class TestFramesRideTheControllerStream:
         assert replied.status_code == 200, replied.text
         assert relay.future.result() == {"ok": True, "value": {"sessions": []}}
 
+    async def test_an_expired_relay_is_cancelled_on_the_controller_stream(
+        self, harness: Harness
+    ) -> None:
+        async with harness.client() as client:
+            placed = await place(harness, client)
+            await attach(client, placed)
+            worker = harness.protocol.connections.attached_worker(placed.agent.agent_id)
+            assert worker is not None
+            relay = dispatch_read_only(
+                harness.protocol, TENANT_ZERO_ID, worker, {"list": {}}, 50
+            )
+            first = await frames_until(placed.stream, "agent.worker")
+            second = await frames_until(placed.stream, "agent.worker")
+        assert first["event"] == "relay"
+        assert second["event"] == "relay_cancel"
+        assert second["data"] == {"id": relay.id}
+
+    async def test_the_worker_goes_with_the_controller_stream(
+        self, harness: Harness
+    ) -> None:
+        async with harness.client() as client:
+            placed = await place(harness, client)
+            await attach(client, placed)
+            await frames_until(placed.stream, "agent.attached")
+            await placed.stream.aclose()  # type: ignore[attr-defined]
+        assert harness.protocol.connections.worker_of(placed.agent.agent_id) is None
+
     async def test_a_new_launch_revision_closes_the_worker(
         self, harness: Harness
     ) -> None:

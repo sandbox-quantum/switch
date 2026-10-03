@@ -23,6 +23,8 @@ import {
 import type { AgentRow, ControllerStore } from './store';
 
 export const PROVIDER_TTL_MS = 10 * 60 * 1000;
+/** A cloud agent's bootstrap exits with this when its launch moved to a new revision. */
+export const OBSOLETE_EXIT_CODE = 75;
 const VERSION_TIMEOUT_MS = 10_000;
 const DETAIL_LIMIT = 1000;
 /** A launch this recent with nothing alive yet is still starting, not crashed. */
@@ -260,6 +262,12 @@ export function mapAgentProcess(input: {
           detail: truncate(observation.failure ?? 'The agent kept crashing.'),
         };
       case 'failed':
+        if (unit.exit?.code === OBSOLETE_EXIT_CODE)
+          return {
+            process: 'pending',
+            attached: false,
+            detail: truncate(observation.failure ?? 'The agent is waiting for its next revision.'),
+          };
         return {
           process: 'failed',
           attached: false,

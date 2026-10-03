@@ -1156,6 +1156,7 @@ class AgentConnectionRegistry:
             conn = self.controllers.worker(relay.agent_id)
         if (
             conn is not None
+            and conn.agent_id == relay.agent_id
             and conn.id == relay.connection_id
             and conn.worker is not None
             and conn.stream_generation == relay.generation

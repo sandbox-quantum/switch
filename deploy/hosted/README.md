@@ -351,7 +351,8 @@ Do these steps in order.
    repository, and the auto-session and approval settings.
 2. In Switch Console, remove each cloud agent. Removal keeps the machine's
    data disk for `HOSTED_DISK_RETENTION_DAYS`; the new image accepts it (the
-   disk layout is unchanged).
+   disk layout is unchanged), and the machine's controller removes the old
+   agents' directories the first time it states its assignment (`prune`).
 3. Build the console workspace packages and the runtime
    (`node deploy/hosted/build-runtime.mjs <dir>`, now three files), and bake a
    new worker AMI with `install.sh`. Set `image_id` in `controller.json` and

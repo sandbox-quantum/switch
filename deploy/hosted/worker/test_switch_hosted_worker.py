@@ -2012,6 +2012,15 @@ class ProcessStateTests(RootPatched):
         )
         self.assertEqual(unknown["unit"]["installed"], False)
         self.assertEqual(unknown["unit"]["process_state"], "pending")
+        self.commands.units[AGENT_2] = {
+            "ActiveState": "failed",
+            "Result": "oom-kill",
+            "ExecMainCode": "2",
+            "ExecMainStatus": "9",
+            "ExecMainExitTimestampMonotonic": "100",
+        }
+        self.supervisor.handle_request({"op": "state", "agent_id": AGENT_2})
+        self.harness.build()
 
     def test_restarts_and_exit_shape(self):
         state, restarts, exit_value = self.observe(
