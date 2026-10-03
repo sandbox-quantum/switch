@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { forgetManagedAgent } from '@main/core/agent-migration/managed-agents-store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { discardControllerState } from '@main/core/sdk-host/agent-host';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
@@ -285,6 +286,9 @@ async function removeAgent(
     });
   }
 
+  // A moved agent stays managed by Switch; this Console just stops being the
+  // place it can be brought back to.
+  await forgetManagedAgent(agentId);
   await db.delete(agents).where(eq(agents.id, agentId));
   // The session rows go with it, by a foreign key rather than by any code here,
   // so nothing else announces their end. Without this every session an agent

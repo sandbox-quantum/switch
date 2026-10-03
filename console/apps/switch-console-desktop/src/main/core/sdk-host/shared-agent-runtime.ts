@@ -27,6 +27,10 @@ import {
 } from '@switch-console/agent-providers';
 import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '@switch-console/plugins/switch-skill';
 import { commandStatusSchema, type Snapshot } from '@switch-console/shared/session-v1';
+import {
+  AgentManagedByControllerError,
+  managedRecordFor,
+} from '@main/core/agent-migration/managed-agents-store';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentLaunchConfig } from '@main/core/agents/agent-launch-config';
@@ -151,6 +155,10 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     const agent = await getAgentById(session.agentId);
     if (!agent?.switchAgentId || !agent.workspaceId)
       throw new Error('Link this agent to a Switch workspace before starting a session.');
+    // Its controller runs its sessions; one started here would act as the
+    // agent with a key Switch refuses while the agent is managed.
+    if (await managedRecordFor(agent.id, agent.switchAgentId))
+      throw new AgentManagedByControllerError(agent.name);
     this.workspaceId = agent.workspaceId;
     this.startupStage = 'Waiting for the Switch server to be ready…';
     await ensureServerSessionReady(await workspaceServer(agent.workspaceId));

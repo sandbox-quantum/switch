@@ -28,6 +28,11 @@ function base(): string {
   return join(app.getPath('userData'), 'agent-controller');
 }
 
+/** The embedded controller's data directory for a server, as the controller lays it out. */
+export function embeddedControllerDataDir(serverId: string): string {
+  return controllerDataDir(base(), serverId);
+}
+
 /** The controller's `--version`, run the way it will run: on Electron's binary, as Node. */
 async function controllerVersion(bundle: string): Promise<string> {
   const { stdout } = await execute(process.execPath, [bundle, '--version'], {

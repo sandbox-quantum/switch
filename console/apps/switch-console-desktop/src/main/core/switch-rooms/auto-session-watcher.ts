@@ -1,3 +1,4 @@
+import { managedRecordFor } from '@main/core/agent-migration/managed-agents-store';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getAgents } from '@main/core/agents/getAgents';
@@ -121,6 +122,8 @@ class AutoSessionWatcher {
     );
     for (const { parentAgentId, name } of subagents) {
       try {
+        // A subagent moved with its parent, and its parent's controller runs it.
+        if (await managedRecordFor(parentAgentId, null)) continue;
         await this.startForSubagent(parentAgentId, name);
       } catch (error) {
         log.error('Shared SDK subagent watcher could not start', {

@@ -42,6 +42,12 @@ const h = vi.hoisted(() => {
   };
 });
 
+// Console runs every agent here; none was moved to a managed machine.
+vi.mock('@main/core/agent-migration/managed-agents-store', () => ({
+  managedRecordFor: vi.fn(async () => null),
+  forgetManagedAgent: vi.fn(async () => {}),
+  AgentManagedByControllerError: class AgentManagedByControllerError extends Error {},
+}));
 vi.mock('@main/core/sdk-host/agent-host', () => ({
   discardControllerState: h.discardControllerState,
 }));

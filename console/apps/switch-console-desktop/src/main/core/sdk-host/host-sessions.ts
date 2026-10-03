@@ -85,3 +85,16 @@ export async function listHostSessions(agentId: string): Promise<Session[]> {
   const { switchAgentId } = await agentContext(agentId);
   return (await hostSessions(agentId)).get(switchAgentId) ?? [];
 }
+
+/**
+ * The sessions of these Switch identities on the agent's host: the agent's
+ * own and the subagents watched under it, which share its host and working
+ * directory. Read in the same one listing as {@link listHostSessions}.
+ */
+export async function listHostSessionsFor(
+  agentId: string,
+  switchAgentIds: string[]
+): Promise<Session[]> {
+  const byAgent = await hostSessions(agentId);
+  return switchAgentIds.flatMap((switchAgentId) => byAgent.get(switchAgentId) ?? []);
+}

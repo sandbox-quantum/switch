@@ -1,5 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { controllerConnectionId } from '@switch-console/agent-providers';
+import {
+  AgentManagedByControllerError,
+  managedRecordFor,
+} from '@main/core/agent-migration/managed-agents-store';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { updateAgent } from '@main/core/agents/updateAgent';
@@ -127,6 +131,12 @@ export async function applyControllerState(
   intent: WatcherIntent,
   autoApprove: AutoApproveSource
 ): Promise<void> {
+  // A moved agent's controller runs it; its settings describe that controller's watcher, not ours.
+  const agent = await getAgentById(agentId);
+  if (agent && (await managedRecordFor(agentId, agent.switchAgentId))) {
+    log.info('agent-host: leaving a managed agent to its controller', { agentId });
+    return;
+  }
   const connected = !(await listStoppedControllerAgentIds()).includes(agentId);
   await configureAgentHostFor(agentId, { connected, spawning: connected }, intent, {
     name: undefined,
@@ -181,6 +191,8 @@ export async function configureAgentHostFor(
     if (!state.connected) return;
     throw new Error('Link the agent to Switch before it can hold a room connection.');
   }
+  if (state.connected && (await managedRecordFor(agentId, agent.switchAgentId)))
+    throw new AgentManagedByControllerError(agent.name);
   // Connecting waits for the agent's managed server to be in step with this
   // build; standing down never does.
   if (state.connected && agent.serverId) {

@@ -1,5 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
+import {
+  ManagedAgentSection,
+  useAgentMigrationState,
+} from '@renderer/features/agent-migration/managed-agent-section';
 import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import { SidecarSettingsSection } from '@renderer/features/locations/components/settings-view/sections/sidecar-settings-section';
 import { rpc } from '@renderer/lib/ipc';
@@ -33,7 +37,15 @@ export const SidecarPanel = observer(function SidecarPanel() {
   return (
     <section className="flex flex-col gap-4">
       <SectionLabel>Room watcher</SectionLabel>
-      <SidecarSettingsSection agentId={agent.id} />
+      <ManagedAgentSection agentId={agent.id} />
+      <ConsoleWatcher agentId={agent.id} />
     </section>
   );
 });
+
+/** This Console's own watcher for the agent, which a managed agent does not have. */
+function ConsoleWatcher({ agentId }: { agentId: string }) {
+  const migration = useAgentMigrationState(agentId);
+  if (migration.data?.runner === 'managed') return null;
+  return <SidecarSettingsSection agentId={agentId} />;
+}

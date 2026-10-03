@@ -1,3 +1,7 @@
+import {
+  AgentManagedByControllerError,
+  managedRecordFor,
+} from '@main/core/agent-migration/managed-agents-store';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { setControllerStopped } from '@main/core/switch-rooms/auto-session-store';
@@ -7,6 +11,9 @@ export async function manageAgentSidecar(
   agentId: string,
   action: 'update' | 'restart' | 'stop' | 'start'
 ): Promise<void> {
+  const managed = await getAgentById(agentId);
+  if (managed && (await managedRecordFor(agentId, managed.switchAgentId)))
+    throw new AgentManagedByControllerError(managed.name);
   if (action === 'update') {
     const agent = await getAgentById(agentId);
     if (!agent) throw new Error(`Agent ${agentId} does not exist.`);
