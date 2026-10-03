@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from switch_core.addressing import AddressingPolicy
 from switch_core.bridges.collaboration.models import BridgeInstallLink
@@ -670,9 +677,44 @@ class CreateUserRequest(BaseModel):
     role: str = "user"
 
 
+PASSWORD_MIN_LENGTH = 8
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+
+
+class SignupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True,
+            to_lower=True,
+            max_length=320,
+            pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+        ),
+    ]
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+    display_name: (
+        Annotated[
+            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+        ]
+        | None
+    ) = None
+
+    @field_validator("password")
+    @classmethod
+    def bcrypt_sized(cls, password: str) -> str:
+        if len(password.encode()) > 72:
+            raise ValueError("Password must be at most 72 bytes.")
+        return password
+
+
+class SignupMachine(BaseModel):
+    status: Literal["starting", "unavailable"]
+    reason: str | None
 
 
 class TenantMembershipResponse(BaseModel):
@@ -890,6 +932,7 @@ class AuthConfigResponse(BaseModel):
     # response served without a session, and version disclosure is
     # authenticated everywhere (CHOO-1865).
     password_login_enabled: bool
+    signup_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
     # Where a first sign-in lands (`SwitchConfig.gateway_signup_mode`), so the
@@ -927,6 +970,10 @@ class SessionUserResponse(UserResponse):
     """
 
     server: ServerDeclaration
+
+
+class SignupResponse(SessionUserResponse):
+    machine: SignupMachine
 
 
 # ── References ──────────────────────────────────────────────────────────────

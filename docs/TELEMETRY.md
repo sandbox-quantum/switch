@@ -118,7 +118,7 @@ id, no IP field, no Switch identity.
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |
 | `onboarding_checklist_dismissed` | *(no fields)* |
 | `onboarding_completed` | *(no fields)* |
-| `add_server_step` | `step`: `choose` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
+| `add_server_step` | `step`: `choose` / `managedReady` / `managedClaude` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
 
 **Agents and sessions**
 
@@ -151,7 +151,7 @@ machine from another.
 |---|---|
 | `server_added` | `server_kind`: `remote_managed` · `outcome`: `success` |
 | `server_removed` | `server_kind`: `external` |
-| `server_sign_in` | `auth_method`: `password` / `oidc` · `server_kind` · `outcome` · `failure_reason`: `none` / `invalid_credentials` / `cancelled` / `failed` / `unreachable` |
+| `server_sign_in` | `auth_method`: `password` / `oidc` / `signup` · `server_kind` · `outcome` · `failure_reason`: `none` / `invalid_credentials` / `cancelled` / `failed` / `unreachable` / `email_taken` / `invalid` / `disabled` / `rate_limited` |
 | `server_sign_out` | `server_kind`: `local` |
 | `managed_server_action` | `action`: `start` / `stop` / `reset` · `target`: `local` / `remote` · `outcome` · `failure_reason`: `none` / `docker_not_installed` / `docker_daemon_down` / `version_downgrade` / `matrix_migration_failed` / `error` · `docker_available`: `available` / `unavailable` / `unknown` |
 

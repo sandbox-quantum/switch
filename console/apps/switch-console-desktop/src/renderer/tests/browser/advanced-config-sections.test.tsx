@@ -76,9 +76,11 @@ async function sectionCount(): Promise<number> {
     root!.render(
       <QueryClientProvider client={client}>
         <AgentAdvancedConfig
+          cloud={false}
           sshHost={null}
           dir=""
           providerId={'claude' as never}
+          initial={{}}
           onChange={() => {}}
         />
         <LaunchProfileConfig

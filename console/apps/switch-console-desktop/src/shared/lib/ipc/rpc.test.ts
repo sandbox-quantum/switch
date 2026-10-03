@@ -123,7 +123,7 @@ describe('createRPCClient', () => {
 describe('registerRPCRouter', () => {
   it('registers flat handlers at their 2-segment channel', () => {
     const ipc = makeIpcMainStub();
-    registerRPCRouter(router, ipc as never);
+    registerRPCRouter(router, ipc as never, () => true);
 
     expect(ipc.registeredChannels()).toContain('vcs.commit');
     expect(ipc.registeredChannels()).toContain('vcs.status');
@@ -133,7 +133,7 @@ describe('registerRPCRouter', () => {
 
   it('registers nested handlers at their 3-segment channel', () => {
     const ipc = makeIpcMainStub();
-    registerRPCRouter(router, ipc as never);
+    registerRPCRouter(router, ipc as never, () => true);
 
     expect(ipc.registeredChannels()).toContain('nested.gitWorktree.clone');
     expect(ipc.registeredChannels()).toContain('gitRepository.branches');
@@ -142,7 +142,7 @@ describe('registerRPCRouter', () => {
 
   it('calls through to the original handler function with args', async () => {
     const ipc = makeIpcMainStub();
-    registerRPCRouter(router, ipc as never);
+    registerRPCRouter(router, ipc as never, () => true);
 
     const result = await ipc.invoke('vcs.commit', 'my message');
     expect(result).toBe('committed: my message');
@@ -150,7 +150,7 @@ describe('registerRPCRouter', () => {
 
   it('calls through to a nested handler function with args', async () => {
     const ipc = makeIpcMainStub();
-    registerRPCRouter(router, ipc as never);
+    registerRPCRouter(router, ipc as never, () => true);
 
     const result = await ipc.invoke('nested.gitWorktree.clone', 'https://example.com');
     expect(result).toBe('cloned https://example.com');
@@ -159,7 +159,7 @@ describe('registerRPCRouter', () => {
   it('does not register any channel for non-function, non-object values', () => {
     const ipc = makeIpcMainStub();
     // @ts-expect-error intentionally passing an invalid router value to test robustness
-    registerRPCRouter({ broken: null }, ipc as never);
+    registerRPCRouter({ broken: null }, ipc as never, () => true);
     expect(ipc.registeredChannels()).toHaveLength(0);
   });
 });
@@ -210,4 +210,15 @@ describe('IpcClient type-safety', () => {
     // vcsController.commit returns Promise<string> — IpcClient should give Promise<string>, not Promise<Promise<string>>
     expectTypeOf(rpc.vcs.commit).returns.toEqualTypeOf<Promise<string>>();
   });
+});
+
+it('refuses an untrusted sender before invoking any RPC handler', async () => {
+  const handler = vi.fn();
+  const ipc = makeIpcMainStub();
+  registerRPCRouter({ test: { handler } }, ipc as never, () => false);
+  const rpc = createRPCClient<{ test: { handler: () => void } }>((channel, ...args) =>
+    Promise.resolve(ipc.invoke(channel, ...args))
+  );
+  await expect(rpc.test.handler()).rejects.toThrow('trusted app frame');
+  expect(handler).not.toHaveBeenCalled();
 });

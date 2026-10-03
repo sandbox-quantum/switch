@@ -45,4 +45,7 @@ def test_the_unauthenticated_allowlist_has_not_grown() -> None:
         # a credential of ours. Nothing under it discloses a version, and each
         # route checks the platform's signature before it acts.
         "/messaging",
+        # A cloud machine's supervisor: it holds a machine capability, not an
+        # agent key, and every route under it checks that capability first.
+        "/hosted/machines",
     }

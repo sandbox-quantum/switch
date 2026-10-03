@@ -134,6 +134,24 @@ class SwitchConfig(BaseSettings):
     gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
+    # Open self sign-up with email and password: anyone who can reach the
+    # gateway can create an account in tenant zero. Only takes effect while
+    # password login is enabled and gateway_signup_mode is "default_tenant",
+    # the one mode that lands a new account in tenant zero.
+    gateway_signup_enabled: bool = False
+    # Counts every user created in the last hour (sign-up, admin-created and
+    # OIDC first sign-in alike), read from the users table so it holds across
+    # replicas. Sign-up is refused once the count reaches this.
+    gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
+    hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
+    hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
+    hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
+    hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
+    hosted_controller_config_path: str | None = None
+    hosted_github_config_path: str | None = None
+    hosted_provider_verification_enabled: bool = False
+    hosted_claude_verifier_path: str | None = None
     # Sets the Secure flag on the switch_auth cookie. Defaults to False so local
     # dev over plain HTTP keeps working; deployments serving over HTTPS must set
     # this true so the JWT session cookie is never sent over an insecure channel.
@@ -925,6 +943,17 @@ class SwitchConfig(BaseSettings):
         )
 
     @property
+    def gateway_signup_open(self) -> bool:
+        # Sign-up does not verify email ownership and an OIDC login links to an
+        # existing user by email, so a signed-up account could pre-claim one.
+        return (
+            self.gateway_signup_enabled
+            and self.gateway_password_login_enabled
+            and not self.gateway_oidc_enabled
+            and self.gateway_signup_mode == "default_tenant"
+        )
+
+    @property
     def gateway_oidc_metadata_url(self) -> str:
         if self.gateway_oidc_issuer_url is None:
             raise ValueError("gateway_oidc_issuer_url is not set")
@@ -979,6 +1008,14 @@ class SwitchConfig(BaseSettings):
         # additionally proves it was issued for the host we asked for.
         context.check_hostname = self.db_ssl_mode == "verify-full"
         return {"ssl": context}
+
+
+def hosted_configured(config: SwitchConfig) -> bool:
+    """Whether this server runs cloud agents: it has a hosted controller or launch capacity."""
+    return (
+        config.hosted_controller_config_path is not None
+        or config.hosted_launch_capacity > 0
+    )
 
 
 def deprecated_env_names() -> list[str]:

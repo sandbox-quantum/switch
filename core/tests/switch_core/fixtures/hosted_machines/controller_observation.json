@@ -1,0 +1,9 @@
+{
+  "state": "running",
+  "revision": 1,
+  "error": null,
+  "error_code": null,
+  "data_volume_id": "vol-0123456789abcdef0",
+  "instance_id": "i-0123456789abcdef0",
+  "instance_type": "c7i.2xlarge"
+}

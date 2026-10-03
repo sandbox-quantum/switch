@@ -120,6 +120,7 @@ vi.mock('@renderer/features/switch-servers/server-stat-tiles', () => ({
 vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({
   ServerSignInFields: () => null,
   useServerSignIn: () => ({}),
+  machineUnavailableReason: () => null,
 }));
 
 import { serverView } from '@renderer/features/switch-servers/view';

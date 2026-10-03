@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commandSchema } from '@switch-console/shared/session-v1';
-import type { Command, CommandStatus, Session } from '@switch-console/shared/session-v1';
+import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
-import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
+import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { HostWaker } from './handoff';
 import { followupCommandId, roomControlFollowup } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
@@ -17,7 +17,13 @@ import {
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
-import { connectParent, type ParentChannel, type ParentPort } from './session-channel';
+import {
+  connectParent,
+  type BusyReason,
+  type BusyState,
+  type ParentChannel,
+  type ParentPort,
+} from './session-channel';
 import { HostedSession } from './session-host';
 import { startSessionMcp } from './session-mcp';
 import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
@@ -74,6 +80,41 @@ export function parkAfterMs(): number | null {
       `SWITCH_SESSION_PARK_AFTER_MS must be a positive number of milliseconds or "off", not "${value}".`
     );
   return parsed;
+}
+
+/**
+ * How long a session waiting on a fresh-conversation decision keeps its worker
+ * awake. Past it the decision and the room messages it holds stay recorded,
+ * but no longer count as busy, so the worker may sleep.
+ */
+export const RESET_HOLD_MS = 15 * 60_000;
+
+/** Whether a session waits on a reset decision, and if so whether its hold has ended. */
+export type ResetHold = 'none' | 'holding' | 'ended';
+
+/**
+ * Why a session is busy, if it is: what keeps a hosted worker awake and what
+ * keeps a host from parking. A session that is stopped or failed with nothing
+ * left to decide is not busy. Work the provider is still doing after its turn
+ * ended, such as background subagents, counts as a running turn.
+ */
+export function sessionBusy(
+  snapshot: Snapshot,
+  reset: ResetHold,
+  roomsPending: number,
+  backgroundWork: boolean
+): BusyState {
+  const reasons: BusyReason[] = [];
+  const add = (kind: BusyReason['kind'], count: number) => {
+    if (count > 0) reasons.push({ kind, count });
+  };
+  const running = snapshot.turns.filter((turn) => turn.status === 'running').length;
+  add('turn_starting', snapshot.session.status === 'starting' ? 1 : 0);
+  add('turn_running', running || (snapshot.session.status === 'running' || backgroundWork ? 1 : 0));
+  add('approval_open', snapshot.requests.filter((request) => request.state === 'open').length);
+  add('reset_waiting', reset === 'holding' ? 1 : 0);
+  add('room_pending', reset === 'ended' ? 0 : roomsPending);
+  return { busy: reasons.length > 0, reasons };
 }
 
 class TransportError extends Error {}
@@ -276,7 +317,9 @@ export async function runSharedHost(
           Promise.all(
             attachments.map((attachment) =>
               stageAttachment(options.root, attachment, async () => {
-                const fetched = roomAttachments.get(attachment.attachmentId);
+                const fetched =
+                  roomAttachments.get(attachment.attachmentId) ??
+                  (await readStagedAttachment(options.root, attachment));
                 if (!fetched)
                   throw new Error(
                     `Attachment ${attachment.name} is not one this session was given in a room, so there is nowhere to fetch it from.`
@@ -469,6 +512,35 @@ export async function runSharedHost(
         null
       );
     };
+    /** Tells the parent whenever the session's busy state changes. */
+    let announcedBusy = '';
+    let resetHeldSince: number | null = null;
+    const resetHold = (): ResetHold => {
+      if (!host!.resetDecisionPending) {
+        resetHeldSince = null;
+        return 'none';
+      }
+      resetHeldSince ??= Date.now();
+      return Date.now() - resetHeldSince < RESET_HOLD_MS ? 'holding' : 'ended';
+    };
+    const busyNow = (): BusyState =>
+      sessionBusy(
+        host!.snapshot(),
+        resetHold(),
+        rooms?.pending().length ?? 0,
+        host!.backgroundWorkRunning
+      );
+    const announceBusy = () => {
+      const state = busyNow();
+      const key = JSON.stringify(state);
+      if (key === announcedBusy) return;
+      if (resetHold() === 'ended')
+        console.warn(
+          `Session ${options.session.sessionId} has waited ${RESET_HOLD_MS / 60_000} min for a fresh-conversation decision; it no longer keeps its worker awake. The decision and its ${rooms?.pending().length ?? 0} held room message(s) are kept for when it next runs.`
+        );
+      announcedBusy = key;
+      options.parent?.busy(state, null);
+    };
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
@@ -589,8 +661,11 @@ export async function runSharedHost(
     // messages come down the pipe, and every recorded event goes up it.
     const parent = options.parent;
     parent?.serve({
+      // Busy is announced before the reply, so a parent that has the reply has
+      // already heard any change the command made.
       command: async ({ command, requesterName }) => {
         const outcome = await run(command, requesterName);
+        announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;
       },
@@ -598,6 +673,7 @@ export async function runSharedHost(
         if (!rooms) throw new Error('This session serves no rooms.');
         await rooms.accept(handoff);
         active();
+        announceBusy();
         waker.nudge();
         return { accepted: true };
       },
@@ -611,7 +687,13 @@ export async function runSharedHost(
     host.onPublished(active);
     host.onPublished(() => identify(host!.snapshot().session));
     if (parent) {
+      host.onPublished(announceBusy);
+      parent.onBarrier(async () => {
+        await host!.barrier();
+        return busyNow();
+      });
       host.onPublished((event) => parent.push(event));
+      announceBusy();
       parent.ready();
     }
     /**
@@ -626,14 +708,7 @@ export async function runSharedHost(
         return false;
       }
       if (performance.now() - lastActive < options.parkAfterMs) return false;
-      const snapshot = host!.snapshot();
-      return (
-        snapshot.session.status === 'ready' &&
-        !host!.resetDecisionPending &&
-        !snapshot.turns.some((turn) => turn.status === 'running') &&
-        !snapshot.requests.some((request) => request.state === 'open') &&
-        !(rooms?.pending().length ?? 0)
-      );
+      return host!.snapshot().session.status === 'ready' && !busyNow().busy;
     };
     for (const owed of followups()) {
       const applied = host
@@ -719,6 +794,7 @@ export async function runSharedHost(
         if (held) await host.roomBacklogDelivered(held);
       }
       if (rooms && ['ready', 'running'].includes(status)) await admitRoomMessages(rooms);
+      announceBusy();
       if (idleEnough()) {
         console.info(
           `Parking session ${options.session.sessionId} after ${Math.round(options.parkAfterMs! / 1000)} s idle.`

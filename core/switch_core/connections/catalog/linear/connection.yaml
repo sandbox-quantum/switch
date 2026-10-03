@@ -1,0 +1,7 @@
+slug: linear
+name: Linear
+category: Project management
+description: Read and update Linear issues and projects.
+enabled: false
+auth:
+  type: oauth

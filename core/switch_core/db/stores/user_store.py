@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -127,6 +128,26 @@ class UserStore:
         """
         result = await session.execute(select(User.id).where(User.id == user_id))
         return result.first() is not None
+
+    async def created_in_last_hour(self, session: AsyncSession) -> tuple[int, int]:
+        """Users created in the last hour, and whole seconds until the oldest
+        of them leaves that window (0 when there are none).
+
+        Measured on the database clock so every replica sees the same window.
+        """
+        window = timedelta(hours=1)
+        remaining = func.ceil(
+            func.extract("epoch", func.min(User.created_at) + window - func.now())
+        )
+        row = (
+            await session.execute(
+                select(
+                    func.count(),
+                    case((func.count() == 0, 0), else_=func.greatest(remaining, 1)),
+                ).where(User.created_at > func.now() - window)
+            )
+        ).one()
+        return int(row[0]), int(row[1])
 
     async def get_by_email(self, session: AsyncSession, email: str) -> User | None:
         """Case-insensitive: an IdP and a person typing a password don't

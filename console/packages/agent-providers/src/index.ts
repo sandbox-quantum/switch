@@ -94,3 +94,13 @@ export type { SharedHostConfig } from './host/shared-config';
 export { providerReadinessSchema } from './host/provider-readiness';
 export type { ProviderReadiness } from './host/provider-readiness';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
+export {
+  CloudRelayClient,
+  CloudRelayClosedError,
+  CloudRelayError,
+  RELAY_TIMEOUT_MS,
+  type RelayFetch,
+} from './host/cloud-relay-client';
+export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
+export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
+export { openCodeConsoleCredentialSchema } from './opencode/console-credential';

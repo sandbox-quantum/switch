@@ -621,6 +621,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: "false"
 {{- end }}
 {{- end }}
+- name: GATEWAY_SIGNUP_ENABLED
+  value: {{ .Values.switchCore.signupEnabled | quote }}
+- name: GATEWAY_SIGNUP_MAX_PER_HOUR
+  value: {{ .Values.switchCore.signupMaxPerHour | quote }}
 {{- $signupMode := .Values.switchCore.signup.mode }}
 {{- if not (has $signupMode (list "default_tenant" "invite_only" "open")) }}
 {{- fail (printf "switchCore.signup.mode must be one of default_tenant, invite_only, open. Got %q." $signupMode) }}

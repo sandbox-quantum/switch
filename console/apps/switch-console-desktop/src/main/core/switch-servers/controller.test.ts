@@ -10,6 +10,7 @@ const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const findServerByGatewayUrl = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
+const signup = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
 const listWorkspacesForServer = vi.hoisted(() => vi.fn());
 const createTenant = vi.hoisted(() => vi.fn());
@@ -44,11 +45,17 @@ vi.mock('@main/core/workspaces/workspaces-store', () => ({ listWorkspacesForServ
 vi.mock('@main/lib/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin }));
+vi.mock('./local-provider-sign-in', () => ({
+  getLocalProviderSignIn: vi.fn(),
+  localProviderAuthPath: vi.fn(),
+  readLocalProviderSignIn: vi.fn(),
+}));
+vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin, signup }));
 // Reads this install's own agent rows, and through them the database client.
 vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 // Reaches the encrypted secrets store, and through it the database client.
 vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
+vi.mock('./managed-claude-credential', () => ({ deleteManagedClaudeCredential: vi.fn() }));
 vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   fetchMe,
@@ -206,6 +213,90 @@ describe('an action a server whose host has gone down cannot take', () => {
       failure_reason: 'invalid_credentials',
     });
   });
+
+  it('reports the sign-up that never left this machine', async () => {
+    await expect(
+      switchServersController.signup({
+        serverId: 'srv',
+        email: 'dev@example.com',
+        password: 'hunter2',
+      })
+    ).rejects.toBeInstanceOf(HostUnreachableError);
+
+    expect(signup).not.toHaveBeenCalled();
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'unreachable',
+    });
+  });
+
+  it('reports a sign-up by its own reason while the host is up', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: false,
+      error: { kind: 'email_taken', message: 'That email is already registered.' },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'email_taken',
+    });
+  });
+
+  it('reports a sign-up refused by the server’s hourly cap as rate limited', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: false,
+      error: {
+        kind: 'rate_limited',
+        message: 'Too many sign-ups on this server in the last hour. Try again later.',
+      },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'failure',
+      failure_reason: 'rate_limited',
+    });
+  });
+
+  it('reports a sign-up that worked', async () => {
+    managedServerHostBlocked.mockReturnValue(null);
+    signup.mockResolvedValue({
+      success: true,
+      data: { user: {}, machine: { status: 'starting', reason: null } },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('server_sign_in', {
+      auth_method: 'signup',
+      server_kind: 'remote_managed',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
 });
 
 /**
@@ -242,6 +333,21 @@ describe('reading the account’s workspaces once it is signed in', () => {
     });
 
     expect(reconcileServerWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it('matches the workspaces after a sign-up, which leaves the account signed in', async () => {
+    signup.mockResolvedValue({
+      success: true,
+      data: { user: { id: 'u1' }, machine: { status: 'starting', reason: null } },
+    });
+
+    await switchServersController.signup({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(reconcileServerWorkspaces).toHaveBeenCalledWith('srv');
   });
 
   // The sign-in itself worked; reporting it as a failure would send the user

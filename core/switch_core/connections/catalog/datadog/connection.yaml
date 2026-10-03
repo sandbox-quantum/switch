@@ -1,0 +1,7 @@
+slug: datadog
+name: Datadog
+category: Observability
+description: Query Datadog metrics, logs and monitors.
+enabled: false
+auth:
+  type: api_key

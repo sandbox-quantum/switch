@@ -24,6 +24,7 @@ import {
   type UpdateServerParams,
 } from '@shared/core/switch-servers/switch-servers';
 import { workspaceUnavailability } from '@shared/core/workspaces/workspaces';
+import { deleteManagedClaudeCredential } from './managed-claude-credential';
 
 // Keyed to the server, not the workspace: one gateway session cookie covers
 // every workspace on a server.
@@ -310,6 +311,7 @@ export async function removeServer(id: string): Promise<void> {
   // — but a read that exists only to describe the removal must not prevent it.
   const server = await getServer(id).catch(() => null);
 
+  await deleteManagedClaudeCredential(id);
   await deleteSessionCookie(id);
   // Before the delete, while the server's workspaces are still readable.
   await clearActiveWorkspaceOnServer(id);

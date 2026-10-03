@@ -8,7 +8,11 @@ import {
   type Workspace,
 } from '@shared/core/workspaces/workspaces';
 import { clearAssertedTenant, setAssertedTenant } from './asserted-tenant';
-import { listWorkspacesForServer, requireWorkspace } from './workspaces-store';
+import {
+  listWorkspacesForServer,
+  requireWorkspace,
+  requireWorkspaceForServer,
+} from './workspaces-store';
 
 /**
  * Calls in flight on a server's current tenant selection, and the queue that
@@ -205,4 +209,26 @@ export async function withReachableWorkspaceSession<T>(
   } finally {
     release(server.id, session);
   }
+}
+
+/**
+ * {@link withWorkspaceSession} for a caller that knows only the server: the
+ * workspace {@link requireWorkspaceForServer} resolves for it, which is the
+ * one the window is scoped to wherever the server holds several.
+ */
+export async function withServerWorkspaceSession<T>(
+  serverId: string,
+  fn: (server: SwitchServer) => Promise<T>
+): Promise<T> {
+  const workspace = await requireWorkspaceForServer(serverId);
+  return withWorkspaceSession(workspace.id, fn);
+}
+
+/** {@link withServerWorkspaceSession}, refusing while the server's host is unreachable. */
+export async function withReachableServerWorkspaceSession<T>(
+  serverId: string,
+  fn: (server: SwitchServer) => Promise<T>
+): Promise<T> {
+  const workspace = await requireWorkspaceForServer(serverId);
+  return withReachableWorkspaceSession(workspace.id, fn);
 }

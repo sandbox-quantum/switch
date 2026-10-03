@@ -1,0 +1,16 @@
+ARG SWITCH_CORE_IMAGE
+FROM ${SWITCH_CORE_IMAGE} AS claude
+RUN python - <<'PY'
+import hashlib
+import urllib.request
+url = "https://downloads.claude.ai/claude-code-releases/2.1.267/linux-x64/claude"
+with urllib.request.urlopen(url, timeout=120) as response:
+    data = response.read()
+assert hashlib.sha256(data).hexdigest() == "0399c793ff571d5946ef923d80b4f330d05ac4b6842a6b0775468f5d389403c0"
+with open("/claude", "wb") as output:
+    output.write(data)
+PY
+RUN chmod 755 /claude
+FROM ${SWITCH_CORE_IMAGE}
+COPY --from=claude /claude /usr/local/bin/claude
+ENV HOSTED_CLAUDE_VERIFIER_PATH=/usr/local/bin/claude
