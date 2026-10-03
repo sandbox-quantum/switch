@@ -41,12 +41,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_UNASSIGNED,
+    Binding,
     ControllerPresence,
 )
 from switch_core.connections.loader import CATALOG, SKILL_PROVIDERS, deployment_skills
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Agent,
+    AgentController,
     HostedLaunch,
     HostedMachine,
     ProviderConnection,
@@ -85,6 +87,8 @@ class HostedChange:
     controllers whose assignment moved on."""
 
     placed: list[AgentDefinitionRow] = field(default_factory=list)
+    # The controllers rows were placed on, so they can be bound after commit.
+    controllers: dict[str, AgentController] = field(default_factory=dict)
     removed: list[str] = field(default_factory=list)
     revisions: dict[str, int] = field(default_factory=dict)
 
@@ -104,7 +108,7 @@ class HostedPlacements:
         presence: ControllerPresence,
         notifier: ControllerNotifier,
         secret_key: str,
-        binding_of: Callable[[str, AgentDefinitionRow], Any],
+        binding_of: Callable[[str, AgentDefinitionRow, AgentController], Binding],
     ) -> None:
         self._session_factory = session_factory
         self._controllers = controllers
@@ -162,6 +166,11 @@ class HostedPlacements:
         controller_id: str | None,
     ) -> HostedChange:
         change = HostedChange()
+        if controller_id is not None:
+            placed_on = await self._controllers.get(session, tenant_id, controller_id)
+            if placed_on is None:
+                raise RuntimeError(f"Controller {controller_id} vanished while placing")
+            change.controllers[controller_id] = placed_on
         affected: set[str | None] = set()
         for launch in await HostedMachineStore().launches(session, machine.id):
             agent_id = launch.agent_id
@@ -330,7 +339,11 @@ class HostedPlacements:
             if row.controller_id is None:
                 self._presence.unbind(row.agent_id, DETACH_UNASSIGNED)
             else:
-                self._presence.bind(self._binding_of(tenant_id, row))
+                self._presence.bind(
+                    self._binding_of(
+                        tenant_id, row, change.controllers[row.controller_id]
+                    )
+                )
         for agent_id in change.removed:
             self._presence.unbind(agent_id, DETACH_UNASSIGNED)
         for controller_id, revision in change.revisions.items():
