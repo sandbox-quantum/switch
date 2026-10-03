@@ -2,7 +2,11 @@ import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { providerConfigFromAttributes } from '@shared/core/agents/agent-provider-config';
 import type { AgentConfigFile } from './agent-config-file';
-import { writeAgentConfigFile, type AgentTemplateOrigin } from './agent-config-file';
+import {
+  readAgentConfigFile,
+  writeAgentConfigFile,
+  type AgentTemplateOrigin,
+} from './agent-config-file';
 import { readRequiredAgentConfig, withAgentWorkdir } from './agent-launch-config';
 import { getAgentById } from './getAgentById';
 import { ensureRemoteWatcher } from './remote-watcher';
@@ -32,6 +36,24 @@ export async function readAgentTemplateOrigin(
 /** The agent's instructions, or empty when it has none. */
 export async function readAgentInstructions(agentId: string): Promise<string> {
   return (await readAgentConfig(agentId)).instructions ?? '';
+}
+
+/**
+ * Give an agent whose config file is missing an empty one, on the owner's say.
+ *
+ * A missing config file is reported rather than filled in, because it usually
+ * means the agent's definition was deleted and something may still be
+ * recoverable. Starting over with no instructions is then a decision for the
+ * person, not something done on their behalf. Refuses when a config file exists,
+ * so it can never empty one.
+ */
+export async function startWithEmptyAgentConfig(agentId: string): Promise<void> {
+  await withAgentWorkdir(agentId, async (agent, fs) => {
+    if ((await readAgentConfigFile(fs, agent.name)) !== null) {
+      throw new Error(`Agent ${agent.name} already has a settings file; nothing was changed.`);
+    }
+    await writeAgentConfigFile(fs, agent.name, {});
+  });
 }
 
 /**

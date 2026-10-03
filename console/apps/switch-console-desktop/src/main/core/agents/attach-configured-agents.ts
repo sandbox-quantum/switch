@@ -215,6 +215,7 @@ async function ensureAgentConfig(params: {
       repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
       name: params.name,
       providerConfig: null,
+      ifNothing: 'create-empty',
     });
   } finally {
     workdir.close();

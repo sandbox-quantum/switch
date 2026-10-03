@@ -60,6 +60,7 @@ export async function readRequiredAgentConfig(
       repoAgents: getPlugin(agent.providerId).behavior.repoAgents ?? null,
       name: agent.name,
       providerConfig: agent.providerConfig,
+      ifNothing: 'leave-missing',
     });
     markAgentMigrated(agent.id);
   }

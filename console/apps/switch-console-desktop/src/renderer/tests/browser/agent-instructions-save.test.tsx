@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const readInstructions = vi.hoisted(() => vi.fn());
 const updateInstructions = vi.hoisted(() => vi.fn());
+const startWithEmptyConfig = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -27,7 +28,7 @@ vi.hoisted(() => {
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn() },
   rpc: {
-    agents: { readInstructions, updateInstructions },
+    agents: { readInstructions, updateInstructions, startWithEmptyConfig },
   },
 }));
 
@@ -45,6 +46,8 @@ beforeEach(() => {
   readInstructions.mockResolvedValue(STORED);
   updateInstructions.mockReset();
   updateInstructions.mockResolvedValue(undefined);
+  startWithEmptyConfig.mockReset();
+  startWithEmptyConfig.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -177,5 +180,25 @@ describe('when the settings cannot be read', () => {
     expect(field(el)).toBeNull();
     expect(el.querySelector('[role="alert"]')?.textContent).toContain('has no settings file');
     expect(updateInstructions).not.toHaveBeenCalled();
+  });
+});
+
+describe('when the settings file is missing', () => {
+  it('lets the owner start over with empty settings, and only on request', async () => {
+    readInstructions.mockRejectedValueOnce(
+      new Error(
+        'Agent agent-one has no settings file (.switch/config/agent-one.json) in its working directory.'
+      )
+    );
+
+    const el = await renderPage();
+    expect(startWithEmptyConfig).not.toHaveBeenCalled();
+
+    const start = button(el, /Start with empty settings/);
+    expect(start).toBeDefined();
+    await act(async () => start!.click());
+    for (let i = 0; i < 5; i++) await act(async () => await Promise.resolve());
+
+    expect(startWithEmptyConfig).toHaveBeenCalledWith({ agentId: 'agent-1' });
   });
 });

@@ -64,7 +64,12 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
   }),
 }));
 
-import { readAgentInstructions, setAgentInstructions, setAgentSettings } from './agent-config';
+import {
+  readAgentInstructions,
+  setAgentInstructions,
+  setAgentSettings,
+  startWithEmptyAgentConfig,
+} from './agent-config';
 import { AgentConfigMissingError, agentLaunchConfig } from './agent-launch-config';
 import {
   isAgentUnmigrated,
@@ -151,6 +156,36 @@ describe('reading', () => {
 
     expect(await readAgentInstructions('agent-1')).toBe('From the row.');
     expect(isAgentUnmigrated('agent-1')).toBe(false);
+  });
+});
+
+describe('a missing config file', () => {
+  it('stays missing when an agent the boot migration missed has nothing to rebuild it from', async () => {
+    // Its definition was deleted while the host was unreachable. Filling the
+    // gap with an empty file would make it look like an agent with no
+    // instructions instead of one whose instructions are gone.
+    state.files.delete(CONFIG_PATH);
+    markAgentUnmigrated('agent-1');
+
+    await expect(readAgentInstructions('agent-1')).rejects.toBeInstanceOf(AgentConfigMissingError);
+    expect(state.writes).toEqual([]);
+  });
+
+  it('can be replaced by an empty one when the owner chooses to start over', async () => {
+    state.files.delete(CONFIG_PATH);
+
+    await startWithEmptyAgentConfig('agent-1');
+
+    expect(await readAgentInstructions('agent-1')).toBe('');
+  });
+
+  it('is the only case that action writes in: an existing file is never emptied', async () => {
+    state.files.set(CONFIG_PATH, JSON.stringify({ instructions: 'Keep me.' }));
+
+    await expect(startWithEmptyAgentConfig('agent-1')).rejects.toThrow(
+      /already has a settings file/
+    );
+    expect(await readAgentInstructions('agent-1')).toBe('Keep me.');
   });
 });
 
