@@ -920,6 +920,13 @@ class Agent(TenantScoped, Base):
     # `switch_core.addressing.AddressingPolicy` blob (an allow-list of rules
     # over room / room-group / user / agent). See that module for the model.
     addressing_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Whether the agent may act on its owner's agent management through the
+    # agent operations: list the owner's machines and managed agents, and
+    # create managed agents on those machines. Off unless the owner turns it
+    # on, and never inherited by an agent it creates.
+    can_manage_agents: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -2989,6 +2996,8 @@ class AgentController(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    # What the owner says the machine is for; free text, optional.
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     platform: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     version: Mapped[str | None] = mapped_column(Text, nullable=True)

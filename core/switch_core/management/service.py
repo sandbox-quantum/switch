@@ -175,6 +175,7 @@ class ManagementService:
             session,
             owner_id=owner_id,
             name=description.name,
+            description=description.description,
             kind=description.kind,
             platform=description.platform.model_dump(),
             version=description.version,
@@ -240,6 +241,7 @@ class ManagementService:
             session,
             owner_id=consumed.owner_id,
             name=description.name,
+            description=description.description,
             kind=description.kind,
             platform=description.platform.model_dump(),
             version=description.version,
@@ -528,6 +530,35 @@ class ManagementService:
             controller_view(controller, self.state_of(controller))
             for controller in controllers
         ]
+
+    async def update_controller(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        controller_id: str,
+        changes: dict[str, str | None],
+    ) -> dict[str, Any]:
+        """Rename the caller's controller or change its description.
+
+        A revoked one may still be renamed: its agents stay shown against it
+        until they are moved. A new name reaches Core's bindings too, since
+        that is the name the room is told when the machine is offline.
+        """
+        await self.owned_controller(session, tenant_id, owner_id, controller_id)
+        controller = await self.controllers.update_details(
+            session, tenant_id, controller_id, changes
+        )
+        view = controller_view(controller, self.state_of(controller))
+        await session.commit()
+        if "name" in changes:
+            self.presence.rename_controller(controller_id, controller.name)
+        logger.info(
+            "Updated agent controller %s (%s)",
+            controller_id,
+            ", ".join(sorted(changes)),
+        )
+        return view
 
     async def revoke_controller(
         self, session: AsyncSession, tenant_id: str, owner_id: str, controller_id: str

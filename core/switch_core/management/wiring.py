@@ -5,7 +5,9 @@ with None nothing is mounted and the bearer middleware has no controller
 branch. When it is on, the authenticator goes to the middleware as the agent
 bridge app is built, `install` adds the routes once both apps exist, and
 `load_bindings` tells Core which controller runs each agent before the bridge
-serves.
+serves. `install` also hands Core the agent-facing side
+(`ManagementAgentOperations`), which is what makes the agent operations on
+machines and managed agents exist.
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
+from switch_core.bridges.agent.operations.agent_management import (
+    enable_agent_management,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.config import SwitchConfig
@@ -29,6 +34,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
 from switch_core.management.controller_routes import router as controller_router
@@ -48,6 +54,7 @@ def utc_now() -> datetime:
 class Management:
     service: ManagementService
     authenticator: ManagementAuthenticator
+    agent_operations: ManagementAgentOperations
     session_factory: async_sessionmaker[AsyncSession]
 
     def install(
@@ -65,6 +72,7 @@ class Management:
         agent_bridge_app.include_router(controller_router)
         gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
         protocol.set_agent_removal_listener(self.agent_removed)
+        enable_agent_management(self.agent_operations)
 
     async def agent_removed(self, tenant_id: str, agent_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -114,7 +122,12 @@ def build_management(
         auth_cache=auth_cache,
     )
     return Management(
-        service=service, authenticator=authenticator, session_factory=session_factory
+        service=service,
+        authenticator=authenticator,
+        agent_operations=ManagementAgentOperations(
+            service=service, session_factory=session_factory
+        ),
+        session_factory=session_factory,
     )
 
 

@@ -36,6 +36,8 @@ PROVIDER_KNOWN_AGENT_TYPES: dict[str, str] = {
 }
 
 MAX_INSTRUCTIONS_BYTES = 32 * 1024
+MAX_CONTROLLER_NAME_CHARS = 200
+MAX_CONTROLLER_DESCRIPTION_CHARS = 500
 MAX_STATUS_BYTES = 64 * 1024
 
 # Process states that must carry a reason code.
@@ -105,11 +107,45 @@ class EnrollmentCodeProof(_ControllerBody):
     code: str
 
 
+def _controller_name(value: str) -> str:
+    """A machine's name, trimmed, and refused when nothing is left."""
+    trimmed = value.strip()
+    if not trimmed:
+        raise ValueError("a machine's name must not be blank")
+    return trimmed
+
+
+def _controller_description(value: str | None) -> str | None:
+    """A machine's description, trimmed; blank is no description."""
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
 class ControllerDescription(_ControllerBody):
+    """What a controller says about itself when it enrolls.
+
+    `description` is the owner's note on what the machine is for, given at
+    enrollment (`--description`) and editable afterwards; absent is none."""
+
     kind: ControllerKind
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=MAX_CONTROLLER_NAME_CHARS)
+    description: str | None = Field(
+        default=None, max_length=MAX_CONTROLLER_DESCRIPTION_CHARS
+    )
     platform: Platform
     version: str
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_not_blank(cls, value: str) -> str:
+        return _controller_name(value)
+
+    @field_validator("description")
+    @classmethod
+    def _blank_description_is_none(cls, value: str | None) -> str | None:
+        return _controller_description(value)
 
 
 class EnrollRequest(_ControllerBody):
@@ -265,11 +301,55 @@ class ControllerBeatRequest(_ControllerBody):
 
 
 class ConsoleControllerRequest(_GatewayBody):
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=MAX_CONTROLLER_NAME_CHARS)
+    description: str | None = Field(
+        default=None, max_length=MAX_CONTROLLER_DESCRIPTION_CHARS
+    )
     kind: Literal["console"]
     platform: Platform
     version: str
     public_key: PublicKey | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_not_blank(cls, value: str) -> str:
+        return _controller_name(value)
+
+    @field_validator("description")
+    @classmethod
+    def _blank_description_is_none(cls, value: str | None) -> str | None:
+        return _controller_description(value)
+
+
+class UpdateControllerRequest(_GatewayBody):
+    """Rename a machine or change its description. Either or both; a key left
+    out is left as it is, and `description: null` (or blank) clears it — read
+    `model_fields_set`, not the value."""
+
+    name: str | None = Field(
+        default=None, min_length=1, max_length=MAX_CONTROLLER_NAME_CHARS
+    )
+    description: str | None = Field(
+        default=None, max_length=MAX_CONTROLLER_DESCRIPTION_CHARS
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_not_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            raise ValueError("a machine's name cannot be cleared")
+        return _controller_name(value)
+
+    @field_validator("description")
+    @classmethod
+    def _blank_description_is_none(cls, value: str | None) -> str | None:
+        return _controller_description(value)
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> UpdateControllerRequest:
+        if not self.model_fields_set:
+            raise ValueError("give a name, a description, or both")
+        return self
 
 
 class CreateManagedAgentRequest(_GatewayBody):
@@ -369,6 +449,7 @@ def controller_view(controller: AgentController, state: str) -> dict[str, Any]:
     return {
         "id": controller.id,
         "name": controller.name,
+        "description": controller.description,
         "kind": controller.kind,
         "platform": controller.platform,
         "version": controller.version,

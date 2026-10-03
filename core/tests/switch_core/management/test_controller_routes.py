@@ -115,6 +115,32 @@ class TestEnrollmentByCode:
         assert [c["id"] for c in listed.json()] == [enrolled.json()["controller_id"]]
         assert listed.json()[0]["kind"] == "daemon"
         assert listed.json()[0]["state"] == "unknown"
+        assert listed.json()[0]["description"] == "The build box in the office"
+
+    async def test_a_description_is_optional_at_enrollment(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        code = await _code(harness, cookies_for(owner))
+        body = _enroll_body(code)
+        del body["controller"]["description"]
+        async with harness.client() as client:
+            enrolled = await client.post("/v1/management/controllers/enroll", json=body)
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert enrolled.status_code == 201, enrolled.text
+        assert listed.json()[0]["description"] is None
+
+    async def test_an_overlong_description_is_refused(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        code = await _code(harness, cookies_for(owner))
+        body = _enroll_body(code)
+        body["controller"]["description"] = "x" * 501
+        async with harness.client() as client:
+            refused = await client.post("/v1/management/controllers/enroll", json=body)
+        assert refused.status_code == 422
+        assert refused.json()["error"]["code"] == "validation_error"
 
     async def test_a_used_code_leaves_no_credential_behind(
         self, harness: Harness

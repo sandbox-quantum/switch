@@ -29,7 +29,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.protocol.liveness import (
@@ -250,6 +250,12 @@ class ControllerPresence:
             reason,
         )
         self._owe_detach(previous.controller_id, agent_id, reason)
+
+    def rename_controller(self, controller_id: str, name: str) -> None:
+        """The controller's owner renamed it: what its agents' bindings call it."""
+        for agent_id in self._by_controller.get(controller_id, set()):
+            binding = self._bindings[agent_id]
+            self._bindings[agent_id] = replace(binding, controller_name=name)
 
     def revoke_controller(self, controller_id: str) -> None:
         """A revoked controller's stream ends and it cannot open another.
