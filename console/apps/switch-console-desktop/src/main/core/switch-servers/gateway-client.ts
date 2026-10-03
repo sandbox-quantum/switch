@@ -2597,6 +2597,19 @@ export async function enrollConsoleController(
   return { controllerId: json.controller_id, credential: json.credential };
 }
 
+/**
+ * A one-time code a headless controller enrolls with
+ * (`POST /gateway/management/enrollment-codes`): single use, valid for ten
+ * minutes. A secret until it is spent.
+ */
+export async function issueEnrollmentCode(server: SwitchServer): Promise<string> {
+  const res = await managementFetch(server, '/enrollment-codes', {
+    authenticated: true,
+    method: 'POST',
+  });
+  return ((await res.json()) as { code: string }).code;
+}
+
 /** The signed-in user's controllers (`GET /gateway/management/controllers`). */
 export async function fetchManagementControllers(
   server: SwitchServer

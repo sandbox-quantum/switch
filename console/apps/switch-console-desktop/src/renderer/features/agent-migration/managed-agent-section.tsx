@@ -93,12 +93,17 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
     mutationFn: () => {
       const agent = agentsStore.agentById(agentId);
       const target = query.data?.target;
-      if (!agent?.workspaceId || target?.kind !== 'this-computer')
-        throw new Error('Open the agent’s workspace first.');
-      return rpc.embeddedController.enable({
-        serverId: target.serverId,
-        workspaceId: agent.workspaceId,
-      });
+      if (!agent?.workspaceId || !target) throw new Error('Open the agent’s workspace first.');
+      return target.kind === 'this-computer'
+        ? rpc.embeddedController.enable({
+            serverId: target.serverId,
+            workspaceId: agent.workspaceId,
+          })
+        : rpc.hostControllers.enable({
+            sshHost: target.sshHost,
+            serverId: target.serverId,
+            workspaceId: agent.workspaceId,
+          });
     },
     onSettled: refresh,
   });
@@ -173,14 +178,16 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
             <ArrowRightLeft className="size-3.5" /> {action.label}
           </Button>
         )}
-        {state.canEnableTarget && state.target?.kind === 'this-computer' && (
+        {state.canEnableTarget && state.target && (
           <Button
             variant="outline"
             size="sm"
             disabled={enable.isPending}
             onClick={() => enable.mutate()}
           >
-            Run managed agents on this computer
+            {state.target.kind === 'this-computer'
+              ? 'Run managed agents on this computer'
+              : `Run managed agents on ${state.target.sshHost}`}
           </Button>
         )}
         {state.operation?.stage === 'waiting-for-turn' && (

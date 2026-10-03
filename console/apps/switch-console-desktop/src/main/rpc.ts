@@ -6,6 +6,7 @@ import { agentsController } from './core/agents/controller';
 import { appController } from './core/app/controller';
 import { embeddedControllerController } from './core/embedded-controller/controller';
 import { filesController } from './core/fs/controller';
+import { hostControllersController } from './core/host-controllers/controller';
 import { locationsController } from './core/locations/controller';
 import { localSwitchServerController } from './core/managed-switch-server/controller';
 import { remoteSwitchServerController } from './core/managed-switch-server/remote-controller';
@@ -50,6 +51,7 @@ export const rpcRouter = createRPCRouter({
   telemetry: telemetryController,
   embeddedController: embeddedControllerController,
   agentMigration: agentMigrationController,
+  hostControllers: hostControllersController,
   fs: createRPCNamespace({
     watch: filesController,
   }),

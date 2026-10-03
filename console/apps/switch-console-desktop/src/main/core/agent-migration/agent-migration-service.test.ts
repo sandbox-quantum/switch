@@ -272,6 +272,46 @@ describe('moving an agent onto its controller', () => {
   });
 });
 
+describe('moving an agent on an SSH host', () => {
+  it('places it on the host’s controller, with the watcher root in the host’s home', async () => {
+    const remote: MigrationAgent = { ...PARENT, sshHost: 'gpu-1', dir: '/srv/builder' };
+    const display = {
+      kind: 'ssh-host' as const,
+      sshHost: 'gpu-1',
+      serverId: 'server-1',
+      machineName: 'gpu-1.internal',
+    };
+    world.lookup = {
+      display,
+      target: {
+        display,
+        controllerId: 'controller-ssh',
+        workspaceId: WORKSPACE,
+        watcherRoot: (id) =>
+          `~/.local/state/switch/agent-controller/console-server-1/watchers/${id}`,
+      },
+      blocker: null,
+      canEnable: false,
+    };
+    const service = new AgentMigrationService({
+      ...deps(),
+      agents: { ...deps().agents, get: async () => remote },
+    });
+    await service.moveToManaged(PARENT.id);
+    expect(world.calls[0]).toBe('adopt switch-1 stopped on controller-ssh');
+    expect(world.records.get(PARENT.id)).toMatchObject({
+      placement: { kind: 'ssh-host', sshHost: 'gpu-1', serverId: 'server-1' },
+      identities: [
+        {
+          controllerRoot:
+            '~/.local/state/switch/agent-controller/console-server-1/watchers/switch-1',
+        },
+      ],
+    });
+    expect(await service.movedOnto({ kind: 'ssh-host', sshHost: 'gpu-1' })).toEqual(['builder']);
+  });
+});
+
 describe('waiting for the agent to be idle', () => {
   it('waits for a running turn to end before changing anything', async () => {
     world.busy = [true, true, false];

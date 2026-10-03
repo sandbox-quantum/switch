@@ -13,7 +13,7 @@ export type AgentRunner = 'console' | 'managed';
 /** The machine an agent moves to, or runs on. */
 export type MigrationTarget =
   | { kind: 'this-computer'; serverId: string; machineName: string | null }
-  | { kind: 'ssh-host'; sshHost: string; machineName: string | null };
+  | { kind: 'ssh-host'; sshHost: string; serverId: string; machineName: string | null };
 
 /** The step a move or a return is at, so the UI can say what it is waiting for. */
 export type MigrationStage =

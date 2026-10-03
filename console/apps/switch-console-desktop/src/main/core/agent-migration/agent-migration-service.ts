@@ -429,7 +429,12 @@ export class AgentMigrationService {
         lookup?.display ??
         (record.placement.kind === 'this-computer'
           ? { kind: 'this-computer', serverId: record.placement.serverId, machineName: null }
-          : { kind: 'ssh-host', sshHost: record.placement.sshHost, machineName: null }),
+          : {
+              kind: 'ssh-host',
+              sshHost: record.placement.sshHost,
+              serverId: record.placement.serverId,
+              machineName: null,
+            }),
       blocker: null,
       canEnableTarget: false,
       movesWithParent: null,
@@ -547,7 +552,11 @@ export class AgentMigrationService {
       placement:
         target.display.kind === 'this-computer'
           ? { kind: 'this-computer', serverId: target.display.serverId }
-          : { kind: 'ssh-host', sshHost: target.display.sshHost },
+          : {
+              kind: 'ssh-host',
+              sshHost: target.display.sshHost,
+              serverId: target.display.serverId,
+            },
       identities: moving.identities,
       movedAt: new Date(this.deps.now()).toISOString(),
     };

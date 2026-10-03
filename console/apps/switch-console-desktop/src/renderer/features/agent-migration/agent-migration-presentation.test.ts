@@ -36,7 +36,9 @@ const MANAGED: AgentMigrationState = {
 describe('where an agent runs', () => {
   it('names the machine', () => {
     expect(targetName(CONSOLE.target)).toBe('this computer (build-box)');
-    expect(targetName({ kind: 'ssh-host', sshHost: 'gpu-1', machineName: null })).toBe('gpu-1');
+    expect(
+      targetName({ kind: 'ssh-host', sshHost: 'gpu-1', serverId: 'server-1', machineName: null })
+    ).toBe('gpu-1');
     expect(targetName(null)).toBe('a managed machine');
   });
 

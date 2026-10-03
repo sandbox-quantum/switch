@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { agentLaunchConfig } from '@main/core/agents/agent-launch-config';
@@ -15,6 +15,8 @@ import {
   embeddedControllerDataDir,
   embeddedControllerService,
 } from '@main/core/embedded-controller/embedded-controllers';
+import { hostControllerDataDir } from '@main/core/host-controllers/host-controller-service';
+import { hostControllerService } from '@main/core/host-controllers/host-controllers';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport } from '@main/core/locations/location-transport';
@@ -180,18 +182,58 @@ async function resolveThisComputer(agent: MigrationAgent): Promise<TargetLookup>
   };
 }
 
-/** Where an agent on an SSH host moves to. Set by the SSH host controllers once they exist. */
-let resolveSshHost: (agent: MigrationAgent) => Promise<TargetLookup> = async (agent) => ({
-  display: { kind: 'ssh-host', sshHost: agent.sshHost!, machineName: null },
-  target: null,
-  blocker: 'Agents on SSH hosts cannot move to a managed machine yet.',
-  canEnable: false,
-});
-
-export function setSshHostTargetResolver(
-  resolve: (agent: MigrationAgent) => Promise<TargetLookup>
-): void {
-  resolveSshHost = resolve;
+async function resolveSshHost(agent: MigrationAgent): Promise<TargetLookup> {
+  const sshHost = agent.sshHost!;
+  const serverId = agent.serverId!;
+  const overview = await hostControllerService.overview(sshHost, serverId, agent.workspaceId);
+  const display = {
+    kind: 'ssh-host' as const,
+    sshHost,
+    serverId,
+    machineName: overview.enrollment?.name ?? null,
+  };
+  const refuse = (blocker: string, canEnable = false): TargetLookup => ({
+    display,
+    target: null,
+    blocker,
+    canEnable,
+  });
+  const remote = overview.remote;
+  if (remote?.kind === 'unavailable')
+    return refuse(
+      'This server does not have agent management turned on, so it cannot run agents on machines.'
+    );
+  if (!overview.enrollment)
+    return refuse(
+      `Make ${sshHost} a machine for this server first: the agent moves onto the agents controller Console installs there.`,
+      remote?.kind === 'ok'
+    );
+  if (overview.phase.kind === 'installing' || overview.phase.kind === 'removing')
+    return refuse(`${sshHost} is being set up or removed as a machine.`);
+  if (overview.process?.kind !== 'running')
+    return refuse(
+      overview.process?.kind === 'unknown'
+        ? `Console cannot tell whether ${sshHost}’s controller runs: ${overview.process.reason}`
+        : `${sshHost}’s controller is not running. Start it again from the host’s page.`
+    );
+  if (remote?.kind === 'error')
+    return refuse(`Switch could not be asked about ${sshHost}’s controller: ${remote.message}`);
+  if (remote?.kind === 'ok' && remote.controller?.state !== 'online')
+    return refuse(
+      `${sshHost}’s controller has not reached Switch yet. Wait until the host’s page shows it Running.`
+    );
+  const dataDir = hostControllerDataDir(serverId);
+  return {
+    display,
+    target: {
+      display,
+      controllerId: overview.enrollment.controllerId,
+      workspaceId: overview.enrollment.workspaceId,
+      watcherRoot: (switchAgentId) => posix.join(dataDir, 'watchers', switchAgentId),
+    },
+    blocker: null,
+    canEnable: false,
+  };
 }
 
 function managementFailure(what: string, error: unknown): Error {

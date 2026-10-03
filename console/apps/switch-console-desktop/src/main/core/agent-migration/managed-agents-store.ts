@@ -33,7 +33,11 @@ export type MovedIdentity = z.infer<typeof identitySchema>;
 
 const placementSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('this-computer'), serverId: z.string().min(1) }),
-  z.object({ kind: z.literal('ssh-host'), sshHost: z.string().min(1) }),
+  z.object({
+    kind: z.literal('ssh-host'),
+    sshHost: z.string().min(1),
+    serverId: z.string().min(1),
+  }),
 ]);
 
 export type ManagedPlacementRecord = z.infer<typeof placementSchema>;
