@@ -27,8 +27,6 @@ const identitySchema = z.object({
   credentialsStashed: z.boolean(),
   /** The controller's watcher root for it, on the agent's machine (`~/` is that machine's home). */
   controllerRoot: z.string().min(1),
-  /** The relay credentials file the controller writes for it, on the agent's machine. */
-  controllerCredentials: z.string().min(1),
 });
 
 export type MovedIdentity = z.infer<typeof identitySchema>;

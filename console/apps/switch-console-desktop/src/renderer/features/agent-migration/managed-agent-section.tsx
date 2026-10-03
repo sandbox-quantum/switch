@@ -16,7 +16,12 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
-import { type AgentMigrationState, IDLE_RULE } from '@shared/core/agent-migration/agent-migration';
+import {
+  type AgentMigrationState,
+  IDLE_RULE,
+  SESSIONS_ON_MOVE,
+  SESSIONS_ON_RETURN,
+} from '@shared/core/agent-migration/agent-migration';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 import {
   migrationAction,
@@ -201,8 +206,8 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
           <DialogContentArea>
             <DialogDescription>
               {confirming === 'move'
-                ? `Switch’s agent management will run this agent on ${where}, and this Console stops running it. Its conversations carry on there: each room’s next message goes to the session that was answering it. ${IDLE_RULE}`
-                : `Switch stops managing this agent, the machine stops it, and this Console runs it again, with its conversations. ${IDLE_RULE}`}
+                ? `Switch’s agent management will run this agent on ${where}, and this Console stops running it. ${SESSIONS_ON_MOVE} ${IDLE_RULE}`
+                : `Switch stops managing this agent, the machine stops it, and this Console runs it again. ${SESSIONS_ON_RETURN} ${IDLE_RULE}`}
             </DialogDescription>
             {confirming === 'move' && state.notCarried.length > 0 && (
               <div className="mt-3 space-y-1 text-sm">

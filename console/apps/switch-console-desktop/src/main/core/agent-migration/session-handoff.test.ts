@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -14,36 +14,31 @@ let home: string;
 let run: MachineScript;
 let identity: HandoffIdentity;
 
-function hash(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
+function consoleRoot(): string {
+  return join(
+    home,
+    '.local',
+    'state',
+    'switch',
+    'sdk-watchers',
+    createHash('sha256').update(AGENT).digest('hex')
+  );
 }
 
-function state(...parts: string[]): string {
-  return join(home, '.local', 'state', 'switch', ...parts);
+function controllerRoot(): string {
+  return join(home, 'controller', 'watchers', AGENT);
+}
+
+function journal(root: string): unknown[] {
+  return readFileSync(join(root, 'assignments.jsonl'), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 function writeJson(path: string, value: unknown): void {
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, JSON.stringify(value));
-}
-
-function readJson(path: string): Record<string, unknown> {
-  return JSON.parse(readFileSync(path, 'utf8'));
-}
-
-function session(id: string, credentialsPath: string, agentId = AGENT): string {
-  const root = state('sdk-sessions', hash(id));
-  writeJson(join(root, 'config.json'), {
-    session: { sessionId: id, agentId },
-    start: { provider: 'claude', input: { cwd: '/work' } },
-    execution: { credentialsPath, inheritEnv: [] },
-  });
-  return root;
-}
-
-function credentialsOf(id: string): unknown {
-  const config = readJson(join(state('sdk-sessions', hash(id)), 'config.json'));
-  return (config.execution as { credentialsPath: string }).credentialsPath;
 }
 
 beforeEach(() => {
@@ -54,106 +49,139 @@ beforeEach(() => {
         env: { ...process.env, HOME: home },
       })
     ).stdout;
-  identity = {
-    switchAgentId: AGENT,
-    controllerRoot: '~/controller/watchers/switch-agent-1',
-    controllerCredentials: '~/controller/agents/switch-agent-1/credentials.json',
-    consoleCredentials: '/work/.switch/agents/builder.json',
-  };
+  identity = { switchAgentId: AGENT, controllerRoot: '~/controller/watchers/switch-agent-1' };
 });
 
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
-describe('handing an agent’s sessions over to its controller', () => {
-  it('moves which session attends which room, and points its sessions at the relay', async () => {
-    writeJson(join(state('sdk-watchers', hash(AGENT)), 'config.json'), {
-      session: { agentId: AGENT },
-    });
-    writeJson(join(state('sdk-watchers', hash(AGENT)), 'placements.json'), {
-      placements: { 'session-1': 'room-1' },
-    });
-    session('session-1', identity.consoleCredentials);
-    session('session-2', identity.consoleCredentials);
-    session('other-agent', '/elsewhere/.switch/agents/x.json', 'switch-agent-2');
-
-    const result = await runHandoff(run, { op: 'hand-over', identities: [identity] });
-
-    expect(result.placements).toEqual([{ switchAgentId: AGENT, rooms: 1 }]);
-    expect(result.rewritten.sort()).toEqual(['session-1', 'session-2']);
-    expect(result.live).toEqual([]);
-    expect(readJson(join(home, 'controller', 'watchers', AGENT, 'placements.json'))).toEqual({
-      placements: { 'session-1': 'room-1' },
-    });
-    const relay = join(home, 'controller', 'agents', AGENT, 'credentials.json');
-    expect(credentialsOf('session-1')).toBe(relay);
-    expect(credentialsOf('other-agent')).toBe('/elsewhere/.switch/agents/x.json');
-  });
-
-  it('leaves a running session as it is, and says so', async () => {
-    const root = session('session-1', identity.consoleCredentials);
-    writeJson(join(root, 'supervisor', 'owner.json'), { pid: process.pid });
-
-    const result = await runHandoff(run, { op: 'hand-over', identities: [identity] });
-
-    expect(result.live).toEqual(['session-1']);
-    expect(credentialsOf('session-1')).toBe(identity.consoleCredentials);
-  });
-
-  it('refuses while a watcher still runs', async () => {
-    writeJson(join(home, 'controller', 'watchers', AGENT, 'shared-owner.lock'), {
-      pid: process.pid,
-    });
-    await expect(runHandoff(run, { op: 'hand-over', identities: [identity] })).rejects.toThrow(
-      /still running/
-    );
-  });
-
-  it('drops placements a controller root kept from an earlier stay', async () => {
-    writeJson(join(home, 'controller', 'watchers', AGENT, 'placements.json'), {
-      placements: { stale: 'room-9' },
-    });
-    await runHandoff(run, { op: 'hand-over', identities: [identity] });
-    expect(() => readJson(join(home, 'controller', 'watchers', AGENT, 'placements.json'))).toThrow(
-      /ENOENT/
-    );
-  });
-});
-
-describe('handing them back', () => {
-  it('restores the rooms and the agent’s own credentials file', async () => {
-    const relay = join(home, 'controller', 'agents', AGENT, 'credentials.json');
-    session('session-1', relay);
-    writeJson(join(home, 'controller', 'watchers', AGENT, 'placements.json'), {
-      placements: { 'session-1': 'room-2' },
-    });
-
-    const result = await runHandoff(run, { op: 'hand-back', identities: [identity] });
-
-    expect(result.rewritten).toEqual(['session-1']);
-    expect(credentialsOf('session-1')).toBe(identity.consoleCredentials);
-    expect(readJson(join(state('sdk-watchers', hash(AGENT)), 'placements.json'))).toEqual({
-      placements: { 'session-1': 'room-2' },
-    });
-  });
-});
-
-describe('the watchers', () => {
-  it('reports which side is running', async () => {
-    writeJson(join(home, 'controller', 'watchers', AGENT, 'supervisor', 'owner.json'), {
-      pid: process.pid,
-    });
+describe('the watchers of an agent on its machine', () => {
+  it('says which side is running', async () => {
+    writeJson(join(controllerRoot(), 'supervisor', 'owner.json'), { pid: process.pid });
+    writeJson(join(consoleRoot(), 'config.json'), { session: { agentId: AGENT } });
     const result = await runHandoff(run, { op: 'status', identities: [identity] });
     expect(result.watchers).toEqual([{ switchAgentId: AGENT, console: false, controller: true }]);
   });
 
-  it('turns the controller’s watcher off when asked', async () => {
-    mkdirSync(join(home, 'controller', 'watchers', AGENT), { recursive: true });
+  it('reads an owner record whose process has gone as not running', async () => {
+    writeJson(join(consoleRoot(), 'shared-owner.lock'), { pid: 2 ** 22 + 12345 });
+    const result = await runHandoff(run, { op: 'status', identities: [identity] });
+    expect(result.watchers[0]).toMatchObject({ console: false, controller: false });
+  });
+});
+
+describe('starting the agent afresh on the controller', () => {
+  it('clears the room placements an earlier stay left, and leaves Console’s alone', async () => {
+    writeJson(join(controllerRoot(), 'placements.json'), { placements: { stale: 'room-9' } });
+    writeJson(join(consoleRoot(), 'placements.json'), { placements: { kept: 'room-1' } });
+
+    const result = await runHandoff(run, { op: 'fresh-start', identities: [identity] });
+
+    expect(result.cleared).toEqual([AGENT]);
+    expect(existsSync(join(controllerRoot(), 'placements.json'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(consoleRoot(), 'placements.json'), 'utf8'))).toEqual({
+      placements: { kept: 'room-1' },
+    });
+  });
+
+  it('marks a journal left from an earlier stay, so its old position is not resumed', async () => {
+    mkdirSync(controllerRoot(), { recursive: true });
+    writeFileSync(join(controllerRoot(), 'assignments.jsonl'), '{"handled":7}\n');
+    await runHandoff(run, { op: 'fresh-start', identities: [identity] });
+    const lines = journal(controllerRoot());
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toMatchObject({ restarted: true });
+  });
+
+  it('has nothing to clear the first time', async () => {
+    const result = await runHandoff(run, { op: 'fresh-start', identities: [identity] });
+    expect(result.cleared).toEqual([]);
+  });
+
+  it('refuses while the controller already runs the agent', async () => {
+    writeJson(join(controllerRoot(), 'shared-owner.lock'), { pid: process.pid });
+    await expect(runHandoff(run, { op: 'fresh-start', identities: [identity] })).rejects.toThrow(
+      /already running/
+    );
+  });
+});
+
+describe('coming back to Console', () => {
+  it('goes on from the last message the controller routed, keeping Console’s rooms', async () => {
+    writeJson(join(consoleRoot(), 'placements.json'), { placements: { kept: 'room-1' } });
+    mkdirSync(consoleRoot(), { recursive: true });
+    writeFileSync(join(consoleRoot(), 'assignments.jsonl'), '{"handled":3}\n');
+    mkdirSync(controllerRoot(), { recursive: true });
+    writeFileSync(
+      join(controllerRoot(), 'assignments.jsonl'),
+      '{"handled":2}\n{"restarted":true,"at":"x"}\n{"handled":5}\n{"handled":9}\n'
+    );
+
+    const result = await runHandoff(run, { op: 'come-back', identities: [identity] });
+
+    expect(result.resumed).toEqual([{ switchAgentId: AGENT, cursor: 9 }]);
+    const lines = journal(consoleRoot());
+    expect(lines[0]).toEqual({ handled: 3 });
+    expect(lines[1]).toMatchObject({ restarted: true });
+    expect(lines[2]).toEqual({ handled: 9 });
+    expect(JSON.parse(readFileSync(join(consoleRoot(), 'placements.json'), 'utf8'))).toEqual({
+      placements: { kept: 'room-1' },
+    });
+  });
+
+  it('reads the position the way the watcher does, from held and released deliveries', async () => {
+    mkdirSync(controllerRoot(), { recursive: true });
+    writeFileSync(
+      join(controllerRoot(), 'assignments.jsonl'),
+      [
+        { sequence: 5, roomId: 'r', messageId: 'm5', config: {} },
+        { parked: 5, roomId: 'r', messageId: 'm5', spawning: false },
+        { released: { roomId: 'r', messageId: 'm5' } },
+        { parked: 8, roomId: 'r', messageId: 'm8', spawning: false },
+      ]
+        .map((record) => `${JSON.stringify(record)}\n`)
+        .join('')
+    );
+    const result = await runHandoff(run, { op: 'come-back', identities: [identity] });
+    // m8 is still held, so the position stays behind it.
+    expect(result.resumed).toEqual([{ switchAgentId: AGENT, cursor: 5 }]);
+  });
+
+  it('starts at the stream’s head when the controller routed nothing', async () => {
+    const result = await runHandoff(run, { op: 'come-back', identities: [identity] });
+    expect(result.resumed).toEqual([{ switchAgentId: AGENT, cursor: 0 }]);
+    expect(journal(consoleRoot())).toEqual([expect.objectContaining({ restarted: true })]);
+  });
+
+  it('refuses a journal with an incomplete record', async () => {
+    mkdirSync(consoleRoot(), { recursive: true });
+    writeFileSync(join(consoleRoot(), 'assignments.jsonl'), '{"handled":3}');
+    await expect(runHandoff(run, { op: 'come-back', identities: [identity] })).rejects.toThrow(
+      /incomplete record/
+    );
+  });
+
+  it('refuses while either watcher still runs', async () => {
+    writeJson(join(consoleRoot(), 'shared-owner.lock'), { pid: process.pid });
+    await expect(runHandoff(run, { op: 'come-back', identities: [identity] })).rejects.toThrow(
+      /still running/
+    );
+  });
+});
+
+describe('turning the controller’s watcher off', () => {
+  it('writes the flag its watcher stops on', async () => {
+    mkdirSync(controllerRoot(), { recursive: true });
     await runHandoff(run, { op: 'turn-off', identities: [identity] });
-    expect(readJson(join(home, 'controller', 'watchers', AGENT, 'watch.json'))).toEqual({
+    expect(JSON.parse(readFileSync(join(controllerRoot(), 'watch.json'), 'utf8'))).toEqual({
       enabled: false,
       spawn: false,
     });
+  });
+
+  it('creates nothing for an agent the controller never ran', async () => {
+    await runHandoff(run, { op: 'turn-off', identities: [identity] });
+    expect(existsSync(controllerRoot())).toBe(false);
   });
 });

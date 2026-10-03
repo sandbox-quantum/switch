@@ -38,8 +38,6 @@ export type ResolvedTarget = {
   workspaceId: string;
   /** Where the controller keeps an agent's watcher state, on the agent's machine. */
   watcherRoot: (switchAgentId: string) => string;
-  /** The relay credentials file the controller writes for an agent, on the agent's machine. */
-  credentialsPath: (switchAgentId: string) => string;
 };
 
 export type TargetLookup = {
@@ -97,8 +95,6 @@ export interface MigrationMachinePort {
   /** Puts Console's watchers for the agent and these subagents back as their settings say. */
   startConsoleWatchers(agent: MigrationAgent, subagents: SubagentRef[]): Promise<void>;
   handoff(agent: MigrationAgent, request: HandoffRequest): Promise<HandoffResult>;
-  /** Console's credentials file for an identity, absolute on the machine. */
-  consoleCredentialsPath(agent: MigrationAgent, slug: string): string;
 }
 
 /** The agent's credentials file in its working directory, kept aside while it is managed. */
@@ -519,7 +515,6 @@ export class AgentMigrationService {
         ...identity,
         credentialsStashed: false,
         controllerRoot: lookup.target!.watcherRoot(identity.switchAgentId),
-        controllerCredentials: lookup.target!.credentialsPath(identity.switchAgentId),
       })),
     };
   }
@@ -576,23 +571,17 @@ export class AgentMigrationService {
       );
     }
 
-    const handedOver = this.handoffIdentities(agent, moving.identities);
+    const identities = this.handoffIdentities(moving.identities);
     const stashed: MovedIdentity[] = [];
+    let ranOnController = false;
     try {
-      this.stage(agent.id, 'handing-over-sessions');
-      const handoff = await this.deps.machine.handoff(agent, {
-        op: 'hand-over',
-        identities: handedOver,
-      });
-      if (handoff.live.length)
-        throw new Error(
-          `Session(s) ${handoff.live.join(', ')} are still running under this Console, so they cannot be handed over.`
-        );
-      this.deps.log.info('Handed an agent’s sessions over to its controller', {
-        agentId: agent.id,
-        rewritten: handoff.rewritten.length,
-        placements: handoff.placements,
-      });
+      this.stage(agent.id, 'preparing-machine');
+      const fresh = await this.deps.machine.handoff(agent, { op: 'fresh-start', identities });
+      if (fresh.cleared.length)
+        this.deps.log.info('Cleared room placements an earlier stay left on the controller', {
+          agentId: agent.id,
+          cleared: fresh.cleared,
+        });
       this.stage(agent.id, 'releasing');
       for (const identity of moving.identities) {
         const had = await this.deps.credentials.stash(agent, identity);
@@ -600,6 +589,7 @@ export class AgentMigrationService {
         stashed.push(identity);
         await this.deps.store.set({ ...record, identities: moving.identities });
       }
+      ranOnController = !moving.stoppedByHand;
       if (!moving.stoppedByHand)
         for (const identity of moving.identities)
           await this.deps.management.setDesiredState(
@@ -612,7 +602,7 @@ export class AgentMigrationService {
         agentId: agent.id,
         error: message(error),
       });
-      await this.undoMove(agent, target, record, handedOver, stashed, subagents);
+      await this.undoMove(agent, target, record, identities, stashed, subagents, ranOnController);
       throw new Error(
         `Could not move ${agent.name}, so it stays with this Console: ${message(error)}`,
         { cause: error }
@@ -631,7 +621,8 @@ export class AgentMigrationService {
     record: ManagedAgentRecord,
     identities: HandoffIdentity[],
     stashed: MovedIdentity[],
-    subagents: SubagentRef[]
+    subagents: SubagentRef[],
+    ranOnController: boolean
   ): Promise<void> {
     await this.releaseQuietly(
       record.workspaceId,
@@ -639,9 +630,11 @@ export class AgentMigrationService {
     );
     try {
       await this.waitForControllerStop(agent, identities);
-      await this.handBack(agent, identities);
+      // Only once the controller may have answered something: otherwise Console's
+      // watcher goes on from where it stopped, and takes what arrived meanwhile.
+      if (ranOnController) await this.deps.machine.handoff(agent, { op: 'come-back', identities });
     } catch (error) {
-      this.deps.log.error('Could not hand an agent’s sessions back after a failed move', {
+      this.deps.log.error('The controller did not stop an agent after a failed move', {
         agentId: agent.id,
         controllerId: target.controllerId,
         error: message(error),
@@ -673,16 +666,15 @@ export class AgentMigrationService {
           switchAgentId: identity.switchAgentId,
         });
     }
-    const identities = this.handoffIdentities(agent, record.identities);
+    const identities = this.handoffIdentities(record.identities);
     this.stage(agent.id, 'waiting-for-controller');
     await this.waitForControllerStop(agent, identities);
-    this.stage(agent.id, 'handing-over-sessions');
-    const handoff = await this.handBack(agent, identities);
-    this.deps.log.info('Handed an agent’s sessions back to Console', {
-      agentId: agent.id,
-      rewritten: handoff.rewritten.length,
-    });
     this.stage(agent.id, 'restoring-console-watcher');
+    const resumed = await this.deps.machine.handoff(agent, { op: 'come-back', identities });
+    this.deps.log.info('Console’s watcher goes on from where the controller’s stopped', {
+      agentId: agent.id,
+      resumed: resumed.resumed,
+    });
     for (const identity of record.identities) await this.deps.credentials.restore(agent, identity);
     await this.deps.store.delete(agent.id);
     const subagents = record.identities
@@ -693,23 +685,6 @@ export class AgentMigrationService {
       agentId: agent.id,
       controllerId: record.controllerId,
     });
-  }
-
-  /** Hands the sessions back, again for a while if the controller's sessions are still winding down. */
-  private async handBack(
-    agent: MigrationAgent,
-    identities: HandoffIdentity[]
-  ): Promise<HandoffResult> {
-    const deadline = this.deps.now() + this.deps.controllerStopWaitMs;
-    for (;;) {
-      const handoff = await this.deps.machine.handoff(agent, { op: 'hand-back', identities });
-      if (!handoff.live.length) return handoff;
-      if (this.deps.now() >= deadline)
-        throw new Error(
-          `Session(s) ${handoff.live.join(', ')} are still running under the controller, so they cannot come back yet. Try Stop managing again in a moment.`
-        );
-      await this.deps.sleep(this.deps.pollMs);
-    }
   }
 
   /**
@@ -755,12 +730,10 @@ export class AgentMigrationService {
 
   // ── Shared ─────────────────────────────────────────────────────────────────
 
-  private handoffIdentities(agent: MigrationAgent, identities: MovedIdentity[]): HandoffIdentity[] {
+  private handoffIdentities(identities: MovedIdentity[]): HandoffIdentity[] {
     return identities.map((identity) => ({
       switchAgentId: identity.switchAgentId,
       controllerRoot: identity.controllerRoot,
-      controllerCredentials: identity.controllerCredentials,
-      consoleCredentials: this.deps.machine.consoleCredentialsPath(agent, identity.slug),
     }));
   }
 

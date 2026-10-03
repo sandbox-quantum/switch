@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { join, posix } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { agentLaunchConfig } from '@main/core/agents/agent-launch-config';
@@ -174,8 +174,6 @@ async function resolveThisComputer(agent: MigrationAgent): Promise<TargetLookup>
       controllerId: overview.enrollment.controllerId,
       workspaceId: overview.enrollment.workspaceId,
       watcherRoot: (switchAgentId) => join(dataDir, 'watchers', switchAgentId),
-      credentialsPath: (switchAgentId) =>
-        join(dataDir, 'agents', switchAgentId, 'credentials.json'),
     },
     blocker: null,
     canEnable: false,
@@ -285,8 +283,6 @@ const machine: MigrationMachinePort = {
       await autoSessionWatcher.startForSubagent(agent.id, subagent.name);
   },
   handoff: (agent, request) => runHandoff(machineScript(agent), request),
-  consoleCredentialsPath: (agent, slug) =>
-    (agent.sshHost ? posix.join : join)(agent.dir, agentSettingsRelativePath(slug)),
 };
 
 const credentialsLog = { warn: (...input: unknown[]) => log.warn('agent-migration:', ...input) };

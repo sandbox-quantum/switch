@@ -27,8 +27,8 @@ export function operationLabel(operation: MigrationOperation): string {
       return 'Placing it on the machine…';
     case 'stopping-console-watcher':
       return 'Stopping this Console’s watcher…';
-    case 'handing-over-sessions':
-      return moving ? 'Handing its sessions over…' : 'Handing its sessions back…';
+    case 'preparing-machine':
+      return 'Preparing the machine…';
     case 'releasing':
       return moving ? 'Starting it on the machine…' : 'Asking Switch to stop managing it…';
     case 'waiting-for-controller':

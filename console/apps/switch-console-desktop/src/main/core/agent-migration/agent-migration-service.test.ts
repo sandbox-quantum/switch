@@ -40,7 +40,6 @@ const TARGET: ResolvedTarget = {
   controllerId: CONTROLLER,
   workspaceId: WORKSPACE,
   watcherRoot: (id) => `/data/watchers/${id}`,
-  credentialsPath: (id) => `/data/agents/${id}/credentials.json`,
 };
 
 const BUILT: BuiltDefinition = {
@@ -59,7 +58,7 @@ const BUILT: BuiltDefinition = {
 };
 
 function emptyHandoff(): HandoffResult {
-  return { placements: [], rewritten: [], live: [], watchers: [] };
+  return { watchers: [], cleared: [], resumed: [] };
 }
 
 type World = {
@@ -74,7 +73,7 @@ type World = {
   controllerRunning: boolean[];
   failAdoptOn: string | null;
   failStopWatchers: boolean;
-  liveOnHandOver: string[];
+  failFreshStart: boolean;
   failDesiredState: boolean;
   releaseOutcome: 'released' | 'already_gone';
   managedView: { controllerId: string | null; desiredState: 'running' | 'stopped' } | null;
@@ -155,10 +154,10 @@ function deps(): AgentMigrationDeps {
             })),
           };
         }
-        if (request.op === 'hand-over') return { ...emptyHandoff(), live: world.liveOnHandOver };
+        if (request.op === 'fresh-start' && world.failFreshStart)
+          throw new Error('The controller is already running agent switch-1');
         return emptyHandoff();
       },
-      consoleCredentialsPath: (agent, slug) => `${agent.dir}/.switch/agents/${slug}.json`,
     },
     credentials: {
       stash: async (_agent, identity) => {
@@ -213,7 +212,7 @@ beforeEach(() => {
     controllerRunning: [false],
     failAdoptOn: null,
     failStopWatchers: false,
-    liveOnHandOver: [],
+    failFreshStart: false,
     failDesiredState: false,
     releaseOutcome: 'released',
     managedView: { controllerId: CONTROLLER, desiredState: 'running' },
@@ -229,7 +228,7 @@ describe('moving an agent onto its controller', () => {
       'adopt switch-1 stopped on controller-1',
       'record agent-1',
       'stop console builder',
-      'hand-over switch-1',
+      'fresh-start switch-1',
       'stash builder',
       'desired switch-1 running',
     ]);
@@ -242,7 +241,6 @@ describe('moving an agent onto its controller', () => {
         subagent: null,
         credentialsStashed: true,
         controllerRoot: '/data/watchers/switch-1',
-        controllerCredentials: '/data/agents/switch-1/credentials.json',
       },
     ]);
     expect(world.events.at(-1)).toEqual({ agentId: PARENT.id, runner: 'managed', operation: null });
@@ -328,7 +326,7 @@ describe('bringing an agent back', () => {
       'release switch-1',
       'status switch-1',
       'status switch-1',
-      'hand-back switch-1',
+      'come-back switch-1',
       'restore builder',
       'forget agent-1',
       'start console builder',
@@ -381,7 +379,7 @@ describe('subagents watched under the agent', () => {
       'adopt switch-2 stopped on controller-1',
       'record agent-1',
       'stop console builder,reviewer',
-      'hand-over switch-1,switch-2',
+      'fresh-start switch-1,switch-2',
       'stash builder',
       'stash reviewer',
       'desired switch-1 running',
@@ -397,7 +395,7 @@ describe('subagents watched under the agent', () => {
       'release switch-1',
       'release switch-2',
       'status switch-1,switch-2',
-      'hand-back switch-1,switch-2',
+      'come-back switch-1,switch-2',
       'restore builder',
       'restore reviewer',
       'forget agent-1',
@@ -454,19 +452,18 @@ describe('a move that fails', () => {
     expect(world.records.size).toBe(0);
   });
 
-  it('undoes everything when a session is still running under Console', async () => {
-    world.liveOnHandOver = ['session-a'];
+  it('undoes everything when the machine cannot be prepared, keeping Console’s stream position', async () => {
+    world.failFreshStart = true;
     await expect(new AgentMigrationService(deps()).moveToManaged(PARENT.id)).rejects.toThrow(
-      /still running under this Console/
+      /already running/
     );
     expect(world.calls).toEqual([
       'adopt switch-1 stopped on controller-1',
       'record agent-1',
       'stop console builder',
-      'hand-over switch-1',
+      'fresh-start switch-1',
       'release switch-1',
       'status switch-1',
-      'hand-back switch-1',
       'forget agent-1',
       'start console builder',
     ]);
@@ -480,7 +477,7 @@ describe('a move that fails', () => {
     expect(world.calls.slice(-6)).toEqual([
       'release switch-1',
       'status switch-1',
-      'hand-back switch-1',
+      'come-back switch-1',
       'restore builder',
       'forget agent-1',
       'start console builder',

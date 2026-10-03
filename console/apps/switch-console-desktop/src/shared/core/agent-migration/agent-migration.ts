@@ -22,7 +22,8 @@ export type MigrationStage =
   | 'waiting-for-turn'
   | 'adopting'
   | 'stopping-console-watcher'
-  | 'handing-over-sessions'
+  /** Clearing what an earlier stay left on the machine, so its rooms start afresh there. */
+  | 'preparing-machine'
   | 'releasing'
   | 'waiting-for-controller'
   | 'restoring-console-watcher';
@@ -99,3 +100,15 @@ export type AgentMigrationEvent = {
  */
 export const IDLE_RULE =
   'An agent moves only between turns: if one of its sessions is working, the move waits for that turn to end and never interrupts it.';
+
+/**
+ * What happens to an agent's conversations when it moves. A session's saved
+ * state is bound to the address it reaches Switch at, and a controller's
+ * sessions reach it through the controller's local relay, so a session cannot
+ * be resumed across the move.
+ */
+export const SESSIONS_ON_MOVE =
+  'Conversations do not move with it: the next message in each room starts a fresh session on the machine. Its sessions here stay in Console to read.';
+
+export const SESSIONS_ON_RETURN =
+  'Each room picks up the conversation it had in this Console before the move; what was said while it was managed stays in the sessions the machine ran.';

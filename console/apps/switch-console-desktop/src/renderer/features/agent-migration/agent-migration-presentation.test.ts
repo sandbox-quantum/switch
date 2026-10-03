@@ -91,8 +91,8 @@ describe('where an agent runs', () => {
       detail: 'Waiting for the current turn to end (2 sessions working)…',
     });
     expect(
-      operationLabel({ kind: 'returning', stage: 'handing-over-sessions', busySessions: [] })
-    ).toBe('Handing its sessions back…');
+      operationLabel({ kind: 'returning', stage: 'waiting-for-controller', busySessions: [] })
+    ).toBe('Waiting for the machine to stop it…');
   });
 });
 
