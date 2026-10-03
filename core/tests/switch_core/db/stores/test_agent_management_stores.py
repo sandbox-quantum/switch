@@ -66,6 +66,7 @@ async def _controller(
         session,
         owner_id=owner.id,
         name="box",
+        description=None,
         kind="daemon",
         platform={"os": "linux", "arch": "x64", "os_version": "6"},
         version="0.1.0",
@@ -94,6 +95,31 @@ class TestControllers:
                     session, TENANT_ZERO_ID, owner.id
                 )
             ] == [controller.id]
+
+    async def test_name_and_description_are_edited_alone(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _user(session)
+            controller = await _controller(session, owner)
+            await session.commit()
+            assert controller.description is None
+            described = await CONTROLLERS.update_details(
+                session, TENANT_ZERO_ID, controller.id, {"description": "Office"}
+            )
+            assert (described.name, described.description) == ("box", "Office")
+            renamed = await CONTROLLERS.update_details(
+                session, TENANT_ZERO_ID, controller.id, {"name": "laptop"}
+            )
+            assert (renamed.name, renamed.description) == ("laptop", "Office")
+            with pytest.raises(ValueError, match="Not editable"):
+                await CONTROLLERS.update_details(
+                    session, TENANT_ZERO_ID, controller.id, {"kind": "ec2"}
+                )
+            with pytest.raises(LookupError):
+                await CONTROLLERS.update_details(
+                    session, "store-tenant-b", controller.id, {"name": "x"}
+                )
 
     async def test_reads_name_their_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -187,6 +213,7 @@ class TestControllers:
                     session,
                     owner_id=owner.id,
                     name="box",
+                    description=None,
                     kind="mainframe",
                     platform=None,
                     version=None,
@@ -431,6 +458,7 @@ async def test_a_write_with_no_tenant_bound_is_refused(
                 session,
                 owner_id=owner.id,
                 name="box",
+                description=None,
                 kind="daemon",
                 platform=None,
                 version=None,
