@@ -43,9 +43,20 @@ export type ManagedActual = {
   detail: string | null;
 };
 
+/**
+ * Whether the machine a moved agent was placed on can run it now, from
+ * Console's own look at that machine's controller. The controller's last
+ * report on the agent counts only while the controller runs.
+ */
+export type ManagedMachine =
+  | { kind: 'running' }
+  | { kind: 'stopped'; reason: string }
+  | { kind: 'unknown'; reason: string };
+
 export type ManagedPlacement = {
   controllerId: string;
   movedAt: string;
+  machine: ManagedMachine;
   /** Null until Switch could be asked, or when it could not. */
   desiredState: 'running' | 'stopped' | null;
   actual: ManagedActual | null;

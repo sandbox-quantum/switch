@@ -141,11 +141,18 @@ async function resolveThisComputer(agent: MigrationAgent): Promise<TargetLookup>
     serverId,
     machineName: overview.enrollment?.name ?? null,
   };
+  const controller: TargetLookup['controller'] = overview.enrollment
+    ? {
+        controllerId: overview.enrollment.controllerId,
+        state: overview.phase.kind === 'running' ? 'running' : 'stopped',
+      }
+    : null;
   const refuse = (blocker: string, canEnable = false): TargetLookup => ({
     display,
     target: null,
     blocker,
     canEnable,
+    controller,
   });
   if (overview.unsupportedReason) return refuse(overview.unsupportedReason);
   const remote = overview.remote;
@@ -179,6 +186,7 @@ async function resolveThisComputer(agent: MigrationAgent): Promise<TargetLookup>
     },
     blocker: null,
     canEnable: false,
+    controller,
   };
 }
 
@@ -192,11 +200,24 @@ async function resolveSshHost(agent: MigrationAgent): Promise<TargetLookup> {
     serverId,
     machineName: overview.enrollment?.name ?? null,
   };
+  const probed = overview.process;
+  const controller: TargetLookup['controller'] = overview.enrollment
+    ? {
+        controllerId: overview.enrollment.controllerId,
+        state:
+          probed?.kind === 'running'
+            ? 'running'
+            : probed?.kind === 'unknown'
+              ? 'unknown'
+              : 'stopped',
+      }
+    : null;
   const refuse = (blocker: string, canEnable = false): TargetLookup => ({
     display,
     target: null,
     blocker,
     canEnable,
+    controller,
   });
   const remote = overview.remote;
   if (remote?.kind === 'unavailable')
@@ -233,6 +254,7 @@ async function resolveSshHost(agent: MigrationAgent): Promise<TargetLookup> {
     },
     blocker: null,
     canEnable: false,
+    controller,
   };
 }
 

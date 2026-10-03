@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type { PlacedManagedAgent } from '@shared/core/embedded-controller/embedded-controller';
 import type { HostControllerOverview } from '@shared/core/host-controllers/host-controllers';
 import {
   canRestartHost,
+  hostAgentActual,
   hostMachineStatus,
   hostToggleBlocker,
   supervisionNote,
@@ -57,6 +59,44 @@ describe('the state of a host as a machine', () => {
       hostMachineStatus({ ...ON, process: { kind: 'stopped', state: 'exited', code: 3, log: '' } })
         .label
     ).toBe('Removed');
+  });
+
+  it('says a controller whose process went away is not running, never that it is', () => {
+    const rebooted: HostControllerOverview = {
+      ...ON,
+      enrollment: { ...ON.enrollment!, supervision: 'detached' },
+      process: {
+        kind: 'stopped',
+        state: 'gone',
+        code: null,
+        log: 'INFO Started agent {"agentId":"agent-1"}',
+      },
+    };
+    const status = hostMachineStatus(rebooted);
+    expect(status).toMatchObject({ label: 'Stopped', tone: 'error' });
+    expect(status.detail).toBe(
+      'The controller is not running. Its process is gone without saying why: the host may have restarted, or the process was killed.\n' +
+        'The last lines it logged:\nINFO Started agent {"agentId":"agent-1"}'
+    );
+    expect(canRestartHost(rebooted)).toBe(true);
+    for (const state of ['running', 'restarting', 'active'])
+      expect(
+        hostMachineStatus({ ...ON, process: { kind: 'stopped', state, code: null, log: '' } })
+          .detail
+      ).not.toMatch(/It is running|reports it running|reports it active/);
+  });
+
+  it('says what the supervisor reports for the other ways it stops', () => {
+    const detail = (state: string, code: number | null = null) =>
+      hostMachineStatus({ ...ON, process: { kind: 'stopped', state, code, log: '' } }).detail;
+    expect(detail('stopped')).toBe('The controller is not running. It was stopped.');
+    expect(detail('never-started')).toBe(
+      'The controller is not running. It has not been started on this host.'
+    );
+    expect(detail('exited', 0)).toBe('The controller is not running. It exited with code 0.');
+    expect(detail('failed', 1)).toBe(
+      'The controller is not running. systemd reports that it failed.'
+    );
   });
 
   it('does not claim to know when the host cannot be asked', () => {
@@ -115,5 +155,43 @@ describe('starting it again', () => {
     expect(
       canRestartHost({ ...ON, process: { kind: 'stopped', state: 'exited', code: 3, log: '' } })
     ).toBe(false);
+  });
+});
+
+describe('the managed agents placed on the host', () => {
+  const AGENT: PlacedManagedAgent = {
+    agentId: 'agent-1',
+    name: 'builder',
+    displayName: null,
+    provider: 'claude',
+    desiredState: 'running',
+    actual: { process: 'running', attached: true, reason: null, detail: 'pid 4242' },
+  };
+
+  it('read as the controller reports them while it runs', () => {
+    expect(hostAgentActual(ON, AGENT)).toEqual({
+      label: 'running',
+      tone: 'ok',
+      detail: 'pid 4242',
+    });
+  });
+
+  it('read as not running while the controller is stopped, whatever they last reported', () => {
+    const stopped: HostControllerOverview = {
+      ...ON,
+      process: { kind: 'stopped', state: 'gone', code: null, log: '' },
+    };
+    expect(hostAgentActual(stopped, AGENT)).toEqual({
+      label: 'not running',
+      tone: 'warn',
+      detail: 'the controller is not running',
+    });
+    expect(hostAgentActual(stopped, { ...AGENT, desiredState: 'stopped' }).tone).toBe('neutral');
+  });
+
+  it('read as unknown while Console cannot tell whether the controller runs', () => {
+    expect(
+      hostAgentActual({ ...ON, process: { kind: 'unknown', reason: 'unreachable' } }, AGENT)
+    ).toMatchObject({ label: 'unknown', tone: 'warn' });
   });
 });

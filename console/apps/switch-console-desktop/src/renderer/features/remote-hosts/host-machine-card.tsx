@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, Server, TriangleAlert } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { moveAllSummary } from '@renderer/features/agent-migration/agent-migration-presentation';
-import { agentActual } from '@renderer/features/switch-servers/this-computer-machine';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
@@ -22,6 +21,7 @@ import { IDLE_RULE } from '@shared/core/agent-migration/agent-migration';
 import { hostControllerStateChannel } from '@shared/events/hostControllerEvents';
 import {
   canRestartHost,
+  hostAgentActual,
   type HostMachineTone,
   hostMachineStatus,
   hostToggleBlocker,
@@ -177,7 +177,7 @@ export function HostMachineCard({
             </li>
           )}
           {overview.remote.agents.map((agent) => {
-            const actual = agentActual(agent);
+            const actual = hostAgentActual(overview, agent);
             return (
               <li key={agent.agentId} className="flex items-center justify-between gap-3 px-3 py-2">
                 <div className="min-w-0">
@@ -186,7 +186,7 @@ export function HostMachineCard({
                   </p>
                   <p className="truncate text-xs text-foreground-muted">
                     {agent.provider} · wanted {agent.desiredState}
-                    {agent.actual?.detail ? ` · ${agent.actual.detail}` : ''}
+                    {actual.detail ? ` · ${actual.detail}` : ''}
                   </p>
                 </div>
                 <StatusBadge tone={TONE[actual.tone]} className="shrink-0">

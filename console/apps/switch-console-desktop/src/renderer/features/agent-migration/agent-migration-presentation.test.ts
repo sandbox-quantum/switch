@@ -27,6 +27,7 @@ const MANAGED: AgentMigrationState = {
   managed: {
     controllerId: 'controller-1',
     movedAt: '2026-10-01T00:00:00Z',
+    machine: { kind: 'running' },
     desiredState: 'running',
     actual: { process: 'running', attached: true, reason: null, detail: null },
     unreadable: null,
@@ -80,6 +81,32 @@ describe('where an agent runs', () => {
         managed: { ...MANAGED.managed!, unreadable: 'Switch no longer manages this agent.' },
       })
     ).toMatchObject({ tone: 'warn', detail: 'Switch no longer manages this agent.' });
+  });
+
+  it('reads as not running while its machine’s controller is stopped, whatever it last reported', () => {
+    const reason = 'gpu-1’s controller is not running. Start it again from the host’s page.';
+    expect(
+      migrationSummary({
+        ...MANAGED,
+        managed: { ...MANAGED.managed!, machine: { kind: 'stopped', reason } },
+      })
+    ).toEqual({ label: 'Managed, not running', tone: 'warn', detail: reason });
+    expect(
+      migrationSummary({
+        ...MANAGED,
+        managed: {
+          ...MANAGED.managed!,
+          machine: {
+            kind: 'unknown',
+            reason: 'Console cannot tell whether gpu-1’s controller runs.',
+          },
+        },
+      })
+    ).toEqual({
+      label: 'Managed',
+      tone: 'warn',
+      detail: 'Console cannot tell whether gpu-1’s controller runs.',
+    });
   });
 
   it('shows a move in flight, including the wait for a turn', () => {

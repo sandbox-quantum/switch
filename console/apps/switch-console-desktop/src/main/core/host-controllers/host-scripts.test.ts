@@ -243,6 +243,27 @@ describe('the detached supervisor', () => {
     expect(runs()).toBe(1);
   });
 
+  it('reports a supervisor that died without recording it as gone, not as running', async () => {
+    const exited = await execute(process.execPath, ['-e', 'console.log(process.pid)']);
+    const deadPid = Number(exited.stdout.trim());
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(
+      join(dataDir(), 'console-supervisor.json'),
+      JSON.stringify({ pid: deadPid, state: 'running', since: '2026-10-03T14:25:00Z' })
+    );
+    writeFileSync(join(dataDir(), 'console-controller.log'), 'INFO Started agent\n');
+    expect(await status()).toEqual({
+      running: false,
+      state: 'gone',
+      code: null,
+      log: 'INFO Started agent',
+    });
+  });
+
+  it('says it was never started when the supervisor left no record', async () => {
+    expect(await status()).toMatchObject({ running: false, state: 'never-started' });
+  });
+
   it('refuses to start a second supervisor', async () => {
     await start('up');
     await until(async () => (await status()).running, 5_000);

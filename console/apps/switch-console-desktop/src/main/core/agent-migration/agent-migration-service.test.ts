@@ -206,7 +206,13 @@ beforeEach(() => {
     records: new Map(),
     subagents: [],
     busy: [false],
-    lookup: { display: TARGET.display, target: TARGET, blocker: null, canEnable: false },
+    lookup: {
+      display: TARGET.display,
+      target: TARGET,
+      blocker: null,
+      canEnable: false,
+      controller: { controllerId: CONTROLLER, state: 'running' },
+    },
     eligibility: { management: true, owner: 'Ada', ownedByMe: true },
     stoppedByHand: false,
     controllerRunning: [false],
@@ -255,7 +261,56 @@ describe('moving an agent onto its controller', () => {
       controllerId: CONTROLLER,
       desiredState: 'running',
       actual: { process: 'running', attached: true },
+      machine: { kind: 'running' },
       unreadable: null,
+    });
+  });
+
+  it('reports the machine as not running it once Console finds its controller stopped', async () => {
+    const service = new AgentMigrationService(deps());
+    await service.moveToManaged(PARENT.id);
+    world.lookup = {
+      display: TARGET.display,
+      target: null,
+      blocker: 'build-box’s controller is not running. Start it again from the host’s page.',
+      canEnable: false,
+      controller: { controllerId: CONTROLLER, state: 'stopped' },
+    };
+    expect((await service.state(PARENT.id)).managed?.machine).toEqual({
+      kind: 'stopped',
+      reason: 'build-box’s controller is not running. Start it again from the host’s page.',
+    });
+  });
+
+  it('says Console cannot tell when the machine cannot be looked at', async () => {
+    const service = new AgentMigrationService({
+      ...deps(),
+      targets: {
+        resolve: async () => {
+          throw new Error('ssh: connect to host build-box port 22: Connection refused');
+        },
+      },
+    });
+    world.records.set(PARENT.id, {
+      agentId: PARENT.id,
+      workspaceId: WORKSPACE,
+      controllerId: CONTROLLER,
+      placement: { kind: 'this-computer', serverId: 'server-1' },
+      movedAt: '2026-10-03T00:00:00Z',
+      identities: [
+        {
+          switchAgentId: 'switch-1',
+          slug: 'builder',
+          subagent: null,
+          credentialsStashed: true,
+          controllerRoot: '/data/watchers/switch-1',
+        },
+      ],
+    });
+    expect((await service.state(PARENT.id)).managed?.machine).toEqual({
+      kind: 'unknown',
+      reason:
+        'Console could not look at the machine: ssh: connect to host build-box port 22: Connection refused',
     });
   });
 
@@ -292,6 +347,7 @@ describe('moving an agent on an SSH host', () => {
       },
       blocker: null,
       canEnable: false,
+      controller: { controllerId: 'controller-ssh', state: 'running' },
     };
     const service = new AgentMigrationService({
       ...deps(),
@@ -546,6 +602,7 @@ describe('what keeps an agent from moving', () => {
           target: null,
           blocker: 'Turn on “Run managed agents on this computer” first.',
           canEnable: true,
+          controller: null,
         }),
       /Turn on/,
     ],
@@ -557,6 +614,7 @@ describe('what keeps an agent from moving', () => {
           target: { ...TARGET, workspaceId: 'workspace-2' },
           blocker: null,
           canEnable: false,
+          controller: { controllerId: CONTROLLER, state: 'running' },
         }),
       /another workspace/,
     ],
@@ -574,6 +632,7 @@ describe('what keeps an agent from moving', () => {
       target: null,
       blocker: 'Turn it on.',
       canEnable: true,
+      controller: null,
     };
     expect((await new AgentMigrationService(deps()).state(PARENT.id)).canEnableTarget).toBe(true);
   });

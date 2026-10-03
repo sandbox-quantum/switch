@@ -1,8 +1,47 @@
-import type { HostControllerOverview } from '@shared/core/host-controllers/host-controllers';
+import { agentActual } from '@renderer/features/switch-servers/this-computer-machine';
+import type { PlacedManagedAgent } from '@shared/core/embedded-controller/embedded-controller';
+import type {
+  HostControllerOverview,
+  HostControllerProcess,
+} from '@shared/core/host-controllers/host-controllers';
 
 export type HostMachineTone = 'neutral' | 'busy' | 'ok' | 'warn' | 'error';
 
 export type HostMachineStatus = { label: string; tone: HostMachineTone; detail: string | null };
+
+type StoppedProcess = Extract<HostControllerProcess, { kind: 'stopped' }>;
+
+/**
+ * Why a stopped controller is not running. The supervisor's word for its
+ * state is never repeated as is: a process the host reports stopped is not
+ * running, whatever word was left behind.
+ */
+function stoppedReason(process: StoppedProcess): string {
+  if (process.code === 3) return 'Switch removed this host as a machine.';
+  if (process.code === 2) return 'It stopped on a configuration error.';
+  if (process.code === 4) return 'Another copy of this controller took over.';
+  switch (process.state) {
+    case 'never-started':
+      return 'It has not been started on this host.';
+    case 'stopped':
+      return 'It was stopped.';
+    case 'exited':
+      return process.code === null ? 'It exited.' : `It exited with code ${process.code}.`;
+    case 'failed':
+      return 'systemd reports that it failed.';
+    case 'inactive':
+      return 'systemd reports it inactive.';
+    case 'gone':
+    case 'running':
+    case 'restarting':
+    case 'active':
+    case 'activating':
+    case 'reloading':
+      return 'Its process is gone without saying why: the host may have restarted, or the process was killed.';
+    default:
+      return `Its supervisor reports it ${process.state}.`;
+  }
+}
 
 /** One line of state for "This host as a machine". */
 export function hostMachineStatus(overview: HostControllerOverview): HostMachineStatus {
@@ -26,23 +65,18 @@ export function hostMachineStatus(overview: HostControllerOverview): HostMachine
       tone: 'warn',
       detail: `Console cannot tell whether the controller runs: ${process.reason}`,
     };
-  if (process?.kind === 'stopped') {
-    const why =
-      process.code === 3
-        ? 'Switch removed this host as a machine.'
-        : process.code === 2
-          ? 'It stopped on a configuration error.'
-          : process.code === 4
-            ? 'Another copy of this controller took over.'
-            : `It is ${process.state}.`;
+  if (process?.kind === 'stopped')
     return {
       label: process.code === 3 ? 'Removed' : 'Stopped',
       tone: 'error',
-      detail: [failed, `The controller is not running. ${why}`, process.log || null]
+      detail: [
+        failed,
+        `The controller is not running. ${stoppedReason(process)}`,
+        process.log ? `The last lines it logged:\n${process.log}` : null,
+      ]
         .filter(Boolean)
         .join('\n'),
     };
-  }
   if (remote?.kind === 'error')
     return {
       label: 'Running',
@@ -109,4 +143,32 @@ export function canRestartHost(overview: HostControllerOverview): boolean {
     overview.process?.kind === 'stopped' &&
     overview.process.code !== 3
   );
+}
+
+export type HostAgentActual = { label: string; tone: HostMachineTone; detail: string | null };
+
+/**
+ * What a managed agent placed on the host is doing. The controller's last
+ * report holds only while the controller runs: with it stopped, or with
+ * Console unable to tell, nothing on the host runs the agent, whatever it
+ * reported before.
+ */
+export function hostAgentActual(
+  overview: HostControllerOverview,
+  agent: PlacedManagedAgent
+): HostAgentActual {
+  const process = overview.process;
+  if (process?.kind === 'stopped')
+    return {
+      label: 'not running',
+      tone: agent.desiredState === 'running' ? 'warn' : 'neutral',
+      detail: 'the controller is not running',
+    };
+  if (process?.kind === 'unknown')
+    return {
+      label: 'unknown',
+      tone: 'warn',
+      detail: 'Console cannot tell whether the controller runs',
+    };
+  return { ...agentActual(agent), detail: agent.actual?.detail ?? null };
 }

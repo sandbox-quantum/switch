@@ -55,6 +55,10 @@ export function migrationSummary(state: AgentMigrationState): MigrationSummary {
   if (!managed)
     return { label: 'Managed', tone: 'ok', detail: `Runs on ${where}, with its parent.` };
   if (managed.unreadable) return { label: 'Managed', tone: 'warn', detail: managed.unreadable };
+  if (managed.machine.kind === 'stopped' && managed.desiredState !== 'stopped')
+    return { label: 'Managed, not running', tone: 'warn', detail: managed.machine.reason };
+  if (managed.machine.kind === 'unknown')
+    return { label: 'Managed', tone: 'warn', detail: managed.machine.reason };
   if (managed.desiredState === 'stopped')
     return { label: 'Managed, stopped', tone: 'neutral', detail: `Placed on ${where}, stopped.` };
   const actual = managed.actual;

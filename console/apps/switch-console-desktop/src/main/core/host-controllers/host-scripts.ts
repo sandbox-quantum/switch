@@ -179,6 +179,11 @@ if (o.supervision === 'systemd') {
 /**
  * Whether the controller runs, and if not, what it last said.
  *
+ * The detached supervisor records its own state, so a supervisor that died
+ * without recording it (the host restarted, or it was killed) leaves a file
+ * that still says `running`. Its process being gone is what counts: that is
+ * reported as the state `gone`, never as the stale word in the file.
+ *
  * Options: `{ supervision, unit, dataDir }`.
  */
 export const STATUS_SCRIPT = String.raw`${EXPAND}
@@ -199,8 +204,10 @@ if (o.supervision === 'systemd') {
   console.log(JSON.stringify({ running: state === 'active' || state === 'activating', state: state, code: code, log: log }));
 } else {
   const saved = readJson(path.join(dataDir, 'console-supervisor.json'));
-  const up = !!(saved && saved.pid && alive(saved.pid) && ['running', 'restarting'].includes(saved.state));
-  console.log(JSON.stringify({ running: up, state: saved ? saved.state : 'never-started', code: saved && saved.code !== undefined ? saved.code : null, log: up ? '' : tail() }));
+  const claimsUp = !!(saved && ['running', 'restarting'].includes(saved.state));
+  const up = claimsUp && !!saved.pid && alive(saved.pid);
+  const state = !saved ? 'never-started' : claimsUp && !up ? 'gone' : saved.state;
+  console.log(JSON.stringify({ running: up, state: state, code: saved && saved.code !== undefined ? saved.code : null, log: up ? '' : tail() }));
 }
 `;
 
