@@ -551,6 +551,9 @@ class AgentConnectionRegistry:
             existing.closure = None
             existing.stream_attached = True
             existing.stream_generation = self._new_incarnation()
+            # Wake the stream this one replaces, so its client hears it was
+            # taken over now rather than on the stream's next idle tick.
+            existing.wake.set()
             # A reattach can come from an upgraded client, so the declaration
             # is replaced rather than kept. The connection outlives the socket;
             # what is on the other end of it need not.

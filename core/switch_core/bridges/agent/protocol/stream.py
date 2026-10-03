@@ -1,22 +1,22 @@
-"""Server-sent event stream for agent connections (CHOO-1857).
+"""The frames of an agent connection (CHOO-1857).
 
-Turns a connection plus the event buffer into a `text/event-stream`: catch-up
+Turns a connection plus the event buffer into a sequence of frames: catch-up
 from the client's cursor, then live delivery as events are appended. The client
-never asks again — it opens once and reads.
+never asks again; it opens once and reads. The WebSocket in
+`api/handlers.py` sends them.
 
-Every event carries its sequence number as the SSE `id`, so a client that
-reconnects sends `Last-Event-ID` and resumes exactly where it stopped. Gaps are
-reported as their own event rather than skipped: a client that has missed
-events must never see a stream that looks complete.
+Every event carries its sequence number, so a client that reconnects names the
+last one it processed and resumes exactly where it stopped. Gaps are reported
+as their own event rather than skipped: a client that has missed events must
+never see a stream that looks complete.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -43,9 +43,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How long to wait for an event before writing a keepalive comment. This exists
-# only to stop proxies dropping an idle connection — liveness comes from the
-# client's heartbeat, never from this.
+# How long the loop waits for work before yielding an idle tick, so whoever
+# reads it gets a chance to do its own periodic work.
 KEEPALIVE_INTERVAL_SECONDS = 15.0
 
 # Cap on how many buffered events are written in one batch, so a large catch-up
@@ -57,8 +56,7 @@ CATCH_UP_BATCH = 200
 class Frame:
     """One message on an agent's event stream, before it is encoded.
 
-    The same frames go out as Server-Sent Events or as WebSocket messages; the
-    loop that decides what to send does not know which.
+    The loop decides what to send; the transport decides how it is encoded.
     """
 
     event: str
@@ -67,8 +65,7 @@ class Frame:
 
 
 # Not a message: the loop's signal that it waited a keepalive interval with
-# nothing to send. SSE turns it into a comment so proxies keep the response
-# open; a WebSocket has its own ping and drops it.
+# nothing to send. The WebSocket has its own ping and drops it.
 KEEPALIVE = Frame("keepalive", {})
 
 
@@ -76,20 +73,9 @@ def _frame(event: str, data: dict[str, Any], *, seq: int | None = None) -> Frame
     return Frame(event, data, seq)
 
 
-def encode_sse(frame: Frame) -> bytes:
-    if frame is KEEPALIVE:
-        return b": keepalive\n\n"
-    lines = []
-    if frame.seq is not None:
-        lines.append(f"id: {frame.seq}")
-    lines.append(f"event: {frame.event}")
-    lines.append(f"data: {json.dumps(frame.data, separators=(',', ':'))}")
-    return ("\n".join(lines) + "\n\n").encode()
-
-
 def encode_ws(frame: Frame) -> dict[str, Any]:
-    """A frame as a WebSocket message. `id` is the sequence number SSE sends
-    as the event id, so a client resumes from it the same way."""
+    """A frame as a WebSocket message. `id` is the event's sequence number,
+    which a reconnecting client passes back as `start_from`."""
     message: dict[str, Any] = {"event": frame.event, "data": frame.data}
     if frame.seq is not None:
         message["id"] = frame.seq
@@ -137,32 +123,6 @@ def _eviction(closure: Closure) -> dict[str, Any]:
         "reason": closure.message,
         "room_id": closure.room_id,
     }
-
-
-def event_stream(
-    *,
-    conn: AgentConnection,
-    registry: AgentConnectionRegistry,
-    buffer: EventBuffer,
-    approvals: ApprovalOutcomes | None,
-) -> AsyncIterator[bytes]:
-    """The connection's frames as Server-Sent Events.
-
-    A plain function rather than a generator, so the frames are created, and
-    the connection's generation captured, at the call: a stream replaced
-    before its first read must not pick up its successor's.
-    """
-    return _as_sse(
-        event_frames(conn=conn, registry=registry, buffer=buffer, approvals=approvals)
-    )
-
-
-async def _as_sse(frames: AsyncGenerator[Frame]) -> AsyncIterator[bytes]:
-    try:
-        async for frame in frames:
-            yield encode_sse(frame)
-    finally:
-        await frames.aclose()
 
 
 def event_frames(

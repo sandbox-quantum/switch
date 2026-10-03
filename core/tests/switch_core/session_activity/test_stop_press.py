@@ -7,7 +7,7 @@ from sqlalchemy import update
 
 from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.protocol.agent_connections import (
-    SESSION_COMMAND_PROTOCOL_REVISION,
+    PROTOCOL_VERSION,
     AgentConnectionRegistry,
     ClientDeclaration,
 )
@@ -47,7 +47,7 @@ def _watching(registry: AgentConnectionRegistry):
         delivery_filter="addressed",
         spawn_capable=False,
         cursor=0,
-        declaration=ClientDeclaration(speaks=SESSION_COMMAND_PROTOCOL_REVISION),
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
     conn.stream_attached = True

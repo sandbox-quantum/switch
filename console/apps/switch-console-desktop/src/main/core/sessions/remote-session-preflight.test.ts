@@ -23,7 +23,7 @@ function makeDeps(opts: {
   endpoint?: string;
 }) {
   const missing = opts.missingBinaries ?? [];
-  const nodeVersion = opts.nodeVersion ?? 'v18.19.0';
+  const nodeVersion = opts.nodeVersion ?? 'v22.12.0';
   const exec = vi.fn(async (command: string, _args: string[]) => {
     // Combined working-dir + required-tools probe (`sh -c <script>`). A missing
     // dir or exhausted channel rejects; otherwise missing tools and node's
@@ -119,7 +119,7 @@ describe('preflightRemoteSession', () => {
   it('fails loud when node is present but too old', async () => {
     const deps = makeDeps({ nodeVersion: 'v12.22.9', credsFile: CREDS_FILE });
     await expect(preflightRemoteSession(deps)).rejects.toThrow(
-      /has Node v12.22.9, but the Switch Console sidecar needs Node 18 or newer/
+      /has Node v12.22.9, but the Switch Console sidecar needs Node 22 or newer/
     );
   });
 

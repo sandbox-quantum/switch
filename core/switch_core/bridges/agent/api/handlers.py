@@ -21,7 +21,7 @@ from fastapi import (
 )
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response
 
 from switch_core.bridges.agent.api.schemas import (
     AcceptTaskRequest,
@@ -29,7 +29,6 @@ from switch_core.bridges.agent.api.schemas import (
     AgentListResponse,
     BulkRegisterResult,
     CancelTaskRequest,
-    ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionRenewRequest,
     ConnectionSubscribeRequest,
@@ -90,14 +89,11 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     Closure,
     ConnectionError_,
     DeliveryFilter,
-    NoStreamAttachedError,
     ProtocolVersionError,
     RoomOccupiedError,
     Scope,
-    SupersededConnectionError,
     SupersededControlError,
     SupersededReattachError,
-    UnfencedBeatError,
     UnfencedControlError,
     UnknownConnectionError,
     evicted_session_warning,
@@ -109,7 +105,6 @@ from switch_core.bridges.agent.protocol.stream import (
     Frame,
     encode_ws,
     event_frames,
-    event_stream,
 )
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_TYPE,
@@ -728,112 +723,43 @@ async def poll_events(
     client: Annotated[str | None, Query()] = None,
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
-    last_event_id: Annotated[str | None, Header(alias="last-event-id")] = None,
 ) -> EventResponse | Response:
-    """Deliver the agent's events, as a push stream or a long poll.
+    """Deliver the agent's events as a long poll.
 
-    `Accept: text/event-stream` opens a connection and streams: catch-up from
-    the client's cursor, then live delivery. Anything else falls back to the
-    long poll, which is served from the same buffer so the two cannot diverge
-    while both exist.
-
-    The four declaration parameters are all optional and all default to None,
-    meaning *unknown* (CHOO-1865). `protocol` previously defaulted to the
-    server's own value, so a client that said nothing was read as having
-    agreed — and since no shipped client sent it, the check had never once
-    fired. Absent now records as unknown, and still connects.
+    The live connection is the WebSocket at `/connection/ws`. A request for the
+    old Server-Sent Events stream is refused with what to do about it.
     """
     if accept and "text/event-stream" in accept:
-        return await _open_event_stream(
-            agent=agent,
-            protocol=protocol,
-            connection_id=connection_id,
-            scope=scope,
-            event_filter=event_filter,
-            start_from=start_from,
-            spawn_capable=spawn_capable,
-            declaration=ClientDeclaration(
-                speaks=protocol_version,
-                accepts=protocol_accepts,
-                artifact=client,
-                version=client_version,
-            ),
-            rooms=rooms,
-            last_event_id=last_event_id,
-            expected_generation=expected_generation,
+        # The agent connection moved to one WebSocket, which carries both the
+        # events and the heartbeat. A client still asking for the stream is
+        # an old runtime, and is told what to do rather than left retrying.
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "code": "transport_removed",
+                "message": "The event stream over Server-Sent Events was "
+                "replaced by a WebSocket at /agents/{agent_id}/connection/ws.",
+                "remedy": "Update Switch Console, or the agent runtime, to a "
+                "version that connects over the WebSocket.",
+            },
         )
-
     events = await protocol.poll_events(agent.id, timeout=timeout)
     if not events:
         return Response(status_code=204)
     return EventResponse(events=events)
 
 
-def _resolve_start_cursor(
-    protocol: AgentCore,
-    agent_id: str,
-    start_from: str,
-    last_event_id: str | None,
-) -> int:
-    """Where a stream begins.
-
-    `Last-Event-ID` wins when present: a reconnecting SSE client sends it
-    automatically and it is the most accurate statement of what it processed.
-    """
-    raw = last_event_id or start_from
-    if raw in ("", "head"):
+def _resolve_start_cursor(protocol: AgentCore, agent_id: str, start_from: str) -> int:
+    """Where a connection's events begin: the head, or a sequence number."""
+    if start_from in ("", "head"):
         return protocol.event_buffer.head(agent_id)
     try:
-        return max(int(raw), 0)
+        return max(int(start_from), 0)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"start_from must be 'head' or a sequence number, got {raw!r}",
+            detail=f"start_from must be 'head' or a sequence number, got {start_from!r}",
         ) from exc
-
-
-async def _open_event_stream(
-    *,
-    agent: Agent,
-    protocol: AgentCore,
-    connection_id: str | None,
-    scope: str,
-    event_filter: str,
-    start_from: str,
-    spawn_capable: bool,
-    declaration: ClientDeclaration,
-    rooms: str | None,
-    last_event_id: str | None,
-    expected_generation: int | None,
-) -> StreamingResponse:
-    conn = await _open_connection(
-        agent=agent,
-        protocol=protocol,
-        connection_id=connection_id,
-        scope=scope,
-        event_filter=event_filter,
-        start_from=start_from,
-        spawn_capable=spawn_capable,
-        declaration=declaration,
-        rooms=rooms,
-        last_event_id=last_event_id,
-        expected_generation=expected_generation,
-    )
-    return StreamingResponse(
-        event_stream(
-            conn=conn,
-            registry=protocol.connections,
-            buffer=protocol.event_buffer,
-            approvals=protocol.approval_outcomes,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            # Proxies that buffer would defeat the point of a push channel.
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 async def _open_connection(
@@ -847,7 +773,6 @@ async def _open_connection(
     spawn_capable: bool,
     declaration: ClientDeclaration,
     rooms: str | None,
-    last_event_id: str | None,
     expected_generation: int | None,
 ) -> AgentConnection:
     if not connection_id:
@@ -867,7 +792,7 @@ async def _open_connection(
             detail=f"filter must be 'all' or 'addressed', got {event_filter!r}",
         )
 
-    cursor = _resolve_start_cursor(protocol, agent.id, start_from, last_event_id)
+    cursor = _resolve_start_cursor(protocol, agent.id, start_from)
 
     try:
         conn = protocol.connections.open(
@@ -968,59 +893,33 @@ async def _open_connection(
     return conn
 
 
-@router.post("/{agent_id}/connection/beat")
-async def connection_beat(
+def _record_beat(
+    protocol: AgentCore,
     agent_id: str,
-    req: ConnectionBeatRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, Any]:
-    """The single per-connection heartbeat.
+    connection_id: str,
+    cursor: int,
+    generation: int,
+) -> AgentConnection:
+    """Count a client's answer to a ping as a beat, and adopt its cursor.
 
-    Proves the client is alive and reports its cursor. Rejected when the
-    connection is unknown, dead, has no stream attached, or belongs to another
-    incarnation — an agent that can still make calls but is receiving nothing
-    must be told, not left believing it is connected. A refusal carries a code
-    beside its prose, because the remedies differ: `taken_over` is terminal for
-    the client that receives it, and the rest are recovered by reopening.
+    The cursor is clamped to the buffer head first. The buffer is in memory,
+    so a restart resets the sequence while a client keeps reporting the
+    number it had reached, and neither `beat()` nor `confirm()` will move a
+    cursor backwards: adopting the stale number would skip every event up to
+    it, silently, and mark them consumed on the way past.
+
+    Raises the registry's refusal when the connection is no longer this
+    client's to beat for: another socket took it over (`taken_over`), or it
+    has no stream attached (`no_stream`), or it is gone.
     """
-    # A cursor above the buffer's head belongs to a previous life of this
-    # process: the buffer is in memory, so a restart resets the sequence while
-    # the client keeps beating the number it had reached. Both consumers below
-    # only ever move a cursor forward, so adopting it undoes the rewind the
-    # stream performs on resume — the connection then skips every event up to
-    # the stale value and confirms events it was never delivered. Clamp it here,
-    # where the untrusted value enters, rather than in either consumer.
-    head = protocol.event_buffer.head(agent.id)
-    cursor = min(req.cursor, head)
-
-    try:
-        conn = protocol.connections.beat(
-            agent.id, req.connection_id, cursor, req.generation
-        )
-    except (
-        NoStreamAttachedError,
-        SupersededConnectionError,
-        UnfencedBeatError,
-    ) as exc:
-        # All three refuse the tick, and one of them means something the others
-        # do not: a superseded tick is terminal for the client that sent it,
-        # because reopening is itself a takeover and would pull the connection
-        # back off the client that now holds it. Prose alone could not tell
-        # them apart, so every refusal was answered with a reopen.
-        raise HTTPException(
-            status_code=409, detail={"code": exc.code, "message": str(exc)}
-        ) from exc
-    except UnknownConnectionError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    protocol.event_buffer.confirm(agent.id, conn.id, cursor)
-    return {"ok": True, "rooms": sorted(conn.rooms), "cursor": conn.cursor}
+    cursor = min(cursor, protocol.event_buffer.head(agent_id))
+    conn = protocol.connections.beat(agent_id, connection_id, cursor, generation)
+    protocol.event_buffer.confirm(agent_id, conn.id, cursor)
+    return conn
 
 
-# A WebSocket close code for each refusal the SSE stream answers with an HTTP
-# status: 4000 plus the status, so a client maps both transports onto one set
-# of remedies.
+# A WebSocket close code for each refusal that would otherwise be an HTTP
+# status: 4000 plus the status, so a client maps them onto one set of remedies.
 def _ws_close_code(status: int) -> int:
     return 4000 + status
 
@@ -1056,7 +955,7 @@ async def connection_socket(
     and no token lookup.
 
     A refusal on opening is sent as a `refused` frame carrying the status and
-    detail the SSE stream would have answered with, then the socket closes
+    detail an HTTP request would have been answered with, then the socket closes
     with code 4000 plus that status.
     """
     await websocket.accept()
@@ -1076,7 +975,6 @@ async def connection_socket(
                 version=client_version,
             ),
             rooms=rooms,
-            last_event_id=None,
             expected_generation=expected_generation,
         )
     except HTTPException as exc:
@@ -1109,8 +1007,18 @@ async def connection_socket(
         # so frames and pings both go out from this loop.
         while not pump.done() or not outbox.empty():
             if pongs.done():
-                # The client closed, or a pong was refused as a beat; either
-                # way this socket is finished.
+                refusal = pongs.result()
+                if refusal is not None:
+                    await websocket.send_json(
+                        {
+                            "event": "evicted",
+                            "data": {
+                                "code": getattr(refusal, "code", "closed"),
+                                "reason": str(refusal),
+                                "room_id": None,
+                            },
+                        }
+                    )
                 return
             try:
                 frame = await asyncio.wait_for(
@@ -1153,11 +1061,12 @@ async def _receive_pongs(
     agent_id: str,
     connection_id: str,
     generation: int,
-) -> None:
+) -> ConnectionError_ | None:
     """Turn each pong into a beat, until the client goes or a beat is refused.
 
-    The same refusals as `/connection/beat`; the event stream reports the
-    reason (taken over, lapsed) on its own, so this only stops listening.
+    Returns the refusal, so the socket can say which one before it closes:
+    `taken_over` is final for this client, the rest are recovered by
+    reconnecting. Returns None when the client simply went away.
     """
     while True:
         try:
@@ -1165,24 +1074,15 @@ async def _receive_pongs(
         except (WebSocketDisconnect, ValueError, RuntimeError):
             # Gone, or sent something that is not JSON: either way no more
             # beats are coming on this socket.
-            return
+            return None
         if not isinstance(message, dict) or message.get("type") != "pong":
             continue
         raw = message.get("cursor", 0)
         cursor = raw if isinstance(raw, int) and raw >= 0 else 0
-        cursor = min(cursor, protocol.event_buffer.head(agent_id))
         try:
-            conn = protocol.connections.beat(
-                agent_id, connection_id, cursor, generation
-            )
-        except (
-            NoStreamAttachedError,
-            SupersededConnectionError,
-            UnfencedBeatError,
-            UnknownConnectionError,
-        ):
-            return
-        protocol.event_buffer.confirm(agent_id, conn.id, cursor)
+            _record_beat(protocol, agent_id, connection_id, cursor, generation)
+        except ConnectionError_ as refusal:
+            return refusal
 
 
 def _current_connection(

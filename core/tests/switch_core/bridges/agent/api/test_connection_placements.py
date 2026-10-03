@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from switch_core.bridges.agent.api.handlers import connection_placements
 from switch_core.bridges.agent.api.schemas import ConnectionPlacementsRequest
 from switch_core.bridges.agent.protocol.agent_connections import (
-    ROOM_RELEASED_PROTOCOL_REVISION,
+    PROTOCOL_VERSION,
     AgentConnection,
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -49,7 +49,7 @@ def _open(
         delivery_filter="all",
         spawn_capable=True,
         cursor=0,
-        declaration=ClientDeclaration(speaks=ROOM_RELEASED_PROTOCOL_REVISION),
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
 
