@@ -319,6 +319,10 @@ class AgentSessionDetail(BaseModel):
 
 class AgentDetail(AgentSummary):
     agent_type: str
+    # Whether the agent may act on its owner's agent management (list the
+    # owner's machines and managed agents, create managed agents on them).
+    # Only the owner changes it; it matters only where agent management runs.
+    can_manage_agents: bool
     integration_profile: dict[str, Any]
     tools: list[AgentToolSummary]
     models: list[AgentModelSummary]
@@ -333,6 +337,14 @@ class UpdateAddressingPolicyRequest(BaseModel):
     ``policy: null`` clears it — the agent becomes open to anyone again."""
 
     policy: AddressingPolicy | None = None
+
+
+class UpdateAgentCanManageAgentsRequest(BaseModel):
+    """Turn an agent's "can manage agents" capability on or off."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
 
 
 class UpdateAgentIconRequest(BaseModel):

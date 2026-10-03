@@ -28,6 +28,7 @@ from switch_core.management.schemas import (
     CreateOperationRequest,
     PatchManagedAgentRequest,
     PutManagedAgentRequest,
+    UpdateControllerRequest,
     wire_time,
 )
 from switch_core.management.service import ManagementService, placement_from
@@ -69,6 +70,7 @@ async def enroll_console(
         description=ControllerDescription(
             kind=body.kind,
             name=body.name,
+            description=body.description,
             platform=body.platform,
             version=body.version,
         ),
@@ -82,6 +84,24 @@ async def list_controllers(
     session: Session, user: CurrentUser, management: Management
 ) -> list[dict[str, Any]]:
     return await management.list_controllers(session, require_tenant_id(), user.id)
+
+
+@router.patch("/controllers/{controller_id}")
+async def update_controller(
+    controller_id: str,
+    body: UpdateControllerRequest,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+) -> dict[str, Any]:
+    """Rename the machine and/or change its description."""
+    return await management.update_controller(
+        session,
+        require_tenant_id(),
+        user.id,
+        controller_id,
+        {key: getattr(body, key) for key in body.model_fields_set},
+    )
 
 
 @router.delete("/controllers/{controller_id}")

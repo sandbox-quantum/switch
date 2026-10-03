@@ -2125,11 +2125,13 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
         {id, name, description, icon_url, display_name, connector_type,
         connection_model, tool_count, model_count, owner_id, owner_name,
         oauth_client_id, created_at, parent_agent_id, known_agent_type,
-        known_agent_options, agent_type, integration_profile, tools, models,
-        rooms, sessions, children}.
+        known_agent_options, agent_type, can_manage_agents,
+        integration_profile, tools, models, rooms, sessions, children}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`; `display_name` routes nothing.
+        `can_manage_agents` is whether the agent's owner lets it list their
+        machines and create agents on them, where agent management runs.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()

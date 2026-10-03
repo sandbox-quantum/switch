@@ -67,6 +67,8 @@ export interface StatusReport {
 export interface Controller {
   id: string;
   name: string;
+  /** What its owner says the machine is for; null when none was given. */
+  description: string | null;
   kind: "console" | "daemon" | "ec2";
   platform: Platform | null;
   version: string | null;
@@ -184,6 +186,23 @@ export function fetchControllers(): Promise<Controller[]> {
 
 export function createEnrollmentCode(): Promise<EnrollmentCode> {
   return request<EnrollmentCode>("/enrollment-codes", { method: "POST" });
+}
+
+export const MAX_MACHINE_NAME = 200;
+export const MAX_MACHINE_DESCRIPTION = 500;
+
+/**
+ * Rename a machine and/or change its description. A key left out is left as
+ * it is; `description: null` clears it.
+ */
+export function updateController(
+  controllerId: string,
+  body: { name?: string; description?: string | null },
+): Promise<Controller> {
+  return request<Controller>(`/controllers/${encodeURIComponent(controllerId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
 }
 
 export async function revokeController(controllerId: string): Promise<void> {

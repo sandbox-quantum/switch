@@ -8,6 +8,7 @@ import {
   managementErrorCode,
   managementErrorMessage,
   revokeManagementController,
+  updateManagementController,
 } from '@main/core/switch-servers/gateway-client';
 import { withReachableWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import type { EmbeddedControllerRemote } from '@shared/core/embedded-controller/embedded-controller';
@@ -22,7 +23,14 @@ export function placedOn(
   const controller = controllers.find((candidate) => candidate.id === controllerId) ?? null;
   return {
     kind: 'ok',
-    controller: controller ? { state: controller.state, lastSeenAt: controller.lastSeenAt } : null,
+    controller: controller
+      ? {
+          name: controller.name,
+          description: controller.description,
+          state: controller.state,
+          lastSeenAt: controller.lastSeenAt,
+        }
+      : null,
     agents: agents
       .filter((agent) => agent.controllerId === controllerId)
       .map((agent) => ({
@@ -63,6 +71,21 @@ export const gatewayManagementPort: ManagementPort = {
     } catch (error) {
       if (error instanceof AgentManagementUnavailableError) return { kind: 'unavailable' };
       return { kind: 'error', message: managementErrorMessage(error) };
+    }
+  },
+
+  update: async (workspaceId, controllerId, changes) => {
+    try {
+      await withReachableWorkspaceSession(workspaceId, (server) =>
+        updateManagementController(server, controllerId, changes)
+      );
+    } catch (error) {
+      throw new Error(
+        `Could not change this computer in Switch: ${managementErrorMessage(error)}`,
+        {
+          cause: error,
+        }
+      );
     }
   },
 

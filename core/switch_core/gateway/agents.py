@@ -48,6 +48,7 @@ from switch_core.gateway.schemas import (
     RegisterKnownSubagentsResponse,
     RegisterOtherAgentRequest,
     UpdateAddressingPolicyRequest,
+    UpdateAgentCanManageAgentsRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
     UpdateAgentOptionsRequest,
@@ -574,6 +575,57 @@ async def update_addressing_policy(
         "Updated addressing policy for agent %s (%d rules) by user %s",
         agent.name,
         len(req.policy.rules) if req.policy is not None else 0,
+        user.name,
+    )
+
+    return await assemble_agent_detail(
+        session,
+        agent=agent,
+        agent_store=agent_store,
+        room_store=room_store,
+        user_store=user_store,
+        agent_session_store=protocol.agent_session_store,
+        room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
+    )
+
+
+@router.put("/{agent_id}/can-manage-agents")
+async def update_can_manage_agents(
+    agent_id: str,
+    req: UpdateAgentCanManageAgentsRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> AgentDetail:
+    """Turn the agent's "can manage agents" capability on or off.
+
+    With it on, the agent may list its owner's machines and managed agents
+    and create managed agents on those machines, acting for its owner. Only
+    the agent's owner may change it — not an admin, since the agent then acts
+    on the owner's own machines. It has an effect only on a server running
+    agent management, where those operations exist.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    if agent.owner_id is None or agent.owner_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner can change whether it can manage agents.",
+        )
+
+    await agent_store.update(session, agent_id, can_manage_agents=req.enabled)
+    await session.commit()
+    await session.refresh(agent)
+
+    logger.info(
+        "%s 'can manage agents' for agent %s by its owner %s",
+        "Enabled" if req.enabled else "Disabled",
+        agent.name,
         user.name,
     )
 

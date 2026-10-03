@@ -21,7 +21,10 @@ from switch_core.bridges.agent.api.operations import (
 )
 from switch_core.bridges.agent.mcp import server as mcp_server
 from switch_core.bridges.agent.operations import context as op_context
-from switch_core.bridges.agent.operations import get_operation
+from switch_core.bridges.agent.operations import get_operation, registry
+from switch_core.bridges.agent.operations.agent_management import (
+    AGENT_MANAGEMENT_OPERATIONS,
+)
 from switch_core.bridges.agent.operations.callctx import (
     CallContext,
     current_call_context,
@@ -34,12 +37,23 @@ AGENT = "agent-1"
 
 
 async def _tool_names() -> set[str]:
-    return {tool.name for tool in await mcp_server.mcp._list_tools()}
+    """The tools an MCP client is offered, the server's middleware included."""
+    return {tool.name for tool in await mcp_server.mcp.list_tools()}
 
 
 async def test_every_operation_is_registered_as_an_mcp_tool() -> None:
     # The MCP door registers whatever the registry holds, so this is the
     # parity guarantee: neither door can be missing an operation the other has.
+    assert set(list_operations()) == await _tool_names()
+
+
+async def test_parity_holds_with_an_operation_group_enabled() -> None:
+    registry.enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
+    try:
+        assert {"list_machines", "create_agent"} <= set(list_operations())
+        assert set(list_operations()) == await _tool_names()
+    finally:
+        registry.disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     assert set(list_operations()) == await _tool_names()
 
 

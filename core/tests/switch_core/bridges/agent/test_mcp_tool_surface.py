@@ -8,12 +8,20 @@ rather than surfacing as an agent calling into nothing.
 """
 
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
 from switch_core.bridges.agent.mcp.server import mcp
 from switch_core.bridges.agent.operations import all_operations
+from switch_core.bridges.agent.operations.agent_management import (
+    AGENT_MANAGEMENT_OPERATIONS,
+)
+from switch_core.bridges.agent.operations.registry import (
+    disable_operation_group,
+    enable_operation_group,
+)
 
 TASK_PROTOCOL_TOOLS = {
     "delegate_task",
@@ -25,9 +33,30 @@ TASK_PROTOCOL_TOOLS = {
 }
 
 
+# Tools that exist only on a server running agent management. The skill
+# documents them for those servers (and says they are absent elsewhere), so the
+# surface is read here with their group enabled.
+AGENT_MANAGEMENT_TOOLS = {"list_machines", "create_agent", "list_managed_agents"}
+
+
 @pytest.fixture
-async def tool_names() -> set[str]:
-    return {tool.name for tool in await mcp.list_tools()}
+async def tool_names() -> AsyncIterator[set[str]]:
+    enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
+    try:
+        yield {tool.name for tool in await mcp.list_tools()}
+    finally:
+        disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
+
+
+async def test_agent_management_tools_exist_only_with_their_group_enabled() -> None:
+    names = {tool.name for tool in await mcp.list_tools()}
+    assert not AGENT_MANAGEMENT_TOOLS & names
+    enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
+    try:
+        names = {tool.name for tool in await mcp.list_tools()}
+    finally:
+        disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
+    assert AGENT_MANAGEMENT_TOOLS <= names
 
 
 async def test_task_protocol_is_fully_exposed(tool_names: set[str]) -> None:
@@ -89,6 +118,7 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
         "list_agents",
         "get_agent_detail",
         "update_agent_detail",
+        *AGENT_MANAGEMENT_TOOLS,
     }
 
     assert documented <= tool_names, (

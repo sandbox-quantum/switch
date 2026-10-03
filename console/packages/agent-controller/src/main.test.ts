@@ -49,6 +49,64 @@ describe('main', () => {
     expect(await main(['--help'])).toBe(EXIT_OK);
   });
 
+  it('enrolls with the name and description it is given', async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(
+          JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      })
+    );
+    const code = await main([
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--name',
+      'build-box',
+      '--description',
+      '  The build box in the office ',
+      '--data-dir',
+      dir,
+    ]);
+    vi.unstubAllGlobals();
+    expect(code).toBe(EXIT_OK);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({
+      controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
+    });
+  });
+
+  it('enrolls without a description when none is given, and refuses an overlong one', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(
+          JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      })
+    );
+    const base = ['enroll', '--server', 'https://switch.example.com', '--code', 'swce_test'];
+    expect(await main([...base, '--description', 'x'.repeat(501), '--data-dir', dir])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(lastLine()).toBe(
+      'switch-agent-controller: --description must be at most 500 characters.'
+    );
+    expect(await main([...base, '--name', 'box', '--data-dir', dir])).toBe(EXIT_OK);
+    vi.unstubAllGlobals();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]!.controller).not.toHaveProperty('description');
+  });
+
   it('exits 2 when the data directory belongs to another controller', async () => {
     const store = ControllerStore.open(join(dir, 'controller.db'));
     store.saveIdentity({

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Computer, ExternalLink, RefreshCw, TriangleAlert } from 'lucide-react';
+import { Computer, ExternalLink, Pencil, RefreshCw, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -16,9 +16,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import { Input } from '@renderer/lib/ui/input';
+import { Label } from '@renderer/lib/ui/label';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { Switch } from '@renderer/lib/ui/switch';
-import type { EmbeddedControllerOverview } from '@shared/core/embedded-controller/embedded-controller';
+import { Textarea } from '@renderer/lib/ui/textarea';
+import {
+  type EmbeddedControllerOverview,
+  MAX_MACHINE_DESCRIPTION,
+  MAX_MACHINE_NAME,
+  type MachineDetailsChange,
+} from '@shared/core/embedded-controller/embedded-controller';
 import { embeddedControllerStateChannel } from '@shared/events/embeddedControllerEvents';
 import { switchServersStore } from './switch-servers-store';
 import {
@@ -202,6 +210,10 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
         )}
       </div>
 
+      {overview.enrollment && (
+        <MachineDetails serverId={serverId} overview={overview} onSaved={refresh} />
+      )}
+
       {overview.enrollment && <PlacedAgents overview={overview} />}
 
       <Dialog open={confirmingOff} onOpenChange={setConfirmingOff}>
@@ -247,6 +259,134 @@ function Heading() {
           them while it is open.
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * This computer's name and description as a machine on the server, which its
+ * owner sees on the Machines page and agents allowed to manage agents read
+ * when they pick a machine, with an edit action.
+ */
+function MachineDetails({
+  serverId,
+  overview,
+  onSaved,
+}: {
+  serverId: string;
+  overview: EmbeddedControllerOverview;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const save = useMutation({
+    mutationFn: (changes: MachineDetailsChange) =>
+      rpc.embeddedController.updateDetails({ serverId, changes }),
+    onSuccess: () => setEditing(false),
+    onSettled: onSaved,
+  });
+
+  const remote = overview.remote;
+  const controller = remote?.kind === 'ok' ? remote.controller : null;
+  if (!controller || controller.state === 'revoked') return null;
+
+  const trimmedName = name.trim();
+  const trimmedDescription = description.trim();
+  const nameProblem = !trimmedName
+    ? 'A machine needs a name.'
+    : trimmedName.length > MAX_MACHINE_NAME
+      ? `At most ${MAX_MACHINE_NAME} characters.`
+      : null;
+  const descriptionProblem =
+    trimmedDescription.length > MAX_MACHINE_DESCRIPTION
+      ? `At most ${MAX_MACHINE_DESCRIPTION} characters.`
+      : null;
+  const changes: MachineDetailsChange = {
+    ...(trimmedName !== controller.name ? { name: trimmedName } : {}),
+    ...(trimmedDescription !== (controller.description ?? '')
+      ? { description: trimmedDescription || null }
+      : {}),
+  };
+
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p className="truncate text-sm text-foreground">{controller.name}</p>
+        <p className="truncate text-xs text-foreground-muted">
+          {controller.description ?? 'No description'}
+        </p>
+      </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label="Rename or describe this computer"
+        onClick={() => {
+          setName(controller.name);
+          setDescription(controller.description ?? '');
+          save.reset();
+          setEditing(true);
+        }}
+      >
+        <Pencil className="size-4" />
+        Edit
+      </Button>
+      <Dialog open={editing} onOpenChange={setEditing}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>This computer as a machine</DialogTitle>
+          </DialogHeader>
+          <DialogContentArea className="gap-3">
+            <DialogDescription>
+              The name and description your Machines page shows, and that agents you allow to manage
+              agents see when they pick a machine.
+            </DialogDescription>
+            <div className="space-y-1">
+              <Label htmlFor="machine-name">Name</Label>
+              <Input
+                id="machine-name"
+                value={name}
+                aria-invalid={nameProblem !== null}
+                onChange={(event) => setName(event.target.value)}
+              />
+              {nameProblem && <p className="text-xs text-foreground-error">{nameProblem}</p>}
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="machine-description">Description</Label>
+              <Textarea
+                id="machine-description"
+                value={description}
+                placeholder="What this computer is for"
+                aria-invalid={descriptionProblem !== null}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+              {descriptionProblem && (
+                <p className="text-xs text-foreground-error">{descriptionProblem}</p>
+              )}
+            </div>
+            {save.error && (
+              <p className="text-xs text-foreground-error">
+                {failureText(save.error, 'Could not save.')}
+              </p>
+            )}
+          </DialogContentArea>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" size="sm" />}>Cancel</DialogClose>
+            <Button
+              size="sm"
+              disabled={
+                save.isPending ||
+                nameProblem !== null ||
+                descriptionProblem !== null ||
+                Object.keys(changes).length === 0
+              }
+              onClick={() => save.mutate(changes)}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

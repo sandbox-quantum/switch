@@ -43,6 +43,7 @@ import {
 } from "../../data/management";
 import { EM_DASH, absoluteTitle, formatRelative } from "../../theme/hootFormat";
 import AddMachineDialog from "./AddMachineDialog";
+import EditMachineDialog from "./EditMachineDialog";
 import ManagedAgentDialog from "./ManagedAgentDialog";
 
 const REFRESH_MS = 10_000;
@@ -118,6 +119,7 @@ export default function MachinesPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<ManagedAgent | null | "new">(null);
   const [revokeTarget, setRevokeTarget] = useState<Controller | null>(null);
+  const [machineTarget, setMachineTarget] = useState<Controller | null>(null);
   const [unmanageTarget, setUnmanageTarget] = useState<ManagedAgent | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -171,7 +173,27 @@ export default function MachinesPage() {
 
   const machineColumns = useMemo<GridColDef<Controller>[]>(
     () => [
-      { field: "name", headerName: "Machine", flex: 1, minWidth: 160 },
+      {
+        field: "name",
+        headerName: "Machine",
+        flex: 1,
+        minWidth: 160,
+        renderCell: ({ row }) =>
+          row.description ? (
+            <Tooltip title={row.description}>
+              <Stack justifyContent="center" sx={{ height: "100%", lineHeight: 1.3, overflow: "hidden" }}>
+                <Typography variant="body2" noWrap>
+                  {row.name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>
+                  {row.description}
+                </Typography>
+              </Stack>
+            </Tooltip>
+          ) : (
+            row.name
+          ),
+      },
       {
         field: "state",
         headerName: "State",
@@ -242,7 +264,7 @@ export default function MachinesPage() {
       {
         field: "actions",
         headerName: "",
-        width: 100,
+        width: 130,
         sortable: false,
         filterable: false,
         renderCell: ({ row }) => {
@@ -276,6 +298,15 @@ export default function MachinesPage() {
                     <RefreshOutlined fontSize="small" />
                   </IconButton>
                 </span>
+              </Tooltip>
+              <Tooltip title="Rename or describe">
+                <IconButton
+                  size="small"
+                  aria-label={`Edit machine ${row.name}`}
+                  onClick={() => setMachineTarget(row)}
+                >
+                  <EditOutlined fontSize="small" />
+                </IconButton>
               </Tooltip>
               <Tooltip title="Revoke">
                 <span>
@@ -565,6 +596,15 @@ export default function MachinesPage() {
       </Box>
 
       <AddMachineDialog open={addOpen} onClose={() => setAddOpen(false)} />
+
+      <EditMachineDialog
+        machine={machineTarget}
+        onClose={() => setMachineTarget(null)}
+        onSaved={(saved) => {
+          setNotice({ severity: "success", text: `Saved ${saved.name}` });
+          void load();
+        }}
+      />
 
       <ManagedAgentDialog
         open={editing !== null}

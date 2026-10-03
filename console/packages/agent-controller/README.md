@@ -34,7 +34,7 @@ Create a one-time enrollment code in Switch. It is valid for 10 minutes. Then:
 node packages/agent-controller/dist/cli.mjs enroll \
   --server https://switch.example.com \
   --code <code> \
-  [--name build-box] [--data-dir <dir>]
+  [--name build-box] [--description "The build box in the office"] [--data-dir <dir>]
 
 node packages/agent-controller/dist/cli.mjs run [--data-dir <dir>]
 node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
@@ -44,6 +44,10 @@ node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
   accepted only for a loopback server. Agents never see it: they reach Switch
   through the controller's relay.
 - `--name` defaults to the host name.
+- `--description` says what the machine is for (optional, at most 500
+  characters). Its owner sees it in the gateway's Machines page, where both the
+  name and the description can be changed later, and so do the agents allowed
+  to manage agents for that owner.
 - `status` reads only local state. It makes no network call.
 - Logging goes to stderr. Set the level with `SWITCH_CONTROLLER_LOG_LEVEL`
   (`debug`, `info`, `warn`, `error`; the default is `info`).

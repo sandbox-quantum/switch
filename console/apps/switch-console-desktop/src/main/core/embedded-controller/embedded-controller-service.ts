@@ -4,6 +4,7 @@ import type {
   EmbeddedControllerPhase,
   EmbeddedControllerRemote,
   EmbeddedControllerStateEvent,
+  MachineDetailsChange,
 } from '@shared/core/embedded-controller/embedded-controller';
 import {
   credentialSecretKey,
@@ -29,6 +30,8 @@ export interface ManagementPort {
   ): Promise<{ serverId: string; apiUrl: string; controllerId: string; credential: string }>;
   /** The controller's state and the agents placed on it; with no controller, only whether management is there. */
   read(workspaceId: string, controllerId: string | null): Promise<EmbeddedControllerRemote>;
+  /** Renames it and/or changes its description. */
+  update(workspaceId: string, controllerId: string, changes: MachineDetailsChange): Promise<void>;
   /** Revokes it. `already_gone` when the server no longer knows it. */
   revoke(workspaceId: string, controllerId: string): Promise<'revoked' | 'already_gone'>;
 }
@@ -224,6 +227,25 @@ export class EmbeddedControllerService {
       this.deps.log.info('This computer no longer runs managed agents for the server', {
         serverId,
       });
+    });
+  }
+
+  /**
+   * Renames this computer as a machine on the server and/or changes its
+   * description: what its owner sees on the Machines page, and what agents
+   * allowed to manage agents read when they pick a machine.
+   */
+  async updateDetails(serverId: string, changes: MachineDetailsChange): Promise<void> {
+    const record = await this.deps.records.get(serverId);
+    if (record?.kind !== 'enrolled')
+      throw new Error('This computer is not enrolled to run managed agents for this server.');
+    const name = changes.name?.trim();
+    if (changes.name !== undefined && !name) throw new Error('A machine needs a name.');
+    const description =
+      changes.description === undefined ? undefined : changes.description?.trim() || null;
+    await this.deps.management.update(record.workspaceId, record.controllerId, {
+      ...(name !== undefined ? { name } : {}),
+      ...(description !== undefined ? { description } : {}),
     });
   }
 

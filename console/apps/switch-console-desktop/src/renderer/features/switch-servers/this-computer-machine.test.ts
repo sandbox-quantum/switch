@@ -35,7 +35,7 @@ function overview(
 
 const ok = (state: 'online' | 'unknown' | 'revoked' | null): EmbeddedControllerRemote => ({
   kind: 'ok',
-  controller: state ? { state, lastSeenAt: null } : null,
+  controller: state ? { name: 'box', description: null, state, lastSeenAt: null } : null,
   agents: [],
 });
 const running: EmbeddedControllerPhase = { kind: 'running', since: '2026-01-01T00:00:00Z' };

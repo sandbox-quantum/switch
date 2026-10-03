@@ -287,6 +287,7 @@ async def assemble_agent_detail(
     return AgentDetail(
         **summary.model_dump(),
         agent_type=agent.agent_type,
+        can_manage_agents=agent.can_manage_agents,
         integration_profile=agent.integration_profile
         if isinstance(agent.integration_profile, dict)
         else {},

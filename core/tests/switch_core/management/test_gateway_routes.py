@@ -23,6 +23,7 @@ from tests.switch_core.management.harness import (
     create_managed_agent,
     definition,
     enroll_console,
+    platform,
     provider,
     report_status,
 )
@@ -126,7 +127,7 @@ class TestOwnerIsolation:
             return found
 
         routes = [r for r in gateway_router.routes if hasattr(r, "dependant")]
-        assert len(routes) == 12
+        assert len(routes) == 13
         for route in routes:
             assert get_current_user in calls(route.dependant), route.path  # type: ignore[attr-defined]
 
@@ -527,3 +528,125 @@ class TestDeletingAManagedAgentThroughCore:
         assert subscription.drain() == [(ASSIGNMENT_CHANGED, {"revision": 2})]
         assert assignment.status_code == 200
         assert assignment.json() == {"revision": 2, "agents": []}
+
+
+class TestMachineNameAndDescription:
+    async def test_console_enrollment_takes_an_optional_description(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            described = await client.post(
+                "/gateway/management/controllers",
+                json={
+                    "name": "  laptop  ",
+                    "description": "  My work laptop ",
+                    "kind": "console",
+                    "platform": platform(),
+                    "version": "0.1.0",
+                },
+                cookies=cookies_for(owner),
+            )
+            await enroll_console(harness, client, owner, name="desktop")
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert described.status_code == 201, described.text
+        by_name = {c["name"]: c for c in listed.json()}
+        assert by_name["laptop"]["description"] == "My work laptop"
+        assert by_name["desktop"]["description"] is None
+
+    async def test_the_owner_renames_and_describes_a_machine(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner, name="laptop")
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client,
+                owner,
+                name="reviewer",
+                controller_id=controller.controller_id,
+            )
+            agent_id = created.json()["agent_id"]
+            path = f"/gateway/management/controllers/{controller.controller_id}"
+            renamed = await client.patch(
+                path,
+                json={"name": " build box ", "description": "Under the desk"},
+                cookies=cookies_for(owner),
+            )
+            name_only = await client.patch(
+                path, json={"name": "build-box"}, cookies=cookies_for(owner)
+            )
+            cleared = await client.patch(
+                path, json={"description": None}, cookies=cookies_for(owner)
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+
+        assert renamed.status_code == 200, renamed.text
+        assert renamed.json()["name"] == "build box"
+        assert renamed.json()["description"] == "Under the desk"
+        assert renamed.json()["state"] == "online"
+        assert name_only.json()["description"] == "Under the desk"
+        assert cleared.json()["name"] == "build-box"
+        assert cleared.json()["description"] is None
+        [stored] = listed.json()
+        assert (stored["name"], stored["description"]) == ("build-box", None)
+        binding = harness.protocol.connections.controllers.binding(agent_id)
+        assert binding is not None
+        assert binding.controller_name == "build-box"
+
+    async def test_another_users_machine_is_not_found(self, harness: Harness) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada, name="laptop")
+            response = await client.patch(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                json={"name": "mine now"},
+                cookies=cookies_for(bob),
+            )
+            missing = await client.patch(
+                "/gateway/management/controllers/no-such-controller",
+                json={"name": "mine now"},
+                cookies=cookies_for(bob),
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(ada)
+            )
+        assert response.status_code == 404
+        assert response.json() == missing.json()
+        assert listed.json()[0]["name"] == "laptop"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"name": ""},
+            {"name": "   "},
+            {"name": None},
+            {"name": "x" * 201},
+            {"description": "x" * 501},
+            {"platform": "linux"},
+        ],
+    )
+    async def test_an_invalid_change_is_refused(
+        self, harness: Harness, body: dict
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner, name="laptop")
+            response = await client.patch(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                json=body,
+                cookies=cookies_for(owner),
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "validation_error"
+        assert listed.json()[0]["name"] == "laptop"

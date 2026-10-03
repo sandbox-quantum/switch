@@ -92,6 +92,8 @@ export const enrollRequestSchema = z.object({
   controller: z.object({
     kind: z.literal('daemon'),
     name: z.string().min(1),
+    /** What the machine is for, shown to its owner and their agents. */
+    description: z.string().max(500).optional(),
     platform: platformSchema,
     version: z.string().min(1),
   }),

@@ -5,6 +5,7 @@ import { SectionLabel } from '@renderer/features/locations/components/main-panel
 import { AddressingPolicySettingsSection } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
 import { AgentAdvancedSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-advanced-settings-section';
 import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
+import { CanManageAgentsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
 import { ProviderSignInSettingsSection } from '@renderer/features/locations/components/settings-view/sections/provider-sign-in-settings-section';
 import {
   asMounted,
@@ -47,6 +48,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
         <ProviderSignInSettingsSection locationId={locationId} agentId={agentId} />
         <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
         <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
+        <CanManageAgentsSettingsSection locationId={locationId} agentId={agentId} />
       </section>
       <AgentAdvancedSettingsSection locationId={locationId} agentId={agentId} />
     </div>

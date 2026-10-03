@@ -23,6 +23,7 @@ class AgentControllerStore:
         *,
         owner_id: str,
         name: str,
+        description: str | None,
         kind: str,
         platform: dict[str, Any] | None,
         version: str | None,
@@ -32,6 +33,7 @@ class AgentControllerStore:
         controller = AgentController(
             owner_id=owner_id,
             name=name,
+            description=description,
             kind=kind,
             platform=platform,
             version=version,
@@ -77,6 +79,26 @@ class AgentControllerStore:
             .order_by(AgentController.created_at, AgentController.id)
         )
         return list(result.scalars().all())
+
+    async def update_details(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        changes: dict[str, str | None],
+    ) -> AgentController:
+        """Set the controller's `name` and/or `description` and return the row."""
+        unknown = set(changes) - {"name", "description"}
+        if unknown:
+            raise ValueError(f"Not editable on a controller: {sorted(unknown)}")
+        controller = await self.get(session, tenant_id, controller_id)
+        if controller is None:
+            raise LookupError(f"No such controller: {controller_id}")
+        for key, value in changes.items():
+            setattr(controller, key, value)
+        await session.flush()
+        await session.refresh(controller)
+        return controller
 
     async def bump_assignment_revision(
         self, session: AsyncSession, tenant_id: str, controller_id: str

@@ -45,7 +45,8 @@ inactive.
 
 ### Tables (all `TenantScoped`, RLS like every scoped table, one migration)
 - `agent_controllers`
-  - `id`, `owner_id` (users), `name`, `kind` (`console|daemon|ec2`), `platform` JSONB null,
+  - `id`, `owner_id` (users), `name`, `description` null (the owner's note on what the
+    machine is for), `kind` (`console|daemon|ec2`), `platform` JSONB null,
     `version` null, `public_key` null.
   - `api_key_id`: the credential, an `api_keys` row of type `controller`, holding the hash only.
   - `assignment_revision` int default 0, `status_seq` bigint null, `status` JSONB null.
@@ -77,7 +78,9 @@ nothing may decrypt them.
 ### Agent-bridge routes (bearer). Errors use `{"error": {"code", "message", "retryable"}}`
 Public (they authenticate through the body):
 - `POST /v1/management/controllers/enroll`
-  - Body: `{proof:{kind:"enrollment_code", code}, controller:{kind, name, platform, version}, public_key?}`.
+  - Body: `{proof:{kind:"enrollment_code", code}, controller:{kind, name, description?, platform, version}, public_key?}`.
+  - `name` is trimmed and must not be blank (at most 200 characters); `description` is
+    optional, at most 500 characters, and blank means none.
   - Returns `201 {controller_id, credential}`.
 - `POST /v1/management/controllers/{id}/token`
   - Body: `{credential}`.
@@ -118,10 +121,17 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
   agent bridge.
 - `POST   /gateway/management/controllers`
   - Console enrollment by a signed-in user.
-  - Body: `{name, kind:"console", platform, version, public_key?}`.
+  - Body: `{name, description?, kind:"console", platform, version, public_key?}`.
   - Returns `{controller_id, credential}`.
 - `GET    /gateway/management/controllers`
-  - Returns the list, each with derived `state` (`online|unknown|revoked`), `last_seen_at` and its last `status`.
+  - Returns the list, each with its `description`, derived `state` (`online|unknown|revoked`),
+    `last_seen_at` and its last `status`.
+- `PATCH  /gateway/management/controllers/{id}`
+  - Body: `{name?, description?}`, at least one. Renames the machine and/or changes its
+    description; `description: null` (or blank) clears it. Same limits as at enrollment;
+    `422 validation_error` otherwise. Someone else's controller is `404`.
+  - A new name also reaches Core's bindings (`ControllerPresence.rename_controller`), since
+    it is the name a room is told when the machine is offline.
 - `DELETE /gateway/management/controllers/{id}`
   - Revokes it: deletes the credential, sends the `credential.revoked` nudge, and leaves definitions placed but shown.
 - `GET    /gateway/management/agents` and `GET /gateway/management/agents/{agent_id}`.
@@ -166,10 +176,65 @@ These are the codes from the contract, plus `forbidden`, `invalid_credential`, `
 - Core tests check that real route responses match the fixture's shape, with volatile values normalised.
 - The controller's TypeScript tests parse the same files with its schemas.
 
+### Agents managing agents
+
+An agent may act on its owner's agent management through three agent operations. They
+exist only while management runs: they are declared in their own operation group
+(`registry.gated_operation`), and `Management.install` enables it by handing Core
+management's implementation of `AgentManagementPort`
+(`bridges/agent/protocol/agent_management.py`, implemented by
+`management/agent_operations.py`). With the flag off they are on neither door: not in
+`GET /ops`, `404` on `POST /ops/{name}`, and not listed or callable over MCP (the MCP server
+registers every declared operation and filters by the registry per request).
+
+- `list_machines()`: the owner's controllers that are not revoked, each `{id, name,
+  description, kind, state, last_seen_at, providers: [{provider, installed, version, auth}],
+  agents_running}`. Revoked machines are left out rather than flagged; the managed-agent
+  list still shows an agent placed on one, with the machine's `state: "revoked"`.
+  `agents_running` counts the agents the last status reports as `running`, null before any
+  status.
+- `create_agent(name, description, machine, provider, model=None, instructions="",
+  directory=None, auto_approve=False, display_name=None, start=True)`: builds the same
+  `CreateManagedAgentRequest` the gateway route takes and calls
+  `ManagementService.create_managed_agent`, so validation, placement checks, owner-only
+  addressing and registration are the gateway's. `machine` is an id among the owner's
+  controllers (any state; a revoked one is then refused as `controller_revoked`), or else an
+  exact name among those not revoked; a shared name is refused with the candidates listed.
+  The agent is owned by the calling agent's owner, with `auto_session` true and the
+  capability off. Returns `{agent_id, name, machine: {id, name}, desired_state, hint}`.
+- `list_managed_agents()`: the owner's managed agents, each `{agent_id, name, display_name,
+  description, provider, model, machine: {id, name, state} | null, desired_state, actual:
+  {process, reason, detail, applied_revision, since} | null, revision}`, `actual` being the
+  agent's entry in its controller's last status.
+
+**The capability.** `agents.can_manage_agents` (boolean, default false) gates all three,
+listing included since it discloses the owner's machines. It is the agent's, read from its
+row on every call, so it holds however the call authenticated: the agent's own key or a
+controller acting as the agent. An agent with no owner is refused. Only the agent's owner
+sets it, with `PUT /gateway/agents/{agent_id}/can-manage-agents {enabled}` (not an admin:
+the agent would act on the owner's own machines); the agent detail carries it as
+`can_manage_agents`. An agent created through `create_agent` (or the gateway) starts with
+it off.
+
+**Where owners set things.** The gateway's agent page has an "Agent management" section
+with the capability switch (shown only where management runs), and the Machines page an
+edit action for a machine's name and description. In Switch Console, an agent's settings
+carry the same switch for Switch agents, and the "This computer as a machine" card shows
+and edits this computer's name and description. Console's own enrollment sends no
+description.
+
+**Refusals.** Without the capability: `403`, "Agent X is not allowed to manage agents. Ask
+your owner to enable 'can manage agents' for X ...". Everything management refuses is an
+`AgentManagementRefused` (a `ValueError`, so `400` over HTTP) whose message starts "Nothing
+was created:", says why in terms of the machine (placement codes are reworded: the machine
+has not reported recently, the provider is not installed or not logged in there, ...) and
+ends with the reason code in parentheses. Another person's machine, by id or name, gets
+exactly the answer a missing one does.
+
 ## Headless agents controller (`console/packages/agent-controller`)
 
 - CLI `switch-agent-controller`:
-  - `enroll --server <agent-bridge-url> --code <code> [--name] [--data-dir]`
+  - `enroll --server <agent-bridge-url> --code <code> [--name] [--description] [--data-dir]`
   - `run [--data-dir]`
   - `status [--data-dir]`
 - **Data dir:** `SWITCH_CONTROLLER_DATA_DIR`, otherwise the OS default.

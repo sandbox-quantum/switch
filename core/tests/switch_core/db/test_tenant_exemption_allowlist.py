@@ -127,6 +127,7 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.dependencies",
     "switch_core.bridges.agent.operations.context",
     "switch_core.bridges.agent.operations.definitions",
+    "switch_core.bridges.agent.operations.agent_management",
     "switch_core.bridges.agent.mediation",
     # Reached only from the gateway's rooms endpoints, so the same holds.
     "switch_core.rooms_yaml",
