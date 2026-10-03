@@ -141,12 +141,15 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
             ` Its subagents ${state.subagents.join(', ')} move with it.`}
         </p>
       )}
-      {state.runner === 'managed' && !state.operation && !state.movesWithParent && (
-        <p className="text-sm text-foreground-muted">
-          This Console does not run it while it is managed: its room watcher here is off and its
-          sessions run on the machine. Stop managing brings it back. {IDLE_RULE}
-        </p>
-      )}
+      {state.runner === 'managed' &&
+        !state.operation &&
+        !state.movesWithParent &&
+        state.managed?.machine.kind !== 'removed' && (
+          <p className="text-sm text-foreground-muted">
+            This Console does not run it while it is managed: its room watcher here is off and its
+            sessions run on the machine. Stop managing brings it back. {IDLE_RULE}
+          </p>
+        )}
       {state.movesWithParent && (
         <p className="text-sm text-foreground-muted">
           Watched under {state.movesWithParent}: it moves to a managed machine, and comes back, with

@@ -54,6 +54,12 @@ export function migrationSummary(state: AgentMigrationState): MigrationSummary {
   const managed = state.managed;
   if (!managed)
     return { label: 'Managed', tone: 'ok', detail: `Runs on ${where}, with its parent.` };
+  if (managed.machine.kind === 'removed')
+    return {
+      label: 'Machine removed',
+      tone: 'error',
+      detail: `The machine it was moved onto, ${where}, was removed from Switch, so nothing runs this agent now. Stop managing brings it back to this Console.`,
+    };
   if (managed.unreadable) return { label: 'Managed', tone: 'warn', detail: managed.unreadable };
   if (managed.machine.kind === 'stopped' && managed.desiredState !== 'stopped')
     return { label: 'Managed, not running', tone: 'warn', detail: managed.machine.reason };

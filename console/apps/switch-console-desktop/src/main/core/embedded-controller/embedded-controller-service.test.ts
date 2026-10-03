@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
+import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type {
   EmbeddedControllerPhase,
   EmbeddedControllerStateEvent,
@@ -42,6 +43,8 @@ let management: { [K in keyof ManagementPort]: Mock<ManagementPort[K]> };
 let services: EmbeddedControllerService[];
 /** The server's API URL as Console has it now; null for a server it no longer knows. */
 let apiUrl: string | null;
+/** The Console agents moved onto this computer's controller. */
+let moved: string[];
 
 function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedControllerService {
   const spawned = fakeSpawn();
@@ -80,6 +83,7 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
     backoff: { initialMs: 10, maxMs: 40, stableMs: 10_000 },
     revokeGraceMs: 200,
     stopTimeoutMs: 200,
+    movedAgents: async () => moved,
     ...overrides,
   });
   services.push(created);
@@ -138,6 +142,7 @@ beforeEach(() => {
   events = [];
   services = [];
   apiUrl = 'https://switch.example.com';
+  moved = [];
   management = {
     enroll: vi.fn<ManagementPort['enroll']>(async () => ({
       serverId: SERVER,
@@ -308,6 +313,26 @@ describe('EmbeddedControllerService', () => {
     expect(secrets.get(credentialSecretKey(SERVER))).toBe(CREDENTIAL);
     expect(lastPhase()).toEqual({ kind: 'running', since: '2026-01-01T00:00:00.000Z' });
     expect((await running.overview(SERVER, null)).enrollment?.controllerId).toBe('controller-1');
+  });
+
+  it('says which agents moved from this Console run on it', async () => {
+    const running = await enabled();
+    moved = ['builder'];
+    expect((await running.overview(SERVER, null)).movedAgents).toEqual(['builder']);
+  });
+
+  it('refuses to turn off, with nothing changed, while agents moved from this Console run on it', async () => {
+    const running = await enabled();
+    moved = ['builder'];
+    const refused = running.disable(SERVER);
+    await expect(refused).rejects.toBeInstanceOf(MovedAgentsHereError);
+    await expect(refused).rejects.toThrow(
+      'This computer runs builder for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.'
+    );
+    expect(management.revoke).not.toHaveBeenCalled();
+    expect(calls[0]!.child.signals).toEqual([]);
+    expect(secrets.get(credentialSecretKey(SERVER))).toBe(CREDENTIAL);
+    expect(lastPhase()).toEqual({ kind: 'running', since: '2026-01-01T00:00:00.000Z' });
   });
 
   it('revokes a controller it enrolled but could not keep, and keeps nothing', async () => {

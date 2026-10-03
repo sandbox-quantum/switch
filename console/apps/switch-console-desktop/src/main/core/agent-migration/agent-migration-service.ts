@@ -49,7 +49,7 @@ export type TargetLookup = {
   /** The machine is not running managed agents, and Console can turn it on. */
   canEnable: boolean;
   /** The controller enrolled on the machine now, as Console last probed it; null when none is. */
-  controller: { controllerId: string; state: 'running' | 'stopped' | 'unknown' } | null;
+  controller: { controllerId: string; state: 'running' | 'stopped' | 'unknown' | 'removed' } | null;
 };
 
 export type ManagedView = {
@@ -189,12 +189,25 @@ function inScope(record: ManagedAgentRecord, scope: MoveScope): boolean {
     : record.placement.kind === 'ssh-host' && record.placement.sshHost === scope.sshHost;
 }
 
-/** Whether the machine can run a moved agent now, as the lookup found its controller. */
-function machineOf(lookup: TargetLookup): ManagedMachine {
+/**
+ * Whether the machine can run a moved agent now, as the lookup found its
+ * controller. A machine with no controller, or with another one than the
+ * agent was placed on, lost the agent's controller to a removal.
+ */
+function machineOf(lookup: TargetLookup, record: ManagedAgentRecord): ManagedMachine {
+  const controller = lookup.controller;
+  if (!controller || controller.controllerId !== record.controllerId) return { kind: 'removed' };
   const reason = lookup.blocker ?? 'The machine’s controller is not running.';
-  if (lookup.controller?.state === 'running') return { kind: 'running' };
-  if (lookup.controller?.state === 'unknown') return { kind: 'unknown', reason };
-  return { kind: 'stopped', reason };
+  switch (controller.state) {
+    case 'running':
+      return { kind: 'running' };
+    case 'removed':
+      return { kind: 'removed' };
+    case 'unknown':
+      return { kind: 'unknown', reason };
+    case 'stopped':
+      return { kind: 'stopped', reason };
+  }
 }
 
 function message(error: unknown): string {
@@ -465,7 +478,7 @@ export class AgentMigrationService {
         controllerId: record.controllerId,
         movedAt: record.movedAt,
         machine: lookup
-          ? machineOf(lookup)
+          ? machineOf(lookup, record)
           : { kind: 'unknown', reason: `Console could not look at the machine: ${lookupFailure}` },
         desiredState: view?.desiredState ?? null,
         actual: view?.actual ?? null,

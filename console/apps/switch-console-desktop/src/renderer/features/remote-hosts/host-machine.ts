@@ -172,3 +172,24 @@ export function hostAgentActual(
     };
   return { ...agentActual(agent), detail: agent.actual?.detail ?? null };
 }
+
+/**
+ * What the card's state is, for telling whether a failure shown on it still
+ * describes it: the phase, the enrollment, whether the controller runs (and
+ * how it stopped) and the agents moved here.
+ */
+export function hostStateKey(overview: HostControllerOverview): string {
+  const { process } = overview;
+  return JSON.stringify([
+    overview.phase.kind,
+    overview.enrollment?.controllerId ?? null,
+    process?.kind ?? null,
+    process?.kind === 'stopped' ? process.code : null,
+    overview.movedAgents,
+  ]);
+}
+
+/** Whether a failed action's message is already on the card, as the failure Console keeps for the host. */
+export function failureAlreadyShown(overview: HostControllerOverview, message: string): boolean {
+  return overview.phase.kind === 'error' && overview.phase.message.trim() === message.trim();
+}

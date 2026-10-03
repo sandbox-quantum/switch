@@ -281,6 +281,22 @@ describe('the host as a machine afterwards', () => {
     });
   });
 
+  it('keeps a failed start again on the card only while the controller is not running', async () => {
+    const service = new HostControllerService(deps());
+    await service.enable(HOST, SERVER, WORKSPACE);
+    host.node = '20.11.0';
+    host.running = false;
+    await expect(service.restart(HOST, SERVER)).rejects.toThrow(/Node 20.11.0/);
+    expect((await service.overview(HOST, SERVER, WORKSPACE)).phase).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('Node 20.11.0'),
+    });
+    host.running = true;
+    expect((await service.overview(HOST, SERVER, WORKSPACE)).phase).toEqual({ kind: 'off' });
+    host.running = false;
+    expect((await service.overview(HOST, SERVER, WORKSPACE)).phase).toEqual({ kind: 'off' });
+  });
+
   it('starts it again without turning its agents off', async () => {
     const service = new HostControllerService(deps());
     await service.enable(HOST, SERVER, WORKSPACE);
@@ -318,8 +334,11 @@ describe('removing the host as a machine', () => {
     await service.enable(HOST, SERVER, WORKSPACE);
     calls = [];
     moved = ['builder'];
-    await expect(service.disable(HOST, SERVER, { force: false })).rejects.toThrow(/builder/);
+    const refused = service.disable(HOST, SERVER, { force: false });
+    await expect(refused).rejects.toBeInstanceOf(MovedAgentsHereError);
+    await expect(refused).rejects.toThrow(/builder .*before turning it off/);
     expect(calls).toEqual([]);
+    expect((await service.overview(HOST, SERVER, WORKSPACE)).phase).toEqual({ kind: 'off' });
   });
 
   it('refuses to remove the host, with nothing changed, while agents moved from this Console run there', async () => {

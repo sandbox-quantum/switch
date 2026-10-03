@@ -282,6 +282,29 @@ describe('moving an agent onto its controller', () => {
     });
   });
 
+  it.each([
+    ['Switch removed its controller', { controllerId: CONTROLLER, state: 'removed' as const }],
+    ['the machine no longer has a controller', null],
+    [
+      'the machine has another controller now',
+      { controllerId: 'controller-2', state: 'running' as const },
+    ],
+  ])('reports the machine as removed when %s', async (_what, controller) => {
+    const service = new AgentMigrationService(deps());
+    await service.moveToManaged(PARENT.id);
+    world.lookup = {
+      display: TARGET.display,
+      target: null,
+      blocker: 'Turn on “Run managed agents on this computer” for this server first.',
+      canEnable: controller === null,
+      controller,
+    };
+    const state = await service.state(PARENT.id);
+    expect(state.managed?.machine).toEqual({ kind: 'removed' });
+    expect(state.runner).toBe('managed');
+    expect(state.blocker).toBeNull();
+  });
+
   it('says Console cannot tell when the machine cannot be looked at', async () => {
     const service = new AgentMigrationService({
       ...deps(),

@@ -7,6 +7,7 @@ import type {
 import {
   agentActual,
   canStartAgain,
+  machineStateKey,
   machineStatus,
   toggleBlocker,
   toggleChecked,
@@ -30,6 +31,7 @@ function overview(
     enrollment: enrolled ? ENROLLMENT : null,
     phase,
     remote,
+    movedAgents: [],
   };
 }
 
@@ -103,8 +105,11 @@ describe('toggle', () => {
     expect(toggleBlocker(overview({ kind: 'enrolling' }, null, false))).toBe('Working…');
   });
 
-  it('always lets an enrolled computer be turned off, unless something is in flight', () => {
+  it('lets an enrolled computer be turned off, unless something is in flight or agents were moved here', () => {
     expect(toggleBlocker(overview(running, { kind: 'unavailable' }))).toBeNull();
+    expect(toggleBlocker({ ...overview(running, ok('online')), movedAgents: ['builder'] })).toBe(
+      'Bring back builder before turning it off: they were moved here from this Console.'
+    );
     expect(toggleBlocker(overview({ kind: 'stopping' }, ok('online')))).toBe('Working…');
     expect(toggleChecked(overview(running, ok('online')))).toBe(true);
     expect(toggleChecked(overview({ kind: 'enrolling' }, null, false))).toBe(true);
@@ -116,6 +121,38 @@ describe('toggle', () => {
     expect(canStartAgain(overview({ kind: 'error', message: 'm' }, null))).toBe(true);
     expect(canStartAgain(overview(running, null))).toBe(false);
     expect(canStartAgain(overview({ kind: 'error', message: 'm' }, null, false))).toBe(false);
+  });
+});
+
+describe('a removed computer with agents still moved onto it', () => {
+  it('says nothing runs them, and how to bring them back', () => {
+    expect(
+      machineStatus({
+        ...overview({ kind: 'removed', at: 'x' }, null, false),
+        movedAgents: ['builder'],
+      }).detail
+    ).toMatch(
+      /Nothing runs builder, moved here from this Console, now: bring them back with Stop managing\.$/
+    );
+  });
+});
+
+describe('machineStateKey', () => {
+  it('stays the same across reads of the same state', () => {
+    expect(machineStateKey(overview(running, ok('online')))).toBe(
+      machineStateKey(overview(running, ok('unknown')))
+    );
+  });
+
+  it('changes with the phase, the enrollment or the agents moved here', () => {
+    const base = machineStateKey({ ...overview(running, ok('online')), movedAgents: ['builder'] });
+    expect(machineStateKey(overview(running, ok('online')))).not.toBe(base);
+    expect(
+      machineStateKey({
+        ...overview({ kind: 'removed', at: 'x' }, null, false),
+        movedAgents: ['builder'],
+      })
+    ).not.toBe(base);
   });
 });
 

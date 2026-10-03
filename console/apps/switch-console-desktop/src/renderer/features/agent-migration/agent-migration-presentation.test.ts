@@ -109,6 +109,25 @@ describe('where an agent runs', () => {
     });
   });
 
+  it('says its machine was removed, and that Stop managing brings it back, once the controller is gone', () => {
+    const stranded: AgentMigrationState = {
+      ...MANAGED,
+      target: { kind: 'this-computer', serverId: 'server-1', machineName: null },
+      managed: { ...MANAGED.managed!, machine: { kind: 'removed' } },
+    };
+    expect(migrationSummary(stranded)).toEqual({
+      label: 'Machine removed',
+      tone: 'error',
+      detail:
+        'The machine it was moved onto, this computer, was removed from Switch, so nothing runs this agent now. Stop managing brings it back to this Console.',
+    });
+    expect(migrationAction(stranded)).toEqual({
+      kind: 'return',
+      label: 'Stop managing',
+      disabledReason: null,
+    });
+  });
+
   it('shows a move in flight, including the wait for a turn', () => {
     const waiting: AgentMigrationState = {
       ...CONSOLE,

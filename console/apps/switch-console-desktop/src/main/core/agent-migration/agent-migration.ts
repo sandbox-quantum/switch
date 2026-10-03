@@ -141,10 +141,11 @@ async function resolveThisComputer(agent: MigrationAgent): Promise<TargetLookup>
     serverId,
     machineName: overview.enrollment?.name ?? null,
   };
+  const revoked = overview.remote?.kind === 'ok' && overview.remote.controller?.state === 'revoked';
   const controller: TargetLookup['controller'] = overview.enrollment
     ? {
         controllerId: overview.enrollment.controllerId,
-        state: overview.phase.kind === 'running' ? 'running' : 'stopped',
+        state: revoked ? 'removed' : overview.phase.kind === 'running' ? 'running' : 'stopped',
       }
     : null;
   const refuse = (blocker: string, canEnable = false): TargetLookup => ({
@@ -201,11 +202,15 @@ async function resolveSshHost(agent: MigrationAgent): Promise<TargetLookup> {
     machineName: overview.enrollment?.name ?? null,
   };
   const probed = overview.process;
+  const revoked =
+    (overview.remote?.kind === 'ok' && overview.remote.controller?.state === 'revoked') ||
+    (probed?.kind === 'stopped' && probed.code === 3);
   const controller: TargetLookup['controller'] = overview.enrollment
     ? {
         controllerId: overview.enrollment.controllerId,
-        state:
-          probed?.kind === 'running'
+        state: revoked
+          ? 'removed'
+          : probed?.kind === 'running'
             ? 'running'
             : probed?.kind === 'unknown'
               ? 'unknown'

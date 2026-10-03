@@ -3,6 +3,7 @@ import { RefreshCw, Server, TriangleAlert } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { moveAllSummary } from '@renderer/features/agent-migration/agent-migration-presentation';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useStateBoundFailure } from '@renderer/lib/hooks/use-state-bound-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -18,12 +19,15 @@ import {
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { Switch } from '@renderer/lib/ui/switch';
 import { IDLE_RULE } from '@shared/core/agent-migration/agent-migration';
+import type { HostControllerOverview } from '@shared/core/host-controllers/host-controllers';
 import { hostControllerStateChannel } from '@shared/events/hostControllerEvents';
 import {
   canRestartHost,
+  failureAlreadyShown,
   hostAgentActual,
   type HostMachineTone,
   hostMachineStatus,
+  hostStateKey,
   hostToggleBlocker,
   supervisionNote,
 } from './host-machine';
@@ -73,34 +77,54 @@ export function HostMachineCard({
       }),
     [queryClient, sshHost, serverId]
   );
-  const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: key });
-    void queryClient.invalidateQueries({ queryKey: ['agent-migration'] });
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: key }),
+      queryClient.invalidateQueries({ queryKey: ['agent-migration'] }),
+    ]);
+  };
+  const failed = useStateBoundFailure(query.data ? hostStateKey(query.data) : null);
+  const handlers = {
+    onSuccess: async () => {
+      failed.clear();
+      await refresh();
+    },
+    onError: async (error: Error) => {
+      await refresh();
+      const fresh = queryClient.getQueryData<HostControllerOverview>([...key, workspaceId]);
+      failed.fail(error, fresh ? hostStateKey(fresh) : null);
+    },
   };
   const enable = useMutation({
     mutationFn: () => {
       if (!workspaceId) throw new Error('Open a workspace on this server first.');
       return rpc.hostControllers.enable({ sshHost, serverId, workspaceId });
     },
-    onSettled: refresh,
+    ...handlers,
   });
   const disable = useMutation({
     mutationFn: () => rpc.hostControllers.disable({ sshHost, serverId }),
-    onSettled: refresh,
+    ...handlers,
   });
   const restart = useMutation({
     mutationFn: () => rpc.hostControllers.restart({ sshHost, serverId }),
-    onSettled: refresh,
+    ...handlers,
   });
   const moveAll = useMutation({
     mutationFn: () => rpc.hostControllers.moveAll(sshHost),
-    onSuccess: (result) => setOutcome(moveAllSummary(result, 'Moved')),
-    onSettled: refresh,
+    ...handlers,
+    onSuccess: async (result) => {
+      setOutcome(moveAllSummary(result, 'Moved'));
+      await handlers.onSuccess();
+    },
   });
   const bringBack = useMutation({
     mutationFn: () => rpc.hostControllers.stopManagingAll(sshHost),
-    onSuccess: (result) => setOutcome(moveAllSummary(result, 'Brought back')),
-    onSettled: refresh,
+    ...handlers,
+    onSuccess: async (result) => {
+      setOutcome(moveAllSummary(result, 'Brought back'));
+      await handlers.onSuccess();
+    },
   });
 
   const overview = query.data;
@@ -120,7 +144,9 @@ export function HostMachineCard({
   const note = supervisionNote(overview);
   const running = overview.enrollment !== null && overview.process?.kind === 'running';
   const failure =
-    enable.error ?? disable.error ?? restart.error ?? moveAll.error ?? bringBack.error;
+    failed.failure && !failureAlreadyShown(overview, failed.failure.message)
+      ? failed.failure
+      : null;
   const moving = moveAll.isPending || bringBack.isPending;
 
   return (
@@ -134,8 +160,7 @@ export function HostMachineCard({
             checked={checked}
             disabled={blocker !== null}
             onCheckedChange={(next) => {
-              enable.reset();
-              disable.reset();
+              failed.clear();
               if (next) enable.mutate();
               else setConfirmingOff(true);
             }}

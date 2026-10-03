@@ -155,11 +155,15 @@ export class HostControllerService {
         : Promise.resolve(null),
       this.deps.movedAgents(sshHost, serverId),
     ]);
+    const id = key(sshHost, serverId);
+    // A failure is about the state it happened in: once the controller runs, it is over.
+    if (this.phases.get(id)?.kind === 'error' && process?.kind === 'running')
+      this.phases.delete(id);
     return {
       sshHost,
       serverId,
       enrollment: record ? enrollmentOf(record) : null,
-      phase: this.phases.get(key(sshHost, serverId)) ?? { kind: 'off' },
+      phase: this.phases.get(id) ?? { kind: 'off' },
       process,
       remote,
       movedAgents,
@@ -299,14 +303,15 @@ export class HostControllerService {
    * exits as soon as it hears.
    */
   async disable(sshHost: string, serverId: string, options: { force: boolean }): Promise<void> {
+    const moved = await this.deps.movedAgents(sshHost, serverId);
+    if (moved.length)
+      throw new MovedAgentsHereError(
+        `${sshHost} runs ${moved.join(', ')} for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.`,
+        moved
+      );
     await this.exclusive(sshHost, serverId, async () => {
       const record = await this.deps.records.get(sshHost, serverId);
       if (!record) return;
-      const moved = await this.deps.movedAgents(sshHost, serverId);
-      if (moved.length)
-        throw new Error(
-          `${sshHost} runs ${moved.join(', ')} for this Console. Bring them back with Stop managing (or Bring all back) first.`
-        );
       this.setPhase(sshHost, serverId, { kind: 'removing' });
       const outcome = await this.deps.management.revoke(record.workspaceId, record.controllerId);
       if (outcome === 'already_gone')

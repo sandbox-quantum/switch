@@ -51,7 +51,9 @@ export type ManagedActual = {
 export type ManagedMachine =
   | { kind: 'running' }
   | { kind: 'stopped'; reason: string }
-  | { kind: 'unknown'; reason: string };
+  | { kind: 'unknown'; reason: string }
+  /** Switch removed the controller it was placed on, or Console no longer has it: nothing runs the agent. */
+  | { kind: 'removed' };
 
 export type ManagedPlacement = {
   controllerId: string;

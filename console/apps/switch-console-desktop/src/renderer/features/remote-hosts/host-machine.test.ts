@@ -3,8 +3,10 @@ import type { PlacedManagedAgent } from '@shared/core/embedded-controller/embedd
 import type { HostControllerOverview } from '@shared/core/host-controllers/host-controllers';
 import {
   canRestartHost,
+  failureAlreadyShown,
   hostAgentActual,
   hostMachineStatus,
+  hostStateKey,
   hostToggleBlocker,
   supervisionNote,
 } from './host-machine';
@@ -193,5 +195,30 @@ describe('the managed agents placed on the host', () => {
     expect(
       hostAgentActual({ ...ON, process: { kind: 'unknown', reason: 'unreachable' } }, AGENT)
     ).toMatchObject({ label: 'unknown', tone: 'warn' });
+  });
+});
+
+describe('a failure shown on the card', () => {
+  it('outlives a re-read of the same state, not a change of it', () => {
+    const refusedIn = hostStateKey({ ...ON, movedAgents: ['builder'] });
+    expect(hostStateKey({ ...ON, movedAgents: ['builder'] })).toBe(refusedIn);
+    expect(hostStateKey(ON)).not.toBe(refusedIn);
+    expect(
+      hostStateKey({
+        ...ON,
+        movedAgents: ['builder'],
+        process: { kind: 'stopped', state: 'gone', code: null, log: '' },
+      })
+    ).not.toBe(refusedIn);
+  });
+
+  it('is not repeated when the status line already shows it', () => {
+    const failed: HostControllerOverview = {
+      ...ON,
+      phase: { kind: 'error', message: 'build-box runs Node 20.11.0.' },
+    };
+    expect(failureAlreadyShown(failed, 'build-box runs Node 20.11.0.')).toBe(true);
+    expect(failureAlreadyShown(failed, 'Switch is down.')).toBe(false);
+    expect(failureAlreadyShown(ON, 'build-box runs Node 20.11.0.')).toBe(false);
   });
 });

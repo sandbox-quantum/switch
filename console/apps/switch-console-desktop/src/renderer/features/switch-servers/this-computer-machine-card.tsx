@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { moveAllSummary } from '@renderer/features/agent-migration/agent-migration-presentation';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useStateBoundFailure } from '@renderer/lib/hooks/use-state-bound-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -26,6 +27,7 @@ import { switchServersStore } from './switch-servers-store';
 import {
   agentActual,
   canStartAgain,
+  machineStateKey,
   machineStatus,
   type MachineStatusTone,
   toggleBlocker,
@@ -82,24 +84,41 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
   );
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: overviewKey(serverId) });
+  const failed = useStateBoundFailure(
+    overviewQuery.data ? machineStateKey(overviewQuery.data) : null
+  );
+  const handlers = {
+    onSuccess: async () => {
+      failed.clear();
+      await refresh();
+    },
+    onError: async (error: Error) => {
+      await refresh();
+      const fresh = queryClient.getQueryData<EmbeddedControllerOverview>([
+        ...overviewKey(serverId),
+        workspaceId,
+      ]);
+      failed.fail(error, fresh ? machineStateKey(fresh) : null);
+    },
+  };
   const enable = useMutation({
     mutationFn: () => {
       if (!workspaceId) throw new Error('Open a workspace on this server first.');
       return rpc.embeddedController.enable({ serverId, workspaceId });
     },
-    onSettled: refresh,
+    ...handlers,
   });
   const disable = useMutation({
     mutationFn: () => rpc.embeddedController.disable(serverId),
-    onSettled: refresh,
+    ...handlers,
   });
   const startAgain = useMutation({
     mutationFn: () => rpc.embeddedController.restart(serverId),
-    onSettled: refresh,
+    ...handlers,
   });
   const dismiss = useMutation({
     mutationFn: () => rpc.embeddedController.dismissRemoved(serverId),
-    onSettled: refresh,
+    ...handlers,
   });
 
   const overview = overviewQuery.data;
@@ -123,7 +142,7 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
   const status = machineStatus(overview);
   const blocker = toggleBlocker(overview);
   const checked = toggleChecked(overview);
-  const failure = enable.error ?? disable.error ?? startAgain.error ?? dismiss.error;
+  const failure = failed.failure;
 
   return (
     <section className={`${card} space-y-3`}>
@@ -136,8 +155,7 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
             checked={checked}
             disabled={blocker !== null}
             onCheckedChange={(next) => {
-              enable.reset();
-              disable.reset();
+              failed.clear();
               if (next) enable.mutate();
               else setConfirmingOff(true);
             }}
@@ -219,7 +237,8 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
             <DialogDescription>
               This removes {overview.enrollment?.name ?? 'this computer'} from Switch as a machine
               and stops the managed agents placed on it. They stay defined in Switch, and can be
-              moved to another machine. Agents you created in this Console are not affected.
+              moved to another machine. Agents this Console runs itself are not affected; any moved
+              here from this Console have to be brought back first.
             </DialogDescription>
           </DialogContentArea>
           <DialogFooter>

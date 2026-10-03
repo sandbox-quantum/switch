@@ -65,6 +65,8 @@ export type EmbeddedControllerOverview = {
   phase: EmbeddedControllerPhase;
   /** The server's side, read for the enrolled workspace, or for the one asked about when not enrolled. Null when there was no workspace to ask in. */
   remote: EmbeddedControllerRemote | null;
+  /** The Console agents moved onto this computer's controller for the server, by name. */
+  movedAgents: string[];
 };
 
 export type EmbeddedControllerStateEvent = {
