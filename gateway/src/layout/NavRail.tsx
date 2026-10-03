@@ -1,6 +1,7 @@
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
+import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
@@ -24,11 +25,12 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router";
 import type { ComponentType, MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import { useCurrentTenant } from "../data/hooks";
+import { fetchManagementAvailable } from "../data/management";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import ThemeModeToggle from "./ThemeModeToggle";
@@ -47,6 +49,11 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Apps", path: "/collaborations", icon: ChatBubbleOutlineOutlined },
   { label: "API Keys", path: "/registration-keys", icon: VpnKeyOutlined },
   { label: "Workspace", path: "/workspace", icon: WorkspacesOutlined },
+];
+
+// Shown only when the server runs with agent management enabled.
+const MANAGEMENT_ITEMS: NavItem[] = [
+  { label: "Machines", path: "/machines", icon: ComputerOutlined },
 ];
 
 const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
@@ -126,9 +133,25 @@ export default memo(function NavRail() {
   };
 
   const { data: tenant } = useCurrentTenant();
+  const [managementAvailable, setManagementAvailable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchManagementAvailable()
+      .then((available) => {
+        if (!cancelled) setManagementAvailable(available);
+      })
+      .catch((err: unknown) => {
+        console.error("Could not tell whether agent management is enabled:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const items = [
     ...NAV_ITEMS,
+    ...(managementAvailable ? MANAGEMENT_ITEMS : []),
     ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
     ...(isOperator ? ADMIN_ITEMS : []),
   ];

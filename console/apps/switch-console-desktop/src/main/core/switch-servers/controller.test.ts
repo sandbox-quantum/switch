@@ -18,16 +18,23 @@ const acceptInvitation = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
 const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
+const updateServer = vi.hoisted(() => vi.fn());
+const propagateServerApiUrl = vi.hoisted(() => vi.fn());
+const followServerApiUrl = vi.hoisted(() => vi.fn());
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load.
 vi.mock('@main/core/agents/agent-defaults', () => ({ suggestAgentDefaults: vi.fn() }));
-vi.mock('@main/core/agents/propagate-server-api-url', () => ({ propagateServerApiUrl: vi.fn() }));
+vi.mock('@main/core/agents/propagate-server-api-url', () => ({ propagateServerApiUrl }));
 vi.mock('@main/core/agents/write-remote-switch-settings', () => ({
   writeRemoteSwitchSettings: vi.fn(),
 }));
 vi.mock('@main/core/agents/write-switch-settings', () => ({ writeSwitchSettings: vi.fn() }));
 vi.mock('@main/core/app/service', () => ({ appService: { openExternal: vi.fn() } }));
+// Holds the embedded agents controllers, and through them electron and the secrets store.
+vi.mock('@main/core/embedded-controller/embedded-controllers', () => ({
+  embeddedControllerService: { forgetServer: vi.fn(), followServerApiUrl },
+}));
 vi.mock('@main/core/fs/impl/ssh-fs', () => ({ SshFileSystem: vi.fn() }));
 vi.mock('@main/core/locations/location-transport', () => ({ sshConnectionIdForHost: vi.fn() }));
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
@@ -81,7 +88,7 @@ vi.mock('./servers-store', () => ({
   renameServer: vi.fn(),
   serverKindOf,
   setActiveServerId: vi.fn(),
-  updateServer: vi.fn(),
+  updateServer,
 }));
 
 const { switchServersController } = await import('./controller');
@@ -545,6 +552,53 @@ describe('acceptInvitation', () => {
       switchServersController.acceptInvitation({ serverId: 'srv', token: 'tok' })
     ).rejects.toThrow('This invitation has expired');
     expect(reconcileServerWorkspaces).not.toHaveBeenCalled();
+  });
+});
+
+describe('editing a server', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    propagateServerApiUrl.mockResolvedValue([]);
+  });
+
+  it('moves this computer’s controller to a new API URL, after the agents', async () => {
+    const order: string[] = [];
+    propagateServerApiUrl.mockImplementation(async () => {
+      order.push('agents');
+      return [];
+    });
+    followServerApiUrl.mockImplementation(async () => {
+      order.push('controller');
+    });
+    getServer.mockResolvedValue(server({ apiUrl: 'http://localhost:8000' }));
+    updateServer.mockResolvedValue(server({ apiUrl: 'https://switch.example.com' }));
+
+    const result = await switchServersController.updateServer({
+      id: 'srv',
+      name: 'S',
+      gatewayUrl: 'http://localhost:3300',
+      apiUrl: 'https://switch.example.com',
+    });
+
+    expect(result.propagation.apiUrlChanged).toBe(true);
+    expect(propagateServerApiUrl).toHaveBeenCalledWith('srv', 'https://switch.example.com');
+    expect(followServerApiUrl).toHaveBeenCalledExactlyOnceWith('srv');
+    expect(order).toEqual(['agents', 'controller']);
+  });
+
+  it('leaves the controller alone when the API URL did not change', async () => {
+    getServer.mockResolvedValue(server({}));
+    updateServer.mockResolvedValue(server({ gatewayUrl: 'http://localhost:3301' }));
+
+    await switchServersController.updateServer({
+      id: 'srv',
+      name: 'S',
+      gatewayUrl: 'http://localhost:3301',
+      apiUrl: 'http://localhost:8000',
+    });
+
+    expect(followServerApiUrl).not.toHaveBeenCalled();
+    expect(propagateServerApiUrl).not.toHaveBeenCalled();
   });
 });
 

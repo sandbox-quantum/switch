@@ -215,6 +215,7 @@ async def assemble_agent_detail(
                 lifecycle=row.lifecycle,
                 state=session_state(row, now),
                 last_seen_at=str(row.last_seen_at),
+                controller_id=None,
             )
         )
 
@@ -245,6 +246,33 @@ async def assemble_agent_detail(
                     lifecycle="connection",
                     state="live",
                     last_seen_at=str(now),
+                    controller_id=None,
+                )
+            )
+
+    # A controller-backed agent has no connection of its own. Its sessions are
+    # the rooms its live controller reports them working in, and with none
+    # placed its controller is still one room-agnostic session.
+    binding = connections.controllers.binding(agent.id)
+    if binding is not None and connections.controllers.is_live(agent.id):
+        placed: list[str | None] = list(
+            sorted(connections.controllers.placed_rooms(agent.id))
+        ) or [None]
+        for placed_room in placed:
+            room_name = None
+            if placed_room is not None:
+                room_name = room_name_by_id.get(placed_room)
+                if room_name is None:
+                    linked_room = await room_store.get(session, placed_room)
+                    room_name = linked_room.name if linked_room else None
+            sessions.append(
+                AgentSessionDetail(
+                    room_id=placed_room,
+                    room_name=room_name,
+                    lifecycle="controller",
+                    state="live",
+                    last_seen_at=str(now),
+                    controller_id=binding.controller_id,
                 )
             )
 

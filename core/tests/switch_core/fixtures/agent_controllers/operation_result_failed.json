@@ -1,0 +1,4 @@
+{
+  "outcome": "failed",
+  "error": { "code": "provider_not_installed", "message": "claude was not found on PATH." }
+}

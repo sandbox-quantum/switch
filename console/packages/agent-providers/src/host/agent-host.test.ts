@@ -12,7 +12,9 @@ import {
   stopSupersededSessions,
   runAgentHost,
   AgentHostAssignments,
+  definitionChanged,
   supersededSessions,
+  withDefinitionOf,
 } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import { WorkerObsoleteError } from './exit-codes';
@@ -1269,6 +1271,103 @@ it('starts the session serving a room again when its host has gone, instead of a
   expect((await AgentHostAssignments.open(root)).sessions()).toHaveLength(1);
 });
 
+it('takes the model, approval mode and instructions from the template, and nothing else', () => {
+  const root = '/state';
+  const edited = watchable(root);
+  edited.start.input.model = { id: 'claude-sonnet-4-6' };
+  edited.start.input.runtimeMode = 'full-access';
+  edited.execution!.context = 'Answer in one word.';
+  const saved = watchable(root);
+  saved.session = { ...saved.session, agentId: edited.session.agentId, sessionId: 'room-session' };
+  saved.start.input.sessionId = 'room-session';
+  saved.start.input.model = { id: 'haiku' };
+  saved.start.input.resume = { nativeSessionId: 'native' };
+
+  const refreshed = withDefinitionOf(saved, edited);
+
+  expect(definitionChanged(saved, edited)).toBe(true);
+  expect(definitionChanged(refreshed, edited)).toBe(false);
+  expect(refreshed.start.input).toMatchObject({
+    sessionId: 'room-session',
+    model: { id: 'claude-sonnet-4-6' },
+    runtimeMode: 'full-access',
+    resume: { nativeSessionId: 'native' },
+  });
+  expect(refreshed.execution!.context).toBe('Answer in one word.');
+  expect(refreshed.session.sessionId).toBe('room-session');
+  delete edited.start.input.model;
+  expect(withDefinitionOf(saved, edited).start.input.model).toBeUndefined();
+});
+
+it('restarts a room’s session under its agent’s edited definition, resuming the same session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-redefined-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const before = structuredClone(config);
+  before.start.input.model = { id: 'haiku' };
+  before.execution!.context = 'Old instructions.';
+  config.start.input.model = { id: 'claude-sonnet-4-6' };
+  config.execution!.context = 'New instructions.';
+  await writeFile(join(root, 'config.json'), JSON.stringify(config));
+  const stale = await existing(root, before);
+  const current = await existing(root, config);
+  await assignTo(root, before, 1, 'room', stale.sessionId);
+  await assignTo(root, config, 2, 'elsewhere', current.sessionId);
+  supervisors.set(stale.sessionRoot, { build: 'build' });
+  supervisors.set(current.sessionRoot, { build: 'build' });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  const stoppedRoots: string[] = [];
+  hosts.supervision.stop = async (sessionRoot) => {
+    stoppedRoots.push(sessionRoot);
+    supervisors.delete(sessionRoot);
+  };
+  const launched: { sessionId: string; model: unknown; context: unknown }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: started }) => {
+      launched.push({
+        sessionId: started.session.sessionId,
+        model: started.start.input.model,
+        context: started.execution?.context,
+      });
+      return hosts.start(sessionRoot);
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(3, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  // Only the session saved under the earlier definition was stopped.
+  expect(stoppedRoots).toEqual([stale.sessionRoot]);
+  expect(warn.mock.calls.map(String).join('\n')).toContain('earlier definition');
+  // Started again as the same session, under the current definition.
+  expect(launched).toEqual([
+    {
+      sessionId: stale.sessionId,
+      model: { id: 'claude-sonnet-4-6' },
+      context: 'New instructions.',
+    },
+  ]);
+  expect(hosts.to(stale.sessionRoot)).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-3' } },
+  ]);
+});
+
 it('gives a room a new session once the one serving it has been stopped', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-stopped-owner-'));
   roots.push(root);
@@ -2213,9 +2312,15 @@ it('tells the room once a session keeps not taking a message, instead of startin
   try {
     await eventually(() => streams.length === 1);
     await streams[0]!.onEvent!(addressed(1, 'room'));
-    for (let second = 0; second < 120; second++) {
-      if (calls.some((call) => call.name === 'send_targeted_message')) break;
+    // Bounded by real time, not by a count of fake seconds: each restart reads
+    // the agent's template from disk, which advancing fake time does not wait for.
+    const deadline = performance.now() + 20_000;
+    while (
+      !calls.some((call) => call.name === 'send_targeted_message') &&
+      performance.now() < deadline
+    ) {
       await vi.advanceTimersByTimeAsync(1000);
+      await new Promise((resolve) => setImmediate(resolve));
     }
     const told = calls.filter((call) => call.name === 'send_targeted_message');
     expect(told).toHaveLength(1);

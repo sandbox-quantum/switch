@@ -311,6 +311,10 @@ async def connect_to_room(
     if not key:
         raise ValueError("MCP session has no session id; cannot connect to room")
 
+    # A controller-backed agent's sessions are placed by its controller, which
+    # tracks the room locally and names it on later calls: connecting checks
+    # membership (above) and returns the room's context, and claims nothing.
+    controller_backed = protocol.connections.controllers.is_bound(agent_id)
     # Where a session is recorded and where its events are routed are one
     # move, so they are made under one hold of the agent's connection slots.
     # Reconciling the connection after the bind has already committed leaves a
@@ -322,39 +326,41 @@ async def connect_to_room(
     # is the order every other holder of both takes them in.
     caller = caller_session()
     displaced_session_id = None
-    async with protocol.connections.slots(agent_id):
-        # Routing is where events actually go, so moving it on a bind that
-        # then fails would send them somewhere the session is not — and the
-        # rooms to vacate are the caller's own, read under the bind's lock
-        # rather than from what it believed on arrival.
-        if caller is not None:
-            previous, displaced_session_id = protocol.connections.place_session(
-                agent_id, caller.id, room.id, key
+    evicted_connection_id = None
+    if not controller_backed:
+        async with protocol.connections.slots(agent_id):
+            # Routing is where events actually go, so moving it on a bind that
+            # then fails would send them somewhere the session is not — and the
+            # rooms to vacate are the caller's own, read under the bind's lock
+            # rather than from what it believed on arrival.
+            if caller is not None:
+                previous, displaced_session_id = protocol.connections.place_session(
+                    agent_id, caller.id, room.id, key
+                )
+            else:
+                previous = rooms_on_caller_connection(protocol, agent_id, key)
+
+            evicted_connection_id = claim_room_on_caller_connection(
+                protocol, agent_id, key, room.id
             )
-        else:
-            previous = rooms_on_caller_connection(protocol, agent_id, key)
+            for departed in previous - {room.id}:
+                release_room_on_caller_connection(protocol, agent_id, key, departed)
 
-        evicted_connection_id = claim_room_on_caller_connection(
-            protocol, agent_id, key, room.id
-        )
-        for departed in previous - {room.id}:
-            release_room_on_caller_connection(protocol, agent_id, key, departed)
+            # Connecting is how an agent's occupancy of a room changes hands, and
+            # the occupant is the one whose reading clears that room's unread
+            # count. The connection underneath cannot stand in for it: sessions of
+            # one agent share it, and each of them is in a room of its own.
+            reader = counting_reader()
+            if reader is not None:
+                protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
 
-        # Connecting is how an agent's occupancy of a room changes hands, and
-        # the occupant is the one whose reading clears that room's unread
-        # count. The connection underneath cannot stand in for it: sessions of
-        # one agent share it, and each of them is in a room of its own.
-        reader = counting_reader()
-        if reader is not None:
-            protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
-
-        await bind_room_for_connectionless_caller(
-            protocol,
-            agent_id=agent_id,
-            connection_id=key,
-            room_id=room.id,
-            connection_model=profile.connection_model,
-        )
+            await bind_room_for_connectionless_caller(
+                protocol,
+                agent_id=agent_id,
+                connection_id=key,
+                room_id=room.id,
+                connection_model=profile.connection_model,
+            )
 
     return {
         "agent_id": agent_id,

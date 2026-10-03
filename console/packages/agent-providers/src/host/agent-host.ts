@@ -3,6 +3,7 @@ import * as nodeFs from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   EVICTION_HEARTBEAT_LAPSED,
   EVICTION_LAUNCH_SUPERSEDED,
@@ -344,6 +345,83 @@ export async function stopSupersededSessions(
   for (const { root, config } of superseded) {
     console.warn(
       `Session ${config.session.sessionId} is running a superseded build; stopping it until it is next needed.`
+    );
+    await supervision.stop(root);
+  }
+}
+
+/**
+ * `config` with what its agent's definition decides — the model, the approval
+ * mode, and the instructions and skill the provider is given — taken from the
+ * watcher's `template` as it stands now. Everything else stays the session's
+ * own: its identity, directory and native conversation, so a session started
+ * after its agent was edited resumes its conversation under the edit instead
+ * of under what the agent was when the session was first created.
+ */
+export function withDefinitionOf(
+  config: SharedHostConfig,
+  template: SharedHostConfig
+): SharedHostConfig {
+  const next = structuredClone(config);
+  const model = template.start.input.model;
+  if (model) next.start.input.model = structuredClone(model);
+  else delete next.start.input.model;
+  next.start.input.runtimeMode = template.start.input.runtimeMode;
+  if (next.execution && template.execution) {
+    next.execution.context = template.execution.context;
+    next.execution.skill = template.execution.skill;
+  }
+  return next;
+}
+
+/** Whether `config` was saved under a definition other than the one `template` carries. */
+export function definitionChanged(config: SharedHostConfig, template: SharedHostConfig): boolean {
+  return !isDeepStrictEqual(withDefinitionOf(config, template), config);
+}
+
+/**
+ * The live sessions among `sessionIds` saved under an earlier definition of
+ * their agent than `template`'s. A running host keeps the model and
+ * instructions it was started with, through a reset too, so these would go on
+ * answering as the agent was before it was edited.
+ */
+export async function redefinedSessions(
+  sessionIds: string[],
+  template: SharedHostConfig
+): Promise<{ root: string; config: SharedHostConfig }[]> {
+  const found: { root: string; config: SharedHostConfig }[] = [];
+  for (const sessionId of new Set(sessionIds)) {
+    const root = sharedSessionRoot(sessionId);
+    let config: SharedHostConfig;
+    try {
+      config = sharedConfigSchema.parse(
+        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    if (config.session.agentId !== template.session.agentId) continue;
+    if (!definitionChanged(config, template)) continue;
+    if (!(await liveSupervisor(root))) continue;
+    found.push({ root, config });
+  }
+  return found;
+}
+
+/**
+ * Stops each session running under an earlier definition. Like a superseded
+ * build, it is started again when it is next needed, and then resumes its
+ * conversation under the current definition (`withDefinitionOf`). A turn it
+ * was in the middle of is reported as interrupted by the host.
+ */
+export async function stopRedefinedSessions(
+  redefined: { root: string; config: SharedHostConfig }[],
+  supervision: Supervision
+): Promise<void> {
+  for (const { root, config } of redefined) {
+    console.warn(
+      `Session ${config.session.sessionId} runs under an earlier definition of its agent (model, instructions or approval mode); stopping it so it resumes under the current one when it is next needed.`
     );
     await supervision.stop(root);
   }
@@ -772,6 +850,9 @@ export async function runAgentHost(
         void pending.catch((error: Error) => fail(error));
       })
     );
+    /** The watcher's template as it stands now, which admitting a room reads too. */
+    const currentTemplate = async (): Promise<SharedHostConfig> =>
+      sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
     const launch = async (config: SharedHostConfig) => {
       // Both flags are re-read here rather than taken from whoever asked for the
       // launch. Everything that reaches this point was admitted earlier and may
@@ -782,7 +863,7 @@ export async function runAgentHost(
       if (!now.enabled || !now.spawn || (await stopped(config.session.sessionId))) return;
       await ensureSharedProcess({
         root: sharedSessionRoot(config.session.sessionId),
-        config: reachableBy(config, connectionId),
+        config: reachableBy(withDefinitionOf(config, await currentTemplate()), connectionId),
         resuming: false,
         watcher: false,
         restart: false,
@@ -794,6 +875,16 @@ export async function runAgentHost(
     };
     const superseded = await supersededSessions(template.session.agentId, supervision);
     await stopSupersededSessions(superseded, supervision);
+    const stoppedRoots = new Set(superseded.map((entry) => entry.root));
+    await stopRedefinedSessions(
+      (
+        await redefinedSessions(
+          assignments.sessions().map((config) => config.session.sessionId),
+          template
+        )
+      ).filter((entry) => !stoppedRoots.has(entry.root)),
+      supervision
+    );
     /**
      * Rooms with no session able to take their messages yet, and the events
      * waiting in the order they arrived. Only the room in question waits; the
@@ -1302,7 +1393,7 @@ export async function runAgentHost(
           throw new OperationRefusedError('session limit');
         await ensureSharedProcess({
           root: sessionRoot,
-          config: reachableBy(saved, connectionId),
+          config: reachableBy(withDefinitionOf(saved, await currentTemplate()), connectionId),
           resuming: true,
           watcher: false,
           restart: true,
@@ -1320,7 +1411,7 @@ export async function runAgentHost(
           );
           await ensureSharedProcess({
             root: sessionRoot,
-            config: reachableBy(saved, connectionId),
+            config: reachableBy(withDefinitionOf(saved, await currentTemplate()), connectionId),
             resuming: true,
             watcher: false,
             restart: true,

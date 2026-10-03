@@ -24,7 +24,7 @@ reported explicitly rather than replaced with synthetic prompts.
 ## Changing providers
 
 Keep the adapter, plugin metadata, desktop registry, and host environment in
-sync. The desktop environment allowlist is `src/main/core/sdk-host/agent-env.ts`.
+sync. The environment allowlist is `packages/agent-providers/src/host/agent-env.ts`, shared by Console and the headless agents controller.
 Keep MCP helpers shared when retained providers import them. Model catalogues
 come from the provider on the execution host. Test both local and SSH setup;
 credentials and native configuration belong to that host.

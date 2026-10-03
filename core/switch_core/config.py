@@ -334,7 +334,9 @@ class SwitchConfig(BaseSettings):
     # `switchdash://` deeplink HTTP redirect (`/deeplink/session`, served on the
     # agent-bridge app) so the "Open in Switch Console" link is clickable on platforms
     # that only linkify http(s) (Discord, and any future http-only bridge). When
-    # unset, the raw `switchdash://` deeplink is posted as-is.
+    # unset, the raw `switchdash://` deeplink is posted as-is. Also the
+    # `--server` an agents controller enrolls against, which the gateway's Add
+    # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
 
     # Credentials of the distributed Slack app *we* registered — the one a
@@ -437,11 +439,28 @@ class SwitchConfig(BaseSettings):
     # the entry immediately rather than waiting for it to expire. This is the
     # window in which an already-issued credential outlives its revocation, so
     # it is deliberately shorter than the agent heartbeat TTL. Set to 0 to
-    # disable the cache and read the database on every request.
+    # disable the cache and read the database on every request. With agent
+    # management on, the same TTL and bound apply to the separate cache of a
+    # controller access token's reads (its controller row, and the agent row
+    # it acts as), which a revocation or binding change also drops at once.
     agent_auth_cache_ttl_seconds: float = 5.0
     # Bound on the memo. One entry per distinct live token; the oldest is
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
+
+    # Agent management: managed agent definitions, the agent controllers that
+    # run them, and the controller-facing routes under /v1/management and
+    # /v1/controllers. Off by default; with it off none of those routes are
+    # mounted and the bearer middleware never treats a token as a controller's.
+    agent_management_enabled: bool = False
+    # Signs controller access tokens. Required (at least 32 characters) when
+    # agent management is on, and deliberately separate from JWT_SECRET_KEY so
+    # rotating one never invalidates the other.
+    controller_token_secret: str | None = None
+    # How often a controller must report status. Sent to controllers as
+    # `report_within_s`; a controller that has not reported for three of these
+    # is shown as unknown and refused new placements.
+    controller_status_interval_seconds: int = 60
 
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such
@@ -513,6 +532,27 @@ class SwitchConfig(BaseSettings):
             raise ValueError(
                 "AGENT_AUTH_CACHE_MAX_ENTRIES must be at least 1, got "
                 f"{self.agent_auth_cache_max_entries!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_agent_management(self) -> "SwitchConfig":
+        if self.controller_status_interval_seconds < 1:
+            raise ValueError(
+                "CONTROLLER_STATUS_INTERVAL_SECONDS must be at least 1, got "
+                f"{self.controller_status_interval_seconds!r}."
+            )
+        if not self.agent_management_enabled:
+            return self
+        if not self.controller_token_secret:
+            raise ValueError(
+                "CONTROLLER_TOKEN_SECRET is required when AGENT_MANAGEMENT_ENABLED "
+                "is true: it signs the access tokens agent controllers use."
+            )
+        if len(self.controller_token_secret) < 32:
+            raise ValueError(
+                "CONTROLLER_TOKEN_SECRET must be at least 32 characters, got "
+                f"{len(self.controller_token_secret)}."
             )
         return self
 

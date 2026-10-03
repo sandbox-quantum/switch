@@ -289,6 +289,69 @@ def _offline_owner_message(
     return f"{opening} {terminal}\n\n```\n{cmd}\n```"
 
 
+def _stopped_owner_message(owner_handle: str | None, asker_handle: str) -> str:
+    """The reply for a managed agent its owner has set to stopped.
+
+    Nothing will start a session for it until the owner sets it running
+    again, and only the owner can, so it is the owner who is asked.
+    """
+    needs_me = "" if owner_handle == asker_handle else f", and @{asker_handle} needs me"
+    if owner_handle:
+        return (
+            f"@{owner_handle} — you've stopped me, so I'm not running{needs_me}. "
+            "Set me to running in Switch to bring me back."
+        )
+    return (
+        f"I'm stopped, so I'm not running{needs_me}. **My owner has to set me "
+        "to running** in Switch to bring me back."
+    )
+
+
+def _owner_ref(owner_handle: str | None) -> str:
+    return f"my owner (@{owner_handle})" if owner_handle else "my owner"
+
+
+def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
+    """A managed agent whose controller's stream is down: Core restarted, the
+    machine lost its network, or it is switched off."""
+    return (
+        f"My machine, **{machine}**, is offline or reconnecting to Switch, so "
+        "I can't answer right now. If I haven't answered once it's back, address "
+        f"me again. If it stays offline, {_owner_ref(owner_handle)} needs to "
+        "check it."
+    )
+
+
+def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
+    removed = (
+        f"my machine, **{machine}**, has been removed from Switch, so nothing "
+        "runs me. My owner has to move me to another machine to bring me back."
+    )
+    if owner_handle:
+        return f"@{owner_handle} — {removed}"
+    return removed[0].upper() + removed[1:]
+
+
+def _no_session_here_message(
+    auto_session: bool, elsewhere: list[str], owner_handle: str | None
+) -> str:
+    """A managed agent whose machine is up but starts no session for it here."""
+    if elsewhere:
+        where = ", ".join(f"**{name}**" for name in elsewhere)
+        opening = (
+            f"I don't have a session in this room, but I'm working in {where}. "
+            "Ask me there to come here."
+        )
+    else:
+        opening = "I don't have a session in this room."
+    if auto_session:
+        return opening
+    return (
+        f"{opening} My machine doesn't start sessions for me on its own: "
+        f"{_owner_ref(owner_handle)} can turn on automatic starts in Switch."
+    )
+
+
 # The refusal wording lives with the decision that produces it. Kept under
 # these names because they are how the rest of the package and its tests refer
 # to them.
@@ -431,6 +494,8 @@ class AgentConsumer(Consumer[AgentActor]):
         # — e.g. on Mattermost, whose native "X joined the
         # channel" notice makes it redundant.
         meta = await self._resolve_room_meta(room.room_id)
+        if meta is not None:
+            self._connections.controllers.room_joined(self.agent.id, meta.room_id)
         if meta is not None and not meta.agent_greetings_enabled:
             logger.info(
                 "Suppressing self-join greeting for %s in %s "
@@ -461,6 +526,7 @@ class AgentConsumer(Consumer[AgentActor]):
             return
         self._event_buffer.drop_room(self.agent.id, meta.room_id)
         self._connections.release_room_everywhere(self.agent.id, meta.room_id)
+        self._connections.controllers.room_left(self.agent.id, meta.room_id)
 
     async def _member_name(
         self, session: AsyncSession, event: InboundMembership
@@ -1177,6 +1243,13 @@ class AgentConsumer(Consumer[AgentActor]):
         if self._connections.can_spawn_for(self.agent.id, meta.room_id):
             return _STARTING_SESSION_MESSAGE
 
+        # A controller-backed agent is answered from its controller alone: none
+        # of the heartbeat rows, placements or room claims below is its.
+        if self._connections.controllers.is_bound(self.agent.id):
+            return await self._controller_unavailable_reply(
+                session, agent, meta, asker_handle
+            )
+
         if connection_model == "auto_session":
             # The heartbeat arm only: a client still running the
             # /watch/heartbeat loop declares no capability, and that loop meant
@@ -1242,6 +1315,35 @@ class AgentConsumer(Consumer[AgentActor]):
                 session, meta, agent, asker_handle, connected_not_live=True
             )
         return await self._unavailable_reply(session, meta, agent, asker_handle)
+
+    async def _controller_unavailable_reply(
+        self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
+    ) -> str:
+        """Why an agent run by an agents controller cannot answer here.
+
+        Never the terminal command or "open Switch Console": a managed agent
+        is started by its controller, so the reply names what stands in the
+        way — the owner stopped it, its machine was removed or is offline, or
+        its machine is up but starts no session for it here (naming rooms a
+        session of it is working in, where the asker can find it).
+        """
+        controllers = self._connections.controllers
+        binding = controllers.binding(self.agent.id)
+        assert binding is not None
+        owner = await self.owner_handle_in(session, agent, meta.bridge_id)
+        if not binding.running:
+            return _stopped_owner_message(owner, asker_handle)
+        if controllers.is_revoked(binding.controller_id):
+            return _machine_removed_message(binding.controller_name, owner)
+        if not controllers.is_live(self.agent.id):
+            return _machine_offline_message(binding.controller_name, owner)
+        placed_names: list[str] = []
+        for rid in sorted(controllers.placed_rooms(self.agent.id) - {meta.room_id}):
+            placed_room = await self._room_store.get(session, rid)
+            placed_name = placed_room.name if placed_room is not None else rid
+            if placed_name != meta.name:
+                placed_names.append(placed_name)
+        return _no_session_here_message(binding.auto_session, placed_names, owner)
 
     async def owner_handle_in(
         self, session: AsyncSession, agent: Agent, bridge_id: str | None
@@ -1347,6 +1449,12 @@ class AgentConsumer(Consumer[AgentActor]):
         )
         if connection_model == "session_passive":
             return False
+        if self._connections.controllers.is_bound(self.agent.id):
+            # A session its controller reports working here answers; so does
+            # an always-on agent whose controller is live at all.
+            if connection_model == "always_on":
+                return self._connections.is_live(self.agent.id)
+            return self._connections.controllers.is_placed(self.agent.id, room_id)
         # Union of the presence sources while every kind of client exists
         # (CHOO-1857 stage B): a client on the push transport keeps only a
         # connection, one still polling keeps only the heartbeat row, and a

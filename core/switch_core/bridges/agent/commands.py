@@ -254,7 +254,7 @@ _CONTROL_BODIES: dict[str, dict[str, str]] = {
 def room_control_frame(
     *,
     agent_id: str,
-    session_id: str,
+    session_id: str | None,
     room_id: str,
     action: str,
     actor_id: str,
@@ -267,6 +267,8 @@ def room_control_frame(
 
     Beside the contract command it names who asked, as the room knows them,
     so the session can answer that person once the control has applied.
+    `session_id` is None for a controller-backed agent, whose controller
+    picks the session from the room.
     """
     body = _CONTROL_BODIES.get(action)
     if body is None:
@@ -328,7 +330,7 @@ def stop_control_frame(
 def _control_frame(
     *,
     command_id: str,
-    session_id: str,
+    session_id: str | None,
     room_id: str,
     actor_id: str,
     message_id: str | None,
@@ -486,9 +488,13 @@ async def _dispatch_control_command(
     # A session that connected to this room takes the command itself, over
     # its agent's controller. Nothing is queued: with no controller to relay
     # it to, the room is told so.
+    # A controller-backed agent's sessions are placed with its controller,
+    # which routes the command to the one working in this room. Switch does not
+    # know which session that is, so the frame names none.
+    controller_backed = client._connections.controllers.is_bound(agent.id)
     placed = client._connections.session_in_room(agent.id, meta.room_id)
     launch_id = hosted_launch_of(agent.metadata_)
-    if placed is not None:
+    if placed is not None or controller_backed:
         if not event.message_id:
             await _reply(
                 client,
@@ -518,7 +524,7 @@ async def _dispatch_control_command(
         client, room, event, agent, launch_id, command
     ):
         return
-    if placed is not None:
+    if placed is not None or controller_backed:
         await _reply(
             client,
             room,

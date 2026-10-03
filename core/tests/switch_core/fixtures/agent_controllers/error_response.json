@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "controller_revoked",
+    "message": "The controller has been revoked.",
+    "retryable": false
+  }
+}

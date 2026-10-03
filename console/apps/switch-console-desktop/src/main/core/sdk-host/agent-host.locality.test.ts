@@ -68,7 +68,7 @@ vi.mock('./local-host', () => ({
 
 const { applyControllerState, configureAgentHost, discardControllerState } =
   await import('./agent-host');
-const { controllerConnectionId } = await import('@main/core/switch-rooms/session-connection-id');
+const { controllerConnectionId } = await import('@switch-console/agent-providers');
 
 beforeEach(() => {
   vi.clearAllMocks();

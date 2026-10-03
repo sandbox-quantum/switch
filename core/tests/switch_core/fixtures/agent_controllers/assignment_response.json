@@ -1,0 +1,21 @@
+{
+  "revision": 3,
+  "agents": [
+    {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "revision": 2,
+      "desired_state": "running",
+      "definition": {
+        "name": "reviewer",
+        "display_name": "Reviewer",
+        "icon_url": "https://example.com/icons/reviewer.png",
+        "provider": "claude",
+        "model": null,
+        "instructions": "Review pull requests in this repository.",
+        "auto_session": true,
+        "auto_approve": false,
+        "directory": "/home/example/src/project"
+      }
+    }
+  ]
+}
