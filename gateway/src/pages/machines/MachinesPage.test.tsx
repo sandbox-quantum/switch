@@ -6,6 +6,7 @@ import MachinesPage from "./MachinesPage";
 const laptop: Controller = {
   id: "c1",
   name: "laptop",
+  description: null,
   kind: "daemon",
   platform: { os: "linux", arch: "x64", os_version: "6.1" },
   version: "0.1.0",
@@ -186,6 +187,51 @@ describe("MachinesPage", () => {
         body: { desired_state: "stopped" },
       }),
     );
+  });
+
+  it("renames a machine and describes it, sending only what changed", async () => {
+    const calls = mockManagement({
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, [pmAgent]],
+      "GET /operations": [200, []],
+      "PATCH /controllers/c1": [
+        200,
+        { ...laptop, name: "build-box", description: "Under the desk" },
+      ],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByLabelText("Edit machine laptop"));
+    const name = await screen.findByLabelText(/^Name/);
+    fireEvent.change(name, { target: { value: "  build-box " } });
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Under the desk" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "PATCH")).toEqual({
+        path: "/controllers/c1",
+        method: "PATCH",
+        body: { name: "build-box", description: "Under the desk" },
+      }),
+    );
+    expect(await screen.findByText("Saved build-box")).toBeTruthy();
+  });
+
+  it("will not save a machine without a name", async () => {
+    const calls = mockManagement({
+      "GET /controllers": [200, [{ ...laptop, description: "Old note" }]],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText("Old note")).toBeTruthy();
+    fireEvent.click(await screen.findByLabelText("Edit machine laptop"));
+    fireEvent.change(await screen.findByLabelText(/^Name/), { target: { value: "   " } });
+    expect(screen.getByText("A machine needs a name.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 
   it("shows a refusal from the server in words", async () => {

@@ -29,6 +29,7 @@ import {
   titleCase,
 } from "../../theme/hootFormat";
 import AddressingPolicySection from "./AddressingPolicySection";
+import AgentManagementSection from "./AgentManagementSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 import { sessionPlace, sessionRunner } from "./sessionLabels";
 
@@ -129,6 +130,11 @@ export default function AgentDetailPage() {
         )}
         <Divider />
         <AddressingPolicySection
+          agent={agent}
+          canEdit={isOwner}
+          onUpdated={refetch}
+        />
+        <AgentManagementSection
           agent={agent}
           canEdit={isOwner}
           onUpdated={refetch}
