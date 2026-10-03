@@ -2,8 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Computer, ExternalLink, RefreshCw, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { moveAllSummary } from '@renderer/features/agent-migration/agent-migration-presentation';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useStateBoundFailure } from '@renderer/lib/hooks/use-state-bound-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -18,12 +20,14 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { Switch } from '@renderer/lib/ui/switch';
+import { IDLE_RULE } from '@shared/core/agent-migration/agent-migration';
 import type { EmbeddedControllerOverview } from '@shared/core/embedded-controller/embedded-controller';
 import { embeddedControllerStateChannel } from '@shared/events/embeddedControllerEvents';
 import { switchServersStore } from './switch-servers-store';
 import {
   agentActual,
   canStartAgain,
+  machineStateKey,
   machineStatus,
   type MachineStatusTone,
   toggleBlocker,
@@ -80,24 +84,41 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
   );
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: overviewKey(serverId) });
+  const failed = useStateBoundFailure(
+    overviewQuery.data ? machineStateKey(overviewQuery.data) : null
+  );
+  const handlers = {
+    onSuccess: async () => {
+      failed.clear();
+      await refresh();
+    },
+    onError: async (error: Error) => {
+      await refresh();
+      const fresh = queryClient.getQueryData<EmbeddedControllerOverview>([
+        ...overviewKey(serverId),
+        workspaceId,
+      ]);
+      failed.fail(error, fresh ? machineStateKey(fresh) : null);
+    },
+  };
   const enable = useMutation({
     mutationFn: () => {
       if (!workspaceId) throw new Error('Open a workspace on this server first.');
       return rpc.embeddedController.enable({ serverId, workspaceId });
     },
-    onSettled: refresh,
+    ...handlers,
   });
   const disable = useMutation({
     mutationFn: () => rpc.embeddedController.disable(serverId),
-    onSettled: refresh,
+    ...handlers,
   });
   const startAgain = useMutation({
     mutationFn: () => rpc.embeddedController.restart(serverId),
-    onSettled: refresh,
+    ...handlers,
   });
   const dismiss = useMutation({
     mutationFn: () => rpc.embeddedController.dismissRemoved(serverId),
-    onSettled: refresh,
+    ...handlers,
   });
 
   const overview = overviewQuery.data;
@@ -121,7 +142,7 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
   const status = machineStatus(overview);
   const blocker = toggleBlocker(overview);
   const checked = toggleChecked(overview);
-  const failure = enable.error ?? disable.error ?? startAgain.error ?? dismiss.error;
+  const failure = failed.failure;
 
   return (
     <section className={`${card} space-y-3`}>
@@ -134,8 +155,7 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
             checked={checked}
             disabled={blocker !== null}
             onCheckedChange={(next) => {
-              enable.reset();
-              disable.reset();
+              failed.clear();
               if (next) enable.mutate();
               else setConfirmingOff(true);
             }}
@@ -203,6 +223,9 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
       </div>
 
       {overview.enrollment && <PlacedAgents overview={overview} />}
+      {overview.enrollment && overview.phase.kind === 'running' && (
+        <ConsoleAgentsHere serverId={serverId} />
+      )}
 
       <Dialog open={confirmingOff} onOpenChange={setConfirmingOff}>
         <DialogContent>
@@ -214,7 +237,8 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
             <DialogDescription>
               This removes {overview.enrollment?.name ?? 'this computer'} from Switch as a machine
               and stops the managed agents placed on it. They stay defined in Switch, and can be
-              moved to another machine. Agents you created in this Console are not affected.
+              moved to another machine. Agents this Console runs itself are not affected; any moved
+              here from this Console have to be brought back first.
             </DialogDescription>
           </DialogContentArea>
           <DialogFooter>
@@ -280,5 +304,75 @@ function PlacedAgents({ overview }: { overview: EmbeddedControllerOverview }) {
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * The agents this Console runs itself, moved here all at once ("Move all") or
+ * brought back all at once. Each agent can also be moved on its own page.
+ */
+function ConsoleAgentsHere({ serverId }: { serverId: string }) {
+  const queryClient = useQueryClient();
+  const movedKey = ['agent-migration', 'this-computer', serverId];
+  const moved = useQuery({
+    queryKey: movedKey,
+    queryFn: () => rpc.agentMigration.movedOntoThisComputer(serverId),
+    refetchInterval: REFRESH_MS,
+  });
+  const [outcome, setOutcome] = useState<string[] | null>(null);
+  const settle = (lines: string[]) => {
+    setOutcome(lines);
+    void queryClient.invalidateQueries({ queryKey: movedKey });
+    void queryClient.invalidateQueries({ queryKey: overviewKey(serverId) });
+    void queryClient.invalidateQueries({ queryKey: ['agent-migration'] });
+  };
+  const moveAll = useMutation({
+    mutationFn: () => rpc.agentMigration.moveAllOnThisComputer(serverId),
+    onSuccess: (result) => settle(moveAllSummary(result, 'Moved')),
+  });
+  const bringBack = useMutation({
+    mutationFn: () => rpc.agentMigration.stopManagingAllOnThisComputer(serverId),
+    onSuccess: (result) => settle(moveAllSummary(result, 'Brought back')),
+  });
+  const working = moveAll.isPending || bringBack.isPending;
+  const failure = moveAll.error ?? bringBack.error;
+  const names = moved.data ?? [];
+  return (
+    <div className="space-y-2 rounded-lg border border-border px-3 py-2">
+      <p className="text-sm text-foreground">Agents this Console runs</p>
+      <p className="text-xs text-foreground-muted">
+        Move every agent this Console runs on this computer for this server onto its controller, so
+        Switch manages them. {IDLE_RULE} Agents that cannot move are left as they are, with the
+        reason.
+      </p>
+      {names.length > 0 && (
+        <p className="text-xs text-foreground-muted">Moved here: {names.join(', ')}.</p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" size="sm" disabled={working} onClick={() => moveAll.mutate()}>
+          {moveAll.isPending ? 'Moving…' : 'Move all'}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={working || names.length === 0}
+          onClick={() => bringBack.mutate()}
+        >
+          {bringBack.isPending ? 'Bringing back…' : 'Bring all back'}
+        </Button>
+      </div>
+      {outcome && (
+        <ul className="space-y-0.5 text-xs text-foreground-muted">
+          {outcome.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+      {failure && (
+        <p className="text-xs text-foreground-error">
+          {failureText(failure, 'That did not work.')}
+        </p>
+      )}
+    </div>
   );
 }

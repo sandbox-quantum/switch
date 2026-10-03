@@ -9,6 +9,12 @@ const mocks = vi.hoisted(() => ({
   setStopped: vi.fn(),
   teardown: vi.fn(async () => ({ success: true })),
 }));
+// Console runs every agent here; none was moved to a managed machine.
+vi.mock('@main/core/agent-migration/managed-agents-store', () => ({
+  managedRecordFor: vi.fn(async () => null),
+  forgetManagedAgent: vi.fn(async () => {}),
+  AgentManagedByControllerError: class AgentManagedByControllerError extends Error {},
+}));
 vi.mock('./getAgentById', () => ({
   getAgentById: async () => ({ id: 'local', workspaceId: 'workspace', switchAgentId: 'agent' }),
 }));
