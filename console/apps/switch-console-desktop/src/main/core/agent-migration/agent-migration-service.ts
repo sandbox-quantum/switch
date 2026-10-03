@@ -304,7 +304,8 @@ export class AgentMigrationService {
         result.failed.push({ agentId: agent.id, name: agent.name, message: state.error });
         continue;
       }
-      if (state.runner === 'managed') continue;
+      // A subagent moves with its parent, wherever its parent is in the list.
+      if (state.runner === 'managed' || state.movesWithParent) continue;
       if (state.blocker) {
         result.skipped.push({ agentId: agent.id, name: agent.name, reason: state.blocker });
         continue;
@@ -384,17 +385,18 @@ export class AgentMigrationService {
         notCarried: [],
       };
     const lookup = await this.deps.targets.resolve(agent);
-    let notCarried: string[] = [];
-    let blocker = lookup.blocker;
-    try {
-      notCarried = await this.notCarried(agent, subagents);
-    } catch (error) {
-      blocker ??= `Its configuration cannot be read: ${message(error)}`;
-    }
-    if (!blocker) blocker = await this.eligibilityBlocker(agent);
+    let blocker = lookup.blocker ?? (await this.eligibilityBlocker(agent));
     if (!blocker && lookup.target && lookup.target.workspaceId !== agent.workspaceId)
       blocker =
         'The machine runs managed agents for another workspace on this server; an agent can only be placed on a machine of its own workspace.';
+    // Read only for an agent that can move: it is what the move's confirmation lists.
+    let notCarried: string[] = [];
+    if (!blocker)
+      try {
+        notCarried = await this.notCarried(agent, subagents);
+      } catch (error) {
+        blocker = `Its configuration cannot be read: ${message(error)}`;
+      }
     return {
       ...base,
       target: lookup.display,
