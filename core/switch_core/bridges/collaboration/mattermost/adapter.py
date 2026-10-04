@@ -92,6 +92,11 @@ logger = logging.getLogger(__name__)
 # stream unbounded data into memory.
 _MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
 
+# Every request to Mattermost gives up after this long. The driver's default is
+# to wait for ever, so a server that accepts the connection and never answers
+# would hold the call, and anything waiting on it, indefinitely.
+_MM_REQUEST_TIMEOUT_SECONDS = 10.0
+
 # Mattermost channel types a bot can be *added* to: open and private channels.
 # Membership of a DM ("D") or group DM ("G") is a property of the conversation
 # existing rather than of anyone joining, so Mattermost raises no `user_added`
@@ -1990,14 +1995,16 @@ class MattermostAdapter(PlatformAdapter):
         # identifier. Only the bot's own display name carries the label.
         label = (await self.agent_rendering(agent_name)).field_label
         if label != agent_name:
-            self._warn_once_if_display_names_are_hidden()
+            await self._warn_once_if_display_names_are_hidden()
 
         existing = await self._find_existing_bot(agent_name)
         if existing:
             bot_id: str = str(existing["user_id"])
             if existing.get("display_name") != label:
                 try:
-                    self._mm_api("put", f"/bots/{bot_id}", {"display_name": label})
+                    await self._mm_api(
+                        "put", f"/bots/{bot_id}", {"display_name": label}
+                    )
                 except Exception as e:
                     logger.exception(
                         "Failed to update the display name of Mattermost bot %s: %s",
@@ -2006,7 +2013,7 @@ class MattermostAdapter(PlatformAdapter):
                     )
         else:
             try:
-                bot = self._mm_api(
+                bot = await self._mm_api(
                     "post",
                     "/bots",
                     {
@@ -2023,7 +2030,7 @@ class MattermostAdapter(PlatformAdapter):
                 return
 
         try:
-            token_resp = self._mm_api(
+            token_resp = await self._mm_api(
                 "post",
                 f"/users/{bot_id}/tokens",
                 {"description": f"Switch bridge token for {agent_name}"},
@@ -2158,7 +2165,7 @@ class MattermostAdapter(PlatformAdapter):
             bot_id = str(existing["user_id"])
         else:
             try:
-                bot = self._mm_api(
+                bot = await self._mm_api(
                     "post",
                     "/bots",
                     {
@@ -2172,7 +2179,7 @@ class MattermostAdapter(PlatformAdapter):
                 logger.exception("Failed to create Switch Admin bot")
                 return
         try:
-            token_resp = self._mm_api(
+            token_resp = await self._mm_api(
                 "post",
                 f"/users/{bot_id}/tokens",
                 {"description": "Switch admin bot token"},
@@ -2241,7 +2248,7 @@ class MattermostAdapter(PlatformAdapter):
                 agent_names.append(bot_name)
         return agent_names
 
-    def _read_name_display_setting(self) -> str | None:
+    async def _read_name_display_setting(self) -> str | None:
         """`TeamSettings.TeammateNameDisplay`, read at most once per run.
 
         None when the read could not answer — the server config is readable
@@ -2251,7 +2258,7 @@ class MattermostAdapter(PlatformAdapter):
             return self._name_display_setting
         self._name_display_read = True
         try:
-            config = self._mm_api("get", "/config")
+            config = await self._mm_api("get", "/config")
             setting = (config.get("TeamSettings") or {}).get("TeammateNameDisplay")
         except Exception as e:
             logger.warning(
@@ -2270,14 +2277,14 @@ class MattermostAdapter(PlatformAdapter):
         self._name_display_setting = setting
         return setting
 
-    def _warn_once_if_display_names_are_hidden(self) -> None:
+    async def _warn_once_if_display_names_are_hidden(self) -> None:
         """Say so when this server will store an agent's display name and show
         nobody. Mattermost renders a bot under its username unless the server
         is told otherwise, so a display name Switch sets can be invisible with
         nothing about the write itself failing."""
         if self._name_display_warned:
             return
-        setting = self._read_name_display_setting()
+        setting = await self._read_name_display_setting()
         if setting is None or setting in _NAME_DISPLAY_SHOWS_LABEL:
             return
         self._name_display_warned = True
@@ -2333,6 +2340,7 @@ class MattermostAdapter(PlatformAdapter):
                     upload_url,
                     headers={"Authorization": f"Bearer {token}"},
                     files={"image": ("icon.png", data, "image/png")},
+                    timeout=_MM_REQUEST_TIMEOUT_SECONDS,
                 )
                 if not r.ok:
                     logger.error(
@@ -2687,6 +2695,7 @@ class MattermostAdapter(PlatformAdapter):
             "scheme": scheme,
             "port": port,
             "verify": self._config.verify_tls,
+            "request_timeout": _MM_REQUEST_TIMEOUT_SECONDS,
         }
         if token:
             opts["token"] = token
@@ -2696,7 +2705,14 @@ class MattermostAdapter(PlatformAdapter):
 
         return Driver(opts)
 
-    def _mm_api(
+    async def _mm_api(
+        self, method: str, endpoint: str, data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        # On a thread: the driver is blocking, and on the event loop one slow
+        # Mattermost response would stall every agent and bridge in Switch.
+        return await asyncio.to_thread(self._mm_api_blocking, method, endpoint, data)
+
+    def _mm_api_blocking(
         self, method: str, endpoint: str, data: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         if self._admin_driver is None:
@@ -2718,7 +2734,7 @@ class MattermostAdapter(PlatformAdapter):
             page = 0
             per_page = 200
             while True:
-                result = self._mm_api(
+                result = await self._mm_api(
                     "get",
                     f"/bots?include_deleted=true&page={page}&per_page={per_page}",
                 )
@@ -2726,7 +2742,7 @@ class MattermostAdapter(PlatformAdapter):
                 for bot in bots:
                     if bot.get("username") == username:
                         if bot.get("delete_at", 0) > 0:
-                            self._mm_api("post", f"/bots/{bot['user_id']}/enable")
+                            await self._mm_api("post", f"/bots/{bot['user_id']}/enable")
                         return bot
                 if len(bots) < per_page:
                     break
