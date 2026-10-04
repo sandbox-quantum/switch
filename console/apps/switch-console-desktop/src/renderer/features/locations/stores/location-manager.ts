@@ -127,6 +127,26 @@ export class LocationManagerStore {
     return result;
   }
 
+  /**
+   * The same for an agent created managed, on this computer or an SSH host:
+   * Switch places it on the machine's controller, and Console keeps a row for it.
+   */
+  async addManagedAgentAndOpen(
+    params: Parameters<typeof rpc.agentMigration.addManagedAgent>[0]
+  ): Promise<Awaited<ReturnType<typeof rpc.agentMigration.addManagedAgent>>> {
+    const result = await rpc.agentMigration.addManagedAgent(params);
+    if (result.kind === 'created') {
+      const location = (await rpc.locations.getLocations()).find(
+        (l) => l.id === result.agent.locationId
+      );
+      if (!location) {
+        throw new Error(`Added agent's location ${result.agent.locationId} not found`);
+      }
+      this._setAndOpenLocation(location.id, location);
+    }
+    return result;
+  }
+
   async startAgentOnboarding(
     data: ModeData,
     options: StartAgentOnboardingOptions = {}

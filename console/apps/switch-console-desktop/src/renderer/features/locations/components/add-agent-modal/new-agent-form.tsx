@@ -57,6 +57,8 @@ import { CloudAgentRepository } from './cloud-agent-repository';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
 import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
+import { machineDisabledReason } from './managed-run-location';
+import { ManagedModelField, ManagedRunLocationNotice } from './managed-run-location-notice';
 import { useConfigureAgentForm, usePickMode } from './modes';
 
 export type NewAgentFormProps = {
@@ -228,8 +230,36 @@ export const NewAgentForm = observer(function NewAgentForm({
     launchProfileConfigRef.current = config;
   }, []);
 
-  // Drive the agent through its provider's own server rather than a terminal.
-  // Held in state rather than a ref: the switch has to render what it holds.
+  // On a server with agent management, every agent created on this computer or
+  // an SSH host is a managed agent there: Switch places it on the machine's
+  // controller. Without it, Console runs the agent, and the form says so.
+  const workspaceId = workspacesStore.idOnServerInScope(pickState.serverId);
+  const machineQuery = useQuery({
+    queryKey: ['new-agent-machine', pickState.serverId, workspaceId, runHost],
+    queryFn: () =>
+      rpc.agentMigration.newAgentMachine({
+        serverId: pickState.serverId!,
+        workspaceId: workspaceId!,
+        sshHost: isRemoteRun ? runHost : null,
+      }),
+    enabled: !isCloudRun && !!pickState.serverId && !!workspaceId,
+    // While the machine cannot take one yet, so turning it on elsewhere shows here.
+    refetchInterval: (query) =>
+      query.state.data?.management && query.state.data.blocker ? 3000 : false,
+  });
+  const machine = isCloudRun ? undefined : machineQuery.data;
+  const managedRun = machine?.management === true;
+  const machineReason = isCloudRun
+    ? null
+    : machineDisabledReason({
+        checking: !!workspaceId && machineQuery.isPending,
+        error: machineQuery.error,
+        machine,
+      });
+  const [managedModel, setManagedModel] = useState('');
+  useEffect(() => {
+    setManagedModel('');
+  }, [pickState.providerId, runHost]);
 
   const trimmedRemoteDir = canonicalDir(remoteRepoDir);
   const dir = isCloudRun ? '' : isRemoteRun ? trimmedRemoteDir : pickState.path;
@@ -268,6 +298,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     remoteDirIsAbsolute &&
     runHostReachable &&
     runHostReady &&
+    machineReason === null &&
     submitState === 'idle' &&
     !connectingProvider &&
     !connectingGitHub;
@@ -294,17 +325,19 @@ export const NewAgentForm = observer(function NewAgentForm({
                       ? `Checking what ${runLocationLabel} has installed…`
                       : hostReadiness.blocked
                         ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
-                        : !pickState.providerId
-                          ? 'Choose an agent type.'
-                          : !isCloudRun && dir.trim().length === 0
-                            ? isRemoteRun
-                              ? 'Enter the agent’s working directory on the host.'
-                              : 'Choose the agent’s working directory.'
-                            : !remoteDirIsAbsolute
-                              ? `Give the full path on ${runLocationLabel}, starting with “/”.`
-                              : policyHasDeadRule(form.addressingPolicy)
-                                ? 'One addressing rule can never match — fix it under Settings.'
-                                : null;
+                        : machineReason !== null
+                          ? machineReason
+                          : !pickState.providerId
+                            ? 'Choose an agent type.'
+                            : !isCloudRun && dir.trim().length === 0
+                              ? isRemoteRun
+                                ? 'Enter the agent’s working directory on the host.'
+                                : 'Choose the agent’s working directory.'
+                              : !remoteDirIsAbsolute
+                                ? `Give the full path on ${runLocationLabel}, starting with “/”.`
+                                : policyHasDeadRule(form.addressingPolicy)
+                                  ? 'One addressing rule can never match — fix it under Settings.'
+                                  : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -417,7 +450,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         });
         return;
       }
-      const result = await getLocationManagerStore().addAgentAndOpen({
+      const common = {
         sshHost: isRemoteRun ? runHost : null,
         dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
         name: form.agentName,
@@ -428,10 +461,29 @@ export const NewAgentForm = observer(function NewAgentForm({
         instructions: form.instructions,
         iconUrl: form.iconUrl,
         autoApprove: form.autoApprove,
-        definitionAttributes: advancedAttributesRef.current,
-        providerConfig: launchProfileConfigRef.current,
         entryPoint,
-      });
+      };
+      const result = managedRun
+        ? await getLocationManagerStore().addManagedAgentAndOpen({
+            ...common,
+            model: managedModel.trim() || null,
+          })
+        : await getLocationManagerStore().addAgentAndOpen({
+            ...common,
+            definitionAttributes: advancedAttributesRef.current,
+            providerConfig: launchProfileConfigRef.current,
+          });
+      if (result.kind === 'machine-unavailable') {
+        toast({
+          title: `${runLocationLabel} can’t take the agent now. Nothing was created.`,
+          description: result.message,
+          variant: 'destructive',
+        });
+        void machineQuery.refetch();
+        setCloseGuard(false);
+        setSubmitState('idle');
+        return;
+      }
       if (result.kind !== 'created') {
         reportProvisionError(result);
         setCloseGuard(false);
@@ -651,6 +703,19 @@ export const NewAgentForm = observer(function NewAgentForm({
                     : 'This server runs on this computer, so its agents run here too.'}
                 </p>
               )}
+              {machine && pickState.serverId && workspaceId && (
+                <ManagedRunLocationNotice
+                  machine={machine}
+                  label={runLocationLabel}
+                  sshHost={isRemoteRun ? runHost : null}
+                  serverId={pickState.serverId}
+                  workspaceId={workspaceId}
+                  onEnabled={() => void machineQuery.refetch()}
+                />
+              )}
+              {!isCloudRun && machineQuery.error && (
+                <p className="text-xs text-destructive">{machineReason}</p>
+              )}
               {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
               {/* Not while it is still checking: the provider picker below is
               already saying so, and two spinners for one question read as two
@@ -723,7 +788,17 @@ export const NewAgentForm = observer(function NewAgentForm({
               />
             )}
 
-            {canConfigureAgent && !!pickState.providerId && (
+            {canConfigureAgent && !!pickState.providerId && managedRun && (
+              <ManagedModelField
+                providerId={pickState.providerId}
+                sshHost={isRemoteRun ? runHost : null}
+                dir={dir}
+                value={managedModel}
+                onChange={setManagedModel}
+              />
+            )}
+
+            {canConfigureAgent && !!pickState.providerId && !managedRun && (
               <>
                 {(!isCloudRun || pickState.providerId === 'claude') && (
                   <AgentAdvancedConfig
