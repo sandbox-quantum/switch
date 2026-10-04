@@ -14,7 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.types import ASGIApp, Receive, Scope, Send
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from switch_core.bridges.agent.api import handlers
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
@@ -192,3 +192,26 @@ def test_a_socket_whose_connection_is_taken_over_is_told_so(
             evicted = _next(loser, "evicted")
 
             assert evicted["data"]["code"] == "taken_over"
+
+
+def test_a_socket_the_server_closed_under_it_ends_cleanly(
+    client: TestClient, protocol: _Protocol, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Uvicorn closes sockets itself on shutdown, and the next send raises
+    RuntimeError rather than WebSocketDisconnect."""
+    send_json = WebSocket.send_json
+
+    async def closed_on_ping(self: WebSocket, data: Any, mode: str = "text") -> None:
+        if data.get("event") == "ping":
+            raise RuntimeError("Unexpected ASGI message 'websocket.send'")
+        await send_json(self, data, mode)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(WebSocket, "send_json", closed_on_ping)
+    with client.websocket_connect(_url()) as ws:
+        ws.receive_json()
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+
+    conn = protocol.connections.get("c1")
+    assert conn is not None
+    assert not conn.stream_attached

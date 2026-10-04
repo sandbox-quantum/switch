@@ -1033,6 +1033,10 @@ async def connection_socket(
                 next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
     except WebSocketDisconnect:
         return
+    except RuntimeError:
+        # The server closed the socket under us (uvicorn does on shutdown), so
+        # a send raises this rather than WebSocketDisconnect. Same ending.
+        return
     finally:
         # The pump owns the stream: cancelling it runs the stream's own
         # cleanup (detaching it from the connection) inside that task.
