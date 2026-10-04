@@ -8,6 +8,9 @@ import type {
   AgentEventFrame,
   AgentGapFrame,
   AgentSessionCommandFrame,
+  AgentWorkerClosedFrame,
+  AgentWorkerFrame,
+  WorkerIdentity,
 } from './schemas';
 
 /**
@@ -26,6 +29,16 @@ import type {
  * frames, ids and resume, the heartbeat, placements and room claims). A shared
  * agent's host runs in the controller's process and hears its events from the
  * `AgentHub` instead; the room of its calls comes from there too.
+ *
+ * A cloud agent's host opens its stream as a worker (it sends
+ * `X-Switch-Worker-Capability` and the host identity). The relay has Core
+ * admit it on the controller's connection before the stream opens, passes a
+ * refusal back as Core sent it, writes the `worker_attached` payload as the
+ * stream's second frame, and from then on replays the worker's protocol-7
+ * frames (`agent.worker` on the controller stream) on that stream. A worker
+ * stream needs the controller stream: it is refused with 503 while that is
+ * down, and ended when it drops, so the worker opens it again once Core can
+ * admit it.
  */
 
 /** The agent-protocol revisions the relay serves, as switch-core declares its own. */
@@ -57,6 +70,22 @@ export const DEFAULT_RELAY_TIMING: RelayTiming = {
   keepaliveMs: 15_000,
 };
 
+/**
+ * How the relay has Core admit a cloud agent's worker, and let it go: on the
+ * controller's connection, which the controller holds. `unavailable` means
+ * there is no controller connection to attach on right now.
+ */
+export interface WorkerLink {
+  attach(agentId: string, worker: WorkerIdentity): Promise<WorkerAttachResult>;
+  detach(agentId: string, worker: { connectionId: string; generation: number }): void;
+}
+
+export type WorkerAttachResult =
+  | { ok: true; attached: Record<string, unknown> }
+  | { ok: false; kind: 'worker'; status: number; body: string }
+  | { ok: false; kind: 'controller'; status: number; code: string; message: string }
+  | { ok: false; kind: 'unavailable'; message: string };
+
 /** Where a request that is not connection bookkeeping goes. */
 export interface Forwarder {
   forward(
@@ -72,6 +101,7 @@ export type RelayDeps = {
   sharedRoomFor: (agentId: string, sessionId: string | null) => string | null;
   version: string;
   forwarder: Forwarder;
+  workers: WorkerLink;
   /** An agent's confirmed cursor moved; the controller persists it and beats it upstream. */
   onCursor: (agentId: string, cursor: number) => void;
   /** Something `attached()` reads changed. */
@@ -112,6 +142,8 @@ type LocalConnection = {
   rooms: Set<string>;
   released: Map<string, string | null>;
   declaration: Declaration;
+  /** Core admitted this connection as the agent's cloud worker, at its current generation. */
+  worker: boolean;
 };
 
 type Buffered =
@@ -145,6 +177,16 @@ class HttpRefusal extends Error {
     readonly detail: unknown
   ) {
     super(typeof detail === 'string' ? detail : JSON.stringify(detail));
+  }
+}
+
+/** A refusal from Switch, passed back with its status and body as they came. */
+class RawRefusal extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string
+  ) {
+    super(`HTTP ${status}`);
   }
 }
 
@@ -188,9 +230,16 @@ const placementsSchema = z.object({
   generation: z.number().int().nullish(),
 });
 
-const LOCAL_ROUTE = /^\/agents\/([^/]+)\/(events|connection\/[^/]+)$/;
-/** The prefixes forwarded to Switch. Anything else, the management routes above all, stays here. */
-const FORWARDED = /^\/(agents\/[^/]+\/.+|agent-sessions\/.+|sessions\/.+|version|health)$/;
+const LOCAL_ROUTE =
+  /^\/agents\/([^/]+)\/(events|connection\/(?:beat|placements|subscribe|unsubscribe))$/;
+/**
+ * The prefixes forwarded to Switch. Anything else, the management routes above
+ * all, stays here. `/hosted/...` is a cloud agent's: its provider credential
+ * and status, its repository credential and its session operations, never
+ * its machine's routes.
+ */
+const FORWARDED =
+  /^\/(agents\/[^/]+\/.+|agent-sessions\/.+|sessions\/.+|hosted\/(?:provider-credential|provider-status|github-credential|operations\/[^/]+\/(?:claim|result))|version|health)$/;
 /** `/agents/<segment>/...` routes whose segment is not an agent. */
 const AGENTLESS_SEGMENTS = new Set(['rooms', 'feature-flags']);
 
@@ -210,6 +259,12 @@ export class LocalRelay {
   private ready = false;
   private upstream = false;
   private timers: ReturnType<typeof setInterval>[] = [];
+  /**
+   * Worker frames that arrived for a worker whose attach is still being
+   * answered, by `connection:generation`: they are written once its
+   * `worker_attached` is.
+   */
+  private readonly attaching = new Map<string, { event: string; data: unknown }[]>();
 
   constructor(private readonly deps: RelayDeps) {}
 
@@ -382,6 +437,7 @@ export class LocalRelay {
   // -- What arrives on the controller stream ----------------------------------
 
   setUpstream(connected: boolean): void {
+    if (!connected) this.endWorkerStreams(null, 'the controller lost its stream to Switch');
     if (this.upstream === connected) return;
     this.upstream = connected;
     this.deps.onChange();
@@ -390,12 +446,82 @@ export class LocalRelay {
   /**
    * The controller stream (re)attached. Switch attaches every bound agent
    * afresh on each stream, with `agent.attached`, so none counts as attached
-   * until it says so again.
+   * until it says so again. Workers attached on the stream before it are
+   * Switch's no longer, so their streams end and they attach again.
    */
   streamAttached(): void {
+    this.endWorkerStreams(null, 'the controller reconnected to Switch');
     for (const agent of this.agents.values()) agent.attached = false;
     this.upstream = true;
     this.deps.onChange();
+  }
+
+  /** A frame for a cloud agent's worker: written on its stream as it came. */
+  workerFrame(frame: AgentWorkerFrame): void {
+    const key = `${frame.connection_id}:${frame.generation}`;
+    const waiting = this.attaching.get(key);
+    if (waiting) {
+      waiting.push({ event: frame.event, data: frame.data });
+      return;
+    }
+    const conn = this.workerConnection(frame);
+    if (!conn) {
+      this.deps.log.debug('Dropped a worker frame for a worker that is not attached here', {
+        agentId: frame.agent_id,
+        connectionId: frame.connection_id,
+        event: frame.event,
+      });
+      return;
+    }
+    this.write(conn, frame.event, frame.data);
+  }
+
+  /** Switch ended a worker's attachment: its stream is evicted with Switch's code. */
+  workerClosed(frame: AgentWorkerClosedFrame): void {
+    const conn = this.workerConnection(frame);
+    if (!conn) return;
+    conn.worker = false;
+    this.deps.log.warn('Switch ended a worker’s attachment', {
+      agentId: frame.agent_id,
+      code: frame.code,
+    });
+    this.evict(conn, frame.code, frame.reason);
+  }
+
+  private workerConnection(frame: {
+    agent_id: string;
+    connection_id: string;
+    generation: number;
+  }): LocalConnection | null {
+    const conn = this.connections.get(frame.connection_id);
+    if (
+      !conn ||
+      conn.agentId !== frame.agent_id ||
+      conn.generation !== frame.generation ||
+      !conn.worker ||
+      !conn.stream
+    )
+      return null;
+    return conn;
+  }
+
+  /**
+   * Ends the worker streams (every agent's, or one agent's): no `evicted`
+   * frame, so each worker reconnects and attaches again.
+   */
+  private endWorkerStreams(agentId: string | null, why: string): void {
+    for (const conn of this.connections.values()) {
+      if (!conn.worker || (agentId !== null && conn.agentId !== agentId)) continue;
+      conn.worker = false;
+      const stream = conn.stream;
+      if (!stream) continue;
+      this.deps.log.info('Ending a worker stream so it attaches again', {
+        agentId: conn.agentId,
+        why,
+      });
+      conn.stream = null;
+      stream.res.end();
+    }
   }
 
   attach(agentId: string, fromSeq: number, rooms: string[]): void {
@@ -423,6 +549,7 @@ export class LocalRelay {
     const agent = this.agents.get(agentId);
     if (!agent) return;
     agent.attached = false;
+    this.endWorkerStreams(agentId, `Switch detached the agent (${reason})`);
     this.deps.log.warn('Agent detached from the controller stream', { agentId, reason });
     this.deps.onChange();
   }
@@ -586,6 +713,7 @@ export class LocalRelay {
         path: `${url.pathname}${url.search}`,
       });
     } catch (error) {
+      if (error instanceof RawRefusal) return this.sendRaw(res, error.status, error.body);
       if (!(error instanceof HttpRefusal)) throw error;
       this.send(res, error.status, { detail: error.detail });
     }
@@ -616,7 +744,7 @@ export class LocalRelay {
           406,
           'The agents controller relays the event stream only; ask for text/event-stream.'
         );
-      return this.openStream(req, res, agentId, url);
+      return await this.openStream(req, res, agentId, url);
     }
     if (req.method !== 'POST') throw new HttpRefusal(405, 'Method Not Allowed');
     const body = await readJson(req);
@@ -634,7 +762,12 @@ export class LocalRelay {
     }
   }
 
-  private openStream(req: IncomingMessage, res: ServerResponse, agentId: string, url: URL): void {
+  private async openStream(
+    req: IncomingMessage,
+    res: ServerResponse,
+    agentId: string,
+    url: URL
+  ): Promise<void> {
     const query = url.searchParams;
     const connectionId = query.get('connection_id');
     if (!connectionId)
@@ -681,7 +814,77 @@ export class LocalRelay {
       });
     const expectedRaw = query.get('expected_generation');
     const expected = expectedRaw === null ? null : Number(expectedRaw);
+    const spawnCapable = query.get('spawn_capable') === 'true';
 
+    const capability = header(req, 'x-switch-worker-capability');
+    const generation = ++this.incarnation;
+    let attached: Record<string, unknown> | null = null;
+    if (capability !== null) {
+      const known = this.connections.get(connectionId);
+      if (known && known.agentId !== agentId)
+        throw new HttpRefusal(409, notOpen(connectionId).detail);
+      if (known && expected !== null && expected !== known.generation)
+        throw coded(
+          409,
+          'taken_over',
+          `connection ${connectionId} has been reopened since incarnation ${expected} and is now at ${known.generation}; another client holds it, so this reattach was refused and the connection was left untouched`
+        );
+      attached = await this.admitWorker(agentId, {
+        connection_id: connectionId,
+        generation,
+        spawn_capable: spawnCapable,
+        protocol: declaration.speaks,
+        protocol_accepts: declaration.accepts,
+        capability,
+        boot_id: header(req, 'x-switch-host-boot-id'),
+        instance_id: header(req, 'x-switch-host-instance-id'),
+        state_version: integerHeader(req, 'x-switch-worker-state-version'),
+      });
+    }
+    const owed = this.attaching.get(`${connectionId}:${generation}`) ?? [];
+    this.attaching.delete(`${connectionId}:${generation}`);
+    try {
+      this.commitStream(req, res, agentId, url, {
+        connectionId,
+        scope,
+        filter,
+        cursor,
+        declaration,
+        expected,
+        spawnCapable,
+        generation,
+        attached,
+        owed,
+      });
+    } catch (error) {
+      // Core holds the worker this open attached; the stream never opened.
+      if (attached !== null) this.deps.workers.detach(agentId, { connectionId, generation });
+      throw error;
+    }
+  }
+
+  private commitStream(
+    req: IncomingMessage,
+    res: ServerResponse,
+    agentId: string,
+    url: URL,
+    open: {
+      connectionId: string;
+      scope: 'single' | 'all';
+      filter: 'all' | 'addressed';
+      cursor: number | null;
+      declaration: Declaration;
+      expected: number | null;
+      spawnCapable: boolean;
+      generation: number;
+      attached: Record<string, unknown> | null;
+      owed: { event: string; data: unknown }[];
+    }
+  ): void {
+    const { connectionId, scope, filter, cursor, declaration, expected, spawnCapable } = open;
+    const { generation, attached, owed } = open;
+    const query = url.searchParams;
+    const agent = this.agent(agentId);
     let conn = this.connections.get(connectionId);
     if (conn && conn.agentId !== agentId) throw new HttpRefusal(409, notOpen(connectionId).detail);
     if (conn && !this.alive(conn)) {
@@ -721,18 +924,20 @@ export class LocalRelay {
         rooms: new Set(),
         released: new Map(),
         declaration,
+        worker: false,
       };
       this.connections.set(connectionId, conn);
       agent.connections.set(connectionId, conn);
     }
     conn.scope = scope;
     conn.filter = filter;
-    conn.spawnCapable = query.get('spawn_capable') === 'true';
+    conn.spawnCapable = spawnCapable;
     conn.declaration = declaration;
     conn.cursor = cursor;
     conn.confirmed = cursor;
     conn.lastBeat = this.deps.now();
-    conn.generation = ++this.incarnation;
+    conn.generation = generation;
+    conn.worker = attached !== null;
 
     for (const roomId of (query.get('rooms') ?? '').split(',').filter(Boolean)) {
       if (agent.rooms && !agent.rooms.has(roomId)) {
@@ -752,8 +957,11 @@ export class LocalRelay {
     conn.stream = stream;
     const owner = conn;
     res.on('close', () => {
+      if (attached !== null)
+        this.deps.workers.detach(agentId, { connectionId, generation: stream.generation });
       if (owner.stream === stream) {
         owner.stream = null;
+        owner.worker = false;
         this.deps.onChange();
       }
     });
@@ -775,6 +983,10 @@ export class LocalRelay {
       },
       client: declaration,
     });
+    if (attached !== null) {
+      this.write(conn, 'worker_attached', attached);
+      for (const frame of owed) this.write(conn, frame.event, frame.data);
+    }
     if (agent.reset && conn.cursor !== null && agent.head !== null && conn.cursor > agent.head) {
       this.write(conn, 'gap', {
         from_sequence: agent.head,
@@ -788,6 +1000,47 @@ export class LocalRelay {
     }
     this.pump(conn);
     this.deps.onChange();
+  }
+
+  /**
+   * Has Core admit the worker before its stream opens. A refusal of the
+   * worker itself goes back as Core sent it, so the worker acts on Core's
+   * code exactly as it would on its own stream; anything else (no
+   * controller stream, the agent not bound here yet) is a 503 it retries.
+   */
+  private async admitWorker(
+    agentId: string,
+    worker: WorkerIdentity
+  ): Promise<Record<string, unknown>> {
+    if (!this.upstream)
+      throw new HttpRefusal(
+        503,
+        'The agents controller is not connected to Switch; retry in a moment.'
+      );
+    const key = `${worker.connection_id}:${worker.generation}`;
+    this.attaching.set(key, []);
+    let result: WorkerAttachResult;
+    try {
+      result = await this.deps.workers.attach(agentId, worker);
+    } catch (error) {
+      this.attaching.delete(key);
+      throw new HttpRefusal(
+        503,
+        `The agents controller could not attach this worker: ${errorMessage(error)}; retry in a moment.`
+      );
+    }
+    if (result.ok) return result.attached;
+    this.attaching.delete(key);
+    if (result.kind === 'worker') throw new RawRefusal(result.status, result.body);
+    if (result.kind === 'controller')
+      this.deps.log.warn('Switch would not attach a worker on this controller', {
+        agentId,
+        code: result.code,
+      });
+    throw new HttpRefusal(
+      503,
+      `${result.message}; the agents controller retries once it can attach this worker.`
+    );
   }
 
   private beat(
@@ -1128,6 +1381,7 @@ export class LocalRelay {
 
   /** Ends a connection; with a code, its open stream is told why first. */
   private closeConnection(conn: LocalConnection, code: 'heartbeat_lapsed' | null): void {
+    conn.worker = false;
     if (code)
       this.evict(conn, code, 'heartbeat lapsed; reopen the stream and resume from your cursor');
     else conn.stream?.res.end();
@@ -1152,6 +1406,14 @@ export class LocalRelay {
     for (const conn of this.connections.values()) conn.stream?.res.write(': keepalive\n\n');
   }
 
+  private sendRaw(res: ServerResponse, status: number, body: string): void {
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+  }
+
   private send(res: ServerResponse, status: number, body: unknown): void {
     const text = JSON.stringify(body);
     res.writeHead(status, {
@@ -1166,6 +1428,13 @@ function header(req: Pick<IncomingMessage, 'headers'>, name: string): string | n
   const value = req.headers[name];
   const text = Array.isArray(value) ? value[0] : value;
   return text ? text : null;
+}
+
+function integerHeader(req: Pick<IncomingMessage, 'headers'>, name: string): number | null {
+  const text = header(req, name);
+  if (text === null) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
 }
 
 function declarationOf(query: URLSearchParams): Declaration {

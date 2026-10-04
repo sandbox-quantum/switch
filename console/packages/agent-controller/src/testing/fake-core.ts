@@ -61,6 +61,20 @@ export class FakeCore {
   waitBetweenChunks: Promise<void> | null = null;
   /** Bytes of an upload received so far. */
   uploadReceived = 0;
+  /** Each cloud agent's attached worker, as the relay attached it. */
+  readonly workers = new Map<string, { connectionId: string; generation: number }>();
+  /** What a worker attach answers instead of admitting it, once. */
+  workerRefusal: { status: number; body: unknown } | null = null;
+  /** The `worker_attached` payload an admitted worker is given. */
+  workerAttached: Record<string, unknown> = {
+    launch_revision: 1,
+    limits: { sessions_per_agent: 8 },
+    idle: { report_every_s: 30, fresh_for_s: 75 },
+    credential_revision: 'revision-1',
+    queued_operations: [],
+    relay_fence: 0,
+    cancelled: [],
+  };
   private readonly tokens = new Set<string>();
   private issued = 0;
   private generations = 0;
@@ -120,6 +134,19 @@ export class FakeCore {
   pushEvent(agentId: string, seq: number, event: Record<string, unknown>): void {
     this.heads.set(agentId, Math.max(seq, this.heads.get(agentId) ?? 0));
     this.push('agent.event', { agent_id: agentId, seq, event: { ...event, sequence: seq } });
+  }
+
+  /** A protocol-7 frame for the agent's attached worker, as Switch wraps it. */
+  pushWorker(agentId: string, event: string, data: Record<string, unknown>): void {
+    const worker = this.workers.get(agentId);
+    if (!worker) throw new Error(`No worker of ${agentId} is attached.`);
+    this.push('agent.worker', {
+      agent_id: agentId,
+      connection_id: worker.connectionId,
+      generation: worker.generation,
+      event,
+      data,
+    });
   }
 
   /** Ends the open streams; the connection itself lives on. */
@@ -318,6 +345,31 @@ export class FakeCore {
       this.beatPlacements.push((body as { placements: Record<string, string[]> }).placements);
       return this.json(res, 200, { agents: this.bound() });
     }
+    const worker = url.pathname.match(
+      new RegExp(`^${streamBase}/agents/([^/]+)/worker(/detach)?$`)
+    );
+    if (method === 'POST' && worker) {
+      const agentId = decodeURIComponent(worker[1]!);
+      const named = (body as { worker: { connection_id: string; generation: number } }).worker;
+      if (worker[2]) {
+        const held = this.workers.get(agentId);
+        if (held?.connectionId === named.connection_id && held.generation === named.generation)
+          this.workers.delete(agentId);
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (this.workerRefusal) {
+        const refusal = this.workerRefusal;
+        this.workerRefusal = null;
+        return this.json(res, refusal.status, refusal.body);
+      }
+      this.workers.set(agentId, {
+        connectionId: named.connection_id,
+        generation: named.generation,
+      });
+      return this.json(res, 200, { attached: this.workerAttached });
+    }
     if (method === 'GET' && url.pathname === `${base}/assignment`) {
       const etag = `"${this.assignment.revision}"`;
       if (req.headers['if-none-match'] === etag) {
@@ -367,7 +419,11 @@ export class FakeCore {
 
     // Acting as an agent: the agent comes from the header, and must be bound here.
     const actingAs = req.headers['x-switch-agent-id'];
-    if (url.pathname.startsWith('/agents/') || url.pathname.startsWith('/agent-sessions/')) {
+    if (
+      url.pathname.startsWith('/agents/') ||
+      url.pathname.startsWith('/agent-sessions/') ||
+      url.pathname.startsWith('/hosted/')
+    ) {
       if (
         typeof actingAs !== 'string' ||
         !this.assignment.agents.some((entry) => entry.agent_id === actingAs)

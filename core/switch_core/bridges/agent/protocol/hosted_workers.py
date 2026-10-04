@@ -16,11 +16,10 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
-        AgentConnection,
         AgentConnectionRegistry,
     )
     from switch_core.db.models import HostedLaunch
@@ -204,6 +203,31 @@ class IdleReport:
     generation: int
     received_monotonic: float
     received_at: datetime
+
+
+class WorkerHandle(Protocol):
+    """A cloud agent's attached worker, as the hosted worker code sees it.
+
+    An `AgentConnection` bound to a worker (a cloud agent holding its own
+    connection), or a `ControllerWorker` (a cloud agent run by its machine's
+    agents controller, whose worker attached through the controller's relay).
+    `id` and `stream_generation` are what the worker names on its up-calls;
+    `holder` is who it holds an operation claim under.
+    """
+
+    id: str
+    agent_id: str
+    stream_generation: int
+    spawn_capable: bool
+    worker: WorkerBinding | None
+    idle_report: IdleReport | None
+    worker_frames: WorkerFrames
+
+    @property
+    def stream_attached(self) -> bool: ...
+
+    @property
+    def holder(self) -> str: ...
 
 
 class FrameSlot:
@@ -550,14 +574,14 @@ class RelayViews:
         return unsubscribe
 
 
-def offer_key(boot: int, conn: AgentConnection) -> str:
+def offer_key(boot: int, conn: WorkerHandle) -> str:
     """Who holds a wake mailbox offer: this Core boot, the worker's connection and its generation."""
     return f"{boot}:{conn.id}:{conn.stream_generation}"
 
 
 def attached_worker_for(
     registry: AgentConnectionRegistry, launch: HostedLaunch
-) -> AgentConnection | None:
+) -> WorkerHandle | None:
     """The launch's attached worker, if it is bound to the launch's current revision."""
     if launch.agent_id is None:
         return None

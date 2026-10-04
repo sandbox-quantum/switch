@@ -1,8 +1,10 @@
 import type { ProviderReadiness, SharedHostConfig } from '@switch-console/agent-providers';
+import { ReasonedError } from './errors';
 import type {
   AgentObservation,
   AgentRunner,
   AgentRuntime,
+  HostedDeploymentRequest,
   InProcessRuntime,
   LaunchOptions,
   RelayCredentials,
@@ -16,6 +18,8 @@ import type { Provider } from './schemas';
  * restart: whichever runs it now is stopped before the other starts it.
  */
 export class AgentRuntimes implements AgentRuntime {
+  readonly kind = 'shared-host';
+
   constructor(
     private readonly shared: InProcessRuntime,
     private readonly isolated: AgentRunner
@@ -43,6 +47,20 @@ export class AgentRuntimes implements AgentRuntime {
     await this.shared.stop(agentId, options);
     await this.isolated.stop(agentId, options);
   }
+
+  async launchHosted(_agentId: string, _deployment: HostedDeploymentRequest): Promise<void> {
+    throw new ReasonedError(
+      'definition_invalid',
+      'This is a cloud agent; only the agents controller of its cloud machine runs it.'
+    );
+  }
+
+  async remove(agentId: string): Promise<void> {
+    await this.stop(agentId, { wait: false });
+  }
+
+  /** Nothing outlives this controller's own records here; only a cloud machine prunes. */
+  async prune(): Promise<void> {}
 
   async close(): Promise<void> {
     await this.shared.close();

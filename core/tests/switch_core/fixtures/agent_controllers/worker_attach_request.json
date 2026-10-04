@@ -1,0 +1,15 @@
+{
+  "connection_id": "00000000-0000-4000-8000-0000000000e1",
+  "generation": 3141592653,
+  "worker": {
+    "connection_id": "00000000-0000-4000-8000-0000000000c9",
+    "generation": 41,
+    "spawn_capable": true,
+    "protocol": 7,
+    "protocol_accepts": 1,
+    "capability": "example-worker-capability-not-real",
+    "boot_id": "00000000-0000-4000-8000-00000000b001",
+    "instance_id": "i-0123456789abcdef0",
+    "state_version": 1
+  }
+}

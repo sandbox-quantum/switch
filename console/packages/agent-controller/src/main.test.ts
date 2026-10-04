@@ -94,6 +94,57 @@ describe('main', () => {
     expect(lastLine()).toMatch(/must use https/);
   });
 
+  it('exits 2 for a cloud machine runtime named by halves or beside a bundle', async () => {
+    expect(
+      await main(['run', '--data-dir', dir, '--systemd-socket', join(dir, 'supervisor.sock')])
+    ).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe(
+      'switch-agent-controller: --systemd-socket and --hosted-agents-dir go together; pass both.'
+    );
+    expect(
+      await main([
+        'run',
+        '--data-dir',
+        dir,
+        '--systemd-socket',
+        join(dir, 'supervisor.sock'),
+        '--hosted-agents-dir',
+        join(dir, 'agents'),
+        '--shared-host-bundle',
+        bundle,
+      ])
+    ).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/runs them as its units/);
+    expect(
+      await main([
+        'run',
+        '--data-dir',
+        dir,
+        '--systemd-socket',
+        'supervisor.sock',
+        '--hosted-agents-dir',
+        join(dir, 'agents'),
+      ])
+    ).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/absolute paths/);
+  });
+
+  it('runs a cloud machine without a shared host bundle', async () => {
+    expect(
+      await main([
+        'run',
+        '--data-dir',
+        dir,
+        '--systemd-socket',
+        join(dir, 'supervisor.sock'),
+        '--hosted-agents-dir',
+        join(dir, 'agents'),
+      ])
+    ).toBe(EXIT_CONFIGURATION);
+    // It gets as far as the identity: no bundle is needed or resolved.
+    expect(lastLine()).toMatch(/not enrolled/);
+  });
+
   it('exits 2 when it is not enrolled', async () => {
     expect(await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle])).toBe(
       EXIT_CONFIGURATION

@@ -1,10 +1,17 @@
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { isSafeSegment } from './paths';
-import { type AgentObservation, type AgentRuntime, emptyObservation } from './runtime';
+import {
+  type AgentObservation,
+  type AgentRuntime,
+  emptyObservation,
+  type HostedDeploymentRequest,
+  type RuntimeKind,
+} from './runtime';
 import {
   type AgentAssignment,
   type Assignment,
+  type HostedDefinition,
   isProvider,
   type Provider,
   type ReasonCode,
@@ -33,15 +40,24 @@ export type Action =
   | { kind: 'invalid'; agentId: string; revision: number; detail: string; stop: boolean }
   | { kind: 'hold'; agentId: string; why: string };
 
-/** Why an assigned agent cannot be applied on this machine as defined, or null when it can. */
-export function definitionProblem(entry: AgentAssignment): string | null {
+/**
+ * Why an assigned agent cannot be applied on this machine as defined, or null
+ * when it can. A cloud agent (a definition with a `hosted` block) runs only on
+ * its cloud machine's controller, and that controller runs nothing else.
+ */
+export function definitionProblem(entry: AgentAssignment, runtime: RuntimeKind): string | null {
   if (!isSafeSegment(entry.agent_id))
     return `The agent id '${entry.agent_id}' cannot be used as a directory name.`;
   if (!isProvider(entry.definition.provider))
     return `This controller does not run the provider '${entry.definition.provider}'.`;
   if (entry.definition.isolation === 'unknown')
     return 'This controller does not know the isolation this agent asks for.';
-  if (entry.definition.directory === null && !isSafeSegment(entry.definition.name))
+  const hosted = entry.definition.hosted !== undefined;
+  if (hosted && runtime !== 'systemd')
+    return 'This is a cloud agent; only the agents controller of its cloud machine runs it.';
+  if (!hosted && runtime === 'systemd')
+    return 'This controller runs a cloud machine, which runs only its cloud agents.';
+  if (!hosted && entry.definition.directory === null && !isSafeSegment(entry.definition.name))
     return `The agent name '${entry.definition.name}' cannot be used as a workspace directory name; set a directory.`;
   return null;
 }
@@ -69,6 +85,7 @@ export function planReconcile(input: {
   /** Agents whose relay credentials file was rewritten in this pass. */
   credentialsChanged: Set<string>;
   nowMs: number;
+  runtime: RuntimeKind;
 }): Action[] {
   const actions: Action[] = [];
   const rows = new Map(input.rows.map((row) => [row.agentId, row]));
@@ -80,7 +97,7 @@ export function planReconcile(input: {
     const observation = input.observations.get(agentId);
     if (!observation) throw new Error(`No observation of agent ${agentId} to reconcile against.`);
     const applied = row?.appliedRevision ?? null;
-    const problem = definitionProblem(entry);
+    const problem = definitionProblem(entry, input.runtime);
     if (problem) {
       if (row?.failure?.revision !== entry.revision || observation.alive)
         actions.push({
@@ -105,6 +122,14 @@ export function planReconcile(input: {
         kind: 'hold',
         agentId,
         why: 'the desired state is not one this controller knows',
+      });
+      continue;
+    }
+    if (entry.definition.hosted?.worker_capability === null) {
+      actions.push({
+        kind: 'hold',
+        agentId,
+        why: 'its cloud launch is moving to a new revision, which the next assignment carries',
       });
       continue;
     }
@@ -224,6 +249,22 @@ export async function startAgent(
     if (!isProvider(provider))
       throw new ReasonedError('definition_invalid', `Unknown provider '${provider}'.`);
     await deps.ensureCredentials(agentId);
+    if (definition.hosted) {
+      await deps.runtime.launchHosted(
+        agentId,
+        await hostedDeployment(entry, definition.hosted, deps.runtime),
+        { restart: action.restart }
+      );
+      deps.store.recordApplied(agentId, entry.revision, now);
+      if (action.relaunch) deps.store.recordRestart(agentId, nowMs);
+      deps.log.info('Started cloud agent', {
+        agentId,
+        revision: entry.revision,
+        launchRevision: definition.hosted.launch_revision,
+        why: action.why,
+      });
+      return null;
+    }
     const cwd = await deps.runtime.workingDirectory(definition.name, definition.directory);
     const binaryPath = await deps.binaryPath(provider);
     if (!binaryPath)
@@ -268,6 +309,38 @@ export async function startAgent(
   }
 }
 
+/** What the machine supervisor builds a cloud agent's deployment from. */
+async function hostedDeployment(
+  entry: AgentAssignment,
+  hosted: HostedDefinition,
+  runtime: AgentRuntime
+): Promise<HostedDeploymentRequest> {
+  const credentials = await runtime.readCredentials(entry.agent_id);
+  if (!credentials) throw new Error(`Agent ${entry.agent_id} has no relay credentials.`);
+  if (hosted.worker_capability === null)
+    throw new ReasonedError('definition_invalid', 'The cloud launch has no worker capability yet.');
+  return {
+    launch_id: hosted.launch_id,
+    agent_id: entry.agent_id,
+    name: entry.definition.name,
+    revision: hosted.launch_revision,
+    desired_state: entry.desired_state === 'stopped' ? 'stopped' : 'running',
+    provider: entry.definition.provider,
+    provider_credential_kind: hosted.provider_credential_kind,
+    worker_capability: hosted.worker_capability,
+    switch_credentials: {
+      env: {
+        SWITCH_API_ENDPOINT: credentials.endpoint,
+        SWITCH_API_TOKEN: credentials.token,
+        SWITCH_AGENT_ID: entry.agent_id,
+      },
+    },
+    repository: hosted.repository,
+    spec: hosted.spec,
+    skills: hosted.skills,
+  };
+}
+
 /** Carries out one action. Per-agent failures are recorded on the agent and logged. */
 export async function executeAction(action: Action, deps: ReconcileDeps): Promise<void> {
   const now = new Date(deps.now()).toISOString();
@@ -283,7 +356,7 @@ export async function executeAction(action: Action, deps: ReconcileDeps): Promis
     case 'remove':
       // An id that was never safe to put in a path never got an agent host or a key.
       if (isSafeSegment(action.agentId)) {
-        await deps.runtime.stop(action.agentId, { wait: false });
+        await deps.runtime.remove(action.agentId);
         await deps.runtime.deleteCredentials(action.agentId);
       }
       deps.forgetAgent(action.agentId);
@@ -315,7 +388,7 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
   const observations = new Map<string, AgentObservation>();
   const credentialsChanged = new Set<string>();
   for (const entry of assignment.agents) {
-    if (definitionProblem(entry)) {
+    if (definitionProblem(entry, deps.runtime.kind)) {
       observations.set(entry.agent_id, emptyObservation());
       continue;
     }
@@ -337,6 +410,7 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
     observations,
     credentialsChanged,
     nowMs: deps.now(),
+    runtime: deps.runtime.kind,
   });
   for (const action of actions) {
     try {
@@ -348,6 +422,13 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
         error: errorMessage(error),
       });
     }
+  }
+  try {
+    await deps.runtime.prune(assignment.agents.map((entry) => entry.agent_id));
+  } catch (error) {
+    deps.log.error('Could not remove agents this machine no longer runs', {
+      error: errorMessage(error),
+    });
   }
   return actions;
 }

@@ -1,0 +1,40 @@
+[Unit]
+Description=Switch agents controller for this cloud machine
+AssertPathIsMountPoint=/data
+
+[Service]
+# Type=exec: `systemctl start` returns once the controller has been executed,
+# with its stdin already open, so the supervisor can delete the credential
+# file systemd opened for it.
+Type=exec
+User=switch-agent
+Group=switch-agent
+EnvironmentFile=/run/switch-hosted/machine/controller.env
+Environment=HOME=/run/switch-hosted/controller
+Environment=SWITCH_CONTROLLER_LOG_LEVEL=info
+ExecStart=/opt/switch/node/bin/node /opt/switch/agent-controller/agent-controller.mjs run --data-dir /run/switch-hosted/controller --controller-id ${SWITCH_CONTROLLER_ID} --server ${SWITCH_CONTROLLER_SERVER} --credential-stdin --systemd-socket /run/switch-hosted/supervisor.sock --hosted-agents-dir /data/agents
+# The credential, read by systemd as root before the controller starts and
+# deleted by the supervisor right after: it never reaches the disk, the
+# command line or the environment.
+StandardInput=file:/run/switch-hosted/machine/controller-credential
+StandardOutput=journal
+StandardError=journal
+# The supervisor restarts it, re-enrolling first when it was revoked.
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/run/switch-hosted/controller
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

@@ -21,7 +21,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.hosted_workers import (
     HEALTH_SUBSCRIPTION,
@@ -30,6 +29,7 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     ConsoleView,
     PendingRelay,
     RelayError,
+    WorkerHandle,
     classify_message,
     frame_size,
     subscribe_message,
@@ -70,7 +70,7 @@ class RelayRequest(BaseModel):
     timeout_ms: int = Field(gt=0, le=RELAY_TIMEOUT_LIMIT_MS)
 
 
-def worker_info(conn: AgentConnection | None) -> dict[str, Any] | None:
+def worker_info(conn: WorkerHandle | None) -> dict[str, Any] | None:
     if conn is None or conn.worker is None:
         return None
     return {
@@ -96,7 +96,7 @@ def relay_target(
     launch: HostedLaunch,
     machine: HostedMachine | None,
     kind: str,
-) -> AgentConnection:
+) -> WorkerHandle:
     """The worker attached for the launch's current revision, or why there is none.
 
     A mutating message to an idle-sleeping machine is the caller's to wake
@@ -145,7 +145,7 @@ def relay_frame(
 def dispatch_read_only(
     protocol: AgentCore,
     tenant_id: str,
-    conn: AgentConnection,
+    conn: WorkerHandle,
     message: dict[str, Any],
     timeout_ms: int,
 ) -> PendingRelay:
@@ -323,7 +323,7 @@ async def relay(
 def ask_worker(
     protocol: AgentCore,
     tenant_id: str,
-    conn: AgentConnection,
+    conn: WorkerHandle,
     subscription: str,
     on: bool,
 ) -> None:
@@ -365,7 +365,7 @@ NO_WORKER = {"launch_revision": None, "boot_id": None, "generation": None}
 
 def launch_worker(
     protocol: AgentCore, agent_id: str, launch_id: str
-) -> AgentConnection | None:
+) -> WorkerHandle | None:
     conn = protocol.connections.attached_worker(agent_id)
     if conn is None or conn.worker is None or conn.worker.launch_id != launch_id:
         return None

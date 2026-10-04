@@ -145,6 +145,70 @@ Under Console the controller runs on Electron's own binary with
 the environment the controller passes to the shared host, so the agent hosts and
 session hosts it launches with `process.execPath` run as Node too.
 
+## On a cloud machine
+
+On a Switch cloud machine the controller runs the machine's cloud agents. The
+machine's root supervisor (`deploy/hosted/worker`) enrolls it with the machine
+capability and starts it as its own unit, with the identity on the command
+line and the credential on stdin:
+
+```bash
+switch-agent-controller run \
+  --data-dir /run/switch-hosted/controller \
+  --controller-id <id> --server <agent-bridge-url> --credential-stdin \
+  --systemd-socket /run/switch-hosted/supervisor.sock \
+  --hosted-agents-dir /data/agents
+```
+
+- `--systemd-socket` and `--hosted-agents-dir` (both, and without
+  `--shared-host-bundle`) select the **systemd runtime**: each agent runs in a
+  `switch-agent@<id>` unit that the supervisor installs, starts, stops and
+  removes when the controller asks over that socket, instead of as a watcher
+  the controller launches. The units keep the machine's memory limit, OOM
+  handling and crash-loop limit.
+- It runs only cloud agents (a definition with a `hosted` block), and a
+  controller without these flags refuses them (`definition_invalid`).
+- For each agent it sends the supervisor the assignment's hosted block, the
+  agent's identity and desired state, and the agent's relay credentials; the
+  supervisor builds the deployment and derives every path itself. A hosted
+  block whose `worker_capability` is null (the launch is moving to a new
+  revision) leaves the agent as it is until the next assignment.
+- It observes each agent's unit through the supervisor, and the watcher's
+  health file in `<hosted-agents-dir>/<id>/`. Status reports carry the unit's
+  OOM kills; a unit that hit its restart limit is `crashed` with
+  `crash_loop`.
+- After each reconcile it tells the supervisor the whole assignment
+  (`prune`), so an agent that left it while the controller was not running
+  is removed from the machine.
+- It checks no provider logins and reports none: each agent's bootstrap
+  signs its provider in from the owner's connection.
+
+### Cloud agent workers
+
+A cloud agent's watcher opens its stream on the relay as a worker (it sends
+`X-Switch-Worker-Capability`, the host identity and its state version). The
+relay asks Switch to admit it on the controller's connection
+(`POST /v1/controllers/{id}/agents/{agent_id}/worker`) before the stream
+opens:
+
+- A refusal of the worker itself (an obsolete capability, too old a
+  protocol) is passed back as Switch sent it, so the worker stops exactly as
+  it would on its own stream. Anything else (the controller stream is down,
+  the agent is not bound here yet) is a `503` the worker retries.
+- Once admitted, the stream's second frame is `worker_attached`, and the
+  worker's protocol-7 frames (`agent.worker` on the controller stream) are
+  written on it as they came. `agent.worker_closed` evicts it with Switch's
+  code (`launch_superseded`).
+- When the worker's stream ends the relay tells Switch
+  (`.../worker/detach`). When the controller stream drops or reconnects,
+  every worker stream is ended so its worker attaches again.
+- The worker's up-calls (`/agents/{id}/connection/relay/...`,
+  `/connection/idle`, `/connection/mailbox/ack`,
+  `/connection/cutover-manifest`, `/room-notices`, and
+  `/hosted/operations/...`, `/hosted/provider-credential`,
+  `/hosted/provider-status`, `/hosted/github-credential`) are forwarded like
+  every other agent call. The hosted worker code runs unchanged.
+
 ## How it works
 
 - Exchanges its long-lived credential for a one-hour access token. It refreshes the
@@ -198,7 +262,9 @@ session hosts it launches with `process.execPath` run as Node too.
   controller holds each agent's connection to Switch itself.
 - **Forwarded to Switch**, everything else under `/agents/{id}/…`,
   `/agent-sessions/…`, `/sessions/…`, `/version` and `/health`: operations, media,
-  typing, history, session activity and approvals. The relay sends them with the
+  typing, history, session activity and approvals; and a cloud agent's
+  `/hosted/…` routes (its provider credential and status, its repository
+  credential and its session operations), never a machine's. The relay sends them with the
   controller's access token, `X-Switch-Agent-Id`, and `X-Switch-Room-Id`: the room
   the calling session is placed in (from `X-Switch-Session-Id`), or else the
   agent's only placed room. The agent host's connection id is not passed on.
@@ -258,12 +324,14 @@ session hosts it launches with `process.execPath` run as Node too.
   agent host is not connected, is dropped with a warning in the log. Switch keeps no
   copy to send again.
 - Only enrollment by one-time code, or adoption of an identity a parent process
-  enrolled (see "Run by a parent process"). There is no EC2 machine secret, and
-  the controller itself has no OS keychain backend.
+  enrolled (see "Run by a parent process"); a cloud machine's supervisor
+  enrolls with the machine secret and hands the identity over the same way.
+  The controller itself has no OS keychain backend.
 - No session limit is enforced. `sessions_max` is reported as `0`.
-- OOM kills are not detected. `oom_kills` is always `0`.
-- `restarts_10m` counts the relaunches reconciling made, not the restarts after a
-  agent host failure.
+- An agent host's OOM kills are not detected: `oom_kills` is `0` but on a cloud
+  machine, where the supervisor counts each unit's.
+- `restarts_10m` counts the relaunches reconciling made, not the restarts after an
+  agent host failure (or a unit's systemd restarts).
 - Windows is not supported.
 
 ## Where data lives

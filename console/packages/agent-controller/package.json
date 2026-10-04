@@ -1,6 +1,6 @@
 {
   "name": "@switch-console/agent-controller",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Headless agents controller: runs the Switch agents assigned to this machine and reports their status",
   "license": "Apache-2.0",

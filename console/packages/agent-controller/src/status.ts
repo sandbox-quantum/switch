@@ -16,7 +16,6 @@ import {
   type ProcessState,
   PROTOCOL_VERSION,
   type Provider,
-  PROVIDERS,
   type ProviderStatus,
   type ReasonCode,
   type StatusReport,
@@ -24,6 +23,8 @@ import {
 import type { AgentRow, ControllerStore } from './store';
 
 export const PROVIDER_TTL_MS = 10 * 60 * 1000;
+/** A cloud agent's bootstrap exits with this when its launch moved to a new revision. */
+export const OBSOLETE_EXIT_CODE = 75;
 const VERSION_TIMEOUT_MS = 10_000;
 const DETAIL_LIMIT = 1000;
 /** A launch this recent with nothing alive yet is still starting, not crashed. */
@@ -130,6 +131,8 @@ export class ProviderStatuses {
 
   constructor(
     private readonly deps: {
+      /** The providers checked and reported. */
+      providers: readonly Provider[];
       locator: ProviderLocator;
       runtime: Pick<AgentRuntime, 'probe'>;
       probeCwd: string;
@@ -164,10 +167,12 @@ export class ProviderStatuses {
   /** Checks every provider whose last check is older than the TTL, all at once. */
   async refreshStale(): Promise<void> {
     this.refreshing ??= Promise.all(
-      PROVIDERS.filter((provider) => {
-        const entry = this.entries.get(provider);
-        return !entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS;
-      }).map((provider) => this.check(provider))
+      this.deps.providers
+        .filter((provider) => {
+          const entry = this.entries.get(provider);
+          return !entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS;
+        })
+        .map((provider) => this.check(provider))
     )
       .then(() => {})
       .finally(() => {
@@ -178,7 +183,7 @@ export class ProviderStatuses {
 
   /** What is known now; providers not checked yet are left out rather than guessed. */
   snapshot(): ProviderStatus[] {
-    return PROVIDERS.flatMap((provider) => {
+    return this.deps.providers.flatMap((provider) => {
       const entry = this.entries.get(provider);
       return entry ? [entry.status] : [];
     });
@@ -234,6 +239,45 @@ export function mapAgentProcess(input: {
     };
   const desiredStopped = assignment.desired_state === 'stopped';
   const health = observation.health?.current ? observation.health : null;
+  const unit = observation.unit;
+  if (unit) {
+    switch (unit.processState) {
+      case 'running':
+        if (desiredStopped) return { process: 'stopping', attached: false };
+        return health?.state === 'connected'
+          ? { process: 'running', attached: input.relayAttached, since: health.since }
+          : { process: 'starting', attached: false };
+      case 'starting':
+      case 'restarting':
+        return { process: 'starting', attached: false };
+      case 'stopping':
+        return { process: 'stopping', attached: false };
+      case 'pending':
+        return { process: 'pending', attached: false };
+      case 'crashed':
+        return {
+          process: 'crashed',
+          attached: false,
+          reason: 'crash_loop',
+          detail: truncate(observation.failure ?? 'The agent kept crashing.'),
+        };
+      case 'failed':
+        if (unit.exit?.code === OBSOLETE_EXIT_CODE)
+          return {
+            process: 'pending',
+            attached: false,
+            detail: truncate(observation.failure ?? 'The agent is waiting for its next revision.'),
+          };
+        return {
+          process: 'failed',
+          attached: false,
+          reason: unit.exit?.result === 'oom-kill' ? 'out_of_memory' : 'internal',
+          detail: truncate(observation.failure ?? 'The agent stopped with an error.'),
+        };
+      case 'stopped':
+        break;
+    }
+  }
   if (observation.alive) {
     if (desiredStopped || observation.flags?.enabled === false)
       return { process: 'stopping', attached: false };
@@ -337,8 +381,9 @@ export class StatusCollector {
         attached: mapped.attached,
         sessions: { active: ids.length, ids },
         restarts_10m: this.deps.store.restartsSince(entry.agent_id, nowMs - 10 * 60 * 1000),
-        // v1 does not observe OOM kills; nothing here can count one.
-        oom_kills: 0,
+        // Only an agent run in a unit has its OOM kills counted, by the
+        // machine supervisor; a watcher's are not observed.
+        oom_kills: observation.unit?.oomKills ?? 0,
         since,
         ...(mapped.reason ? { reason: mapped.reason } : {}),
         ...(mapped.detail ? { detail: mapped.detail } : {}),

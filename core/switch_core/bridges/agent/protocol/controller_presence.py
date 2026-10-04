@@ -32,6 +32,11 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from switch_core.bridges.agent.protocol.hosted_workers import (
+    IdleReport,
+    WorkerBinding,
+    WorkerFrames,
+)
 from switch_core.bridges.agent.protocol.liveness import (
     HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
@@ -165,11 +170,70 @@ class ControllerConnection:
         )
 
 
+@dataclass(eq=False)
+class ControllerWorker:
+    """A cloud agent's worker, attached through its controller's relay.
+
+    It stands where an `AgentConnection` bound to a worker stands for a cloud
+    agent that holds its own connection, with the same attributes the hosted
+    worker code reads (`id`, `stream_generation`, `worker`, `worker_frames`,
+    `idle_report`, `spawn_capable`, `stream_attached`), so that code runs
+    unchanged for both:
+
+    - `id` and `stream_generation` are the relay's: the local connection and
+      incarnation the worker was told in its `connection_state`, and names on
+      every up-call. Up-calls are fenced on them.
+    - Its frames are queued here and written on the controller's stream as
+      `agent.worker`, which the relay replays on the worker's local stream.
+    - It lives as long as the controller connection it attached on, and is
+      dropped when that connection closes, is taken over or loses its stream,
+      when the worker's local stream ends, or when another attach replaces it.
+    - `holder` is the identity the agent holds things under on its
+      controller (`ControllerPresence.holder_id`).
+    """
+
+    id: str
+    agent_id: str
+    controller: ControllerConnection
+    holder: str
+    stream_generation: int
+    spawn_capable: bool
+    worker: WorkerBinding | None
+    idle_report: IdleReport | None = None
+    closure: Closure | None = None
+    worker_frames: WorkerFrames = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.worker_frames = WorkerFrames(self.controller.wake)
+
+    @property
+    def wake(self) -> asyncio.Event:
+        return self.controller.wake
+
+    @property
+    def stream_attached(self) -> bool:
+        """Frames queued now reach the worker: its controller's stream is up."""
+        return (
+            self.closure is None
+            and self.controller.closure is None
+            and self.controller.is_live(time.monotonic())
+        )
+
+
 class ControllerPresence:
-    def __init__(self, *, on_bound: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        *,
+        on_bound: Callable[[str], None],
+        on_worker_dropped: Callable[[ControllerWorker], None],
+    ) -> None:
         # Called with each agent that becomes controller-backed, so the
         # connections it held of its own can be closed.
         self._on_bound = on_bound
+        # Called with each cloud agent worker this presence lets go of, so the
+        # relays dispatched to it fail rather than wait out their deadline.
+        self._on_worker_dropped = on_worker_dropped
+        self._workers: dict[str, ControllerWorker] = {}
         self._bindings: dict[str, Binding] = {}
         self._by_controller: dict[str, set[str]] = {}
         self._connections: dict[str, ControllerConnection] = {}
@@ -216,6 +280,7 @@ class ControllerPresence:
                 previous.controller_id, binding.agent_id, DETACH_UNASSIGNED
             )
             self._rooms.pop(binding.agent_id, None)
+            self._drop_worker(binding.agent_id)
         if previous is None or previous.controller_id != binding.controller_id:
             logger.info(
                 "[CONTROLLER] agent=%s bound to controller=%s running=%s",
@@ -238,6 +303,7 @@ class ControllerPresence:
         previous = self._bindings.pop(agent_id, None)
         self._rooms.pop(agent_id, None)
         self._invalidate_agent_auth(agent_id)
+        self._drop_worker(agent_id)
         if previous is None:
             return
         self._forget(previous)
@@ -263,6 +329,7 @@ class ControllerPresence:
             conn.closure = REVOKED
             conn.stream_attached = False
             conn.placements.clear()
+            self._drop_workers_of(conn)
             conn.wake.set()
 
     # ------------------------------------------------------------------
@@ -413,6 +480,7 @@ class ControllerPresence:
             previous.closure = TAKEN_OVER
             previous.stream_attached = False
             previous.placements.clear()
+            self._drop_workers_of(previous)
             previous.wake.set()
             remembered = self._superseded.setdefault(
                 controller_id, deque(maxlen=_SUPERSEDED_REMEMBERED)
@@ -475,6 +543,7 @@ class ControllerPresence:
         if conn.stream_token == token:
             conn.stream_attached = False
             conn.placements.clear()
+            self._drop_workers_of(conn)
 
     def replace_placements(
         self, conn: ControllerConnection, placements: dict[str, list[str]]
@@ -582,7 +651,134 @@ class ControllerPresence:
             )
         conn.stream_attached = False
         conn.placements.clear()
+        self._drop_workers_of(conn)
         conn.wake.set()
+
+    # ------------------------------------------------------------------
+    # Cloud agent workers
+    # ------------------------------------------------------------------
+
+    def worker(self, agent_id: str) -> ControllerWorker | None:
+        """The agent's worker, while its controller connection is the
+        current one of the controller the agent is bound to."""
+        worker = self._workers.get(agent_id)
+        binding = self._bindings.get(agent_id)
+        if (
+            worker is None
+            or worker.closure is not None
+            or binding is None
+            or binding.controller_id != worker.controller.controller_id
+            or self._connections.get(worker.controller.controller_id)
+            is not worker.controller
+        ):
+            return None
+        return worker
+
+    def attach_worker(
+        self,
+        conn: ControllerConnection,
+        agent_id: str,
+        *,
+        connection_id: str,
+        generation: int,
+        spawn_capable: bool,
+        binding: WorkerBinding,
+    ) -> ControllerWorker:
+        """Attach the agent's worker on `conn`, replacing any it had."""
+        current = self._bindings.get(agent_id)
+        if current is None or current.controller_id != conn.controller_id:
+            raise ValueError(f"agent {agent_id} is not bound to {conn.controller_id}")
+        self._drop_worker(agent_id)
+        worker = ControllerWorker(
+            id=connection_id,
+            agent_id=agent_id,
+            controller=conn,
+            holder=self.holder_id(current),
+            stream_generation=generation,
+            spawn_capable=spawn_capable,
+            worker=binding,
+        )
+        self._workers[agent_id] = worker
+        logger.info(
+            "[CONTROLLER] controller=%s attached the worker of agent=%s "
+            "(launch=%s revision=%s local connection=%s generation=%s)",
+            conn.controller_id,
+            agent_id,
+            binding.launch_id,
+            binding.launch_revision,
+            connection_id,
+            generation,
+        )
+        return worker
+
+    def detach_worker(self, agent_id: str, connection_id: str, generation: int) -> bool:
+        """The worker's stream on the relay ended. False if it was not this one."""
+        worker = self._workers.get(agent_id)
+        if (
+            worker is None
+            or worker.id != connection_id
+            or worker.stream_generation != generation
+        ):
+            return False
+        self._drop_worker(agent_id)
+        return True
+
+    def supersede_worker(self, agent_id: str, revision: int, closure: Closure) -> None:
+        """End a worker bound to a launch revision older than `revision`.
+
+        It stays queued for its controller's stream, which writes what the
+        worker is still owed and then `agent.worker_closed`, and then lets go
+        of it.
+        """
+        worker = self._workers.get(agent_id)
+        if (
+            worker is None
+            or worker.closure is not None
+            or worker.worker is None
+            or worker.worker.launch_revision >= revision
+        ):
+            return
+        worker.closure = closure
+        self._on_worker_dropped(worker)
+        worker.controller.wake.set()
+
+    def take_worker_frames(
+        self, conn: ControllerConnection
+    ) -> list[tuple[ControllerWorker, list[tuple[str, dict[str, Any]]]]]:
+        """Each of `conn`'s workers with frames owed, and the frames; a closed
+        worker is handed over once, with only its cancellations, and let go."""
+        owed: list[tuple[ControllerWorker, list[tuple[str, dict[str, Any]]]]] = []
+        for agent_id, worker in list(self._workers.items()):
+            if worker.controller is not conn:
+                continue
+            if worker.closure is not None:
+                frames = [
+                    frame
+                    for frame in worker.worker_frames.drain()
+                    if frame[0] == "mailbox_cancel"
+                ]
+                del self._workers[agent_id]
+                owed.append((worker, frames))
+            elif worker.worker_frames:
+                owed.append((worker, worker.worker_frames.drain()))
+        return owed
+
+    def worker_frames_owed(self, conn: ControllerConnection) -> bool:
+        return any(
+            worker.controller is conn
+            and (worker.closure is not None or bool(worker.worker_frames))
+            for worker in self._workers.values()
+        )
+
+    def _drop_worker(self, agent_id: str) -> None:
+        worker = self._workers.pop(agent_id, None)
+        if worker is not None and worker.closure is None:
+            self._on_worker_dropped(worker)
+
+    def _drop_workers_of(self, conn: ControllerConnection) -> None:
+        for agent_id, worker in list(self._workers.items()):
+            if worker.controller is conn:
+                self._drop_worker(agent_id)
 
     def _forget(self, binding: Binding) -> None:
         conn = self._connections.get(binding.controller_id)

@@ -24,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_connections import (
-    AgentConnection,
     AgentConnectionRegistry,
     ClientDeclaration,
     SupersededControlError,
@@ -44,6 +43,7 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     RELAY_REPLY_LIMIT_BYTES,
     IdleReport,
     WorkerBinding,
+    WorkerHandle,
     hosted_launch_of,
 )
 from switch_core.config import SwitchConfig
@@ -80,10 +80,33 @@ def hosted_worker_only() -> HTTPException:
 
 def require_worker(
     registry: AgentConnectionRegistry, agent: Agent, connection_id: str, generation: int
-) -> AgentConnection:
-    """The attached worker making this call, or the refusal saying why not."""
+) -> WorkerHandle:
+    """The attached worker making this call, or the refusal saying why not.
+
+    For an agent run by its machine's controller (whose credential is then
+    the only one let in, by the bearer middleware), the call is the worker
+    attached through that controller's relay, fenced on the relay's
+    connection id and incarnation it names.
+    """
     if hosted_launch_of(agent.metadata_) is None:
         raise hosted_worker_only()
+    if registry.controllers.is_bound(agent.id):
+        worker = registry.controllers.worker(agent.id)
+        if worker is None or not worker.stream_attached:
+            raise refusal(
+                409,
+                "generation_changed",
+                f"agent {agent.id} has no worker attached through its controller; "
+                "reattach and call again",
+            )
+        if worker.id != connection_id or worker.stream_generation != generation:
+            raise refusal(
+                409,
+                "generation_changed",
+                f"connection {connection_id} at generation {generation} is not the "
+                "worker attached through the controller",
+            )
+        return worker
     try:
         conn = registry.require_current(agent.id, connection_id, generation=generation)
     except (
@@ -110,7 +133,7 @@ class WorkerAttach:
 
     binding: WorkerBinding
     attached: dict[str, Any]
-    takes_over: AgentConnection | None
+    takes_over: WorkerHandle | None
 
 
 async def admit_worker(

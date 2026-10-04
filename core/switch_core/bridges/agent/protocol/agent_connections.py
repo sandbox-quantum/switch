@@ -32,7 +32,10 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from switch_core.artifacts import contract_range
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.controller_presence import (
+    ControllerPresence,
+    ControllerWorker,
+)
 from switch_core.bridges.agent.protocol.hosted_workers import (
     IDLE_FRESH_FOR_SECONDS,
     IdleReport,
@@ -41,6 +44,7 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     RelayViews,
     WorkerBinding,
     WorkerFrames,
+    WorkerHandle,
 )
 from switch_core.bridges.agent.protocol.liveness import (
     HEARTBEAT_INTERVAL_SECONDS as HEARTBEAT_INTERVAL_SECONDS,
@@ -437,6 +441,11 @@ class AgentConnection:
     def __post_init__(self) -> None:
         self.worker_frames = WorkerFrames(self.wake)
 
+    @property
+    def holder(self) -> str:
+        """Who this connection holds things under: itself."""
+        return self.id
+
     def is_alive(self, now: float) -> bool:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
 
@@ -477,7 +486,10 @@ class AgentConnectionRegistry:
         # Agents run by an agents controller hold no connection here: their
         # presence is their controller's. Every presence question below asks
         # it first for those agents, and this registry for the rest.
-        self.controllers = ControllerPresence(on_bound=self._close_for_controller)
+        self.controllers = ControllerPresence(
+            on_bound=self._close_for_controller,
+            on_worker_dropped=self._controller_worker_dropped,
+        )
 
     def _new_incarnation(self) -> int:
         """The next never-before-used incarnation number.
@@ -695,6 +707,10 @@ class AgentConnectionRegistry:
                 exc_info=True,
             )
         return conn
+
+    def _controller_worker_dropped(self, worker: ControllerWorker) -> None:
+        self.relays.fail_connection(worker.id, worker.stream_generation)
+        worker.idle_report = None
 
     def _close_for_controller(self, agent_id: str) -> None:
         """An agent now run by a controller keeps no connection of its own."""
@@ -1028,11 +1044,15 @@ class AgentConnectionRegistry:
         holder of the agent key cannot receive room controls meant for it. A
         controller-backed agent's command goes to its controller's stream.
         """
-        if worker_only:
-            worker = self.attached_worker(agent_id)
-            watchers = [worker] if worker is not None else []
-        elif self.controllers.is_bound(agent_id):
+        if self.controllers.is_bound(agent_id):
             return self.controllers.relay_session_command(agent_id, frame)
+        if worker_only:
+            conn = self.worker_of(agent_id)
+            watchers = (
+                [conn]
+                if isinstance(conn, AgentConnection) and conn.stream_attached
+                else []
+            )
         else:
             watchers = [
                 conn
@@ -1061,14 +1081,20 @@ class AgentConnectionRegistry:
         conn.idle_report = None
         conn.worker_frames = WorkerFrames(conn.wake)
 
-    def worker_of(self, agent_id: str) -> AgentConnection | None:
-        """The agent's live worker connection, attached or between streams."""
+    def worker_of(self, agent_id: str) -> WorkerHandle | None:
+        """The agent's live worker, attached or between streams.
+
+        For an agent run by a controller, the worker attached through that
+        controller's relay; otherwise the agent's own worker connection.
+        """
+        if self.controllers.is_bound(agent_id):
+            return self.controllers.worker(agent_id)
         return next(
             (conn for conn in self.for_agent(agent_id) if conn.worker is not None),
             None,
         )
 
-    def attached_worker(self, agent_id: str) -> AgentConnection | None:
+    def attached_worker(self, agent_id: str) -> WorkerHandle | None:
         """The agent's worker, when its stream is attached and can take frames."""
         conn = self.worker_of(agent_id)
         if conn is None or not conn.stream_attached:
@@ -1077,7 +1103,7 @@ class AgentConnectionRegistry:
 
     def admit_worker(
         self, agent_id: str, connection_id: str, boot_id: str
-    ) -> AgentConnection | None:
+    ) -> WorkerHandle | None:
         """Refuse a worker attach, or name the worker it will take over.
 
         One worker per agent. A live worker from another host boot keeps its
@@ -1105,6 +1131,7 @@ class AgentConnectionRegistry:
 
     def supersede(self, agent_id: str, revision: int) -> None:
         """Evict the agent's workers bound to a revision older than `revision`."""
+        self.controllers.supersede_worker(agent_id, revision, LAUNCH_SUPERSEDED)
         for cid in list(self._by_agent.get(agent_id, set())):
             conn = self._by_id.get(cid)
             if (
@@ -1124,15 +1151,19 @@ class AgentConnectionRegistry:
 
     def _cancel_relay(self, relay: PendingRelay) -> None:
         """Tell the worker a relay expired, if it is still on the stream it went to."""
-        conn = self._by_id.get(relay.connection_id)
+        conn: WorkerHandle | None = self._by_id.get(relay.connection_id)
+        if conn is None:
+            conn = self.controllers.worker(relay.agent_id)
         if (
             conn is not None
+            and conn.agent_id == relay.agent_id
+            and conn.id == relay.connection_id
             and conn.worker is not None
             and conn.stream_generation == relay.generation
         ):
             conn.worker_frames.push("relay_cancel", {"id": relay.id})
 
-    def record_idle_report(self, conn: AgentConnection, report: IdleReport) -> bool:
+    def record_idle_report(self, conn: WorkerHandle, report: IdleReport) -> bool:
         """Keep the report unless it is not newer than the one held."""
         held = conn.idle_report
         if held is not None and report.report_seq <= held.report_seq:

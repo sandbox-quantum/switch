@@ -131,7 +131,9 @@ def test_presence_keeps_it_in_step_with_bindings_and_revocations(
     clock: _Clock,
 ) -> None:
     cache = ControllerAuthCache(ttl_seconds=5, max_entries=8)
-    presence = ControllerPresence(on_bound=lambda agent_id: None)
+    presence = ControllerPresence(
+        on_bound=lambda agent_id: None, on_worker_dropped=lambda worker: None
+    )
     presence.use_auth_cache(cache)
     binding = Binding(
         agent_id="a1",

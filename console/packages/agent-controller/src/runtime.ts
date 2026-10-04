@@ -36,6 +36,30 @@ import type { Isolation, Provider } from './schemas';
 
 const execute = promisify(execFile);
 
+/**
+ * A cloud agent's `switch-agent@<id>` unit, as its machine's supervisor
+ * reports it: what the systemd runtime observes instead of a watcher's
+ * records. `processState` is the supervisor's (it adds `restarting`, and
+ * calls a unit that hit its start limit `crashed`).
+ */
+export type UnitObservation = {
+  installed: boolean;
+  /** The launch revision whose deployment is installed. */
+  revision: number | null;
+  processState:
+    | 'pending'
+    | 'starting'
+    | 'running'
+    | 'stopping'
+    | 'stopped'
+    | 'restarting'
+    | 'crashed'
+    | 'failed';
+  restarts: number;
+  oomKills: number;
+  exit: { code: number | null; signal: number | null; result: string | null } | null;
+};
+
 /** What is on disk and alive for one agent's agent host. */
 export type AgentObservation = {
   /** The agent host or its supervisor is running. */
@@ -48,6 +72,8 @@ export type AgentObservation = {
   /** `supervisor/failure.json`: why the agent host stopped and was not restarted. */
   failure: string | null;
   takenOver: TakenOver | null;
+  /** The agent's unit, for a runtime that runs each agent in one; null otherwise. */
+  unit: UnitObservation | null;
 };
 
 /** What an agent with no agent host root at all looks like. */
@@ -59,6 +85,7 @@ export function emptyObservation(): AgentObservation {
     health: null,
     failure: null,
     takenOver: null,
+    unit: null,
   };
 }
 
@@ -76,6 +103,37 @@ export type LaunchOptions = {
 /** What an agent host reads to reach Switch: the controller's relay, and a token for it. */
 export type RelayCredentials = { endpoint: string; token: string };
 
+/**
+ * What a cloud agent's machine supervisor builds the agent's deployment from:
+ * the hosted block of its assignment, the agent's identity and desired state,
+ * and the relay credentials its worker reaches Switch with. The supervisor
+ * validates every field and derives every path itself.
+ */
+export type HostedDeploymentRequest = {
+  launch_id: string;
+  agent_id: string;
+  name: string;
+  revision: number;
+  desired_state: 'running' | 'stopped';
+  provider: string;
+  provider_credential_kind: string | null;
+  worker_capability: string;
+  switch_credentials: {
+    env: { SWITCH_API_ENDPOINT: string; SWITCH_API_TOKEN: string; SWITCH_AGENT_ID: string };
+  };
+  repository: string | null;
+  spec: Record<string, unknown>;
+  skills: Record<string, unknown>[];
+};
+
+/**
+ * `shared-host`: each agent is a room watcher this controller launches
+ * itself. `systemd`: a cloud machine's controller, where each agent is a
+ * `switch-agent@<id>` unit the machine's root supervisor installs and runs
+ * on request.
+ */
+export type RuntimeKind = 'shared-host' | 'systemd';
+
 /** Runs agent hosts one way: in this controller's process, or each in a process of its own. */
 export interface AgentRunner {
   observe(agentId: string): Promise<AgentObservation>;
@@ -92,6 +150,7 @@ export interface AgentRunner {
  * fake.
  */
 export interface AgentRuntime extends AgentRunner {
+  readonly kind: RuntimeKind;
   credentialsPath(agentId: string): string;
   /** The credentials file as written, or null when there is none or it cannot be read. */
   readCredentials(agentId: string): Promise<RelayCredentials | null>;
@@ -99,7 +158,58 @@ export interface AgentRuntime extends AgentRunner {
   deleteCredentials(agentId: string): Promise<void>;
   /** `directory` from the definition, or a workspace under the data directory. */
   workingDirectory(name: string, directory: string | null): Promise<string>;
+  /** Installs a cloud agent's deployment and starts or stops its unit as it says. */
+  launchHosted(
+    agentId: string,
+    deployment: HostedDeploymentRequest,
+    options: { restart: boolean }
+  ): Promise<void>;
+  /** The agent is no longer assigned here: it is stopped, and what it ran from goes. */
+  remove(agentId: string): Promise<void>;
+  /**
+   * These are all the agents assigned here: anything else this machine still
+   * holds goes. Only a cloud machine holds agents beyond what this
+   * controller's own records name (its disk outlives the controller).
+   */
+  prune(keep: string[]): Promise<void>;
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness>;
+}
+
+/** An agent's relay credentials file, in the layout the shared host reads, or null. */
+export async function readRelayCredentials(
+  path: string,
+  agentId: string
+): Promise<RelayCredentials | null> {
+  const text = await readOptional(path);
+  if (text === null) return null;
+  try {
+    const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
+    const endpoint = env.SWITCH_API_ENDPOINT;
+    const token = env.SWITCH_API_TOKEN;
+    if (env.SWITCH_AGENT_ID !== agentId) return null;
+    return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeRelayCredentials(
+  directory: string,
+  path: string,
+  agentId: string,
+  credentials: RelayCredentials
+): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeAtomic(
+    path,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: credentials.endpoint,
+        SWITCH_API_TOKEN: credentials.token,
+        SWITCH_AGENT_ID: agentId,
+      },
+    })
+  );
 }
 
 /** How long an agent host asked to stop is given; each session host is allowed 20 s of it. */
@@ -217,7 +327,14 @@ export async function readRoot(root: string): Promise<Omit<AgentObservation, 'al
     failureText === null
       ? null
       : String((JSON.parse(failureText) as { message?: unknown }).message ?? failureText);
-  return { configured, flags, health: null, failure, takenOver: await readTakenOver(root) };
+  return {
+    configured,
+    flags,
+    health: null,
+    failure,
+    takenOver: await readTakenOver(root),
+    unit: null,
+  };
 }
 
 type RunningAgentHost = {
@@ -239,7 +356,7 @@ type RunningAgentHost = {
  * `MAX_CRASHES` times in `CRASH_WINDOW_MS`; past that its failure is recorded
  * and it stays down until a new revision or an explicit restart.
  */
-export class InProcessRuntime implements AgentRuntime {
+export class InProcessRuntime implements AgentRunner {
   private readonly hosts = new Map<string, RunningAgentHost>();
   private readonly crashes = new Map<string, number[]>();
   private readonly links = new SessionLinks();
@@ -265,30 +382,15 @@ export class InProcessRuntime implements AgentRuntime {
   }
 
   async readCredentials(agentId: string): Promise<RelayCredentials | null> {
-    const text = await readOptional(this.credentialsPath(agentId));
-    if (text === null) return null;
-    try {
-      const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
-      const endpoint = env.SWITCH_API_ENDPOINT;
-      const token = env.SWITCH_API_TOKEN;
-      if (env.SWITCH_AGENT_ID !== agentId) return null;
-      return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
-    } catch {
-      return null;
-    }
+    return readRelayCredentials(this.credentialsPath(agentId), agentId);
   }
 
   async writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void> {
-    await mkdir(this.deps.layout.agentDir(agentId), { recursive: true, mode: 0o700 });
-    await writeAtomic(
+    await writeRelayCredentials(
+      this.deps.layout.agentDir(agentId),
       this.credentialsPath(agentId),
-      JSON.stringify({
-        env: {
-          SWITCH_API_ENDPOINT: credentials.endpoint,
-          SWITCH_API_TOKEN: credentials.token,
-          SWITCH_AGENT_ID: agentId,
-        },
-      })
+      agentId,
+      credentials
     );
   }
 

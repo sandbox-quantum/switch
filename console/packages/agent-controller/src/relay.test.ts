@@ -22,13 +22,18 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AccessTokens } from './api';
 import { silentLogger } from './log';
-import { LocalRelay, RELAY_AGENT_PROTOCOL } from './relay';
+import { LocalRelay, RELAY_AGENT_PROTOCOL, type WorkerLink } from './relay';
 import { UpstreamForwarder } from './relay-forward';
 import type { AgentAssignment } from './schemas';
 import { FakeCore } from './testing/fake-core';
 
 const AGENT = 'agent-1';
 const quiet = { debug: () => {}, warn: () => {}, error: () => {} };
+/** No worker attaches in these tests; `relay-worker.test.ts` has the ones that do. */
+const refusingWorkers: WorkerLink = {
+  attach: async () => ({ ok: false, kind: 'unavailable', message: 'not in this test' }),
+  detach: () => {},
+};
 
 function assigned(agentId: string): AgentAssignment {
   return {
@@ -113,6 +118,7 @@ beforeEach(async () => {
       },
       log: silentLogger,
     }),
+    workers: refusingWorkers,
     onCursor: (agentId, cursor) => cursorsSaved.push([agentId, cursor]),
     onChange: () => {},
     sharedRoomFor: (agentId, sessionId) =>
@@ -331,6 +337,7 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
       log: silentLogger,
       version: '0.1.0',
       forwarder: { forward: async () => {} },
+      workers: refusingWorkers,
       onCursor: () => {},
       onChange: () => {},
       sharedRoomFor: () => null,
@@ -437,6 +444,7 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
       log: silentLogger,
       version: '0.1.0',
       forwarder: { forward: async () => {} },
+      workers: refusingWorkers,
       onCursor: () => {},
       onChange: () => {},
       sharedRoomFor: () => null,
@@ -591,6 +599,7 @@ describe('what the relay refuses', () => {
       log: silentLogger,
       version: '0.1.0',
       forwarder: { forward: async () => {} },
+      workers: refusingWorkers,
       onCursor: () => {},
       onChange: () => {},
       sharedRoomFor: () => null,

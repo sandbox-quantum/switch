@@ -1,5 +1,7 @@
 import { hostname } from 'node:os';
+import { isAbsolute } from 'node:path';
 import { parseArgs } from 'node:util';
+import type { OpenAgentStream } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import { ControllerApiError, enroll, normalizeServerUrl } from './api';
 import { DEFAULT_TIMING, runController } from './controller';
@@ -20,19 +22,25 @@ import {
   resolveSharedHostBundle,
   workspaceSharedHostBundle,
 } from './handover';
-import { createLogger, errorMessage } from './log';
-import { dataLayout, ensureDataDir, resolveDataDir } from './paths';
+import { createLogger, errorMessage, type Logger } from './log';
+import { type DataLayout, dataLayout, ensureDataDir, resolveDataDir } from './paths';
 import { definitionProblem } from './reconcile';
 import {
+  type AgentObservation,
+  type AgentRuntime,
   assertSupportedPlatform,
   emptyObservation,
   InProcessRuntime,
   observeOnDisk,
+  type RuntimeKind,
 } from './runtime';
 import { AgentRuntimes } from './runtimes';
+import { PROVIDERS } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
 import { ControllerStore } from './store';
+import { SocketSupervisor } from './supervisor-client';
+import { SystemdRuntime } from './systemd-runtime';
 
 export const VERSION: string = packageJson.version;
 
@@ -46,12 +54,17 @@ Commands:
   run [--data-dir <dir>] [--shared-host-bundle <path>]
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
       [--credential-stdin]
+      [--systemd-socket <path> --hosted-agents-dir <dir>]
       Run the agents assigned to this machine and report their status.
       --controller-id and --server adopt an identity enrolled elsewhere when
       the data directory holds none, and move the same identity to a new
       server URL when it holds that one. --credential-stdin reads the
       controller credential from stdin and keeps it in memory only.
+      --systemd-socket and --hosted-agents-dir run a cloud machine's agents,
+      each in a unit its root supervisor installs on request over that
+      socket, instead of as watchers this controller launches.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
+      [--systemd-socket <path> --hosted-agents-dir <dir>]
       Show this controller's identity and its agents, from local state only.
 
 The data directory defaults to SWITCH_CONTROLLER_DATA_DIR, then the OS default.
@@ -64,6 +77,77 @@ Exit codes: 0 stopped, 1 error that may pass, 2 configuration error,
 
 function bundlePath(flag: string | undefined): string {
   return resolveSharedHostBundle(flag, process.env, workspaceSharedHostBundle);
+}
+
+const RUNTIME_OPTIONS = {
+  'shared-host-bundle': { type: 'string' },
+  'systemd-socket': { type: 'string' },
+  'hosted-agents-dir': { type: 'string' },
+} as const;
+
+/**
+ * The runtime the flags name: a cloud machine's units, run by its supervisor
+ * (`--systemd-socket` with `--hosted-agents-dir`), or watchers this
+ * controller launches from the shared-host bundle.
+ */
+/**
+ * How this controller runs its agents: as a cloud machine's units, through
+ * its supervisor (`--systemd-socket`), or each agent shared or isolated as its
+ * definition asks. `observeOffline` is what `status` reads, from a process
+ * that does not run the agents.
+ */
+type RuntimeChoice = {
+  kind: RuntimeKind;
+  build: (openStream: (agentId: string) => OpenAgentStream, log: Logger) => AgentRuntime;
+  observeOffline: (agentId: string) => Promise<AgentObservation>;
+};
+
+function runtimeFor(
+  values: {
+    'shared-host-bundle'?: string;
+    'systemd-socket'?: string;
+    'hosted-agents-dir'?: string;
+  },
+  layout: DataLayout
+): RuntimeChoice {
+  const socket = values['systemd-socket'];
+  const agentsDir = values['hosted-agents-dir'];
+  if ((socket === undefined) !== (agentsDir === undefined))
+    throw new UsageError('--systemd-socket and --hosted-agents-dir go together; pass both.');
+  if (socket !== undefined && agentsDir !== undefined) {
+    if (values['shared-host-bundle'] !== undefined)
+      throw new UsageError(
+        '--shared-host-bundle runs agents on this machine; a cloud machine (--systemd-socket) runs them as its units.'
+      );
+    if (!isAbsolute(socket) || !isAbsolute(agentsDir))
+      throw new UsageError('--systemd-socket and --hosted-agents-dir take absolute paths.');
+    const systemd = new SystemdRuntime({
+      layout,
+      supervisor: new SocketSupervisor(socket),
+      agentsDir,
+    });
+    return {
+      kind: 'systemd',
+      build: () => systemd,
+      observeOffline: (agentId) => systemd.observe(agentId),
+    };
+  }
+  const bundle = bundlePath(values['shared-host-bundle']);
+  return {
+    kind: 'shared-host',
+    build: (openStream, log) =>
+      new AgentRuntimes(
+        new InProcessRuntime({
+          layout,
+          bundlePath: bundle,
+          openStream,
+          log,
+          crashBackoffMs: 2_000,
+        }),
+        new DetachedRuntime({ layout, bundlePath: bundle })
+      ),
+    observeOffline: (agentId) => observeOnDisk(layout, agentId),
+  };
 }
 
 async function openState(dataDirFlag: string | undefined) {
@@ -126,7 +210,7 @@ async function runCommand(args: string[]): Promise<number> {
     args,
     options: {
       'data-dir': { type: 'string' },
-      'shared-host-bundle': { type: 'string' },
+      ...RUNTIME_OPTIONS,
       'controller-id': { type: 'string' },
       server: { type: 'string' },
       name: { type: 'string' },
@@ -147,8 +231,14 @@ async function runCommand(args: string[]): Promise<number> {
   const credential = values['credential-stdin']
     ? await readCredential(process.stdin, CREDENTIAL_STDIN_TIMEOUT_MS)
     : null;
-  const sharedHostBundle = bundlePath(values['shared-host-bundle']);
   const { dataDir, layout, store, secrets: fileSecrets } = await openState(values['data-dir']);
+  let runtime: RuntimeChoice;
+  try {
+    runtime = runtimeFor(values, layout);
+  } catch (error) {
+    store.close();
+    throw error;
+  }
   const secrets =
     credential === null
       ? fileSecrets
@@ -185,18 +275,11 @@ async function runCommand(args: string[]): Promise<number> {
       {
         store,
         secrets,
-        runtime: (openStream) =>
-          new AgentRuntimes(
-            new InProcessRuntime({
-              layout,
-              bundlePath: sharedHostBundle,
-              openStream,
-              log,
-              crashBackoffMs: 2_000,
-            }),
-            new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
-          ),
+        runtime: (openStream) => runtime.build(openStream, log),
         locator: new PathProviderLocator(process.env.PATH),
+        // A cloud machine's providers are signed in by each agent's bootstrap
+        // from its owner's connection; there is no machine-wide login to report.
+        providers: runtime.kind === 'systemd' ? [] : PROVIDERS,
         fetch,
         log,
         dataDir,
@@ -217,7 +300,7 @@ async function runCommand(args: string[]): Promise<number> {
 async function statusCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    options: { 'data-dir': { type: 'string' }, ...RUNTIME_OPTIONS },
     strict: true,
   });
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
@@ -252,11 +335,12 @@ async function statusCommand(args: string[]): Promise<number> {
     out.push(
       `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
     );
+    const runtime = runtimeFor(values, layout);
     for (const entry of cached.assignment.agents) {
       const row = store.agent(entry.agent_id);
-      const observation = definitionProblem(entry)
+      const observation = definitionProblem(entry, runtime.kind)
         ? emptyObservation()
-        : await observeOnDisk(layout, entry.agent_id);
+        : await runtime.observeOffline(entry.agent_id);
       // Whether events flow is the running controller's to know; this reads only disk.
       const mapped = mapAgentProcess({
         assignment: entry,

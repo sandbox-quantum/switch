@@ -23,6 +23,14 @@ of its agents' watchers exactly the stream it would have had from Switch:
 - `agent.approval_outcome {agent_id, outcome}`.
 - `agent.rooms {agent_id, rooms}`: its room membership changed.
 - `agent.detached {agent_id, reason}`: `unassigned` or `deleted`.
+- `agent.worker {agent_id, connection_id, generation, event, data}`: a
+  protocol-7 frame (`relay`, `relay_cancel`, `wake`, `mailbox_cancel`,
+  `operation`, `credential`) for the cloud agent worker that attached
+  through the relay as that local connection and incarnation. The relay
+  writes it on that worker's stream as `event` with `data`, unchanged.
+- `agent.worker_closed {agent_id, connection_id, generation, code, reason}`:
+  that worker's attachment ended (`launch_superseded`); the relay evicts its
+  stream with the same code.
 - The management nudges, passed through as they come: `assignment.changed`,
   `operation.pending`, and `credential.revoked`, which ends the stream.
 - `evicted {code, reason}`: the stream ends. `taken_over` is terminal for the
@@ -204,6 +212,9 @@ class _ControllerStream:
                 for raw in await self._owed_outcomes():
                     yield raw
 
+                for raw in self._worker_frames():
+                    yield raw
+
                 delivered = False
                 for attached in list(self._attached.values()):
                     for raw in self._deliver(attached):
@@ -377,6 +388,31 @@ class _ControllerStream:
             )
         return frames
 
+    def _worker_frames(self) -> list[bytes]:
+        frames: list[bytes] = []
+        for worker, owed in self._presence.take_worker_frames(self._conn):
+            where = {
+                "agent_id": worker.agent_id,
+                "connection_id": worker.id,
+                "generation": worker.stream_generation,
+            }
+            frames.extend(
+                frame("agent.worker", {**where, "event": event, "data": data})
+                for event, data in owed
+            )
+            if worker.closure is not None:
+                frames.append(
+                    frame(
+                        "agent.worker_closed",
+                        {
+                            **where,
+                            "code": worker.closure.code,
+                            "reason": worker.closure.message,
+                        },
+                    )
+                )
+        return frames
+
     def _deliver(self, attached: _Attached) -> list[bytes]:
         agent_id = attached.agent_id
         for room_id in self._presence.rooms(agent_id):
@@ -433,6 +469,7 @@ class _ControllerStream:
             or bool(conn.detached or conn.rooms_changed or conn.session_commands)
             or self._presence.agents_of(conn.controller_id) != set(self._attached)
             or any(a.outcomes or a.resync for a in self._attached.values())
+            or self._presence.worker_frames_owed(conn)
             or any(
                 self._buffer.head(a.agent_id) > a.cursor
                 for a in self._attached.values()

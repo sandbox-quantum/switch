@@ -1,7 +1,9 @@
 """Reason codes carried in error envelopes, status reports and placement refusals.
 
 The codes from the controller contract (§9), plus the few v1 adds for its own
-routes. `no_stream` and `managed_by_controller` are also answered by Core's
+routes. `machine_retired` refuses a cloud machine's enrollment once the machine
+is retained or being deleted; `cloud_agent` refuses an owner's management
+change to a cloud agent, whose definition follows its cloud launch. `no_stream` and `managed_by_controller` are also answered by Core's
 bearer middleware and controller stream, which name the same strings without
 importing this module. A code is part of the wire contract: a controller acts on it, so it
 is never renamed.
@@ -42,6 +44,8 @@ ENROLLMENT_CODE_INVALID = "enrollment_code_invalid"
 OPERATION_UNSUPPORTED = "operation_unsupported"
 NOT_FOUND = "not_found"
 VALIDATION_ERROR = "validation_error"
+MACHINE_RETIRED = "machine_retired"
+CLOUD_AGENT = "cloud_agent"
 
 ALL_REASON_CODES = frozenset(
     {
@@ -77,5 +81,7 @@ ALL_REASON_CODES = frozenset(
         OPERATION_UNSUPPORTED,
         NOT_FOUND,
         VALIDATION_ERROR,
+        MACHINE_RETIRED,
+        CLOUD_AGENT,
     }
 )

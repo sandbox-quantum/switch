@@ -98,6 +98,27 @@ export const enrollRequestSchema = z.object({
 });
 export type EnrollRequest = z.infer<typeof enrollRequestSchema>;
 
+/**
+ * What a cloud machine's supervisor sends to enroll the machine's controller:
+ * the machine capability as proof. The supervisor enrolls, not this
+ * controller, which is handed the result (`run --controller-id ...
+ * --credential-stdin`); the schema is here so the fixture both sides record
+ * is read on this side too.
+ */
+export const machineEnrollRequestSchema = z.object({
+  proof: z.object({
+    kind: z.literal('machine_secret'),
+    machine_id: z.string().min(1),
+    capability: z.string().min(16),
+  }),
+  controller: z.object({
+    kind: z.literal('ec2'),
+    name: z.string().min(1),
+    platform: platformSchema,
+    version: z.string().min(1),
+  }),
+});
+
 export const enrollResponseSchema = z.object({ controller_id: id, credential: id });
 export type EnrollResponse = z.infer<typeof enrollResponseSchema>;
 
@@ -109,6 +130,26 @@ export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 export const credentialRotateResponseSchema = z.object({ credential: id });
 
 // §2 Assignment (v1 definition)
+
+/**
+ * A cloud agent's extra definition: what its machine's supervisor builds the
+ * agent's deployment from. Only a machine controller (`--systemd-socket`)
+ * runs one. `spec` and `skills` are passed to the supervisor as they came,
+ * which validates them; `worker_capability` is null while the launch is
+ * moving to a new revision, and the agent is then left as it is until the
+ * assignment carries the new one.
+ */
+export const hostedDefinitionSchema = z.object({
+  machine_id: id,
+  launch_id: id,
+  launch_revision: z.number().int().positive(),
+  provider_credential_kind: z.string().nullable(),
+  repository: z.string().nullable(),
+  spec: z.record(z.string(), z.unknown()),
+  skills: z.array(z.record(z.string(), z.unknown())),
+  worker_capability: z.string().min(1).nullable(),
+});
+export type HostedDefinition = z.infer<typeof hostedDefinitionSchema>;
 
 export const agentDefinitionSchema = z.object({
   name: z.string().min(1),
@@ -122,6 +163,7 @@ export const agentDefinitionSchema = z.object({
   directory: z.string().nullable(),
   /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
   isolation: receivedEnum(['shared', 'isolated']),
+  hosted: hostedDefinitionSchema.optional(),
 });
 export type Isolation = 'shared' | 'isolated';
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
@@ -380,3 +422,61 @@ export const operationPendingSchema = z.object({
 export type OperationPending = z.infer<typeof operationPendingSchema>;
 
 export const credentialRevokedSchema = z.object({});
+
+// §7 Cloud agent workers attached through the relay
+
+/**
+ * A cloud agent's worker, as it opened its stream on the relay: the local
+ * connection and incarnation it was given, and what it declared in its
+ * `X-Switch-*` headers and protocol range. Core admits it as it admits a
+ * worker opening its own stream.
+ */
+export const workerIdentitySchema = z.object({
+  connection_id: id,
+  generation: z.number().int(),
+  spawn_capable: z.boolean(),
+  protocol: z.number().int().nullable(),
+  protocol_accepts: z.number().int().nullable(),
+  capability: z.string().nullable(),
+  boot_id: z.string().nullable(),
+  instance_id: z.string().nullable(),
+  state_version: z.number().int().nullable(),
+});
+export type WorkerIdentity = z.infer<typeof workerIdentitySchema>;
+
+export const workerAttachRequestSchema = z.object({
+  connection_id: id,
+  generation: z.number().int(),
+  worker: workerIdentitySchema,
+});
+
+/** `attached` is the `worker_attached` payload, written first on the worker's stream as it came. */
+export const workerAttachResponseSchema = z.object({
+  attached: z.record(z.string(), z.unknown()),
+});
+
+export const workerDetachRequestSchema = z.object({
+  connection_id: id,
+  generation: z.number().int(),
+  worker: z.object({ connection_id: id, generation: z.number().int() }),
+});
+
+/** A protocol-7 frame for the worker attached as that local connection and incarnation. */
+export const agentWorkerFrameSchema = z.object({
+  agent_id: id,
+  connection_id: id,
+  generation: z.number().int(),
+  event: z.string().min(1),
+  data: z.record(z.string(), z.unknown()),
+});
+export type AgentWorkerFrame = z.infer<typeof agentWorkerFrameSchema>;
+
+/** The worker's attachment ended; its local stream is evicted with `code`. */
+export const agentWorkerClosedFrameSchema = z.object({
+  agent_id: id,
+  connection_id: id,
+  generation: z.number().int(),
+  code: z.string().min(1),
+  reason: z.string(),
+});
+export type AgentWorkerClosedFrame = z.infer<typeof agentWorkerClosedFrameSchema>;

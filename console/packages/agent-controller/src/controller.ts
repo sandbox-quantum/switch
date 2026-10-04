@@ -12,6 +12,7 @@ import type { AgentRuntime } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
+  type Provider,
   type StatusReport,
   statusReportSchema,
 } from './schemas';
@@ -65,6 +66,8 @@ export type ControllerDeps = {
   /** Builds how agents run here, given the stream each agent's agent host hears its events on. */
   runtime: (openStream: (agentId: string) => OpenAgentStream) => AgentRuntime;
   locator: ProviderLocator;
+  /** The providers whose installation and login this controller reports. */
+  providers: readonly Provider[];
   fetch: Fetch;
   log: Logger;
   /** Where disk space is measured and provider checks run. */
@@ -198,6 +201,8 @@ export async function runController(
   let reportWithinS = timing.defaultReportWithinS;
   let revocation: Promise<void> | null = null;
   let reporter: StatusReporter | null = null;
+  /** The controller connection the stream is attached to now; workers attach on it. */
+  let connection: { connectionId: string; generation: number } | null = null;
 
   const hub = new AgentHub({
     log,
@@ -226,6 +231,28 @@ export async function runController(
       },
       log,
     }),
+    workers: {
+      attach: async (agentId, worker) => {
+        const current = connection;
+        if (current === null)
+          return {
+            ok: false,
+            kind: 'unavailable',
+            message: 'The agents controller has no stream to Switch',
+          };
+        return client.attachWorker(current, agentId, worker);
+      },
+      detach: (agentId, worker) => {
+        const current = connection;
+        if (current === null) return;
+        client.detachWorker(current, agentId, worker).catch((error: unknown) =>
+          log.debug('Could not tell Switch a worker stream ended', {
+            agentId,
+            error: errorMessage(error),
+          })
+        );
+      },
+    },
   });
   /**
    * The agents whose host runs in a process of its own: their events go
@@ -240,7 +267,7 @@ export async function runController(
     const cursors = store.cursors();
     for (const entry of held.agents) {
       const agentId = entry.agent_id;
-      const wanted = entry.definition.isolation === 'isolated';
+      const wanted = runtime.kind === 'systemd' || entry.definition.isolation === 'isolated';
       if (placed.has(agentId) && wanted === isolated.has(agentId)) continue;
       placed.add(agentId);
       if (wanted) {
@@ -300,6 +327,7 @@ export async function runController(
   };
 
   const providers = new ProviderStatuses({
+    providers: deps.providers,
     locator: deps.locator,
     runtime,
     probeCwd: deps.dataDir,
@@ -365,7 +393,7 @@ export async function runController(
           client,
           assignment: () => assignment,
           restartAgent: async (entry) => {
-            const problem = definitionProblem(entry);
+            const problem = definitionProblem(entry, runtime.kind);
             if (problem) return { reason: 'definition_invalid', detail: problem };
             return startAgent(
               {
@@ -467,6 +495,12 @@ export async function runController(
       case 'agent.rooms':
         delivery(frame.data.agent_id).setRooms(frame.data.agent_id, frame.data.rooms);
         return;
+      case 'agent.worker':
+        relay.workerFrame(frame.data);
+        return;
+      case 'agent.worker_closed':
+        relay.workerClosed(frame.data);
+        return;
       case 'assignment.changed':
         void sync(`assignment.changed to revision ${frame.data.revision}`);
         return;
@@ -514,15 +548,17 @@ export async function runController(
         log.info('Switch has these agents bound to this controller', {
           agents: connection.agents,
         }),
-      onConnected: () => {
+      onConnected: (attached) => {
         log.info('Connected to Switch');
         hub.streamAttached();
+        connection = attached;
         relay.streamAttached();
         void sync('connected');
         void runOperations();
       },
       onDisconnected: () => {
         hub.setUpstream(false);
+        connection = null;
         relay.setUpstream(false);
       },
       onFrame,
