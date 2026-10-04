@@ -466,6 +466,50 @@ describe('credentials the server rejects', () => {
   });
 });
 
+describe('a server restart', () => {
+  it('comes back within a second of the server, not on the doubling backoff', async () => {
+    vi.useFakeTimers();
+    // Open, then the server restarts: it closes with 1012, refuses three
+    // attempts while it is down, then takes the fifth.
+    serve((socket, index) => {
+      if (index === 0) {
+        attach(socket, 0);
+        queueMicrotask(() => socket.drop(1012, 'service restart'));
+      } else if (index < 4) {
+        socket.fail();
+      } else {
+        attach(socket, 0);
+      }
+    });
+    const { abort } = makeStream({ rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(4000);
+
+    // On the doubling backoff the fifth attempt would come after 1+2+4+8 s.
+    expect(server.sockets).toHaveLength(5);
+    abort.abort();
+  });
+
+  it('keeps the doubling backoff for an ending that is not a restart', async () => {
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      if (index === 0) {
+        attach(socket, 0);
+        queueMicrotask(() => socket.drop(1006));
+      } else {
+        socket.fail();
+      }
+    });
+    const { abort } = makeStream({ rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(4000);
+
+    // Attempts at 1 s and 3 s: the next is not due until 7 s.
+    expect(server.sockets).toHaveLength(3);
+    abort.abort();
+  });
+});
+
 describe('reopening while an open is still in flight', () => {
   /**
    * A server that keeps the incarnation the way the real one does: every open

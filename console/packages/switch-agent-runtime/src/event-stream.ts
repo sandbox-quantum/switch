@@ -29,6 +29,21 @@ const REQUEST_TIMEOUT_MS = 4000;
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 /**
+ * The close code a server sends when it is restarting (uvicorn sends it to
+ * every open socket on shutdown).
+ *
+ * A restart is the one ending we know is short, and the doubling backoff fits
+ * it badly: the socket closes as shutdown begins, so the first retries are
+ * refused while the server is down and the next one lands seconds after it is
+ * back. For a while after this code we retry at a short, randomised interval
+ * instead, which brings the agent back within a second of the server and
+ * spreads a fleet of agents over that second rather than one instant.
+ */
+const SERVICE_RESTART = 1012;
+const RESTART_WINDOW_MS = 60_000;
+const RESTART_RETRY_MIN_MS = 250;
+const RESTART_RETRY_SPREAD_MS = 500;
+/**
  * How long an open socket has to last before it counts as a working stream.
  *
  * A successful handshake is not evidence of one. A stream that opens and is
@@ -341,6 +356,8 @@ export class SwitchEventStream {
    * is answered, never by cancelling it. See `reopen`.
    */
   private reopensWanted = 0;
+  /** Until when the server is taken to be restarting (see `SERVICE_RESTART`). */
+  private restartingUntil = 0;
   private openCarries = 0;
 
   constructor(deps: SwitchEventStreamDeps) {
@@ -657,6 +674,11 @@ export class SwitchEventStream {
      * server is ending streams on purpose.
      */
     const pace = async (): Promise<void> => {
+      if (Date.now() < this.restartingUntil) {
+        const wait = RESTART_RETRY_MIN_MS + Math.random() * RESTART_RETRY_SPREAD_MS;
+        await new Promise((r) => setTimeout(r, wait));
+        return;
+      }
       await new Promise((r) => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
     };
@@ -703,6 +725,7 @@ export class SwitchEventStream {
         const url = `${creds.apiEndpoint.replace(/^http/, 'ws')}/agents/${creds.agentId}/connection/ws?${params}`;
         for await (const frame of this.readSocket(url, socketAbort.signal, () => {
           openedAt = Date.now();
+          this.restartingUntil = 0;
           log.debug('SwitchEventStream: connection open', {
             event: 'switch_stream_open',
             connectionId,
@@ -831,6 +854,7 @@ export class SwitchEventStream {
     });
     socket.addEventListener('close', (event: CloseEvent) => {
       closed = { code: event.code, reason: event.reason };
+      if (event.code === SERVICE_RESTART) this.restartingUntil = Date.now() + RESTART_WINDOW_MS;
       notify();
     });
     socket.addEventListener('error', () => notify());
