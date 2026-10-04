@@ -52,3 +52,20 @@ export const AGENT_ENV_VARS = [
   'OPENROUTER_BASE_URL',
   'XAI_API_KEY',
 ] as const;
+
+/**
+ * What a session host's `execution.inheritEnv` names: the provider variables
+ * above plus the basics a CLI needs to find itself, its home and its terminal.
+ * Console and the headless agents controller both launch hosts with it.
+ */
+export const EXECUTION_INHERIT_ENV: readonly string[] = [
+  ...AGENT_ENV_VARS,
+  'PATH',
+  'HOME',
+  'USER',
+  'SHELL',
+  'TMPDIR',
+  'LANG',
+  'TERM',
+  'SSH_AUTH_SOCK',
+];

@@ -81,6 +81,12 @@ const {
   updateAgentDisplayName,
   updateBridge,
   updateCloudLaunchConfiguration,
+  AgentManagementUnavailableError,
+  enrollConsoleController,
+  fetchManagedAgents,
+  managementErrorCode,
+  managementErrorMessage,
+  revokeManagementController,
 } = await import('./gateway-client');
 
 const SERVER = {
@@ -1608,5 +1614,116 @@ describe('workspace invitations', () => {
 
     expect(created.token).toBe('tok-1');
     expect(created.emailDelivery).toBe('unsupported');
+  });
+});
+
+describe('agent management calls', () => {
+  function respond(status: number, body: unknown): Response {
+    const text = typeof body === 'string' ? body : JSON.stringify(body);
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      json: async () => JSON.parse(text),
+      headers: { getSetCookie: () => [] },
+      text: async () => text,
+    } as unknown as Response;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(2 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('enrolls this Console as a controller of kind console', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(201, { controller_id: 'controller-1', credential: 'swcc_placeholder' })
+    );
+    const enrolled = await enrollConsoleController(SERVER, {
+      name: 'build-box',
+      platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
+      version: '0.1.0',
+    });
+    expect(enrolled).toEqual({ controllerId: 'controller-1', credential: 'swcc_placeholder' });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/controllers');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      name: 'build-box',
+      kind: 'console',
+      platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
+      version: '0.1.0',
+    });
+  });
+
+  it('reads a bare 404 as a server without agent management, and an enveloped one as a refusal', async () => {
+    fetchMock.mockImplementation(async () => respond(404, { detail: 'Not Found' }));
+    await expect(fetchManagedAgents(SERVER)).rejects.toBeInstanceOf(
+      AgentManagementUnavailableError
+    );
+
+    fetchMock.mockImplementation(async () =>
+      respond(404, {
+        error: { code: 'not_found', message: 'Controller not found', retryable: false },
+      })
+    );
+    const refusal = await revokeManagementController(SERVER, 'controller-1').catch(
+      (error: unknown) => error
+    );
+    expect(refusal).not.toBeInstanceOf(AgentManagementUnavailableError);
+    expect(managementErrorCode(refusal)).toBe('not_found');
+    expect(managementErrorMessage(refusal)).toBe('Controller not found');
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/controllers/controller-1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('maps managed agents, provider and last report included', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          agent_id: 'agent-1',
+          name: 'scout',
+          display_name: 'Scout',
+          controller_id: 'controller-1',
+          desired_state: 'running',
+          definition: { provider: 'claude' },
+          status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'x' },
+        },
+        {
+          agent_id: 'agent-2',
+          name: 'idle',
+          display_name: null,
+          controller_id: null,
+          desired_state: 'stopped',
+          definition: {},
+          status: null,
+        },
+      ])
+    );
+    expect(await fetchManagedAgents(SERVER)).toEqual([
+      {
+        agentId: 'agent-1',
+        name: 'scout',
+        displayName: 'Scout',
+        controllerId: 'controller-1',
+        desiredState: 'running',
+        provider: 'claude',
+        status: { process: 'failed', attached: false, reason: 'crash_loop', detail: 'x' },
+      },
+      {
+        agentId: 'agent-2',
+        name: 'idle',
+        displayName: null,
+        controllerId: null,
+        desiredState: 'stopped',
+        provider: 'unknown',
+        status: null,
+      },
+    ]);
   });
 });

@@ -17,6 +17,8 @@ import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   agentLaunchDefinitionSchema,
+  controllerConnectionId,
+  EXECUTION_INHERIT_ENV,
   type HostStartSource,
   SessionHostFailedError,
   sharedConfigSchema,
@@ -34,10 +36,8 @@ import { hostDependencyStore } from '@main/core/dependencies/host-dependency-sto
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { AGENT_ENV_VARS } from '@main/core/sdk-host/agent-env';
 import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
-import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { getPersistedRoomConnection } from '@main/core/switch-rooms/session-room-store';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
@@ -492,17 +492,7 @@ export async function buildSharedHostConfig(
         params.sessionPath,
         agentSettingsRelativePath(slug)
       ),
-      inheritEnv: [
-        ...AGENT_ENV_VARS,
-        'PATH',
-        'HOME',
-        'USER',
-        'SHELL',
-        'TMPDIR',
-        'LANG',
-        'TERM',
-        'SSH_AUTH_SOCK',
-      ],
+      inheritEnv: [...EXECUTION_INHERIT_ENV],
       ...(binaryPath ? { binaryPath } : {}),
       ...(params.shellSetup ? { shellSetup: params.shellSetup } : {}),
       // A subagent watched under its parent is Claude Code's own: it has no

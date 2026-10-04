@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
-import { runAgentHost } from './agent-host';
+import { openSwitchStream, runAgentHost } from './agent-host';
 import type { Supervision } from './launch';
 import type * as OwnershipLock from './ownership-lock';
 import { withOwnershipLock } from './ownership-lock';
@@ -83,7 +83,8 @@ it('writes owner records in the shapes the supervisor quarantines after a reboot
       new AbortController().signal,
       {} as Supervision,
       new WatcherControl(),
-      null
+      null,
+      openSwitchStream
     )
   ).rejects.toThrow('execution credentials');
 

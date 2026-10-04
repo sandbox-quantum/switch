@@ -1,0 +1,11 @@
+{
+  "operations": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000d2",
+      "kind": "provider.recheck",
+      "agent_id": null,
+      "params": { "provider": "claude" },
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

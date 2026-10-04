@@ -51,7 +51,16 @@ async def compute_agent_statuses(
 
     Shared by AgentCore (room detail / participants) and the in-room
     ``!status`` command so both report presence identically.
+
+    A controller-backed agent is answered from its controller alone
+    (`controller_statuses`), and none of the three sources above is asked
+    about it.
     """
+    controllers = connections.controllers
+    backed = [agent for agent in agents if controllers.is_bound(agent.id)]
+    statuses = controller_statuses(backed, room_id, connections)
+    agents = [agent for agent in agents if not controllers.is_bound(agent.id)]
+
     always_on_ids: list[str] = []
     addressable_ids: list[str] = []
     auto_session_ids: list[str] = []
@@ -124,7 +133,6 @@ async def compute_agent_statuses(
         if aid not in live_addressable and connections.can_spawn_for(aid, room_id)
     }
 
-    statuses: dict[str, AgentStatus] = {}
     for agent in agents:
         model = model_by_id[agent.id]
         if model == "always_on":
@@ -146,6 +154,50 @@ async def compute_agent_statuses(
             elif agent.id in watching_auto:
                 statuses[agent.id] = AgentStatus.DORMANT
             elif agent.id in connected_auto:
+                statuses[agent.id] = AgentStatus.NO_SESSION
+            else:
+                statuses[agent.id] = AgentStatus.DISCONNECTED
+        else:
+            statuses[agent.id] = AgentStatus.AWAITING_MANUAL_POLL
+    return statuses
+
+
+def controller_statuses(
+    agents: list[Agent], room_id: str, connections: AgentConnectionRegistry
+) -> dict[str, AgentStatus]:
+    """Presence for agents run by an agents controller.
+
+    A session-shaped agent is LIVE in a room its live controller reports a
+    session of it working in (`placed_rooms`). Elsewhere it is DORMANT where
+    the controller will start a session for the room, NO_SESSION where the
+    controller is live and will not, and DISCONNECTED (or NO_SESSION, for a
+    `session_addressable` agent, as for any other) when the controller is not
+    live. An `always_on` agent is LIVE exactly while its controller is.
+    """
+    controllers = connections.controllers
+    statuses: dict[str, AgentStatus] = {}
+    for agent in agents:
+        model = (agent.integration_profile or {}).get(
+            "connection_model", "session_passive"
+        )
+        live = controllers.is_live(agent.id)
+        placed = controllers.is_placed(agent.id, room_id)
+        spawns = controllers.can_spawn_for(agent.id, room_id)
+        if model == "always_on":
+            statuses[agent.id] = AgentStatus.LIVE if live else AgentStatus.DISCONNECTED
+        elif model == "session_addressable":
+            if placed:
+                statuses[agent.id] = AgentStatus.LIVE
+            elif spawns:
+                statuses[agent.id] = AgentStatus.DORMANT
+            else:
+                statuses[agent.id] = AgentStatus.NO_SESSION
+        elif model == "auto_session":
+            if placed:
+                statuses[agent.id] = AgentStatus.LIVE
+            elif spawns:
+                statuses[agent.id] = AgentStatus.DORMANT
+            elif live:
                 statuses[agent.id] = AgentStatus.NO_SESSION
             else:
                 statuses[agent.id] = AgentStatus.DISCONNECTED

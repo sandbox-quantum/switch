@@ -22,7 +22,10 @@ from switch_core.bridges.agent.api.hosted_worker_routes import (
 from switch_core.bridges.agent.api.operations import router as operations_router
 from switch_core.bridges.agent.api.version_routes import router as version_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.auth import BearerAuthMiddleware
+from switch_core.bridges.agent.auth import (
+    BearerAuthMiddleware,
+    ControllerAuthenticator,
+)
 from switch_core.bridges.agent.deeplink import router as deeplink_router
 from switch_core.bridges.agent.dependencies import get_protocol, init_dependencies
 from switch_core.bridges.agent.mcp import create_mcp_app
@@ -71,6 +74,7 @@ def create_agent_bridge_app(
     session_factory: object,
     config: SwitchConfig,
     approval_outcomes: ApprovalOutcomes,
+    controller_auth: ControllerAuthenticator | None,
     connections: AgentConnectionRegistry | None = None,
     telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, AgentCore]:
@@ -175,6 +179,7 @@ def create_agent_bridge_app(
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,
         session_factory=session_factory,  # type: ignore[arg-type]
+        controller_auth=controller_auth,
     )
     # Outside the bearer middleware, so a request rejected for bad credentials
     # is still counted and timed — an authentication failure is traffic, and a

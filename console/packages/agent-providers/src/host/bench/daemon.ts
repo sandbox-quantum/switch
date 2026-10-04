@@ -23,7 +23,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { runAgentHost } from '../agent-host';
+import { openSwitchStream, runAgentHost } from '../agent-host';
 import { AttachmentTransfers } from '../attachment-transfers';
 import { type ControlContext, ensureSessions, serveControl } from '../control';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from '../exit-codes';
@@ -104,9 +104,15 @@ async function main(): Promise<void> {
     const hosted = await hostedWorker(config, resolve(root), context);
     try {
       await Promise.all([
-        runAgentHost(root, config, stop.signal, supervision, control, hosted).finally(() =>
-          stop.abort()
-        ),
+        runAgentHost(
+          root,
+          config,
+          stop.signal,
+          supervision,
+          control,
+          hosted,
+          openSwitchStream
+        ).finally(() => stop.abort()),
         serveControl(resolve(root), context, stop.signal),
       ]);
     } finally {

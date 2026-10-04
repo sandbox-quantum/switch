@@ -53,12 +53,18 @@ export type { SharedHostOptions } from './host/shared-host';
 export {
   detachedSupervision,
   ensureSharedProcess,
+  inProcessSupervision,
   liveSupervisor,
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
 export { hostStartSources, type HostStartSource } from './host/session-start';
-export { runAgentHost } from './host/agent-host';
+export {
+  type AgentEventStream,
+  type OpenAgentStream,
+  openSwitchStream,
+  runAgentHost,
+} from './host/agent-host';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
 export {
   recordWatcherHealth,
@@ -73,6 +79,8 @@ export {
   watchFlagsSchema,
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
+export { controllerConnectionId } from './host/connection-id';
+export { EXECUTION_INHERIT_ENV } from './host/agent-env';
 export {
   SessionHostFailedError,
   SessionLinks,
@@ -88,7 +96,7 @@ export {
 } from './host/watcher-tools';
 
 export { prepareCodexSessionHome } from './codex/home';
-export { sharedConfigSchema } from './host/shared-config';
+export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './host/provider-readiness';

@@ -59,6 +59,7 @@ def _build(telemetry: TelemetryService) -> Any:
         session_factory=object(),
         config=_config(),
         approval_outcomes=object(),  # type: ignore[arg-type]
+        controller_auth=None,
         telemetry=telemetry,
     )
     return protocol

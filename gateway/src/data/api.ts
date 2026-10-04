@@ -75,9 +75,13 @@ export interface AgentRoomMembership {
 export interface AgentSessionDetail {
   room_id: string | null;
   room_name: string | null;
+  // `heartbeat` / `explicit` (a session row), `connection` (the agent's own
+  // connection) or `controller` (run by the agents controller it is placed on).
   lifecycle: string;
   state: string;
   last_seen_at: string;
+  // The agents controller running it, for a `controller` session; else null.
+  controller_id: string | null;
 }
 
 export interface AgentDetail extends AgentSummary {

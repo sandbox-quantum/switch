@@ -28,3 +28,12 @@ function resolveBundlePath(bundleName: string): string {
 export function resolveSharedHostBundlePath(): string {
   return resolveBundlePath('shared-host.mjs');
 }
+
+/**
+ * The agents controller Console runs as a child process for "Run managed
+ * agents on this computer", built beside the shared host by
+ * `pnpm run build:sidecar`.
+ */
+export function resolveAgentControllerBundlePath(): string {
+  return resolveBundlePath('agent-controller.mjs');
+}

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.config import SwitchConfig
 from switch_core.crypto import decrypt_token, encrypt_token
-from switch_core.db.models import ApiKey, User
+from switch_core.db.models import HASH_ONLY_KEY_TYPES, ApiKey, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -50,7 +50,13 @@ async def list_api_keys(
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[ApiKeyDetail]:
-    keys = await api_key_store.get_by_user(session, user.id)
+    # Controller credentials and enrollment codes are managed through agent
+    # management and hold only a hash; they are not the user's keys to see.
+    keys = [
+        k
+        for k in await api_key_store.get_by_user(session, user.id)
+        if k.type not in HASH_ONLY_KEY_TYPES
+    ]
     return [
         ApiKeyDetail(
             id=k.id,
@@ -105,7 +111,7 @@ async def reveal_api_key(
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> RevealKeyResponse:
     key = await api_key_store.get(session, key_id)
-    if key is None:
+    if key is None or key.type in HASH_ONLY_KEY_TYPES:
         raise HTTPException(status_code=404, detail="API key not found")
     if key.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to reveal this key")
@@ -122,7 +128,7 @@ async def delete_api_key(
     user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, bool]:
     key = await api_key_store.get(session, key_id)
-    if key is None:
+    if key is None or key.type in HASH_ONLY_KEY_TYPES:
         raise HTTPException(status_code=404, detail="API key not found")
     if key.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this key")

@@ -8,6 +8,7 @@ import {
   Divider,
   IconButton,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
@@ -29,6 +30,7 @@ import {
 } from "../../theme/hootFormat";
 import AddressingPolicySection from "./AddressingPolicySection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
+import { sessionPlace, sessionRunner } from "./sessionLabels";
 
 // Presence of an agent within a room — mirrors the room detail page so the two
 // views report status identically.
@@ -322,7 +324,7 @@ function OptionsSection({
   );
 }
 
-function SessionsSection({ sessions }: { sessions: AgentSessionDetail[] }) {
+export function SessionsSection({ sessions }: { sessions: AgentSessionDetail[] }) {
   // Live sessions are the agent's real current presence — surface them first.
   const ordered = [...sessions].sort(
     (a, b) => Number(b.state === "live") - Number(a.state === "live"),
@@ -356,6 +358,7 @@ function SessionRow({ session }: { session: AgentSessionDetail }) {
   };
   const isLive = session.state === "live";
   const clickable = session.room_id !== null;
+  const runner = sessionRunner(session);
   return (
     <Stack
       direction="row"
@@ -388,8 +391,22 @@ function SessionRow({ session }: { session: AgentSessionDetail }) {
           ...(!session.room_name && session.room_id ? MONO_SX : {}),
         }}
       >
-        {session.room_name ?? (session.room_id ? session.room_id : "Room-agnostic")}
+        {sessionPlace(session)}
       </Typography>
+      {runner && (
+        <Tooltip title={runner.detail}>
+          <Chip
+            label={runner.label}
+            size="small"
+            variant="outlined"
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate("/machines");
+            }}
+            sx={{ height: 20 }}
+          />
+        </Tooltip>
+      )}
       {isLive ? (
         <Chip
           label={meta.label}

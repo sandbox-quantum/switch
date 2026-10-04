@@ -340,6 +340,27 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(session.nativeSessionId).toBe('earlier');
   });
 
+  it('resumes a conversation under the model and instructions it is started with now', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({
+      query: sdk.query,
+      claudeExecutablePath: '/bin/claude',
+      savedConversationExists: async (id) => id === 'earlier',
+    });
+    await adapter.startSession(
+      startInput({
+        resume: { nativeSessionId: 'earlier' },
+        model: { id: 'claude-sonnet-4-6' },
+        systemContext: 'Answer in one word.',
+      })
+    );
+    expect(sdk.options()).toMatchObject({
+      resume: 'earlier',
+      model: 'claude-sonnet-4-6',
+      systemPrompt: { append: 'Answer in one word.' },
+    });
+  });
+
   it('stops the session, closes the query and forgets it', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.stopSession(SESSION);

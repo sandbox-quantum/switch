@@ -2949,6 +2949,219 @@ class UsageBudget(TenantScoped, Base):
     )
 
 
+# ── Agent management ──────────────────────────────────────────────────────────
+
+# `api_keys.type` values that hold a hash and nothing else. Nothing may decrypt
+# them, so their `encrypted_key` is the empty string, and they are neither
+# listed nor revealable through the user's API-key routes.
+CONTROLLER_KEY_TYPE = "controller"
+CONTROLLER_ENROLLMENT_KEY_TYPE = "controller_enrollment"
+HASH_ONLY_KEY_TYPES = frozenset({CONTROLLER_KEY_TYPE, CONTROLLER_ENROLLMENT_KEY_TYPE})
+
+
+class AgentController(TenantScoped, Base):
+    """A machine that runs managed agents on behalf of its owner.
+
+    `api_key_id` is the controller's long-lived credential, an `api_keys` row of
+    type `controller` holding the hash only. It is null once the controller is
+    revoked, and also if the key is deleted from under it (removing a member
+    deletes every key they hold), which is treated the same as revocation. `status` is the last accepted status report verbatim and
+    `status_seq` its sequence number: a report with a sequence at or below it is
+    ignored. `assignment_revision` bumps on every change to the set of agents
+    the controller should run, and is what its ETag carries.
+    """
+
+    __tablename__ = "agent_controllers"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_agent_controllers_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "api_key_id"],
+            ["api_keys.tenant_id", "api_keys.id"],
+            name="fk_agent_controllers_api_key",
+            ondelete="SET NULL (api_key_id)",
+        ),
+        CheckConstraint(
+            "kind IN ('console', 'daemon', 'ec2')", name="ck_agent_controllers_kind"
+        ),
+        Index("ix_agent_controllers_owner_id", "owner_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    platform: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_key: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    api_key_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assignment_revision: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
+    status_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AgentControllerEnrollmentCode(TenantScoped, Base):
+    """A one-time code a headless controller enrolls with.
+
+    The code itself is an `api_keys` row of type `controller_enrollment`, so the
+    global hash-to-tenant lookup resolves it before any tenant is bound, exactly
+    as it does a bearer credential. That row is deleted when the code is used,
+    leaving `api_key_id` null and `controller_id` naming what it enrolled.
+    """
+
+    __tablename__ = "agent_controller_enrollment_codes"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "api_key_id"],
+            ["api_keys.tenant_id", "api_keys.id"],
+            name="fk_agent_controller_enrollment_codes_api_key",
+            ondelete="SET NULL (api_key_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_agent_controller_enrollment_codes_controller",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    api_key_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentDefinition(TenantScoped, Base):
+    """What a managed agent is, and which controller runs it.
+
+    One per agent. `controller_id` null means the agent is managed but placed
+    nowhere. `revision` bumps on every change to the definition, its desired
+    state or its placement; controllers use it to fence out stale revisions.
+    `definition` is the v1 definition document (provider, model, instructions,
+    auto_approve, directory).
+    """
+
+    __tablename__ = "agent_definitions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", name="uq_agent_definitions_agent"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_definitions_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_agent_definitions_controller",
+        ),
+        CheckConstraint(
+            "desired_state IN ('running', 'stopped')",
+            name="ck_agent_definitions_desired_state",
+        ),
+        Index("ix_agent_definitions_controller_id", "controller_id"),
+        Index("ix_agent_definitions_owner_id", "owner_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    desired_state: Mapped[str] = mapped_column(Text, nullable=False)
+    definition: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AgentControllerOperation(TenantScoped, Base):
+    """An explicit action for a controller to carry out, outside desired state.
+
+    A controller claims a pending operation and holds it under a lease
+    (`lease_expires_at`); an operation still `claimed` after its lease has
+    lapsed is offered again. `kind` is not checked here, because the set grows
+    with the protocol; Management refuses the kinds it does not support.
+    """
+
+    __tablename__ = "agent_controller_operations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_agent_controller_operations_controller",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_controller_operations_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'claimed', 'succeeded', 'failed', 'cancelled', 'expired')",
+            name="ck_agent_controller_operations_state",
+        ),
+        Index(
+            "ix_agent_controller_operations_controller_state",
+            "controller_id",
+            "state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    controller_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # Same reasoning as the notify trigger above: `create_all` has to build the
 # row-level-security policies too, or the isolation test would pass against a
 # schema that has none. See `db/rls_ddl.py` for the DDL and why it takes this

@@ -36,6 +36,7 @@ def _no_connections(
     declared it will start a session for this room.
     """
     return SimpleNamespace(
+        controllers=SimpleNamespace(is_bound=lambda _agent_id: False),
         live_connection_ids=lambda: set(),
         is_live=lambda _agent_id: connected,
         live_in_room=lambda _agent_id, _room_id: False,

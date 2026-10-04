@@ -38,6 +38,9 @@ def _fake_self(
 
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="cc-bug-fixing"),
+        _connections=SimpleNamespace(
+            controllers=SimpleNamespace(room_joined=lambda _agent, _room: None)
+        ),
         _is_direct_room=_is_direct_room,
         _resolve_room_meta=_resolve_room_meta,
         actor=SimpleNamespace(send_message=send_message),

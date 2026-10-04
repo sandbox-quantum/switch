@@ -199,7 +199,13 @@ export interface EventStreamLogger {
 
 /** A contract `Command`, as relayed; the receiver validates the rest. */
 export interface SessionCommand {
-  sessionId: string;
+  /**
+   * The session it is for. Null when Switch knows only the room it was typed
+   * in (`roomId`), as for an agent run by an agents controller: the agent
+   * decides which of its sessions that is.
+   */
+  sessionId: string | null;
+  roomId?: string | null;
   commandId: string;
   [key: string]: unknown;
 }

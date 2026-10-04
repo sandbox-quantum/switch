@@ -5,7 +5,7 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -265,6 +265,10 @@ class AgentCore:
     # None only for the minimal instances tests assemble; the server always
     # supplies it, and a stream without it simply carries no approval outcomes.
     approval_outcomes: ApprovalOutcomes | None = None
+    # Told (tenant_id, agent_id) just before an agent is deleted, while its row
+    # still exists. Set by the process wiring when something outside Core keeps
+    # state about agents that a cascade alone would drop without telling anyone.
+    _agent_removal_listener: Callable[[str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -796,6 +800,11 @@ class AgentCore:
         self.api_key_cache.invalidate_agent(existing.id)
         return existing.id
 
+    def set_agent_removal_listener(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        self._agent_removal_listener = listener
+
     async def _create_bridge_identities(
         self, tenant_id: str, agent_name: str, description: str
     ) -> None:
@@ -982,6 +991,8 @@ class AgentCore:
             "had_parent": agent.parent_agent_id is not None,
         }
         removed["room_count"] = await self._room_count_for(resolved_id)
+        if self._agent_removal_listener is not None:
+            await self._agent_removal_listener(tenant_id, resolved_id)
         await self.client_lifecycle.stop(client_id)
         self.event_buffer.remove(resolved_id)
 
@@ -2997,7 +3008,17 @@ class AgentCore:
             would be a guess. A seat taken without a session falls back to its
             connection, and to the binding row for callers predating
             connections.
+
+            A controller-backed holder is located by the rooms its controller
+            reports its sessions working in: this room if it is one of them,
+            otherwise the one room it is in, if there is only one.
             """
+            controllers = self.connections.controllers
+            if controllers.is_bound(lease.agent_id):
+                placed = controllers.placed_rooms(lease.agent_id)
+                if room_id in placed:
+                    return room_id
+                return next(iter(placed)) if len(placed) == 1 else None
             if lease.session_id is not None:
                 return self.connections.session_room(lease.agent_id, lease.session_id)
             if lease.transport_session_id is None:

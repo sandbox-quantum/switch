@@ -152,7 +152,10 @@ export class GatewayError extends Error {
     /** The refusal's machine-readable name, from a body such as
      * `{"detail": …, "code": "worker_waking"}`. Present only when the body
      * carried one. */
-    readonly code?: string
+    readonly code?: string,
+    /** The response body as it came, for a caller that reads an envelope other
+     * than FastAPI's (agent management answers `{"error": {...}}`). */
+    readonly body?: string
   ) {
     super(message);
     this.name = 'GatewayError';
@@ -331,7 +334,8 @@ export async function gatewayFetch(
       `Switch gateway returned ${response.status}${body ? `: ${body}` : ''}`,
       response.status,
       parseErrorDetail(body),
-      parseErrorCode(body)
+      parseErrorCode(body),
+      body
     );
   }
   return response;
@@ -2457,6 +2461,187 @@ export async function disconnectCloudProvider(
   provider: Exclude<AgentProviderId, 'claude'>
 ) {
   await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+// ── Agent management: controllers and the agents placed on them ─────────────
+
+/**
+ * The server does not run agent management: its `/gateway/management` routes
+ * are not mounted (`AGENT_MANAGEMENT_ENABLED` is off), so they answer a bare
+ * 404 rather than one in the management error envelope.
+ */
+export class AgentManagementUnavailableError extends Error {
+  constructor(server: SwitchServer) {
+    super(`${server.name} does not have agent management turned on.`);
+    this.name = 'AgentManagementUnavailableError';
+  }
+}
+
+type ManagementErrorEnvelope = { error: { code: string; message: string } };
+
+function managementEnvelope(body: string | undefined): ManagementErrorEnvelope['error'] | null {
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body) as Partial<ManagementErrorEnvelope>;
+    const error = parsed.error;
+    return error && typeof error.code === 'string' && typeof error.message === 'string'
+      ? { code: error.code, message: error.message }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The management reason code a failed call carried, or null when it carried none. */
+export function managementErrorCode(error: unknown): string | null {
+  return error instanceof GatewayError ? (managementEnvelope(error.body)?.code ?? null) : null;
+}
+
+/** A failed management call, said the way the server explained it where it did. */
+export function managementErrorMessage(error: unknown): string {
+  if (error instanceof GatewayError) {
+    const envelope = managementEnvelope(error.body);
+    if (envelope) return envelope.message;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function managementFetch(
+  server: SwitchServer,
+  path: string,
+  options: FetchOptions
+): Promise<Response> {
+  try {
+    return await gatewayFetch(server, `/management${path}`, options);
+  } catch (error) {
+    if (
+      error instanceof GatewayError &&
+      error.status === 404 &&
+      managementEnvelope(error.body) === null
+    )
+      throw new AgentManagementUnavailableError(server);
+    throw error;
+  }
+}
+
+export type ControllerPlatform = { os: string; arch: string; os_version: string };
+
+/** A controller as the owner's list shows it. */
+export type ManagementController = {
+  id: string;
+  name: string;
+  kind: string;
+  state: 'online' | 'unknown' | 'revoked';
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+};
+
+/** A managed agent as the owner's list shows it. */
+export type ManagedAgent = {
+  agentId: string;
+  name: string;
+  displayName: string | null;
+  controllerId: string | null;
+  desiredState: 'running' | 'stopped';
+  provider: string;
+  status: {
+    process: string;
+    attached: boolean;
+    reason: string | null;
+    detail: string | null;
+  } | null;
+};
+
+type ManagementControllerJson = {
+  id: string;
+  name: string;
+  kind: string;
+  state: 'online' | 'unknown' | 'revoked';
+  last_seen_at: string | null;
+  revoked_at: string | null;
+};
+
+type ManagedAgentJson = {
+  agent_id: string;
+  name: string;
+  display_name: string | null;
+  controller_id: string | null;
+  desired_state: 'running' | 'stopped';
+  definition: { provider?: unknown } | null;
+  status: {
+    process: string;
+    attached: boolean;
+    reason?: string | null;
+    detail?: string | null;
+  } | null;
+};
+
+/**
+ * Enroll this Console as a controller of kind `console`, owned by the
+ * signed-in user (`POST /gateway/management/controllers`). The credential is a
+ * secret: keep it in the main process and in the encrypted secrets store.
+ */
+export async function enrollConsoleController(
+  server: SwitchServer,
+  body: { name: string; platform: ControllerPlatform; version: string }
+): Promise<{ controllerId: string; credential: string }> {
+  const res = await managementFetch(server, '/controllers', {
+    authenticated: true,
+    method: 'POST',
+    body: { name: body.name, kind: 'console', platform: body.platform, version: body.version },
+  });
+  const json = (await res.json()) as { controller_id: string; credential: string };
+  return { controllerId: json.controller_id, credential: json.credential };
+}
+
+/** The signed-in user's controllers (`GET /gateway/management/controllers`). */
+export async function fetchManagementControllers(
+  server: SwitchServer
+): Promise<ManagementController[]> {
+  const res = await managementFetch(server, '/controllers', { authenticated: true });
+  return ((await res.json()) as ManagementControllerJson[]).map((json) => ({
+    id: json.id,
+    name: json.name,
+    kind: json.kind,
+    state: json.state,
+    lastSeenAt: json.last_seen_at,
+    revokedAt: json.revoked_at,
+  }));
+}
+
+/** The signed-in user's managed agents (`GET /gateway/management/agents`). */
+export async function fetchManagedAgents(server: SwitchServer): Promise<ManagedAgent[]> {
+  const res = await managementFetch(server, '/agents', { authenticated: true });
+  return ((await res.json()) as ManagedAgentJson[]).map((json) => ({
+    agentId: json.agent_id,
+    name: json.name,
+    displayName: json.display_name,
+    controllerId: json.controller_id,
+    desiredState: json.desired_state,
+    provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
+    status: json.status
+      ? {
+          process: json.status.process,
+          attached: json.status.attached,
+          reason: json.status.reason ?? null,
+          detail: json.status.detail ?? null,
+        }
+      : null,
+  }));
+}
+
+/**
+ * Revoke a controller (`DELETE /gateway/management/controllers/{id}`): the
+ * server deletes its credential and tells it so on its stream.
+ */
+export async function revokeManagementController(
+  server: SwitchServer,
+  controllerId: string
+): Promise<void> {
+  await managementFetch(server, `/controllers/${encodeURIComponent(controllerId)}`, {
     authenticated: true,
     method: 'DELETE',
   });

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from switch_core.artifacts import contract_range
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.hosted_workers import (
     IDLE_FRESH_FOR_SECONDS,
     IdleReport,
@@ -41,6 +42,18 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     WorkerBinding,
     WorkerFrames,
 )
+from switch_core.bridges.agent.protocol.liveness import (
+    HEARTBEAT_INTERVAL_SECONDS as HEARTBEAT_INTERVAL_SECONDS,
+)
+from switch_core.bridges.agent.protocol.liveness import (
+    HEARTBEAT_LAPSED as HEARTBEAT_LAPSED,
+)
+from switch_core.bridges.agent.protocol.liveness import (
+    HEARTBEAT_TTL_SECONDS as HEARTBEAT_TTL_SECONDS,
+)
+from switch_core.bridges.agent.protocol.liveness import TAKEN_OVER as TAKEN_OVER
+from switch_core.bridges.agent.protocol.liveness import CloseCode as CloseCode
+from switch_core.bridges.agent.protocol.liveness import Closure as Closure
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_EXPIRED
 from switch_core.observability.metrics import metrics
@@ -49,12 +62,6 @@ logger = logging.getLogger(__name__)
 
 Scope = Literal["single", "all"]
 DeliveryFilter = Literal["all", "addressed"]
-
-# Clients tick every HEARTBEAT_INTERVAL_SECONDS; a connection is declared dead
-# once nothing has arrived for HEARTBEAT_TTL_SECONDS. One mechanism replaces
-# /connection/renew, /watch/heartbeat and /leases/renew.
-HEARTBEAT_INTERVAL_SECONDS = 2.0
-HEARTBEAT_TTL_SECONDS = 6.0
 
 # Refuse a client that cannot meet this server's protocol rather than degrading
 # in ways neither side can see. The runtime lives on the user's machine and
@@ -262,47 +269,6 @@ class WorkerAlreadyAttachedError(ConnectionError_):
         self.agent_id = agent_id
 
 
-CloseCode = Literal["taken_over", "heartbeat_lapsed", "closed", "launch_superseded"]
-
-
-@dataclass(frozen=True, slots=True)
-class Closure:
-    """Why a connection ended, in a form both sides can act on.
-
-    The prose alone was not enough. Three producers phrased the same three
-    endings six different ways, and the clients that had to tell a recoverable
-    ending from a fatal one did it by comparing those strings — so one of them
-    matched the short heartbeat-lapse wording, missed the long one, and killed
-    a watcher that only needed to reconnect. `code` is the part that is
-    promised and compared; `message` is for a human reading a log and may be
-    reworded freely.
-
-    `room_id` names the room the ending was about, and is null when it was not
-    about one. A client that loses a connection over a room it declared cannot
-    otherwise tell which room, and so cannot stop declaring it.
-    """
-
-    code: CloseCode
-    message: str
-    room_id: str | None
-
-
-#: The connection's client stopped ticking. Recoverable: reopen and resume.
-HEARTBEAT_LAPSED = Closure(
-    code="heartbeat_lapsed",
-    message="heartbeat lapsed; reopen the stream and resume from your cursor",
-    room_id=None,
-)
-
-#: Another stream attached to this id. Terminal for the displaced client:
-#: reopening is itself a takeover, so retrying is how two clients trade the
-#: connection back and forth forever.
-TAKEN_OVER = Closure(
-    code="taken_over",
-    message="another stream attached to this connection and took it over",
-    room_id=None,
-)
-
 #: The hosted launch moved to a newer revision than the one this worker was
 #: attached for. Terminal: the worker's capability is obsolete, and only a
 #: restart onto the current bundle can attach again.
@@ -508,6 +474,10 @@ class AgentConnectionRegistry:
         self._placement_owners: dict[str, dict[str, str]] = {}
         self.relays = PendingRelays(on_expire=self._cancel_relay)
         self.relay_views = RelayViews()
+        # Agents run by an agents controller hold no connection here: their
+        # presence is their controller's. Every presence question below asks
+        # it first for those agents, and this registry for the rest.
+        self.controllers = ControllerPresence(on_bound=self._close_for_controller)
 
     def _new_incarnation(self) -> int:
         """The next never-before-used incarnation number.
@@ -725,6 +695,19 @@ class AgentConnectionRegistry:
                 exc_info=True,
             )
         return conn
+
+    def _close_for_controller(self, agent_id: str) -> None:
+        """An agent now run by a controller keeps no connection of its own."""
+        for cid in list(self._by_agent.get(agent_id, ())):
+            self.close(
+                cid,
+                Closure(
+                    code="closed",
+                    message="this agent is now run by an agents controller, which "
+                    "receives its events; its own connection is closed",
+                    room_id=None,
+                ),
+            )
 
     def sweep(self) -> list[AgentConnection]:
         """Close connections whose heartbeat has lapsed. Returns those closed."""
@@ -1042,11 +1025,14 @@ class AgentConnectionRegistry:
         Not stored anywhere else: a command relayed to nobody is refused to
         whoever sent it, rather than held for a watcher that may not return.
         `worker_only` narrows it to a hosted agent's attached worker, so a
-        holder of the agent key cannot receive room controls meant for it.
+        holder of the agent key cannot receive room controls meant for it. A
+        controller-backed agent's command goes to its controller's stream.
         """
         if worker_only:
             worker = self.attached_worker(agent_id)
             watchers = [worker] if worker is not None else []
+        elif self.controllers.is_bound(agent_id):
+            return self.controllers.relay_session_command(agent_id, frame)
         else:
             watchers = [
                 conn
@@ -1315,6 +1301,8 @@ class AgentConnectionRegistry:
         The connection equivalent of the room-agnostic heartbeat slot: what
         `always_on` liveness and the `auto_session` DORMANT state ask for.
         """
+        if self.controllers.is_bound(agent_id):
+            return self.controllers.is_live(agent_id)
         return bool(self.for_agent(agent_id))
 
     def live_in_room(self, agent_id: str, room_id: str) -> bool:
@@ -1325,6 +1313,8 @@ class AgentConnectionRegistry:
         For "is a session in this room", ask `protocol.presence.rooms_occupied`,
         which weighs a claim against the sessions that could account for it.
         """
+        if self.controllers.is_bound(agent_id):
+            return self.controllers.live_in_room(agent_id, room_id)
         return any(self.covers(conn, room_id) for conn in self.for_agent(agent_id))
 
     def can_spawn_for(self, agent_id: str, room_id: str) -> bool:
@@ -1338,6 +1328,8 @@ class AgentConnectionRegistry:
         the enum alone is how a room gets told a session is coming when nothing
         is listening.
         """
+        if self.controllers.is_bound(agent_id):
+            return self.controllers.can_spawn_for(agent_id, room_id)
         return any(
             conn.spawn_capable and self.covers(conn, room_id)
             for conn in self.for_agent(agent_id)
@@ -1350,15 +1342,21 @@ class AgentConnectionRegistry:
         one: an agent may hold several (the cap is
         `MAX_CONNECTIONS_PER_AGENT`), so ten people running two windows each
         against one agent is twenty connections and one agent. Telemetry
-        reports sessions, and a session is a connection.
+        reports sessions, and a session is a connection. A controller's
+        stream is one connection, however many agents it carries.
         """
         now = time.monotonic()
-        return sum(1 for conn in self._by_id.values() if conn.is_alive(now))
+        return (
+            sum(1 for conn in self._by_id.values() if conn.is_alive(now))
+            + self.controllers.live_connection_count()
+        )
 
     def live_agent_ids(self) -> set[str]:
-        """Every agent with at least one live connection."""
+        """Every agent with at least one live connection, or a live controller."""
         now = time.monotonic()
-        return {conn.agent_id for conn in self._by_id.values() if conn.is_alive(now)}
+        return {
+            conn.agent_id for conn in self._by_id.values() if conn.is_alive(now)
+        } | self.controllers.live_agent_ids()
 
     def live_connection_ids(self) -> set[str]:
         """Every connection currently alive, by id.
@@ -1368,9 +1366,14 @@ class AgentConnectionRegistry:
         sending `/leases/renew` because it moved to the single heartbeat does
         not silently lose it. The connection, not the agent — an agent's other
         connections say nothing about a seat this one took.
+
+        A controller-backed agent takes its seats under its holder id
+        (`ControllerPresence.holder_id`), which is live while the agent is.
         """
         now = time.monotonic()
-        return {conn.id for conn in self._by_id.values() if conn.is_alive(now)}
+        return {
+            conn.id for conn in self._by_id.values() if conn.is_alive(now)
+        } | self.controllers.live_holder_ids()
 
     def live_agents_in_room(self, agent_ids: Iterable[str], room_id: str) -> set[str]:
         return {aid for aid in agent_ids if self.live_in_room(aid, room_id)}

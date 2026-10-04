@@ -541,6 +541,7 @@ async def _serve(
         session_factory=session_factory,
         config=config,
         approval_outcomes=ApprovalOutcomes(activity_listener, activity),
+        controller_auth=None,
         connections=connections,
     )
 

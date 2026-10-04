@@ -36,6 +36,7 @@ const guardForbiddenImports = {
 };
 
 await rm('dist-sidecar/sidecar.mjs', { force: true });
+await rm('dist-sidecar/agent-controller.mjs', { force: true });
 
 await build({
   entryPoints: ['../../packages/agent-providers/src/host/shared-daemon.ts'],
@@ -47,6 +48,29 @@ await build({
   tsconfig: 'tsconfig.json',
   banner: {
     js: "import { createRequire as createSharedHostRequire } from 'node:module'; const require = createSharedHostRequire(import.meta.url);",
+  },
+  logLevel: 'info',
+  plugins: [guardForbiddenImports],
+});
+
+/**
+ * The agents controller Console runs as a child process when "Run managed
+ * agents on this computer" is on: the same `switch-agent-controller` CLI a
+ * headless machine runs, bundled whole because the packaged app has no
+ * workspace to resolve its packages from. It runs on Electron's binary as Node
+ * (`ELECTRON_RUN_AS_NODE=1`), so it is held to the same guard: `node:sqlite` is
+ * a Node built-in, but nothing of Electron or the app's database may come in.
+ */
+await build({
+  entryPoints: ['../../packages/agent-controller/src/cli.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+  outfile: 'dist-sidecar/agent-controller.mjs',
+  tsconfig: '../../packages/agent-controller/tsconfig.json',
+  banner: {
+    js: "import { createRequire as createControllerRequire } from 'node:module'; const require = createControllerRequire(import.meta.url);",
   },
   logLevel: 'info',
   plugins: [guardForbiddenImports],

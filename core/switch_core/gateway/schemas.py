@@ -302,6 +302,11 @@ class AgentSessionDetail(BaseModel):
     A session_addressable agent is only meaningfully attending a room while its
     session is `live`; a `stale` row is a left-over binding, not a live presence.
     `room_id`/`room_name` are null for an always_on agent's room-agnostic row.
+
+    `lifecycle` is `heartbeat` or `explicit` for an `agent_sessions` row,
+    `connection` for an agent's own live connection, and `controller` for a
+    controller-backed agent's session, which its agents controller (a machine)
+    runs; `controller_id` names that controller, and is null otherwise.
     """
 
     room_id: str | None
@@ -309,6 +314,7 @@ class AgentSessionDetail(BaseModel):
     lifecycle: str
     state: str
     last_seen_at: str
+    controller_id: str | None
 
 
 class AgentDetail(AgentSummary):

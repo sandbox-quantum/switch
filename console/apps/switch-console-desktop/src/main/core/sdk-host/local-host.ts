@@ -7,6 +7,7 @@ import {
   clearTakenOver,
   ensureSharedProcess,
   type HostStartSource,
+  openSwitchStream,
   runAgentHost,
   sharedConfigSchema,
   type SharedHostConfig,
@@ -305,7 +306,8 @@ export async function startLocalWatcher(
               signal,
               consoleSupervision,
               localWatcherControl(written.session.agentId),
-              null
+              null,
+              openSwitchStream
             ),
           'Local room watcher stopped',
           true

@@ -1,0 +1,88 @@
+import { chmod, mkdir, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
+import { ConfigurationError } from './errors';
+
+export const DATA_DIR_ENV = 'SWITCH_CONTROLLER_DATA_DIR';
+
+/**
+ * Where the controller keeps its state when nothing names a directory:
+ * macOS `~/Library/Application Support/Switch/agent-controller`, Linux
+ * `$XDG_STATE_HOME/switch/agent-controller` or
+ * `~/.local/state/switch/agent-controller`.
+ */
+export function defaultDataDir(input: {
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+  home: string;
+}): string {
+  if (input.platform === 'darwin')
+    return join(input.home, 'Library', 'Application Support', 'Switch', 'agent-controller');
+  if (input.platform === 'win32') {
+    const local = input.env.LOCALAPPDATA;
+    if (!local)
+      throw new ConfigurationError(
+        `LOCALAPPDATA is not set; pass --data-dir or set ${DATA_DIR_ENV}.`
+      );
+    return join(local, 'Switch', 'agent-controller');
+  }
+  const xdg = input.env.XDG_STATE_HOME;
+  // The XDG spec ignores a relative value, so does this.
+  const state = xdg && isAbsolute(xdg) ? xdg : join(input.home, '.local', 'state');
+  return join(state, 'switch', 'agent-controller');
+}
+
+/** `--data-dir`, then `SWITCH_CONTROLLER_DATA_DIR`, then the OS default. */
+export function resolveDataDir(flag: string | undefined): string {
+  const named = flag ?? process.env[DATA_DIR_ENV];
+  if (named) return resolve(named);
+  return defaultDataDir({ platform: process.platform, env: process.env, home: homedir() });
+}
+
+/**
+ * Creates the data directory owner-only (0700), and tightens one that already
+ * exists with looser permissions: it holds the controller credential and every
+ * agent's relay token.
+ */
+export async function ensureDataDir(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  if (process.platform === 'win32') return;
+  const mode = (await stat(dir)).mode & 0o777;
+  if (mode !== 0o700) await chmod(dir, 0o700);
+}
+
+export type DataLayout = {
+  root: string;
+  database: string;
+  secrets: string;
+  agentDir: (agentId: string) => string;
+  agentCredentials: (agentId: string) => string;
+  watcherRoot: (agentId: string) => string;
+  workspace: (name: string) => string;
+};
+
+export function dataLayout(root: string): DataLayout {
+  return {
+    root,
+    database: join(root, 'controller.db'),
+    secrets: join(root, 'secrets'),
+    agentDir: (agentId) => join(root, 'agents', safeSegment(agentId, 'agent id')),
+    agentCredentials: (agentId) =>
+      join(root, 'agents', safeSegment(agentId, 'agent id'), 'credentials.json'),
+    watcherRoot: (agentId) => join(root, 'watchers', safeSegment(agentId, 'agent id')),
+    workspace: (name) => join(root, 'workspaces', safeSegment(name, 'agent name')),
+  };
+}
+
+const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+/** A server-supplied value about to become one path segment under the data directory. */
+export function isSafeSegment(value: string): boolean {
+  return SAFE_SEGMENT.test(value) && !value.includes('..');
+}
+
+function safeSegment(value: string, what: string): string {
+  if (!isSafeSegment(value))
+    throw new Error(`The ${what} '${value}' cannot be used as a directory name.`);
+  return value;
+}

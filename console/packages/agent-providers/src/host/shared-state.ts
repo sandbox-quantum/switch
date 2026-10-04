@@ -12,6 +12,11 @@ export const sharedStateRecordSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('identity'),
     session: sessionSchema,
+    /**
+     * The Switch API the host first ran against. Not part of the identity:
+     * the server's address can change (a new port, a new relay) while the
+     * agent, session and conversation stay the same.
+     */
     apiUrl: z.string(),
     cwd: z.string(),
     operationId: z.string(),
@@ -105,7 +110,6 @@ export class SharedState {
       if (first) {
         if (
           first.type !== 'identity' ||
-          first.apiUrl !== apiUrl ||
           first.cwd !== cwd ||
           first.session.sessionId !== options.session.sessionId ||
           first.session.agentId !== options.session.agentId ||
@@ -113,6 +117,10 @@ export class SharedState {
           first.session.provider !== options.session.provider
         )
           throw new Error('Shared host saved identity does not match the configuration.');
+        if (first.apiUrl !== apiUrl)
+          console.warn(
+            `Session ${options.session.sessionId} first ran against the Switch API at ${first.apiUrl}; it now uses ${apiUrl}.`
+          );
       } else
         await journal.append({
           type: 'identity',

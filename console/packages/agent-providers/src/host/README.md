@@ -107,6 +107,17 @@ Pre-recovery state directories lack the durable lease metadata and require expli
 migration; they are not silently treated as new conversations. Journals are retained
 without compaction in this experimental implementation.
 
+A room watcher's sessions follow their agent's definition. Each session saves
+the config it was created with, but whenever the watcher starts one — a room
+message for a session that is not running, a restart, a resume — it takes the
+model, approval mode, instructions and skill from the watcher's current
+template (`withDefinitionOf`). A watcher that starts with a template differing
+from a running session's saved definition stops that session, as it does one
+left on a superseded build, so the edit applies when the session is next
+needed. The native conversation is resumed under the new model and
+instructions; every provider takes both on resume (Cursor and Antigravity send
+the instructions with the first message after the restart).
+
 Shared commands currently support queued text and request answers. SSH deployment
 and production session routing remain outside this experimental path.
 

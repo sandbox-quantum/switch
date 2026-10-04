@@ -3,6 +3,7 @@ import { agentTemplatesController } from './core/agent-templates/controller';
 import { agentTypesController } from './core/agent-types/controller';
 import { agentsController } from './core/agents/controller';
 import { appController } from './core/app/controller';
+import { embeddedControllerController } from './core/embedded-controller/controller';
 import { filesController } from './core/fs/controller';
 import { locationsController } from './core/locations/controller';
 import { localSwitchServerController } from './core/managed-switch-server/controller';
@@ -46,6 +47,7 @@ export const rpcRouter = createRPCRouter({
   remoteHosts: remoteHostsController,
   roomTemplates: roomTemplatesController,
   telemetry: telemetryController,
+  embeddedController: embeddedControllerController,
   fs: createRPCNamespace({
     watch: filesController,
   }),

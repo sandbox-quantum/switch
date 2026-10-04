@@ -12,6 +12,8 @@ from switch_core.bridges.agent.commands import (
     _cmd_interrupt,
     _cmd_reset,
 )
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.db.models import HostedLaunch, HostedMachine
 from switch_core.events import CommandEvent
@@ -104,6 +106,7 @@ def _client(
         # Presence unions the heartbeat rows with the live connections
         # (CHOO-1857); nothing is connected in these tests.
         _connections=SimpleNamespace(
+            controllers=SimpleNamespace(is_bound=lambda _agent: False),
             live_connection_ids=lambda: set(),
             session_in_room=lambda _agent, _room: placed,
             relay_session_command=_relay,
@@ -368,6 +371,53 @@ async def test_a_session_with_no_controller_connected_is_told_so(
     )
 
     assert "controller is not connected" in reply.bodies[-1]
+
+
+@pytest.mark.parametrize("live", [True, False])
+@pytest.mark.asyncio
+async def test_a_controller_backed_agent_is_sent_the_command_on_its_controllers_stream(
+    monkeypatch: pytest.MonkeyPatch, live: bool
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "slack"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+    registry = AgentConnectionRegistry()
+    registry.controllers.bind(
+        Binding(
+            agent_id="agent-1",
+            controller_id="controller-1",
+            tenant_id="tenant",
+            controller_name="machine",
+            running=True,
+        )
+    )
+    conn = registry.controllers.open(
+        controller_id="controller-1",
+        tenant_id="tenant",
+        resume_cursors={},
+        placements={},
+    )
+    if live:
+        registry.controllers.attach_stream(conn)
+    client = _client(reply, command_level="unsupported", enqueue=[])
+    client._connections = registry
+
+    await _cmd_reset(client, SimpleNamespace(room_id="!m:server"), _event(), False)
+
+    if live:
+        [(agent_id, frame)] = conn.session_commands
+        assert agent_id == "agent-1"
+        assert frame["sessionId"] is None
+        assert frame["origin"]["roomId"] == "room-1"
+        assert frame["body"] == {"type": "session.reset"}
+        assert reply.bodies[-1].startswith("Resetting my session")
+    else:
+        assert conn.session_commands == []
+        assert "controller is not connected" in reply.bodies[-1]
 
 
 def test_an_interrupt_names_the_current_turn() -> None:

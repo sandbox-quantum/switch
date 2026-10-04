@@ -2,6 +2,7 @@ import type { Result } from '@switch-console/shared';
 import { z } from 'zod';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { appService } from '@main/core/app/service';
+import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
@@ -349,13 +350,20 @@ export const switchServersController = createRPCController({
     const propagatedAgents = apiUrlChanged
       ? await propagateServerApiUrl(server.id, server.apiUrl)
       : [];
+    // The managed agents this computer runs reach the server through its
+    // controller, which has to reconnect at the new address too.
+    if (apiUrlChanged) await embeddedControllerService.followServerApiUrl(server.id);
 
     return { server, propagation: { apiUrlChanged, agents: propagatedAgents } };
   },
 
   renameServer: (params: RenameServerParams): Promise<SwitchServer> => renameServer(params),
 
-  removeServer: (serverId: string): Promise<void> => removeServer(serverId),
+  removeServer: async (serverId: string): Promise<void> => {
+    // While the session and the workspace rows still exist to revoke it with.
+    await embeddedControllerService.forgetServer(serverId);
+    await removeServer(serverId);
+  },
 
   getConnectionCatalog: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => getConnectionCatalog(server)),

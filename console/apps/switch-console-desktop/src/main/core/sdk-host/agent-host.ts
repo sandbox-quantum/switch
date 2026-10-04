@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { controllerConnectionId } from '@switch-console/agent-providers';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { updateAgent } from '@main/core/agents/updateAgent';
@@ -9,7 +10,6 @@ import { locationTransport, type LocationTransport } from '@main/core/locations/
 import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
-import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import { adoptSubagent } from './adopt-subagent';
