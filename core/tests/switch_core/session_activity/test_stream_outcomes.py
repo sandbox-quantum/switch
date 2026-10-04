@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
@@ -12,13 +11,12 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.protocol.agent_connections import (
-    APPROVAL_OUTCOME_PROTOCOL_REVISION,
     PROTOCOL_VERSION,
     AgentConnectionRegistry,
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.stream import event_stream
+from switch_core.bridges.agent.protocol.stream import Frame, event_frames
 from switch_core.db.models import ApprovalRequest
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -61,15 +59,14 @@ def _open_stream(approvals, *, agent_id=AGENT, scope="all", speaks=PROTOCOL_VERS
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )
-    return event_stream(
+    return event_frames(
         conn=conn, registry=registry, buffer=EventBuffer(), approvals=approvals
     )
 
 
-def _outcome(frame: bytes) -> dict:
-    text = frame.decode()
-    assert "event: approval_outcome\n" in text, text
-    return json.loads(text.split("data: ", 1)[1])
+def _outcome(frame: Frame) -> dict:
+    assert frame.event == "approval_outcome", frame
+    return frame.data
 
 
 async def _no_frame_within(stream, seconds: float) -> None:
@@ -225,7 +222,7 @@ async def test_a_stream_without_approvals_carries_none(service, people):
         await stream.aclose()
 
 
-async def test_a_client_older_than_the_outcome_revision_is_sent_none(
+async def test_a_client_that_declared_no_revision_is_sent_none(
     service, approvals, people
 ):
     # An older client hands unknown frames to its room-event path and breaks.
@@ -237,10 +234,9 @@ async def test_a_client_older_than_the_outcome_revision_is_sent_none(
         answer=pick("allow"),
         answerer=PlatformPerson(people.owner),
     )
-    for speaks in (APPROVAL_OUTCOME_PROTOCOL_REVISION - 1, None):
-        stream = _open_stream(approvals, speaks=speaks)
-        try:
-            await anext(stream)
-            await _no_frame_within(stream, 0.3)
-        finally:
-            await stream.aclose()
+    stream = _open_stream(approvals, speaks=None)
+    try:
+        await anext(stream)
+        await _no_frame_within(stream, 0.3)
+    finally:
+        await stream.aclose()

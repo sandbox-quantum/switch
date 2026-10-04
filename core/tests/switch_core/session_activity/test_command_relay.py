@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from switch_core.bridges.agent.protocol.agent_connections import (
-    SESSION_COMMAND_PROTOCOL_REVISION,
+    PROTOCOL_VERSION,
     AgentConnectionRegistry,
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.stream import event_stream
+from switch_core.bridges.agent.protocol.stream import event_frames
 from switch_core.db.models import User
 from switch_core.gateway.agent_sessions import router
 from switch_core.gateway.auth import get_current_user
@@ -32,7 +31,9 @@ class _Protocol:
         self.connections = registry
 
 
-def _watcher(registry: AgentConnectionRegistry, *, speaks: int, scope: str = "all"):
+def _watcher(
+    registry: AgentConnectionRegistry, *, speaks: int | None, scope: str = "all"
+):
     conn = registry.open(
         agent_id=AGENT,
         connection_id=f"conn-{scope}-{speaks}",
@@ -43,7 +44,7 @@ def _watcher(registry: AgentConnectionRegistry, *, speaks: int, scope: str = "al
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )
-    stream = event_stream(
+    stream = event_frames(
         conn=conn, registry=registry, buffer=EventBuffer(), approvals=None
     )
     return conn, stream
@@ -71,15 +72,15 @@ async def owner(session_factory, people) -> str:
 
 async def test_a_relayed_session_command_reaches_the_watcher_stream() -> None:
     registry = AgentConnectionRegistry()
-    _, stream = _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
+    _, stream = _watcher(registry, speaks=PROTOCOL_VERSION)
     try:
         await anext(stream)  # connection_state
         waiting = asyncio.create_task(anext(stream))
         await asyncio.sleep(0.05)
         assert registry.relay_session_command(AGENT, FRAME) is True
-        text = (await asyncio.wait_for(waiting, 5)).decode()
-        assert "event: session_command\n" in text
-        assert json.loads(text.split("data: ", 1)[1]) == FRAME
+        frame = await asyncio.wait_for(waiting, 5)
+        assert frame.event == "session_command"
+        assert frame.data == FRAME
     finally:
         await stream.aclose()
 
@@ -87,8 +88,8 @@ async def test_a_relayed_session_command_reaches_the_watcher_stream() -> None:
 @pytest.mark.parametrize(
     ("speaks", "scope"),
     [
-        (SESSION_COMMAND_PROTOCOL_REVISION - 1, "all"),
-        (SESSION_COMMAND_PROTOCOL_REVISION, "single"),
+        (None, "all"),
+        (PROTOCOL_VERSION, "single"),
     ],
 )
 async def test_a_command_nobody_can_take_is_not_relayed(speaks, scope) -> None:
@@ -105,9 +106,7 @@ async def test_switch_does_not_answer_where_an_agents_sessions_are(
 ) -> None:
     """The agent's room watcher owns its connection and placements; Console asks it."""
     registry = AgentConnectionRegistry()
-    _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
-    registry.place_session(
-        AGENT, "session-1", "room-1", f"conn-all-{SESSION_COMMAND_PROTOCOL_REVISION}"
-    )
+    _watcher(registry, speaks=PROTOCOL_VERSION)
+    registry.place_session(AGENT, "session-1", "room-1", f"conn-all-{PROTOCOL_VERSION}")
     async with _client(session_factory, registry, owner) as client:
         assert (await client.get("/agent-sessions/room-health")).status_code == 404

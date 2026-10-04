@@ -4,9 +4,10 @@ import hashlib
 import logging
 
 import jwt
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from jwt import PyJWKClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import HTTPConnection
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -146,10 +147,9 @@ class BearerAuthMiddleware:
         auth_header = headers.get(b"authorization", b"").decode()
 
         if not auth_header.startswith("Bearer "):
-            response = Response(
-                "Missing or invalid Authorization header", status_code=401
+            await _unauthorized(
+                scope, receive, send, "Missing or invalid Authorization header"
             )
-            await response(scope, receive, send)
             return
 
         token = auth_header[7:]
@@ -198,8 +198,7 @@ class BearerAuthMiddleware:
                 await self.app(scope, receive, send)
             return
 
-        response = Response("Invalid credentials", status_code=401)
-        await response(scope, receive, send)
+        await _unauthorized(scope, receive, send, "Invalid credentials")
 
     async def _resolve_api_key(self, token: str) -> tuple[ApiKey | None, Agent | None]:
         """Look up the token in api_keys once; return (api_key_row, agent_or_None).
@@ -275,13 +274,35 @@ class BearerAuthMiddleware:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 
+async def _unauthorized(
+    scope: Scope, receive: Receive, send: Send, reason: str
+) -> None:
+    """Refuse an unauthenticated request in a form its client can read.
+
+    An HTTP 401. A WebSocket client cannot read the status of a handshake that
+    was refused (the browser-style API hides it), so it would see only a
+    failed connection and retry for ever. A WebSocket is accepted and closed at
+    once with 4401 instead: 4000 plus the status, the same mapping the agent
+    connection uses for every refusal.
+    """
+    if scope["type"] == "websocket":
+        await receive()  # the client's websocket.connect
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.close", "code": 4401, "reason": reason})
+        return
+    await Response(reason, status_code=401)(scope, receive, send)
+
+
 def _is_public_path(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in PUBLIC_PATH_PREFIXES)
 
 
-def get_agent_from_scope(request: Request) -> Agent:
-    """Get authenticated agent from request scope (set by middleware)."""
-    agent: object = request.scope.get("agent")
+def get_agent_from_scope(connection: HTTPConnection) -> Agent:
+    """Get authenticated agent from the connection's scope (set by middleware).
+
+    Any HTTP connection, so a WebSocket route can use it too.
+    """
+    agent: object = connection.scope.get("agent")
     if not isinstance(agent, Agent):
         raise HTTPException(status_code=401, detail="Not authenticated")
     return agent

@@ -11,18 +11,17 @@ winner's; it did not stop the loser from coming back.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 
-from switch_core.bridges.agent.api.handlers import connection_beat
-from switch_core.bridges.agent.api.schemas import ConnectionBeatRequest
+from switch_core.bridges.agent.api.handlers import _record_beat
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
     AgentConnectionRegistry,
     ClientDeclaration,
+    NoStreamAttachedError,
+    SupersededConnectionError,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
@@ -49,61 +48,34 @@ def _open(protocol: _Protocol, *, speaks: int | None = PROTOCOL_VERSION) -> Any:
     )
 
 
-async def _beat(protocol: _Protocol, generation: int | None) -> Any:
-    return await connection_beat(
-        AGENT_ID,
-        ConnectionBeatRequest(connection_id=CONN_ID, cursor=0, generation=generation),
-        SimpleNamespace(id=AGENT_ID),  # type: ignore[arg-type]
-        protocol,  # type: ignore[arg-type]
-    )
+def _beat(protocol: _Protocol, generation: int | None) -> Any:
+    return _record_beat(protocol, AGENT_ID, CONN_ID, 0, generation)  # type: ignore[arg-type]
 
 
-async def test_a_superseded_tick_is_refused_as_a_takeover() -> None:
+def test_a_superseded_tick_is_refused_as_a_takeover() -> None:
     protocol = _Protocol()
     displaced = _open(protocol).stream_generation
     _open(protocol)  # the winner attaches; the incarnation bumps
 
-    with pytest.raises(HTTPException) as caught:
-        await _beat(protocol, displaced)
+    with pytest.raises(SupersededConnectionError) as caught:
+        _beat(protocol, displaced)
 
     # The same code the displaced stream is evicted with: one ending reaching
     # the client by whichever door is still open to it.
-    assert caught.value.status_code == 409
-    assert caught.value.detail["code"] == "taken_over"  # type: ignore[index]
-    # The prose stays, and still names both incarnations for whoever reads it.
-    message = caught.value.detail["message"]  # type: ignore[index]
-    assert str(displaced) in message and str(displaced + 1) in message
+    assert caught.value.code == "taken_over"
+    # The prose still names both incarnations for whoever reads it.
+    assert str(displaced) in str(caught.value)
+    assert str(displaced + 1) in str(caught.value)
 
 
-async def test_a_tick_with_no_stream_is_refused_as_something_to_reopen() -> None:
+def test_a_tick_with_no_stream_is_refused_as_something_to_reopen() -> None:
     protocol = _Protocol()
     conn = _open(protocol)
     protocol.connections.detach_stream(conn, conn.stream_generation)
 
-    with pytest.raises(HTTPException) as caught:
-        await _beat(protocol, conn.stream_generation)
+    with pytest.raises(NoStreamAttachedError) as caught:
+        _beat(protocol, conn.stream_generation)
 
     # Recoverable, and distinct from the takeover: this client still holds the
-    # connection and only has to reopen the stream.
-    assert caught.value.status_code == 409
-    assert caught.value.detail["code"] == "no_stream"  # type: ignore[index]
-
-
-async def test_an_unfenced_tick_from_a_fenced_holder_is_refused_on_its_own_code() -> (
-    None
-):
-    protocol = _Protocol()
-    _open(protocol)
-
-    with pytest.raises(HTTPException) as caught:
-        await _beat(protocol, None)
-
-    assert caught.value.status_code == 409
-    assert caught.value.detail["code"] == "unfenced"  # type: ignore[index]
-
-
-async def test_a_client_that_cannot_be_fenced_still_beats() -> None:
-    protocol = _Protocol()
-    _open(protocol, speaks=None)
-
-    assert (await _beat(protocol, None))["ok"] is True
+    # connection and only has to reconnect.
+    assert caught.value.code == "no_stream"
