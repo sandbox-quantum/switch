@@ -1,3 +1,4 @@
+import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type {
   EmbeddedControllerEnrollment,
   EmbeddedControllerOverview,
@@ -78,6 +79,8 @@ export type EmbeddedControllerDeps = {
   revokeGraceMs: number;
   /** How long a controller asked to stop (SIGTERM) is given before SIGKILL. */
   stopTimeoutMs: number;
+  /** The Console agents moved onto this computer's controller for the server, by name. */
+  movedAgents: (serverId: string) => Promise<string[]>;
 };
 
 export const WINDOWS_UNSUPPORTED =
@@ -131,14 +134,17 @@ export class EmbeddedControllerService {
     const record = await this.deps.records.get(serverId);
     const enrollment = record?.kind === 'enrolled' ? enrollmentOf(record) : null;
     const askIn = enrollment?.workspaceId ?? workspaceId;
+    const [remote, movedAgents] = await Promise.all([
+      askIn ? this.deps.management.read(askIn, enrollment?.controllerId ?? null) : null,
+      this.deps.movedAgents(serverId),
+    ]);
     return {
       serverId,
       unsupportedReason: this.unsupportedReason,
       enrollment,
       phase: this.phaseOf(serverId, record),
-      remote: askIn
-        ? await this.deps.management.read(askIn, enrollment?.controllerId ?? null)
-        : null,
+      remote,
+      movedAgents,
     };
   }
 
@@ -197,9 +203,22 @@ export class EmbeddedControllerService {
   /**
    * Turns it off: revokes the controller on the server, lets it stop its
    * agents and exit, then forgets the credential and the identity. A revoke
-   * the server refuses leaves everything running, and says why.
+   * the server refuses leaves everything running, and says why. Refused, with
+   * nothing changed, while it runs agents moved from this Console: Switch
+   * keeps an agent on its controller after the controller is removed, where
+   * nothing would run it.
    */
   async disable(serverId: string): Promise<void> {
+    const moved = await this.deps.movedAgents(serverId);
+    if (moved.length)
+      throw new MovedAgentsHereError(
+        `This computer runs ${moved.join(', ')} for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.`,
+        moved
+      );
+    await this.turnOff(serverId);
+  }
+
+  private async turnOff(serverId: string): Promise<void> {
     await this.exclusive(serverId, async () => {
       const record = await this.deps.records.get(serverId);
       if (record?.kind !== 'enrolled') {
@@ -272,7 +291,7 @@ export class EmbeddedControllerService {
    */
   async forgetServer(serverId: string): Promise<void> {
     try {
-      await this.disable(serverId);
+      await this.turnOff(serverId);
     } catch (error) {
       this.deps.log.warn(
         'Could not revoke this computer’s controller while removing its server; remove it from the Machines page',

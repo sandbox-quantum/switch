@@ -237,6 +237,21 @@ export function stopLocalSession(sessionId: string): Promise<void> {
   return consoleSupervision.stop(sharedSessionRoot(sessionId));
 }
 
+/**
+ * Stops every session Console supervises for one Switch identity, the way
+ * quitting Console stops them: the provider exits and the session is left to
+ * be resumed, not ended. Returns the state roots it stopped.
+ */
+export async function stopLocalSessionsOf(switchAgentId: string): Promise<string[]> {
+  const stopped: string[] = [];
+  for (const root of [...sessions.keys()]) {
+    if (savedAgentId(root) !== switchAgentId) continue;
+    await halt(sessions, root);
+    stopped.push(root);
+  }
+  return stopped;
+}
+
 /** The failure a local host recorded before giving up, or null if it has not. */
 export async function readLocalHostFailure(root: string): Promise<unknown> {
   try {

@@ -14,8 +14,14 @@ const mocks = vi.hoisted(() => ({
   ready: vi.fn(),
   server: vi.fn(),
   bringUp: vi.fn(),
+  managed: vi.fn(),
 }));
 
+vi.mock('@main/core/agent-migration/managed-agents-store', () => ({
+  managedRecordFor: mocks.managed,
+  forgetManagedAgent: vi.fn(async () => {}),
+  AgentManagedByControllerError: class AgentManagedByControllerError extends Error {},
+}));
 vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
   ensureServerSessionReady: mocks.ready,
 }));
@@ -89,6 +95,22 @@ beforeEach(() => {
   });
   mocks.server.mockResolvedValue({ id: 'server-1', name: 'Local', managed: true });
   mocks.ready.mockResolvedValue(undefined);
+  mocks.managed.mockResolvedValue(null);
+});
+
+it('leaves an agent moved to a managed machine to its controller', async () => {
+  mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
+  mocks.managed.mockResolvedValue({ agentId: 'agent-1' });
+  await applyControllerState('agent-1', 'restore', 'host');
+  expect(mocks.startLocal).not.toHaveBeenCalled();
+  expect(mocks.stopLocal).not.toHaveBeenCalled();
+  await expect(
+    configureAgentHost('agent-1', { connected: true, spawning: true }, 'explicit')
+  ).rejects.toThrow();
+  expect(mocks.startLocal).not.toHaveBeenCalled();
+  // Standing its watcher down is how it moves, so that still goes through.
+  await configureAgentHost('agent-1', { connected: false, spawning: false }, 'restore');
+  expect(mocks.stopLocal).toHaveBeenCalledWith('switch-agent-1');
 });
 
 it('watches a local agent inside Console without deploying a host', async () => {

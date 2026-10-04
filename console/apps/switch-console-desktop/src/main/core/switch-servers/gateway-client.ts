@@ -2597,6 +2597,19 @@ export async function enrollConsoleController(
   return { controllerId: json.controller_id, credential: json.credential };
 }
 
+/**
+ * A one-time code a headless controller enrolls with
+ * (`POST /gateway/management/enrollment-codes`): single use, valid for ten
+ * minutes. A secret until it is spent.
+ */
+export async function issueEnrollmentCode(server: SwitchServer): Promise<string> {
+  const res = await managementFetch(server, '/enrollment-codes', {
+    authenticated: true,
+    method: 'POST',
+  });
+  return ((await res.json()) as { code: string }).code;
+}
+
 /** The signed-in user's controllers (`GET /gateway/management/controllers`). */
 export async function fetchManagementControllers(
   server: SwitchServer
@@ -2612,10 +2625,8 @@ export async function fetchManagementControllers(
   }));
 }
 
-/** The signed-in user's managed agents (`GET /gateway/management/agents`). */
-export async function fetchManagedAgents(server: SwitchServer): Promise<ManagedAgent[]> {
-  const res = await managementFetch(server, '/agents', { authenticated: true });
-  return ((await res.json()) as ManagedAgentJson[]).map((json) => ({
+function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
+  return {
     agentId: json.agent_id,
     name: json.name,
     displayName: json.display_name,
@@ -2630,7 +2641,121 @@ export async function fetchManagedAgents(server: SwitchServer): Promise<ManagedA
           detail: json.status.detail ?? null,
         }
       : null,
-  }));
+  };
+}
+
+/** The signed-in user's managed agents (`GET /gateway/management/agents`). */
+export async function fetchManagedAgents(server: SwitchServer): Promise<ManagedAgent[]> {
+  const res = await managementFetch(server, '/agents', { authenticated: true });
+  return ((await res.json()) as ManagedAgentJson[]).map(toManagedAgent);
+}
+
+/** One managed agent (`GET /gateway/management/agents/{id}`), or null when it is not managed. */
+export async function fetchManagedAgent(
+  server: SwitchServer,
+  agentId: string
+): Promise<ManagedAgent | null> {
+  try {
+    const res = await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+      authenticated: true,
+    });
+    return toManagedAgent((await res.json()) as ManagedAgentJson);
+  } catch (error) {
+    if (managementErrorCode(error) === 'not_found') return null;
+    throw error;
+  }
+}
+
+/** The v1 managed agent definition, as `PUT`/`PATCH …/management/agents/{id}` take it. */
+export type ManagedAgentDefinitionBody = {
+  provider: string;
+  model: string | null;
+  instructions: string;
+  auto_approve: boolean;
+  directory: string | null;
+};
+
+/**
+ * Adopt an agent the signed-in user owns onto a controller, or replace its
+ * definition and placement (`PUT /gateway/management/agents/{id}`).
+ */
+export async function putManagedAgent(
+  server: SwitchServer,
+  agentId: string,
+  body: {
+    controller_id: string | null;
+    desired_state: 'running' | 'stopped';
+    definition: ManagedAgentDefinitionBody;
+  }
+): Promise<void> {
+  await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+    method: 'PUT',
+    body,
+  });
+}
+
+/** Change only a managed agent's desired state (`PATCH /gateway/management/agents/{id}`). */
+export async function setManagedAgentDesiredState(
+  server: SwitchServer,
+  agentId: string,
+  desiredState: 'running' | 'stopped'
+): Promise<void> {
+  await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+    method: 'PATCH',
+    body: { desired_state: desiredState },
+  });
+}
+
+/**
+ * Stop managing an agent (`DELETE /gateway/management/agents/{id}`): its
+ * controller stops it, and the agent itself stays. `already_gone` when it was
+ * not managed.
+ */
+export async function deleteManagedAgent(
+  server: SwitchServer,
+  agentId: string
+): Promise<'released' | 'already_gone'> {
+  try {
+    await managementFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+      authenticated: true,
+      method: 'DELETE',
+    });
+    return 'released';
+  } catch (error) {
+    if (managementErrorCode(error) === 'not_found') return 'already_gone';
+    throw error;
+  }
+}
+
+type ApiKeyJson = { id: string; label: string; type: string };
+
+/**
+ * An agent's own API key, revealed through the owner's session
+ * (`GET /gateway/api-keys`, then `…/{id}/reveal`). An agent's key is labelled
+ * with the agent's name; exactly one key of type `agent` must carry it, since
+ * revealing the wrong one would hand this agent another's identity.
+ */
+export async function revealAgentApiKey(server: SwitchServer, agentName: string): Promise<string> {
+  const res = await gatewayFetch(server, '/api-keys', { authenticated: true });
+  const matches = ((await res.json()) as ApiKeyJson[]).filter(
+    (key) => key.type === 'agent' && key.label === agentName
+  );
+  if (matches.length !== 1)
+    throw new Error(
+      matches.length === 0
+        ? `Switch lists no API key for agent ${agentName} that you can reveal.`
+        : `Switch lists ${matches.length} API keys labelled ${agentName}, so which one is this agent's cannot be told.`
+    );
+  const revealed = await gatewayFetch(
+    server,
+    `/api-keys/${encodeURIComponent(matches[0]!.id)}/reveal`,
+    {
+      authenticated: true,
+    }
+  );
+  return ((await revealed.json()) as { key: string }).key;
 }
 
 /**

@@ -40,7 +40,13 @@ export function machineStatus(overview: EmbeddedControllerOverview, nowMs: numbe
         detail: 'Removing this computer from Switch and stopping its managed agents.',
       };
     case 'removed':
-      return { label: 'Removed', tone: 'error', detail: REMOVED_DETAIL };
+      return {
+        label: 'Removed',
+        tone: 'error',
+        detail: overview.movedAgents.length
+          ? `${REMOVED_DETAIL} Nothing runs ${overview.movedAgents.join(', ')}, moved here from this Console, now: bring them back with Stop managing.`
+          : REMOVED_DETAIL,
+      };
     case 'taken_over':
       return {
         label: 'Error',
@@ -99,13 +105,17 @@ export function machineStatus(overview: EmbeddedControllerOverview, nowMs: numbe
 /**
  * Why the toggle cannot be moved now, or null when it can. Turning it on needs
  * a computer that can run the controller, a workspace to enroll in and a
- * server with agent management; turning it off needs only that nothing else
- * is in flight.
+ * server with agent management; turning it off needs the agents moved from
+ * this Console brought back first.
  */
 export function toggleBlocker(overview: EmbeddedControllerOverview): string | null {
   const { phase, enrollment, remote } = overview;
   if (phase.kind === 'enrolling' || phase.kind === 'stopping') return 'Working…';
-  if (enrollment) return null;
+  if (enrollment) {
+    if (overview.movedAgents.length)
+      return `Bring back ${overview.movedAgents.join(', ')} before turning it off: they were moved here from this Console.`;
+    return null;
+  }
   if (overview.unsupportedReason) return overview.unsupportedReason;
   if (remote === null) return 'Open a workspace on this server to add this computer to it.';
   if (remote.kind === 'unavailable')
@@ -142,4 +152,16 @@ export function canStartAgain(overview: EmbeddedControllerOverview): boolean {
     overview.enrollment !== null &&
     (overview.phase.kind === 'taken_over' || overview.phase.kind === 'error')
   );
+}
+
+/**
+ * What the card's state is, for telling whether a failure shown on it still
+ * describes it: the phase, the enrollment and the agents moved here.
+ */
+export function machineStateKey(overview: EmbeddedControllerOverview): string {
+  return JSON.stringify([
+    overview.phase.kind,
+    overview.enrollment?.controllerId ?? null,
+    overview.movedAgents,
+  ]);
 }

@@ -124,6 +124,14 @@ describe('describeFailure', () => {
       detail: null,
     });
   });
+
+  it('passes a refusal to remove a machine running moved agents straight through', () => {
+    const message =
+      'build-box runs builder for this Console, so it cannot be removed yet. Bring the agents back first: Bring all back on the host’s page, or Stop managing on each agent.';
+    expect(describeFailure(rpcError('MovedAgentsHereError', message), 'Could not remove.')).toEqual(
+      { headline: message, detail: null }
+    );
+  });
 });
 
 describe('failureText', () => {

@@ -3,10 +3,12 @@ import { hostname, release } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { app } from 'electron';
+import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import {
   resolveAgentControllerBundlePath,
   resolveSharedHostBundlePath,
 } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
+import { getAgentById } from '@main/core/agents/getAgentById';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { events } from '@main/lib/events';
@@ -26,6 +28,11 @@ const execute = promisify(execFile);
 
 function base(): string {
   return join(app.getPath('userData'), 'agent-controller');
+}
+
+/** The embedded controller's data directory for a server, as the controller lays it out. */
+export function embeddedControllerDataDir(serverId: string): string {
+  return controllerDataDir(base(), serverId);
 }
 
 /** The controller's `--version`, run the way it will run: on Electron's binary, as Node. */
@@ -84,4 +91,13 @@ export const embeddedControllerService = new EmbeddedControllerService({
   backoff: DEFAULT_BACKOFF,
   revokeGraceMs: 20_000,
   stopTimeoutMs: 4_000,
+  movedAgents: async (serverId) => {
+    const names: string[] = [];
+    for (const record of await listManagedAgentRecords()) {
+      if (record.placement.kind !== 'this-computer' || record.placement.serverId !== serverId)
+        continue;
+      names.push((await getAgentById(record.agentId))?.name ?? record.agentId);
+    }
+    return names;
+  },
 });

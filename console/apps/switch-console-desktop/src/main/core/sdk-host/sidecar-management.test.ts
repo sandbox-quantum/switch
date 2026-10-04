@@ -5,6 +5,12 @@ const mocks = vi.hoisted(() => ({
   setStopped: vi.fn(),
   agent: vi.fn(),
   remote: vi.fn(),
+  managed: vi.fn(),
+}));
+vi.mock('@main/core/agent-migration/managed-agents-store', () => ({
+  managedRecordFor: mocks.managed,
+  forgetManagedAgent: vi.fn(async () => {}),
+  AgentManagedByControllerError: class AgentManagedByControllerError extends Error {},
 }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
 vi.mock('@main/core/agents/agent-location', () => ({ getRemoteAgentLocation: mocks.remote }));
@@ -23,7 +29,18 @@ beforeEach(() => {
   mocks.setStopped.mockResolvedValue(undefined);
   mocks.agent.mockResolvedValue({ id: 'agent', locationId: 'location' });
   mocks.remote.mockResolvedValue({ sshHost: 'builder' });
+  mocks.managed.mockResolvedValue(null);
 });
+it.each(['update', 'restart', 'stop', 'start'] as const)(
+  'refuses to %s the watcher of an agent moved to a managed machine',
+  async (action) => {
+    mocks.managed.mockResolvedValue({ agentId: 'agent' });
+    await expect(manageAgentSidecar('agent', action)).rejects.toThrow();
+    expect(mocks.configure).not.toHaveBeenCalled();
+    expect(mocks.apply).not.toHaveBeenCalled();
+    expect(mocks.setStopped).not.toHaveBeenCalled();
+  }
+);
 it.each(['update', 'restart'] as const)(
   '%s waits for the old watcher to stop before starting the new bundle',
   async (action) => {

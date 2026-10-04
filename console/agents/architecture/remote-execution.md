@@ -290,6 +290,57 @@ number. Two different Console versions on one account restart each other's SDK
 hosts. Agents that run on someone's laptop appear in the server view but cannot
 be loaded.
 
+## An SSH host as a machine, and moving Console agents onto controllers
+
+A Console agent can be handed to Switch's agent management ("Move to managed"
+on the agent's Room watcher panel, or Move all on a machine's card): it then
+runs on an agents controller instead of Console's own watcher, and "Stop
+managing" brings it back. A local agent moves onto this computer's embedded
+controller; an agent on an SSH host onto the controller Console installs on
+that host (`src/main/core/host-controllers/`, the "This host as a machine"
+card on the host's page). Moves are in `src/main/core/agent-migration/`.
+
+- **Installing on a host.** Console copies `dist-sidecar/agent-controller.mjs`
+  to `~/.local/state/switch/sdk-host/` beside the shared-host bundle, fetches a
+  one-time enrollment code through its own signed-in session, and runs the
+  controller's `enroll` there with the data directory
+  `~/.local/state/switch/agent-controller/console-<serverId>`. The controller
+  needs Node 22.13 on the host (`node:sqlite`) and connects to Switch over
+  https, or plain http only to the host itself; either missing is refused
+  before anything is installed. Its credential stays on the host, in the
+  controller's own file store.
+- **Keeping it running.** A systemd user unit when the host has a user
+  manager *and* lingering on (`loginctl … Linger=yes`): without lingering a
+  user's units stop when their last session ends, which is as soon as Console
+  disconnects. Otherwise a detached supervisor (`SUPERVISOR_SCRIPT`), started
+  the way the sidecar's is, in a session of its own. Both restart the
+  controller on exit code 1 only and leave it stopped on 0, 2, 3 and 4, as
+  its README asks. The detached supervisor does not come back after the host
+  reboots; the card says so and offers Start again.
+- **Removing it** revokes the controller in Switch first, then stops it,
+  turns off every watcher it ran and removes its identity from the host.
+  Removing the host from Console does the same. Both are refused while agents
+  moved from this Console run there: Switch keeps an agent on a revoked
+  controller, where nothing runs it.
+- **What moves with an agent.** The managed definition carries provider,
+  model, instructions, auto-approve and working directory; whatever else the
+  agent's configuration says (effort or variant, a provider agent definition,
+  launch-profile settings, shell setup, a pinned CLI) is listed in the move's
+  confirmation as not carried. Its credentials file is removed from the
+  working directory and kept in the encrypted app secrets store until it comes
+  back (Switch refuses the key while the agent is managed anyway; keys are not
+  rotated, so the same key works again after). Subagents watched under it move
+  and come back with it.
+- **Conversations.** A session's saved state is bound to the Switch address it
+  started against, and a controller's sessions reach Switch through its local
+  relay, so sessions do not move: each room starts a fresh session on the
+  controller. Console's watcher keeps its room placements, so on the way back
+  each room resumes the conversation it had before the move; its stream
+  position is moved on to where the controller's watcher stopped, or Switch
+  would send it again what the controller already answered.
+- **Moves happen between turns.** A move or a return waits until none of the
+  agent's sessions is mid-turn, and never interrupts one.
+
 ## Persistent execution
 
 The same SDK host implementation serves local and SSH sessions, hosted
