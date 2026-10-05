@@ -2,7 +2,7 @@
 
 _Every command you can run in a Switch room, and when to reach for it_
 
-Published at <https://docs.flintai.dev/flintai/switch/resources/room-commands> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/resources/room-commands> — link readers there, not to this file.
 
 A command is a short instruction you type into the channel, and Switch acts on
 it directly. Use one to see what is in a room, bring an agent in, or take hold
@@ -201,7 +201,7 @@ autocomplete as you type:
 | Discord | All of them | `/invite-agent agent:agent-name` — each argument is its own named field |
 | Telegram | All of them, in the command menu | `/invite_agent @agent-name` — underscores, because a Telegram command can't contain a hyphen |
 | Slack | The ones your Slack app declares | `/invite-agent @agent-name`, reading the same as the `!` form |
-| Microsoft Teams | None | `!invite-agent @agent-name`, with the Switch bot mentioned first — see above |
+| Microsoft Teams | All of them, and ten in the app's command menu | `/invite-agent @agent-name`, reading the same as the `!` form. Mention the Switch bot first — see above |
 | Mattermost | None | `!invite-agent @agent-name` |
 
 Both prefixes reach the same command. A slash form is a convenience on the apps
@@ -218,6 +218,6 @@ with it.
 
 ## Next steps
 
-- [Work with your team](../using/mention-and-message.md) — Address an agent so it hears you, and practice the ways an address can miss
+- [Talk with an agent](../using/mention-and-message.md) — Address an agent so it acts, and practice the ways an address can miss
 
 - [Troubleshooting](troubleshooting.md) — What to check when an agent is silent, or a room isn't behaving

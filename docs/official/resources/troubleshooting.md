@@ -2,9 +2,86 @@
 
 _Fast fixes for connecting, running an agent, and working in a room_
 
-Published at <https://docs.flintai.dev/flintai/switch/resources/troubleshooting> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/resources/troubleshooting> — link readers there, not to this file.
 
-**If an agent didn't answer you at all, check the address first.** A message with no `@`, or with the name misspelled, reaches nobody and produces no error and no hint. [Work with your team](../using/mention-and-message.md) covers what counts as an address.
+**If an agent didn't answer you at all, check the address first.** A message with no `@`, or with the name misspelled, reaches nobody and produces no error and no hint. [Talk with an agent](../using/mention-and-message.md) covers what counts as an address.
+
+## Running Switch Console on Linux
+
+### No window appears
+
+Switch Console starts and nothing is drawn. There's no error and no crash — the process is running, it just has no window you can see. It happens under Wayland, and a virtual machine is where you're most likely to meet it.
+
+Start it under X11 instead:
+
+```bash
+switch-console --ozone-platform=x11 --disable-gpu
+```
+
+### Closing the window doesn't quit
+
+Closing the window leaves Switch Console running, and the next launch reuses the process that's already there. Anything you changed on the machine in between isn't picked up, because nothing restarted.
+
+End it before relaunching:
+
+```bash
+pkill -x switch-console
+```
+
+### Switch Console can't reach Docker
+
+Docker is reachable only by members of the `docker` group, so running a server on this computer fails until your account is one. Check with `id`, and add yourself if `docker` isn't in the list:
+
+```bash
+sudo usermod -aG docker "$USER"
+```
+
+**Warning**
+
+Anyone in the `docker` group can get root on that machine. Add only accounts you'd give root to anyway.
+
+[Add a server](../getting-started/add-a-server.md) covers what a server on this computer does and doesn't give you.
+
+### Docker still unreachable after joining the group
+
+Group membership is granted when a session starts, so a session that was already open keeps the list it began with and hands that list to everything it launches. Log out and back in, then check both:
+
+```bash
+id
+pgrep -u "$USER" -x systemd
+```
+
+If `docker` still isn't listed, or a `systemd --user` process outlived the logout, reboot. Do that before launching Switch Console from the application icon.
+
+### Secure storage isn't available
+
+Switch Console reports that secure storage isn't available and stops saving your sign-ins. It keeps credentials in the desktop secret service and won't fall back to anything less protected, so when it can't reach one it stores nothing rather than storing it in the clear.
+
+On GNOME, name the backend rather than leaving it to be detected:
+
+```bash
+switch-console --password-store=gnome-libsecret
+```
+
+### Applying these fixes every time you launch
+
+The fixes above are command-line flags, so they only apply to the launch you typed them into. Starting Switch Console from the applications menu or the dock runs it without them.
+
+Give yourself a launcher that carries them by copying the entry the package installed and editing your copy. A copy in your home directory takes precedence over the system one and survives an upgrade:
+
+```bash
+cp /usr/share/applications/switch-console.desktop ~/.local/share/applications/
+```
+
+Then add the flags you need to the `Exec` line in the copy, before the trailing `%U`:
+
+```ini
+Exec="/opt/Switch Console/switch-console" --ozone-platform=x11 --disable-gpu --password-store=gnome-libsecret %U
+```
+
+**Note**
+
+Copy and edit rather than writing an entry from scratch. The installed entry carries the values that let your desktop match the running window to its launcher, and an entry written by hand without them opens a second dock icon.
 
 ## Connecting to a server
 
@@ -46,27 +123,9 @@ Switch Console raises **Session did not start** when a session never reports its
 
 **Open that session's terminal and answer what's on it.** That's the only route. The session never started, so there's no agent in the room to ask, and Switch Console can't answer the prompt on your behalf.
 
-If what's waiting there isn't a prompt but a message naming your agent as not found, see **Agent not found on launch** below instead.
-
 **Read the message as a guess, not a diagnosis.** It names two possible causes — a workspace-trust confirmation or a permissions one — and commits to neither, because Switch Console can see only that nothing came back. Folder trust is the common one, but a permissions prompt looks identical from Switch Console's side and needs the same thing from you.
 
-**Check the auto-trust setting if this keeps happening.** Select **Settings** at the bottom of the sidebar, then the **General** tab. **Auto-trust worktree directories** is on by default, and it writes the trust entry for Claude Code and Codex before the session launches.
-
-### Agent not found on launch
-
-The message names your agent as not found and then lists Claude Code's own built-in subagents. None of them are Switch agents, and nothing in the message mentions Switch.
-
-Switch Console starts a Claude Code agent as a Claude Code subagent of the same name, so Claude Code needs a matching definition at `.claude/agents/` in the agent's working directory, named for the registered Switch agent. An agent added through Switch Console's own add-agent flow has one. An agent registered any other way does not: the Gateway's **Register Agent** dialog, or an agent adopted from an identity file under `.switch/agents/` in the working directory.
-
-Create that file, with the `name` in its frontmatter matching the registered agent name character for character.
-
-Starting the same agent by hand succeeds, which is what makes this read as Switch Console being unreliable rather than as a missing file. The command a room posts when you address an unreachable agent doesn't name a subagent, so it works in the same directory seconds later.
-
-### Auto-create agent never wakes up
-
-Same cause as **Agent not found on launch**, with nothing at all to see. **Auto-create a session on notify** starts sessions through the same path, so every automatic wake fails the same way: the agent never answers, and no error surfaces anywhere you'd look. Turning the setting on to rouse an agent that won't wake therefore appears to do nothing.
-
-Create the definition file described in that entry.
+**Check the auto-trust setting if this keeps happening.** Select **Settings** at the bottom of the sidebar, then **General**. **Auto-trust worktree directories** is on by default, and it writes the trust entry for Claude Code and Codex before the session launches.
 
 ### Agent is connected but never answers
 
@@ -98,7 +157,7 @@ gives back are the ones it matches on.
 
 Your messaging app is what makes this hard to guess, since it leads with the
 display name and shows the handle rarely or not at all. See
-[Meet your team](../using/rooms-and-agents.md).
+[Work with your team](../using/rooms-and-agents.md).
 
 ### An agent refuses your message
 
@@ -118,7 +177,7 @@ That distinction is the point. Read the second as the first, and you'll link an 
 
 A new agent takes instructions only from its owner unless someone changes that, and the account-linking prompt can be skipped when you add a server. Skip it, register an agent, address it — and your own new agent refuses you, at the moment you were trying to confirm it works.
 
-[Know whether it worked](../using/what-comes-back.md) explains the refusals; [Add a server](../getting-started/add-a-server.md) covers the linking prompt.
+[Read what comes back](../using/what-comes-back.md) explains the refusals; [Add a server](../getting-started/add-a-server.md) covers the linking prompt.
 
 ## Handing off work
 

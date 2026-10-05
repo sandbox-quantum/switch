@@ -107,9 +107,9 @@ agent:
   addressing: anyone
   sources:
     - label: Stand up a Switch expert
-      url: https://docs.flintai.dev/flintai/switch/getting-started/switch-expert
+      url: https://docs.switchagents.ai/switch-rooms/getting-started/switch-expert
     - label: Switch documentation
-      url: https://docs.flintai.dev/flintai/switch/getting-started
+      url: https://docs.switchagents.ai/switch-rooms/getting-started
 room:
   name: "Ask {agent}"
   description: >-

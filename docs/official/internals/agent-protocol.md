@@ -2,7 +2,7 @@
 
 _The wire protocol a Switch agent client implements — SSE down, HTTP up, every event frame and every operation_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/agent-protocol> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/agent-protocol> — link readers there, not to this file.
 
 The agent protocol is the wire contract between an agent client and Switch. One server-sent event stream carries what happens in the agent's rooms; HTTP calls carry everything the agent does. Switch Console and its sidecar speak it for every session they start — see [Sessions and the runtime](connectors-and-runtime.md). A client written from scratch implements what follows directly.
 
@@ -109,7 +109,7 @@ data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channe
        "payload":{…},"sequence":4813}
 ```
 
-Every domain event carries `type`, `room_id`, `bridge_id` (nullable), `channel_type` (nullable), `payload`, and `sequence`. It names no session: routing a room's events to one of the agent's sessions is the watcher's, from the placements it holds. **`sequence` appears on the data object as well as the `id:` line**, and they are the same number.
+Every domain event carries `type`, `room_id`, `bridge_id` (nullable), `channel_type` (nullable), `payload`, and `sequence`. **`sequence` appears on the data object as well as the `id:` line**, and they are the same number.
 
 ### `connection_state`
 
@@ -135,7 +135,7 @@ Always the first frame on a stream.
 | `gap` | `from_sequence`, `resumed_at`, `reason` | The cursor is ahead of the buffer head — the buffer is in memory, so a restart resets the sequence — or the cursor is below the dropped-through watermark at open, or it expires mid-stream |
 | `evicted` | `reason` | Another stream attaches to the same connection id, the connection is closed server-side, or the heartbeat lapses while the stream is open |
 | `subscription_changed` | `rooms`, `reason` | The covered room set changes, including a room going dark because a sibling connection claimed it |
-| `room_released` | `room_id`, `session_id` (nullable) | Another connection of the agent took over this connection's claim on the room or its session's placement there. `session_id` is the session this connection had placed in the room, or null when it had none. Sent only to clients declaring agent-protocol 6 or later |
+| `room_released` | `room_id`, `session_id` (nullable) | Another connection of the agent took over this connection's claim on the room, or its session's placement there. `session_id` is the session this connection had placed in the room, or null when it had none. Sent only to clients declaring agent-protocol 6 or later |
 
 A gap is never silent, and it is not a wake. Hold it and attach it to the next event you surface rather than interrupting the agent, and re-read the room's history before responding. A supervisor learns its session's room from `subscription_changed` rather than by reading operation responses.
 
@@ -170,13 +170,42 @@ sequenceDiagram
 
 | Event | Payload fields |
 |---|---|
-| `message` | `addressed` (bool), `sender`, `sender_name`, `sender_kind` (`platform` when the Switch app posted it, else absent), `on_behalf_of` (the person a platform message speaks for, else absent), `message_id`, `body`, `timestamp` (ms), `thread_id` (nullable), `attachments` (list) |
+| `message` | `addressed` (bool), `sender`, `sender_name`, `message_id`, `body`, `timestamp` (ms), `thread_id` (nullable), `attachments` (list) |
 | `command` | `command`, `args` (empty by default), `user_id`, `user_name`, `thread_id` (nullable) |
 | `room_join` | `member`, `member_name`, `timestamp`, `listening` (bool) |
 
 - **`message.addressed`** is what the `addressed` filter tests. An attachment reference carries `filename`, `mimetype`, `size`, `mxc` and `msgtype`, and is **a pointer, never bytes** — fetch the content from the media routes.
 - **`command.args`** carries the role name to re-assume for `reset` and `compact`.
 - **`room_join.listening`** is per room and per agent. The event is always buffered; the client decides whether to surface it.
+
+### Participant ids
+
+`sender` and `member` carry a participant id, in the form `@<localpart>:<server>`. The localpart takes one of two shapes:
+
+```
+switch-<type>-<short id>     a per-participant client
+switch-<type>                a system client, one per instance
+```
+
+`<type>` is what the client is for: `agent`, `user`, `bridge`, or `admin` for the voice Switch speaks in itself. A person talking from a messaging app has a `user` client of their own, so every sender in a room is a client and there is no separate human case to handle.
+
+The `<server>` half is a naming scheme, not an address. Nothing is contacted at it, and it does not resolve. It is fixed per deployment and forms part of every id that deployment has ever issued, which is why it cannot be changed after a server has run.
+
+**Warning**
+
+Treat the whole id as opaque. Match on it, don't parse it: the shapes above are what Switch issues today, and a client that splits an id to infer a type will break on the first one that doesn't fit.
+
+### Multi-file attachments
+
+A media event carries one file, and messaging platforms allow several in one post. Switch sends one event per file and marks the batch, rather than inventing a multi-file event.
+
+Every event in a batch carries `com.switch.attachment_group` in its content, holding `id`, `index` and `total`. The receiving side coalesces the group back into one logical message. An event without the key is a group of one, so an ungrouped attachment needs no special handling, and a malformed marker degrades to ungrouped rather than failing, so one odd event cannot stall a receiver.
+
+Two further content markers appear on otherwise ordinary events: `com.switch.admin` for output Switch posts in its own voice, and `com.switch.auto_reply` for a reply generated on an agent's behalf rather than by it.
+
+**Tip**
+
+If you're writing a client, treat the group marker as the unit of work. Handling media events one at a time will function and will look wrong in every channel it touches.
 
 ### Task events
 
@@ -289,7 +318,6 @@ The connection id header is optional and binds the call to a room: it is what th
 | **Resources** | `list_references`, `list_reference_types`, `create_reference`, `attach_reference_to_room`, `load_internal_documents`, `create_room_document`, `update_room_document`, `delete_room_document` |
 | **Roles** | `list_roles`, `get_role_detail`, `define_role`, `edit_role`, `delete_role`, `assume_role`, `release_role` |
 | **Links and groups** | `list_linked_rooms`, `link_rooms`, `unlink_rooms`, `list_room_groups`, `create_room_group`, `get_room_group_detail` |
-| **Templates** | `create_room_from_yaml`, `get_template_guide`, `list_templates`, `get_template`, `run_template`, `save_template`, `update_template`, `delete_template` |
 | **Agents and bridges** | `list_agents`, `get_agent_detail`, `update_agent_detail`, `list_bridges` |
 | **Tasks** | `delegate_task`, `accept_task`, `update_task`, `finalise_task`, `cancel_task`, `list_tasks` — present but not ready for use |
 

@@ -2,7 +2,9 @@
 
 _Shared context is everything a room holds — documents, resources, and agents — and it compounds as the team works_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/shared-context> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using/shared-context> — link readers there, not to this file.
+
+import SwitchCommandForm from '/snippets/switch-command-form.mdx';
 
 **Shared context is everything the room holds — the documents, the resources it points at, and the agents themselves** — and every agent in the room gets the same briefing, so you say it once instead of repeating it to each agent, and again tomorrow.
 
@@ -11,7 +13,7 @@ Published at <https://docs.flintai.dev/flintai/switch/using/shared-context> — 
 Every agent that joins reads the room document, so the room's own team is the fastest way to learn what this room is for, what everyone calls things, and where work gets posted. Each route answers a different question:
 
 - **Ask an agent to summarize it.** It has read the document, so it can tell you what's in there — and what looks unclear or missing, if you ask for that too.
-- **Post `!list-documents` in the channel** to see what the room holds at all: each document's name, its description, and who created it. The documents live on the Switch server rather than in your messaging app, so this is how you find out what's there without leaving the channel. It's also the route when nothing is awake to ask — an agent with no session running answers to say so, which [Know whether it worked](what-comes-back.md) covers.
+- **Post `!list-documents` in the channel** to see what the room holds at all: each document's name, its description, and who created it. The documents live on the Switch server rather than in your messaging app, so this is how you find out what's there without leaving the channel. It's also the route when nothing is awake to ask — an agent with no session running answers to say so, which [Read what comes back](what-comes-back.md) covers.
 
 Do that before you add anything. Someone has usually been here first, and a gap is often already covered in words you wouldn't have searched for.
 
@@ -24,11 +26,23 @@ Separating those fields is what makes the document work:
 - **Content** — the material itself. What the room knows
 - **Instructions** — what an agent should *do* about it, read on joining and followed
 - **Name** and **description** — how the document is identified in a room holding more than one
-- **Read and write visibility** — who can see it, and who can change it
+- **Read and write visibility** — fields on the document, not a control over the room. Every agent in the room reads the document in full, and only the agent that created it can change it
 
 Instructions are the difference between reference material sitting in a room and a room that behaves a particular way. A document with content and no instructions is a file nobody was told to open.
 
 Whatever you leave unspecified, the agent writing the document fills in. If you care about the wording, supply it.
+
+## Put a document in the room
+
+Where a document gets created decides what you end up with, and the two routes give you different things.
+
+**Ask an agent, and the document belongs to the room.** It's made in one go and exists nowhere else, which is what you want for something only this room needs.
+
+**Make one yourself, and it belongs to your library.** You do that in the Gateway, if you have access to it — not in Switch Console, and not from the channel. Select **Resources**, then the **Documents** tab, then **New document**. What you make there isn't attached to anything yet, and attaching it to a room is a separate step afterwards. The same document can then go to as many rooms as you want, which makes this the route for anything more than one room needs.
+
+There's no way for a person to create a document straight into a room. If you went looking for one in your messaging app and found nothing, that's why.
+
+If what you want is to brief the room rather than give it something to hold, that's a different field and a lighter one. A room's **Instructions** reach every agent as it joins, and you set them under **General** in the room's settings in Switch Console — nothing to create, nothing to attach. Use a document when the room needs to hold content; use instructions when it needs to say how the work is done.
 
 ## How much a room should carry
 
@@ -88,6 +102,8 @@ A **reference** is a shared resource the room points at, with its own type, desc
 
 Use a document for what the room knows. Use a reference for something the room needs to reach. Both carry instructions, and both reach every agent in the room they're attached to.
 
+Attaching is where you choose who reads the material, not afterwards. [Working safely with agents](../resources/working-safely-with-agents.md) covers what to check first.
+
 A reference is registered once against your server and attached to as many rooms as you want. That makes it the thing to reach for when the same resource matters in more than one place — you maintain it once, and every room pointing at it gets the change.
 
 ## Context stops at the room
@@ -116,4 +132,4 @@ Switch gives you the means to make knowledge portable. It doesn't do it for you 
 
 - [Hand off work](hand-off-work.md) — Reach whoever is doing a job without knowing who that is today, and hand over work you expect back later
 
-- [Meet your team](rooms-and-agents.md) — Find out who's in the room, add someone to it, and give a long agent name a short one
+- [Work with your team](rooms-and-agents.md) — Find out who's in the room, add someone to it, and see what the rest of the team can read

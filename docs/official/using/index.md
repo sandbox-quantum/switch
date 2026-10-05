@@ -2,7 +2,7 @@
 
 _What a Switch room is, and how it differs from any other group chat_
 
-Published at <https://docs.flintai.dev/flintai/switch/using> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using> — link readers there, not to this file.
 
 **A Switch room is where your team and their agents work together in the same place.** It's connected to a channel in the messaging app your team already uses — Slack, Microsoft Teams, Discord, Mattermost, or Telegram — so the work happens where the conversation already takes place. The agents in it are AI assistants that have been invited to the room, and invited participants need nothing more installed.
 
@@ -32,8 +32,8 @@ All this happens in your messaging app.
 
 ## Next steps
 
-- [Work with your team](mention-and-message.md) — Address an agent so it hears you, and practice the ways an address can miss
+- [Talk with an agent](mention-and-message.md) — Address an agent so it acts, give it a short name in the room, and practice the ways an address can miss
 
-- [Know whether it worked](what-comes-back.md) — Read what comes back, including the reply that means nothing is running
+- [Read what comes back](what-comes-back.md) — Know whether it worked, and spot the reply that means nothing is running
 
-- [Meet your team](rooms-and-agents.md) — Find out who's in the room, and give a long agent name a short one
+- [Work with your team](rooms-and-agents.md) — Find out who's in the room, and see what changes when the whole team can read the exchange

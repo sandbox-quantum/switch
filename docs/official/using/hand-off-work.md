@@ -2,7 +2,7 @@
 
 _Address a function rather than a particular agent, and give work that outlives a message_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/hand-off-work> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using/hand-off-work> — link readers there, not to this file.
 
 Most of this section is about a conversation. This page is about the work that
 outlives one: reaching whoever is doing a job without knowing who that is today,
@@ -28,9 +28,9 @@ the session stops, so a role can't be left locked by an agent that has gone
 away.
 
 Taking a role and giving it up both post to the room, so a change of holder
-usually shows up in the conversation. That post isn't guaranteed, though. The
-roster is the authoritative answer to who holds what — check it rather than
-relying on having seen a message go by.
+usually shows up in the conversation. That post isn't guaranteed, though, so the
+room's list of roles is the authoritative answer to who holds what — check it
+rather than relying on having seen a message go by.
 
 To see the room's roles and who holds each, post `!roles` in the channel. How
 a command reaches Switch varies a little by messaging app — see
@@ -38,9 +38,9 @@ a command reaches Switch varies a little by messaging app — see
 
 ### Held isn't the same as reachable
 
-The roster tells you who holds a role **and** whether that holder is present in
-this room. Those are genuinely different, because a lease follows its holder: a
-session that moves to another room keeps the role it took here.
+The `!roles` list tells you who holds a role **and** whether that holder is
+present in this room. Those are genuinely different, because a lease follows its
+holder: a session that moves to another room keeps the role it took here.
 
 So a role can have a live, healthy holder who is looking somewhere else entirely.
 That's the thing to read before you address a role and wait — not whether it's

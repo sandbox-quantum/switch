@@ -2,7 +2,7 @@
 
 _The developer's view of the resource model and the room lifecycle — what's scoped where, and the ordering that matters_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/rooms-and-resources> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/rooms-and-resources> — link readers there, not to this file.
 
 A Switch room carries metadata, a position in a group tree, links to other rooms, roles its members can hold, and attached resources drawn from a library that exists outside any one room. This page covers where each of those is scoped, who owns it, what enforces what, and the order operations run in.
 
@@ -65,7 +65,7 @@ Room-scoped documents are the agent-writable kind. A room-scoped document is del
 
 An agent can change or delete only a document it created. Authorship is enforced, not advisory.
 
-Create, update and delete are not direct database writes from the caller's side. Each is a request-and-response round trip over the message bus, serviced by the resource manager client, so the check that the document belongs to the room being asked from runs server-side rather than being trusted to the caller.
+Create, update and delete are not direct database writes from the caller's side. Each is an operation switch-core serves, so the check that the document belongs to the room being asked from runs server-side rather than being trusted to the caller.
 
 ### Room groups
 
@@ -93,11 +93,11 @@ The ecosystem graph and the room-link graph are Gateway-only aggregations built 
 
 ## Creating a room, in order
 
-Room creation touches PostgreSQL, the Matrix homeserver and an external chat platform. The order is deliberate, and some of it exists to prevent specific bugs.
+Room creation touches PostgreSQL and an external chat platform. The order is deliberate, and some of it exists to prevent specific bugs.
 
 ### Validate everything first
 
-The attachments and the group id are validated before anything is provisioned, so a request naming a reference that doesn't exist fails while it's still free to fail — no orphaned Matrix room, no stray external channel to clean up.
+The attachments and the group id are validated before anything is provisioned, so a request naming a reference that doesn't exist fails while it's still free to fail — no orphaned room, no stray external channel to clean up.
 
 ### Resolve the participants
 
@@ -115,9 +115,9 @@ If the room is adopting an existing channel and the caller didn't state its type
 
 Creating a channel makes the bot auto-join it, and that join arrives back as an inbound event before the room mapping is committed. Without the mark, the inbound handler doesn't see the uncommitted mapping, concludes the channel is unknown, and creates a second Switch room for the same channel.
 
-### Create the Matrix room
+### Create the room
 
-The room on the homeserver is created. Everything after this point takes membership in it.
+The room itself is created. Everything after this point takes membership in it.
 
 ### Persist in one transaction
 
@@ -129,7 +129,7 @@ The channel-to-room mapping is registered and the provisioning mark is cleared i
 
 ### Invite the bridge client before any agent
 
-The bridge client is invited ahead of every agent, because a Matrix client ignores events that predate its own join. A message posted before the bridge joins is filtered as a pre-join event and never reaches the external channel — the room looks alive from inside Switch and silent from Slack.
+The bridge client is invited ahead of every agent, because a client ignores events that predate its own join. A message posted before the bridge joins is filtered as a pre-join event and never reaches the external channel — the room looks alive from inside Switch and silent from Slack.
 
 ### Populate the external channel
 
@@ -137,7 +137,7 @@ The agents and users are added on the platform side, so the channel's membership
 
 ### Invite the remaining participants
 
-The agent clients and the system clients are invited together, and then the membership rows are persisted and committed. Membership is ordinary Matrix invitation, which managed clients auto-accept.
+The agent clients and the system clients are invited together, and then the membership rows are persisted and committed. Membership is an ordinary invitation, which managed clients auto-accept.
 
 ### Attach references, packages and links
 
@@ -149,23 +149,23 @@ Rooms can also be created from a YAML definition through the Gateway, which runs
 
 - **Update** changes metadata, instructions, group membership and the agent list.
 - **Delete** removes the room and everything scoped to it, including its room-scoped documents.
-- **Archive** sets a reversible metadata-only flag. The Matrix room, the mapping and the membership stay as they were, and restoring the room brings it back without rerunning the provisioning sequence.
+- **Archive** sets a reversible metadata-only flag. The room, the mapping and the membership stay as they were, and restoring the room brings it back without rerunning the provisioning sequence.
 - **Membership changes** add or remove agents and users after the fact, on the same invitation model as creation.
 - **Moving a room to a different bridge** re-points it at another external chat connection.
 
 ## The durable model
 
-Switch's own state lives in PostgreSQL beside `switch-core`. The tables that carry rooms and resources:
+Switch state lives in PostgreSQL beside `switch-core`. The tables that carry rooms and resources:
 
-- `rooms` — the Matrix room plus Switch metadata: bridge, external channel, channel type, instructions, group, owner, visibility, archive flag
+- `rooms` — the room plus Switch metadata: bridge, external channel, channel type, instructions, group, owner, visibility, archive flag
 - `room_groups` and `room_links` — the tree, and the directed graph over it
 - `room_agents` — which agents are in a room, carrying the alias and the join-event flag
 - `room_roles` and `role_leases` — roles defined per room, and who currently holds one
 - `references`, `documents`, `packages` and their association tables — the library and what it's attached to
 - `agents` — name, description, integration profile, owner, optional parent agent for subagents, addressing policy
-- `clients` and `client_rooms` — one Matrix account per participant, with its sync state, and the rooms it's in
+- `clients` and `client_rooms` — one client per participant, and the rooms it's in
 - `collaboration_bridges` — a configured external chat connection; at most one is the default
-- `bridge_message_map` — the Matrix-to-external correlation, written in both directions
+- `bridge_message_map` — the Switch-to-external correlation, written in both directions
 - `external_users` and `external_user_claims` — platform identity to puppet client, and the claims linking a platform account to a Switch user
 - `agent_sessions` and `agent_runtime_states` — reachability and transport-to-room binding, and what a live session is doing
 

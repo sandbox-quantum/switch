@@ -2,16 +2,18 @@
 
 _Put your Switch agents in a Slack workspace, so a channel becomes a room_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/messaging-apps/slack> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/slack> — link readers there, not to this file.
 
-Slack is the quickest platform to connect. One Slack app backs every agent on your Switch server, and Slack posts each agent under its own name and icon, so a room reads like a conversation with a team rather than with one relay bot.
+Slack is the quickest platform to connect. One Slack app serves every agent on your Switch server, and each agent posts under its own name and icon, so a room reads like a conversation with a team rather than with one relay bot.
 
-Slack reaches Switch over a connection Switch opens outwards, so **nothing needs to be publicly reachable**. This works from a laptop.
+Switch opens the connection to Slack from its side, so **nothing needs to be publicly reachable**. It works from a laptop.
 
 ## Before you begin
 
-- **A Slack workspace where you can install a custom app.** Many workspaces require admin approval for this; get it first, because the install step fails without it.
-- **An admin account on the Switch server** you're connecting to. If Switch Console set that server up for you, you have one.
+You'll need:
+
+- **A Slack workspace where you can install a custom app:** many workspaces need admin approval for this. Get it before you start, because the install step fails without it.
+- **An admin account on the Switch server you're connecting to:** if Switch Console set up the server for you, you have one.
 
 ## Set up Slack
 
@@ -19,13 +21,13 @@ Slack reaches Switch over a connection Switch opens outwards, so **nothing needs
 
 Go to [Slack API apps](https://api.slack.com/apps), select **Create New App**, then **From an app manifest**. Choose your workspace, paste the manifest below, and create the app.
 
-The manifest configures the permissions, the events, the Switch slash commands, Socket Mode and the app home in one step, which is why it's worth using over building the app by hand.
+The manifest sets up the permissions, events, Switch slash commands, Socket Mode and app home in one step.
 
-It also asks for user group scopes and declares the app an **Agent**. Agent name autocomplete is optional when you connect. SDK progress and permission requests use threaded messages.
+It also requests the user group scopes and declares the app an **Agent**. Both affect how agents look in Slack, not whether the bridge works, and you decide whether to use them when you connect.
 
 **Warning**
 
-Declaring the app an Agent removes access to it for workspace guests, and turns every direct message with it into a thread. Pasting the manifest applies both, and neither can be undone. If guests use Slack in your workspace, delete the `agent_view` block from the manifest before you paste it.
+Declaring the app an Agent blocks workspace guests from using it and turns every direct message with it into a thread. Pasting the manifest applies both, and neither can be undone. If your workspace has guests, delete the `agent_view` block from the manifest before you paste it.
 
 ### Agent Switch app manifest
 
@@ -102,6 +104,7 @@ Declaring the app an Agent removes access to it for workspace guests, and turns 
     "settings": {
         "event_subscriptions": {
             "bot_events": [
+                "app_home_opened",
                 "message.channels",
                 "message.groups",
                 "message.im",
@@ -121,21 +124,21 @@ Declaring the app an Agent removes access to it for workspace guests, and turns 
 
 **Note**
 
-Slack reads the slash commands from the manifest once, when you create the app — it doesn't pick up commands Switch adds later. If a command Switch documents doesn't appear in your workspace, compare your app against the [current manifest](https://github.com/sandbox-quantum/switch/blob/main/docs/bridges/SLACK_SETUP.md) and add what's missing.
+Slack reads slash commands from the manifest only when you create the app, so it won't pick up commands Switch adds later. If a documented command is missing from your workspace, compare your app with the [current manifest](https://github.com/sandbox-quantum/switch/blob/main/docs/bridges/SLACK_SETUP.md) and add what's missing.
 
-You can also build the app from scratch and configure it by hand. See [Configure the app by hand](#configure-the-app-by-hand) for the values to set.
+To build the app by hand instead, see [Configure the app by hand](#configure-the-app-by-hand).
 
 ### Generate the app-level token
 
-In the app, open **Basic Information**, find **App-Level Tokens**, and generate a token with the `connections:write` scope. It starts with `xapp-`. This is what lets Slack push events to Switch without a public address.
+In the app, open **Basic Information**, find **App-Level Tokens**, and generate a token with the `connections:write` scope. It starts with `xapp-`, and it lets Slack send events to Switch without a public address.
 
 ### Install the app and copy the bot token
 
-Select **Install App** and install it to your workspace. Copy the **Bot User OAuth Token** — it starts with `xoxb-`.
+Select **Install App** and install it to your workspace. Copy the **Bot User OAuth Token**, which starts with `xoxb-`.
 
 ### Note your workspace id
 
-You need the workspace (team) id, which starts with `T`. It's in your workspace settings, and it's also the first path segment of any Slack message link.
+Find your workspace (team) id, which starts with `T`. Open Slack in a web browser, and the address takes the form `https://app.slack.com/client/T…/C…`. The segment starting with `T` is the id.
 
 ## Connect Slack to your Switch server
 
@@ -147,140 +150,148 @@ In Switch Console, select the server in the sidebar switcher and open its **Home
 
 Select **Connect**, then choose **Slack** under **Messaging app**.
 
-If there's no **Connect** button, you're signed in to that server without admin rights. Connecting a messaging app is an administrator action, so ask whoever runs the server.
+If there's no **Connect** button, you're signed in to that server without admin rights. Connecting a messaging app takes a server administrator.
 
 ### Name the connection
 
-**Name** is how this connection is labeled in Switch Console when you pick it for a room, so name it after the workspace — "Acme Slack" rather than "Slack".
+**Name** labels this connection in Switch Console when you pick it for a room. Name it after the workspace: "Acme Slack" rather than "Slack".
 
 ### Paste in what you gathered
 
-- **Bot Token** — the `xoxb-` token from installing the app.
-- **App Token** — the `xapp-` app-level token.
-- **Workspace Id** — the `T…` id.
+- **Bot Token**: paste the `xoxb-` token from installing the app.
+- **App Token**: paste the `xapp-` app-level token.
+- **Workspace Id**: paste the `T…` id.
 
-The token fields are masked as you type and aren't shown again afterwards.
+The token fields are masked as you type and aren't shown again.
 
 ### Decide whether Switch may create channels
 
-**Allow creating channels from Switch** is on by default, and it's what lets a room created in Switch — by you or by an agent — get a Slack channel to go with it. Turn it off if channels in your workspace should only ever be made in Slack.
+**Allow creating channels from Switch** is on by default. It gives a room created in Switch, by you or by an agent, a matching Slack channel. Turn it off if channels in your workspace should only be made in Slack.
 
 ### Decide how agents appear in Slack
 
-**Agent name autocomplete** is on by default. It completes an agent's name when you type `@` in a channel. It needs a paid Slack plan and permission for the bot to manage user groups.
+Both of these checkboxes are on by default. They control how agents look in Slack, not whether the bridge works.
 
-If Slack refuses user-group creation, Switch reports the reason and agents remain addressable by typing their names. This setting does not control SDK progress or permission cards.
+- **Agent name autocomplete**: an agent's name completes when you type `@` in a channel. Needs a paid Slack plan and permission for the bot to manage user groups.
+- **Native progress card**: an agent's progress shows in Slack's own live card instead of a message Switch posts. Needs the app to have been declared an **Agent** when you created it.
 
-To change autocomplete after creating the connection, ask the Switch server administrator. Switch Console does not expose that setting on existing connections.
+You don't need to know whether your workspace supports either. Switch tries each one, and where Slack refuses, it says so once and carries on without that feature. [Agent names and progress](#agent-names-and-progress) covers what you get without them.
+
+Settle **Agent name autocomplete** and **Native progress card** now. Unlike channel creation, you can't change them in Switch Console or the Gateway once the connection exists, only with a direct call to the Switch server's API.
 
 ### Connect
 
-Select **Connect**. Switch validates the credentials against Slack and opens its connection immediately, so a rejected token is reported here rather than failing quietly later.
+Select **Connect**. Switch checks the credentials with Slack and connects immediately, so a rejected token is reported here rather than failing quietly later.
 
 ### Link your Slack account
 
 Switch Console then asks which Slack account is yours. Search for yourself and select **This is me**.
 
-An agent set to answer only its owner can't recognize you until you do — your messages read as if from a stranger. The connection's row offers **Link my account…** later.
+Until you do, an agent set to answer only its owner treats your messages as a stranger's. You can select **Skip for now** and link later from **Link my account…** on the connection's row. For how linking works in every connected app, see [Link your account, and why it matters](how-connections-work.md#link-your-account-and-why-it-matters).
 
 ## Bring Switch into a channel
 
-A Slack channel becomes a Switch room when the app joins it. In the channel, invite the app using the name your workspace installed it under:
+A Slack channel becomes a Switch room when the app joins it. In the channel, invite the app by the name your workspace installed it under:
 
 ```text
 /invite @Agent Switch
 ```
 
-That's enough — you don't need to add an agent first, and repeating it on a channel that's already a room adopts the existing room rather than making a second one.
+You don't need to add an agent first. Inviting the app to a channel that's already a room reuses that room rather than creating a second one.
 
-Going the other way, a room created in Switch gets a Slack channel made for it, as long as you left channel creation allowed. That applies to rooms an agent creates as well as ones you create in Switch Console.
+In the other direction, a room created in Switch, by you in Switch Console or by an agent, gets its own Slack channel if you left channel creation allowed.
 
 **Info**
 
-Inviting the Slack app to a channel and inviting an agent to a room are different actions. The first creates or connects the room; the second adds one of your registered agents to a room that already exists. See [Create a room](../../getting-started/create-a-room.md).
+Inviting the Slack app to a channel creates or connects the room. To bring in one of your registered agents, invite it to the room once the room exists. See [Create a room](../../getting-started/create-a-room.md).
 
 ## Confirm it worked
 
-- The connection is listed under **Messaging apps** on the server's **Home** page with no error beside its name. A connection that failed to start shows its status there in red.
+- The connection appears under **Messaging apps** on the server's **Home** page with no error beside its name. A connection that failed to start shows its status there in red.
 - The channel you invited the app to appears under **Your Rooms** in Switch Console.
 - Typing `/` in the channel offers the Switch commands.
 
 **Note**
 
-Slack may autocomplete Switch commands in channels that aren't Switch rooms. The list under **Your Rooms** is what settles whether a channel is really a room.
+Slack can offer Switch commands in channels that aren't rooms. **Your Rooms** is what tells you whether a channel is a room.
 
 ## What to expect in Slack
 
-- **Agents post under their own names and icons.** Slack allows this per message, so a room reads like several participants rather than one bot.
-- **File uploads are the exception.** Slack won't let an upload carry a per-message sender, so a file posts under the app itself with the agent name in the accompanying comment.
-- **Rooms are channels, not direct messages.** For a quiet one-to-one, use a private channel holding you and one agent. It's a real room, so nobody outside it sees the conversation — and you still address the agent with `@`, just as you would in any other channel. See [Work with your team](../../using/mention-and-message.md).
-- **Scheduled messages count as real messages.** A recurring post from Slack Workflow Builder addresses an agent exactly as a typed message does — see [Work with your team](../../using/mention-and-message.md) for what else has to be true for that to wake an agent.
+- **Agents post under their own names and icons, except when they upload a file.** Slack doesn't allow a per-message sender on uploads, so a file posts under the app, with the agent's name in the accompanying comment.
+- **Rooms are channels, not direct messages.** For a private one-to-one, use a private channel holding just you and one agent. You still address the agent with `@`, as in any other channel. See [Talk with an agent](../../using/mention-and-message.md).
+- **Scheduled messages count as real messages.** A recurring post from Slack Workflow Builder addresses an agent exactly as a typed message does. [Talk with an agent](../../using/mention-and-message.md) covers what else has to be true for it to wake one.
 
 ## Agent names and progress
 
-Agents aren't registered as Slack users — one app serves all of them. So `@agent-name` is text that happens to start with an at sign: Slack doesn't complete it, doesn't turn it into a pill, and a typo looks exactly like an agent ignoring you. The addressing works; the confirmation you'd expect from Slack doesn't. The settings you chose when you connected close that gap.
+To address an agent, type `@` and its name. One app serves every agent, so on its own Slack treats the name as plain text: no completion and no mention, and a typo looks like an agent ignoring you. The settings you chose when you connected ask Slack to fill that gap, with completion and a visible sign that the agent is working.
 
 ### Names that complete as you type
 
-Switch gives each agent a Slack **user group** handled with the agent's name, because a user group is the one mentionable thing an app is allowed to create. The groups are empty and notify nobody — they exist to appear in the `@` menu. Switch marks its own and leaves the workspace's own alone.
+Switch creates a Slack **user group** for each agent, with the agent's name as its handle, because a user group is the only mentionable thing an app can create. The groups are empty and notify nobody. They exist to appear in the `@` menu. Switch marks the groups it creates and leaves your workspace's other groups alone.
 
-Both of these have to be true, and neither is Switch's to arrange:
+Both of these have to be true, and Switch can't arrange either:
 
-- **A paid Slack plan.** User groups don't exist on the free tier.
-- **Permission for the bot to manage user groups.** Usually admin-only, and the bot is refused until an admin widens it under **Workspace settings** → **Roles & permissions** → **Account types**.
+- **A paid Slack plan.** The free plan has no user groups.
+- **Permission for the bot to manage user groups.** This is usually admin-only, and the bot is refused until an admin widens it under **Workspace settings** → **Roles & permissions** → **Account types**.
 
-If the bot is refused, make the groups by hand: one whose handle or name is exactly an agent's name is adopted as that agent's. The match is exact, so a similar name is never taken over.
+If the bot is refused, create the groups yourself. A group whose handle or name exactly matches an agent's name becomes that agent's group. A similar name is never taken over.
 
 ### Progress on the message being worked on
 
-Switch posts a compact status with the elapsed time and a **Console app** link in the agent's thread. An expandable tool log follows it, with permission and question cards below. The Console link appears when the server has a configured public URL.
+While an agent works, Slack shows a live progress card under the agent's name and icon, linking to the session in Switch Console. The card is an indicator, not a record, so it disappears when the turn ends. It's what declaring the app an **Agent** gets you.
 
-When the turn ends, the status shows the final runtime in place and the tool log remains available. The message that asked is marked with 👀 during the turn. Use `!interrupt @agent-name` to interrupt the agent.
+Where Slack can't draw the card, Switch posts a status message under the agent's name with the same **Open in Switch Console** link, so a turn always shows its progress somewhere.
 
-If Slack rejects a card's block format, Switch uses a text fallback in the same message or thread. The former **Native progress card** setting and native stream renderer have been removed.
+**Switch also marks the message that asked with 👀 until the turn ends.** This needs only the reaction scopes, and because it marks the message rather than a thread, it works anywhere in a channel.
 
-Without user-group autocomplete, you can still address agents by typing `@agent-name`. This does not affect SDK status, permission requests, or reactions.
+### What a workspace without either still gets
+
+Nothing breaks, and there's nothing to undo:
+
+- You address agents by typing `@agent-name`, as before. You lose the autocomplete, not the addressing.
+- An agent's progress arrives as a status message under its own name and icon, with an **Open in Switch Console** link.
+- The message being worked on is marked with 👀, on any plan and in any channel.
 
 ## Configure the app by hand
 
-Skip this if you used the manifest — it already set all of it. This is the reference for building the app from scratch, and for checking an app that isn't behaving.
+Skip this if you used the manifest, which sets all of it. Use it to build the app from scratch, or to check an app that isn't working.
 
 ### Bot token scopes
 
 Under **OAuth & Permissions**, in **Bot Token Scopes**:
 
-- `chat:write`, `chat:write.customize` — post agent messages, each under its own name and icon.
-- `commands` — the Switch slash commands.
-- `channels:read`, `channels:manage` — look up public channels, create them, set their topic, and invite into them.
-- `groups:read`, `groups:write` — the same for private channels.
-- `channels:history`, `groups:history`, `im:history`, `mpim:history` — read message history for context.
-- `im:read`, `im:write` — direct messages.
-- `users:read` — resolve display names.
-- `files:read`, `files:write` — relay attachments in both directions.
-- `reactions:read`, `reactions:write` — reaction acknowledgements, and the 👀 on the message an agent is working on.
-- `usergroups:read`, `usergroups:write` — the per-agent user groups that make agent names autocomplete.
-- `assistant:write` — declares the app an Agent, which is what lets it open the session its progress card is drawn in. Slack adds this scope itself when you switch the Agents feature on.
+- `chat:write`, `chat:write.customize`: post each agent's messages under its own name and icon.
+- `commands`: the Switch slash commands.
+- `channels:read`, `channels:manage`: look up, create, set the topic of and invite into public channels.
+- `groups:read`, `groups:write`: the same for private channels.
+- `channels:history`, `groups:history`, `im:history`, `mpim:history`: read message history for context.
+- `im:read`, `im:write`: direct messages.
+- `users:read`: resolve display names.
+- `files:read`, `files:write`: relay attachments in both directions.
+- `reactions:read`, `reactions:write`: reaction acknowledgements, including the 👀 on the message an agent is working on.
+- `usergroups:read`, `usergroups:write`: the per-agent user groups that make agent names autocomplete.
+- `assistant:write`: declares the app an Agent, which lets it open the session its progress card is drawn in. Slack adds this scope itself when you turn on the Agents feature.
 
 ### Event subscriptions
 
-Subscribe the bot to `message.channels`, `message.groups`, `message.im` and `message.mpim`. With Socket Mode there's no request URL to supply.
+Subscribe the bot to `app_home_opened`, `message.channels`, `message.groups`, `message.im` and `message.mpim`. With Socket Mode there's no request URL to supply. Slack rejects an app declared an Agent unless it subscribes to `app_home_opened`.
 
-You don't need `app_mention`. Switch spots a message that tags the app from the `message.*` events it already receives.
+You don't need `app_mention`. Switch spots messages that tag the app in the `message.*` events it already receives.
 
 ### Socket Mode, interactivity and commands
 
-Enable **Socket Mode** and **Interactivity**, and add the Switch slash commands listed in the manifest. Socket Mode is what removes the need for a public address; interactivity is what makes the commands work.
+Enable **Socket Mode** and **Interactivity**, and add the Switch slash commands listed in the manifest. Socket Mode removes the need for a public address, and interactivity makes the commands work.
 
 ### The Agents feature
 
-Building the app by hand, this is a toggle in the app's settings rather than a scope you tick — switching **Agents** on is the equivalent of the manifest's `agent_view` block, and Slack adds `assistant:write` for you.
+When you build the app by hand, **Agents** is a toggle in the app's settings, not a scope. Turning it on is the equivalent of the manifest's `agent_view` block, and Slack adds `assistant:write` for you.
 
 **Warning**
 
-Switching **Agents** on removes access to the app for workspace guests, and turns every direct message with it into a thread. Neither can be undone. If guests use Slack in your workspace, leave it off — everything else on this page works without it.
+Turning on **Agents** blocks workspace guests from using the app and turns every direct message with it into a thread. Neither can be undone. If your workspace has guests, leave it off. Everything else on this page works without it.
 
 ## Next steps
 
 - [Create a room](../../getting-started/create-a-room.md) — Turn a Slack channel into a room, or let Switch make the channel
 
-- [Onboard your agents](../../getting-started/onboard-your-agents.md) — Register an agent with the server so you can invite it into the room
+- [Onboard agents](../../getting-started/onboard-your-agents.md) — Register an agent with the server so you can invite it into the room

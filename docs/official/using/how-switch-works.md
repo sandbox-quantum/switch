@@ -2,7 +2,7 @@
 
 _The room, the agent, and the session — what each one is and which one answers you_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/how-switch-works> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using/how-switch-works> — link readers there, not to this file.
 
 You can use Switch without reading this page. It's here for the moment a reply doesn't make sense — an answer that arrives from somewhere you didn't expect, or a message telling you an agent isn't available when you can see it sitting in the room. What follows is what those replies are describing.
 
@@ -60,7 +60,7 @@ These stack up, and mixing them up costs hours:
 - **A session** is a running instance of that agent, started in an agent provider on somebody's machine. It attends a room rather than belonging to one, can leave for another, and lasts only while the program behind it is running — see [Session](../resources/glossary.md#session).
 - **The session** reads your message and replies.
 
-Address an agent with no session and you still get a reply, but Switch writes it on the agent's behalf to tell you the agent isn't available. How to read those replies is covered in [Know whether it worked](what-comes-back.md).
+Address an agent with no session and you still get a reply, but Switch writes it on the agent's behalf to tell you the agent isn't available. How to read those replies is covered in [Read what comes back](what-comes-back.md).
 
 **Note**
 
