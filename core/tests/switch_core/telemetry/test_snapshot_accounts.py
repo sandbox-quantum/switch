@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -27,7 +28,8 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.telemetry.snapshot import collect_usage
+from switch_core.telemetry import snapshot as snapshot_module
+from switch_core.telemetry.snapshot import UsageCounts, collect_usage
 
 OTHER_TENANT = "22222222-2222-2222-2222-222222222222"
 
@@ -212,3 +214,37 @@ async def test_staff_accounts_are_counted_apart(
 
     assert counts.user_count == 5
     assert counts.user_internal_count == 3
+
+
+async def test_a_tenant_that_fails_after_collecting_its_accounts_adds_none_of_them(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing tenant contributes nothing, including account ids it had
+    already collected before the failure, so its people are not counted from a
+    pass that otherwise excluded it."""
+    await _other_tenant(session_factory)
+    healthy = await _account(session_factory, f"{uuid.uuid4().hex[:6]}@example.com")
+    failing = await _account(session_factory, f"{uuid.uuid4().hex[:6]}@example.com")
+    await _chat_account_speaks(session_factory, claimed_by=[healthy])
+    await _chat_account_speaks(
+        session_factory, claimed_by=[failing], tenant_id=OTHER_TENANT
+    )
+    collect = snapshot_module.collect_tenant_counts
+
+    async def fails_after_collecting(
+        session: AsyncSession, tenant_id: str, counts: UsageCounts, now: datetime
+    ) -> None:
+        await collect(session, tenant_id, counts, now)
+        if tenant_id == OTHER_TENANT:
+            raise RuntimeError("simulated failure after the accounts were read")
+
+    monkeypatch.setattr(
+        snapshot_module, "collect_tenant_counts", fails_after_collecting
+    )
+
+    counts = await collect_usage(session_factory)
+
+    assert counts.tenant_failed_count == 1
+    assert counts.user_active_1d == 1
+    assert counts.chat_identity_active_1d == 1

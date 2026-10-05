@@ -15,18 +15,11 @@ from sqlalchemy.orm import InstrumentedAttribute
 INTERNAL_EMAIL_DOMAINS: tuple[str, ...] = ("sandboxaq.com", "sandboxquantum.com")
 
 
-def is_internal_email(email: str) -> bool:
-    domain = email.rpartition("@")[2].lower()
-    return any(
-        domain == internal or domain.endswith(f".{internal}")
-        for internal in INTERNAL_EMAIL_DOMAINS
-    )
-
-
 def internal_email_condition(
     email: ColumnElement[str] | InstrumentedAttribute[str],
 ) -> ColumnElement[bool]:
-    """`is_internal_email` as SQL, for counting without loading addresses."""
+    """Whether `email` is on one of `INTERNAL_EMAIL_DOMAINS` or a subdomain of
+    one, as SQL, so accounts are counted without loading their addresses."""
     lowered = func.lower(email)
     return or_(
         *(

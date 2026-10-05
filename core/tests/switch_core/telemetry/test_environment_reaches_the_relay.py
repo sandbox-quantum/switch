@@ -41,7 +41,7 @@ def _config(environment: str) -> SwitchConfig:
     )
 
 
-@pytest.mark.parametrize("environment", ["prod", "dev", "local"])
+@pytest.mark.parametrize("environment", ["prod", "staging", "dev", "local"])
 async def test_the_configured_environment_is_sent_as_flint_env(
     environment: str,
     session_factory: async_sessionmaker[AsyncSession],
