@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
-import { PRODUCT_NAME } from '@shared/app-identity';
+import { IS_CANARY, PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
@@ -150,6 +150,7 @@ void app.whenReady().then(async () => {
   trackEvent('app_launched', {
     install_kind: await recordLaunch({
       version: await resolveAppVersion(),
+      channel: IS_CANARY ? 'canary' : 'stable',
       // Imported here, not at the top: the client opens the database on import.
       databaseExisted: (await import('./db/client')).databaseExistedAtStart,
     }),

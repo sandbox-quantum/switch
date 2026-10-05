@@ -1,5 +1,5 @@
 import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/constants';
-import { getSessionCookie, listServers } from '@main/core/switch-servers/servers-store';
+import { KV } from '@main/db/kv';
 
 /**
  * Email domains whose accounts are the company's own staff. Their usage is
@@ -52,14 +52,47 @@ export function emailFromJwt(jwt: string): string | null {
   }
 }
 
-/** From every server this installation holds a session for. */
+/**
+ * Each server's answer, kept beside its session rather than read from it.
+ * Working it out from the stored session would decrypt every server's cookie
+ * on every event, and a failed decrypt deletes the cookie: a keychain that is
+ * briefly locked would sign people out of servers they were not even using.
+ * So it is worked out once, from the token in hand, when a session is stored.
+ */
+const store = new KV<{ accounts: Record<string, TelemetryInternal> }>('telemetry-accounts');
+
+let writes: Promise<void> = Promise.resolve();
+
+function update(change: (accounts: Record<string, TelemetryInternal>) => void): Promise<void> {
+  writes = writes.then(async () => {
+    const accounts = (await store.get('accounts')) ?? {};
+    change(accounts);
+    await store.set('accounts', accounts);
+  });
+  return writes;
+}
+
+/** Record the account a server's session was issued to. */
+export function recordSessionAccount(serverId: string, jwt: string): Promise<void> {
+  return update((accounts) => {
+    accounts[serverId] = internalFrom([emailFromJwt(jwt)]);
+  });
+}
+
+/** Forget a server's account when its session goes. */
+export function forgetSessionAccount(serverId: string): Promise<void> {
+  return update((accounts) => {
+    delete accounts[serverId];
+  });
+}
+
+/**
+ * Across every server this installation holds a session for. A session stored
+ * before this was recorded reads as unknown until it is next renewed or
+ * signed in again.
+ */
 export async function currentInternalFlag(): Promise<TelemetryInternal> {
-  const servers = await listServers();
-  const emails = await Promise.all(
-    servers.map(async (server) => {
-      const jwt = await getSessionCookie(server.id);
-      return jwt === null ? null : emailFromJwt(jwt);
-    })
-  );
-  return internalFrom(emails);
+  const answers = Object.values((await store.get('accounts')) ?? {});
+  if (answers.includes('true')) return 'true';
+  return answers.includes('false') ? 'false' : 'unknown';
 }

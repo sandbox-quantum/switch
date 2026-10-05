@@ -1,8 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@main/db/kv', () => ({ KV: class {} }));
+vi.mock('@main/db/kv', () => ({
+  KV: class {
+    private values = new Map<string, unknown>();
+    async get(key: string) {
+      return this.values.get(key) ?? null;
+    }
+    async set(key: string, value: unknown) {
+      this.values.set(key, structuredClone(value));
+    }
+  },
+}));
 
-const { installKindFor } = await import('./launch-history');
+const { installKindFor, recordLaunch } = await import('./launch-history');
 
 describe('which kind of launch this is', () => {
   it('is new on an installation’s very first launch, so counting it counts installs', () => {
@@ -29,5 +39,18 @@ describe('which kind of launch this is', () => {
     expect(installKindFor({ lastVersion: null, version: '1.2.0', databaseExisted: true })).toBe(
       'updated'
     );
+  });
+});
+
+describe('canary and stable, which share one database', () => {
+  it('do not read a switch between them as an upgrade', async () => {
+    const launch = (channel: 'canary' | 'stable', version: string) =>
+      recordLaunch({ version, channel, databaseExisted: true });
+
+    expect(await launch('stable', '1.4.0')).toBe('updated');
+    expect(await launch('canary', '1.5.0-canary.2')).toBe('updated');
+    expect(await launch('stable', '1.4.0')).toBe('same');
+    expect(await launch('canary', '1.5.0-canary.2')).toBe('same');
+    expect(await launch('canary', '1.5.0-canary.3')).toBe('updated');
   });
 });

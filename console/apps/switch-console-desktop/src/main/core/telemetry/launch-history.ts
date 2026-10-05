@@ -24,7 +24,12 @@ export function installKindFor({
   return lastVersion === version ? 'same' : 'updated';
 }
 
-const store = new KV<{ lastLaunchedVersion: string }>('telemetry-launches');
+/**
+ * One record per channel: canary and stable share a database, and comparing
+ * one's version with the other's would read every switch between them as an
+ * upgrade.
+ */
+const store = new KV<Record<string, string>>('telemetry-launches');
 
 let current: TelemetryInstallKind | null = null;
 
@@ -35,14 +40,17 @@ let current: TelemetryInstallKind | null = null;
  */
 export async function recordLaunch({
   version,
+  channel,
   databaseExisted,
 }: {
   version: string;
+  channel: 'canary' | 'stable';
   databaseExisted: boolean;
 }): Promise<TelemetryInstallKind> {
-  const lastVersion = (await store.get('lastLaunchedVersion')) ?? null;
+  const key = `lastLaunchedVersion.${channel}`;
+  const lastVersion = (await store.get(key)) ?? null;
   current = installKindFor({ lastVersion, version, databaseExisted });
-  await store.set('lastLaunchedVersion', version);
+  await store.set(key, version);
   return current;
 }
 
