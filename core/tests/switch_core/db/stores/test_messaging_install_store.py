@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from switch_core.db.models import Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_install_store import (
+    INSTALL_DISCONNECTED,
     MessagingInstallClaimedError,
     MessagingInstallStateError,
     MessagingInstallStore,
@@ -226,6 +227,7 @@ class TestRecordingAnInstall:
                 external_workspace_id=fixture.workspace,
                 encrypted_bot_token="ciphertext",
                 scopes="chat:write",
+                platform_data={},
                 user_id=fixture.user_id,
             )
             await session.commit()
@@ -238,6 +240,7 @@ class TestRecordingAnInstall:
                     external_workspace_id=fixture.workspace,
                     encrypted_bot_token="ciphertext",
                     scopes="chat:write",
+                    platform_data={},
                     user_id=fixture.user_id,
                 )
 
@@ -254,6 +257,7 @@ class TestRecordingAnInstall:
                 external_workspace_id=fixture.workspace,
                 encrypted_bot_token="ciphertext",
                 scopes="chat:write",
+                platform_data={},
                 user_id=fixture.user_id,
             )
             await session.commit()
@@ -286,6 +290,7 @@ class TestRecordingAnInstall:
                 external_workspace_id=fixture.workspace,
                 encrypted_bot_token=None,
                 scopes="bot applications.commands",
+                platform_data={},
                 user_id=fixture.user_id,
             )
             assert recorded.encrypted_bot_token is None
@@ -297,3 +302,69 @@ class TestRecordingAnInstall:
             )
             assert mine is not None
             assert mine.encrypted_bot_token is None
+
+
+class TestRefreshingALiveInstall:
+    """What a repeated approval of a still-serving install (CHOO-3017's
+    "approving again") records."""
+
+    async def test_scopes_are_replaced_and_platform_data_is_merged_over(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _two_tenants(rls_harness.owner)
+        store = MessagingInstallStore()
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            recorded = await store.record_install(
+                session,
+                platform="teams",
+                external_workspace_id=fixture.workspace,
+                encrypted_bot_token=None,
+                scopes="a b",
+                platform_data={"kept": "yes", "catalog_app_id": "old"},
+                user_id=fixture.user_id,
+            )
+            install_id = recorded.id
+            await session.commit()
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            refreshed = await store.refresh(
+                session,
+                install_id=install_id,
+                scopes="a b c",
+                platform_data={"catalog_app_id": "new"},
+            )
+
+            assert refreshed.scopes == "a b c"
+            assert refreshed.platform_data == {
+                "kept": "yes",
+                "catalog_app_id": "new",
+            }
+
+    async def test_an_install_that_has_ended_cannot_be_refreshed(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Approving again is for the install still serving the workspace — one
+        that has ended needs a fresh install, not a patch to a dead row."""
+        fixture = await _two_tenants(rls_harness.owner)
+        store = MessagingInstallStore()
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            recorded = await store.record_install(
+                session,
+                platform="teams",
+                external_workspace_id=fixture.workspace,
+                encrypted_bot_token=None,
+                scopes="a",
+                platform_data={},
+                user_id=fixture.user_id,
+            )
+            install_id = recorded.id
+            recorded.status = INSTALL_DISCONNECTED
+            await session.commit()
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            with pytest.raises(MessagingInstallStateError, match="ended"):
+                await store.refresh(
+                    session, install_id=install_id, scopes="a b", platform_data={}
+                )

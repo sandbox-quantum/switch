@@ -61,6 +61,7 @@ def seal(ticket: InstallTicket, *, keyring: Keyring) -> str:
             "name": ticket.grant.workspace_name,
             "tok": ticket.grant.bot_token,
             "scopes": ticket.grant.scopes,
+            "pd": dict(ticket.grant.platform_data),
         },
         separators=(",", ":"),
     )
@@ -91,5 +92,6 @@ def open_ticket(token: str, *, keyring: Keyring) -> InstallTicket:
             workspace_name=decoded["name"],
             bot_token=decoded["tok"],
             scopes=decoded["scopes"],
+            platform_data=decoded["pd"],
         ),
     )

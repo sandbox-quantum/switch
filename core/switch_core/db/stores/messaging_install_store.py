@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
@@ -156,6 +157,7 @@ class MessagingInstallStore:
         external_workspace_id: str,
         encrypted_bot_token: str | None,
         scopes: str,
+        platform_data: Mapping[str, object],
         user_id: str,
     ) -> MessagingInstall:
         """Claim a workspace for the bound tenant.
@@ -180,6 +182,7 @@ class MessagingInstallStore:
             external_workspace_id=external_workspace_id,
             encrypted_bot_token=encrypted_bot_token,
             scopes=scopes,
+            platform_data=dict(platform_data),
             status=INSTALL_ACTIVE,
             installed_by_user_id=user_id,
         )
@@ -267,6 +270,53 @@ class MessagingInstallStore:
             )
         )
         return list(result.scalars())
+
+    async def refresh(
+        self,
+        session: AsyncSession,
+        *,
+        install_id: str,
+        scopes: str,
+        platform_data: Mapping[str, object],
+    ) -> MessagingInstall:
+        """Record what a repeated approval of a live install granted.
+
+        For a platform with no per-install token, approving again is how an
+        organisation grants new permissions, takes a newer version of the app,
+        or restores an approval it withdrew — and the install it refreshes is
+        the same one, still serving, so nothing about who holds the workspace
+        changes.
+        """
+        install = await self.get(session, install_id=install_id)
+        if install.status != INSTALL_ACTIVE:
+            raise MessagingInstallStateError(
+                "this install has ended, so it cannot be approved again; install "
+                "it afresh instead"
+            )
+        install.scopes = scopes
+        # Merged over what is kept rather than replacing it: a repeated
+        # approval that could not re-learn something (an id it failed to read
+        # this time) must not erase what an earlier one learned.
+        install.platform_data = {**install.platform_data, **platform_data}
+        await session.flush()
+        return install
+
+    async def remember(
+        self,
+        session: AsyncSession,
+        *,
+        install_id: str,
+        platform_data: Mapping[str, object],
+    ) -> MessagingInstall:
+        """Add to what a live install keeps about its platform.
+
+        For a fact learned after the install, from the platform itself —
+        never from a person's input.
+        """
+        install = await self.get(session, install_id=install_id)
+        install.platform_data = {**install.platform_data, **platform_data}
+        await session.flush()
+        return install
 
     async def end(
         self, session: AsyncSession, *, install_id: str, status: str

@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
+from switch_core.bridges.collaboration.adapter import (
+    ConfigEditRefused,
+    DirectorySearchBusy,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
@@ -17,6 +20,8 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeInstallLink,
+    BridgeNotRunning,
+    BridgeOperationError,
     BridgeStartRefused,
     DirectoryUser,
 )
@@ -119,6 +124,30 @@ async def _install_note(
         return None
 
 
+async def _attention(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> str | None:
+    """What a workspace admin must do for the bridge to keep working, from the
+    live adapter. None when the bridge is not running or nothing is wrong."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    if adapter is None:
+        return None
+    try:
+        return await adapter.attention()
+    except Exception:
+        logger.warning(
+            "Failed to read the attention note for bridge %s", bridge_id, exc_info=True
+        )
+        return None
+
+
+def _places_app_in_teams(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> bool:
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    return adapter is not None and adapter.places_app_in_teams
+
+
 async def _detail(
     bridge: CollaborationBridge,
     *,
@@ -149,6 +178,8 @@ async def _detail(
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
         ),
+        attention=await _attention(bridge.id, collab_lifecycle),
+        team_placement_supported=_places_app_in_teams(bridge.id, collab_lifecycle),
     )
 
 
@@ -335,6 +366,24 @@ async def update_bridge(
                 status_code=422,
                 detail="event_delivery cannot be changed on an existing connection.",
             )
+        # A connection on an app the deployment owns may hold settings that
+        # decide where the deployment's credential is pointed; only the ones
+        # its adapter names are anyone's to change.
+        editable = collab_lifecycle.editable_config_keys(bridge.type, current)
+        if editable is not None:
+            locked = sorted(
+                key
+                for key, value in payload.connection_config.items()
+                if key not in editable and current.get(key) != value
+            )
+            if locked:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{', '.join(locked)} cannot be changed on this "
+                        "connection: Switch manages it for the installed app."
+                    ),
+                )
         # Not held across the platform's credential check; nothing is written
         # until it passes, so a refused edit still changes nothing.
         await session.commit()
@@ -357,6 +406,19 @@ async def update_bridge(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (BridgeClaimConflict, BridgeCredentialError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            await collab_lifecycle.check_config_edit(
+                bridge_id=bridge_id,
+                bridge_type=bridge.type,
+                current=current,
+                connection_config=merged,
+            )
+        except ConfigEditRefused as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except BridgeNotRunning as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except BridgeOperationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     if payload.agent_greetings_enabled is not None:
         bridge = await bridge_store.set_agent_greetings_enabled(

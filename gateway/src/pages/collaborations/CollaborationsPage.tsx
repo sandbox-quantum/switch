@@ -1,6 +1,7 @@
 import AddLinkOutlined from "@mui/icons-material/AddLinkOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
+import GroupsOutlined from "@mui/icons-material/GroupsOutlined";
 import {
   Alert,
   Box,
@@ -21,13 +22,20 @@ import {
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
-import { type BridgeDetail, deleteBridge, updateBridge } from "../../data/api";
+import {
+  type BridgeDetail,
+  beginAppInstall,
+  deleteBridge,
+  updateBridge,
+} from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { useBridges } from "../../data/hooks";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import { useBridges, useInstallablePlatforms } from "../../data/hooks";
+import { formatDate, platformLabel, titleCase } from "../../theme/hootFormat";
 import AddToChatDialog from "./AddToChatDialog";
+import AttentionBanner from "./AttentionBanner";
 import InstalledAppsSection from "./InstalledAppsSection";
 import RegisterMessagingAppDialog from "./RegisterMessagingAppDialog";
+import TeamsPlacementDialog from "./TeamsPlacementDialog";
 
 type BridgeRow = BridgeDetail & { id: string };
 
@@ -40,12 +48,16 @@ const STATUS_COLOR: Record<string, "success" | "error" | "default"> = {
 export default function CollaborationsPage() {
   const { canAdminTenant: isAdmin } = useAuth();
   const { data: bridges, loading, refetch } = useBridges();
+  const { data: installablePlatforms } = useInstallablePlatforms();
   const [deleteTarget, setDeleteTarget] = useState<BridgeDetail | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<BridgeDetail | null>(null);
+  const [teamsTarget, setTeamsTarget] = useState<BridgeDetail | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [approveError, setApproveError] = useState<string | null>(null);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -85,6 +97,20 @@ export default function CollaborationsPage() {
     [refetch],
   );
 
+  // Re-approval is the same install flow the "Add to..." button starts: the
+  // same workspace approving again refreshes the existing install, it does
+  // not create a second one.
+  const handleApproveAgain = useCallback(async (bridgeId: string, platform: string) => {
+    setApprovingId(bridgeId);
+    setApproveError(null);
+    try {
+      window.location.href = await beginAppInstall(platform);
+    } catch (e) {
+      setApproveError(e instanceof Error ? e.message : "Failed to start the install");
+      setApprovingId(null);
+    }
+  }, []);
+
   const columns = useMemo<GridColDef<BridgeRow>[]>(
     () => [
       {
@@ -98,7 +124,7 @@ export default function CollaborationsPage() {
         headerName: "Type",
         width: 130,
         renderCell: ({ value }) => (
-          <Chip label={titleCase(String(value))} size="small" />
+          <Chip label={platformLabel(String(value))} size="small" />
         ),
       },
       {
@@ -167,12 +193,12 @@ export default function CollaborationsPage() {
             {
               field: "actions" as const,
               headerName: "",
-              width: 110,
+              width: 140,
               sortable: false,
               filterable: false,
               // Right-aligned and bottom-anchored to the same edge on every
-              // row: rows carry one icon or two depending on whether the
-              // platform offers an install link, and without this the delete
+              // row: a row carries between one and three icons depending on
+              // what the platform offers, and without this the delete
               // buttons sit at different x positions down the column.
               align: "right" as const,
               renderCell: ({ row }: { row: BridgeRow }) => (
@@ -183,6 +209,13 @@ export default function CollaborationsPage() {
                   justifyContent="flex-end"
                   height="100%"
                 >
+                  {row.team_placement_supported && (
+                    <Tooltip title="Choose which teams this app is in">
+                      <IconButton size="small" onClick={() => setTeamsTarget(row)}>
+                        <GroupsOutlined fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
                   {(row.install_links ?? []).length > 0 && (
                     <Tooltip title="Add this app to a chat">
                       <IconButton
@@ -210,6 +243,11 @@ export default function CollaborationsPage() {
     [bridges],
   );
 
+  const needsAttention = useMemo(
+    () => rows.filter((b) => !!b.attention),
+    [rows],
+  );
+
   return (
     <Box>
       <Stack direction="row" alignItems="center" mb={2}>
@@ -225,6 +263,27 @@ export default function CollaborationsPage() {
           </Button>
         )}
       </Stack>
+
+      {approveError && (
+        <Alert severity="error" sx={{ mb: 1 }} onClose={() => setApproveError(null)}>
+          {approveError}
+        </Alert>
+      )}
+
+      {needsAttention.map((b) => (
+        <AttentionBanner
+          key={b.bridge_id}
+          displayName={b.display_name}
+          message={b.attention ?? ""}
+          canApproveAgain={
+            isAdmin &&
+            b.team_placement_supported &&
+            (installablePlatforms ?? []).includes(b.bridge_type)
+          }
+          approving={approvingId === b.bridge_id}
+          onApproveAgain={() => handleApproveAgain(b.bridge_id, b.bridge_type)}
+        />
+      ))}
 
       {loading ? (
         <CircularProgress />
@@ -243,6 +302,12 @@ export default function CollaborationsPage() {
       <AddToChatDialog
         bridge={installTarget}
         onClose={() => setInstallTarget(null)}
+      />
+
+      <TeamsPlacementDialog
+        bridge={teamsTarget}
+        onClose={() => setTeamsTarget(null)}
+        onChanged={refetch}
       />
 
       <Dialog

@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The row's siblings reach the renderer IPC bridge at import time, which only
 // exists inside Electron. Hoisted so it is in place before those modules are
@@ -12,6 +12,19 @@ vi.hoisted(() => {
     eventSend: () => {},
   } as unknown as typeof window.electronAPI;
 });
+
+const beginMessagingAppInstall = vi.hoisted(() => vi.fn());
+const openExternalUrl = vi.hoisted(() => vi.fn());
+const showModal = vi.hoisted(() => vi.fn());
+
+vi.mock('@renderer/lib/ipc', () => ({
+  rpc: { workspaces: { beginMessagingAppInstall } },
+  events: { on: () => () => {}, emit: () => {} },
+}));
+vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
+vi.mock('@renderer/lib/modal/modal-provider', () => ({
+  useShowModal: (id: string) => (args: unknown) => showModal(id, args),
+}));
 
 /**
  * One messaging app, one line (CHOO-2137).
@@ -56,6 +69,8 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    attention: null,
+    teamPlacementSupported: false,
     ...patch,
   };
 }
@@ -71,6 +86,7 @@ const IDENTITY: LinkedIdentity = {
 
 function row(
   overrides: {
+    workspaceId?: string | null;
     bridge?: RemoteBridge;
     identities?: LinkedIdentity[] | null;
     isAdmin?: boolean;
@@ -79,7 +95,7 @@ function row(
 ) {
   return (
     <MessagingAppRow
-      workspaceId="ws-1"
+      workspaceId={overrides.workspaceId === undefined ? 'ws-1' : overrides.workspaceId}
       serverId="srv-1"
       bridge={overrides.bridge ?? bridge()}
       identities={overrides.identities === undefined ? [] : overrides.identities}
@@ -294,5 +310,224 @@ describe('channel creation', () => {
     expect(
       (await menuItem(el, 'Create channels on Slack')).getAttribute('data-disabled')
     ).toBeNull();
+  });
+});
+
+/** A promise the test resolves on its own schedule, to pin a request mid-flight. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i++) await act(async () => await Promise.resolve());
+}
+
+/**
+ * The generic attention warning, and "Approve again" on top of it for the
+ * distributed Teams app alone.
+ *
+ * "Approve again" re-runs the same install flow a first approval does, which
+ * only makes sense for a connection that came from it — gating it on
+ * `teamPlacementSupported` is what keeps it off a Teams bridge registered with
+ * pasted-in credentials, and off every other platform.
+ */
+describe('the attention warning', () => {
+  beforeEach(() => {
+    beginMessagingAppInstall.mockReset().mockResolvedValue('https://teams.example/consent');
+    openExternalUrl.mockReset().mockResolvedValue(true);
+  });
+
+  it('shows the server’s own sentence when a bridge has something wrong with it', async () => {
+    const el = await render(row({ bridge: bridge({ attention: 'Approval was withdrawn.' }) }));
+
+    expect(el.textContent).toContain('Approval was withdrawn.');
+  });
+
+  it('shows nothing extra when there is nothing to warn about', async () => {
+    const el = await render(row({ bridge: bridge({ attention: null }) }));
+
+    expect(el.textContent).not.toContain('Approve again');
+  });
+
+  it('offers Approve again to an admin on a team-placement connection', async () => {
+    const el = await render(
+      row({
+        isAdmin: true,
+        bridge: bridge({ attention: 'Approval was withdrawn.', teamPlacementSupported: true }),
+      })
+    );
+
+    expect(buttonLabels(el)).toContain('Approve again');
+  });
+
+  it('does not offer it to a non-admin, even on a team-placement connection', async () => {
+    const el = await render(
+      row({
+        isAdmin: false,
+        bridge: bridge({ attention: 'Approval was withdrawn.', teamPlacementSupported: true }),
+      })
+    );
+
+    expect(buttonLabels(el)).not.toContain('Approve again');
+  });
+
+  it('does not offer it on a connection that does not support team placement', async () => {
+    const el = await render(
+      row({
+        isAdmin: true,
+        bridge: bridge({ attention: 'Approval was withdrawn.', teamPlacementSupported: false }),
+      })
+    );
+
+    expect(buttonLabels(el)).not.toContain('Approve again');
+  });
+
+  it('starts the install and opens the consent page on click', async () => {
+    const el = await render(
+      row({
+        isAdmin: true,
+        bridge: bridge({
+          type: 'teams',
+          attention: 'Approval was withdrawn.',
+          teamPlacementSupported: true,
+        }),
+      })
+    );
+
+    const approve = [...el.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Approve again'
+    );
+    await act(async () => approve!.click());
+    await settle();
+
+    expect(beginMessagingAppInstall).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      platform: 'teams',
+    });
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      'https://teams.example/consent',
+      'Could not open Microsoft Teams'
+    );
+    expect(el.textContent).toContain('Approve again in the browser window');
+  });
+
+  it('shows why re-approving could not start, rather than leaving it unexplained', async () => {
+    beginMessagingAppInstall.mockRejectedValue(new Error('install refused'));
+    const el = await render(
+      row({
+        isAdmin: true,
+        bridge: bridge({
+          type: 'teams',
+          attention: 'Approval was withdrawn.',
+          teamPlacementSupported: true,
+        }),
+      })
+    );
+
+    const approve = [...el.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Approve again'
+    );
+    await act(async () => approve!.click());
+    await settle();
+
+    expect(el.textContent).toContain('Could not start re-approving Microsoft Teams');
+    expect(openExternalUrl).not.toHaveBeenCalled();
+  });
+
+  it('disables the button while the install is starting', async () => {
+    const { promise, resolve } = deferred<string>();
+    beginMessagingAppInstall.mockReturnValue(promise);
+    const el = await render(
+      row({
+        isAdmin: true,
+        bridge: bridge({
+          type: 'teams',
+          attention: 'Approval was withdrawn.',
+          teamPlacementSupported: true,
+        }),
+      })
+    );
+
+    const approve = [...el.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Approve again'
+    ) as HTMLButtonElement;
+    await act(async () => approve.click());
+    await settle();
+
+    expect(
+      [...el.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Opening…')?.disabled
+    ).toBe(true);
+
+    await act(async () => resolve('https://teams.example/consent'));
+    await settle();
+  });
+});
+
+describe('the Teams placement button', () => {
+  it('is offered to an admin on a connection that supports team placement', async () => {
+    const el = await render(
+      row({ isAdmin: true, bridge: bridge({ teamPlacementSupported: true }) })
+    );
+
+    expect(await openMenu(el)).toContain('Manage Microsoft Teams…');
+  });
+
+  it('is withheld from a non-admin', async () => {
+    const el = await render(
+      row({ isAdmin: false, bridge: bridge({ teamPlacementSupported: true }) })
+    );
+
+    expect(await openMenu(el)).not.toContain('Manage Microsoft Teams…');
+  });
+
+  it('is withheld on a connection that does not support team placement', async () => {
+    const el = await render(
+      row({ isAdmin: true, bridge: bridge({ teamPlacementSupported: false }) })
+    );
+
+    expect(await openMenu(el)).not.toContain('Manage Microsoft Teams…');
+  });
+
+  it('opens the Teams placement modal for this bridge', async () => {
+    const el = await render(
+      row({
+        isAdmin: true,
+        bridge: bridge({
+          id: 'b-teams',
+          displayName: 'Contoso Teams',
+          teamPlacementSupported: true,
+        }),
+      })
+    );
+    await openMenu(el);
+
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (i) => i.textContent?.trim() === 'Manage Microsoft Teams…'
+    );
+    await act(async () => item!.click());
+
+    expect(showModal).toHaveBeenCalledWith('teamsPlacementModal', {
+      workspaceId: 'ws-1',
+      bridgeId: 'b-teams',
+      bridgeDisplayName: 'Contoso Teams',
+    });
+  });
+
+  it('does nothing while the workspace has not resolved yet', async () => {
+    const el = await render(
+      row({ workspaceId: null, isAdmin: true, bridge: bridge({ teamPlacementSupported: true }) })
+    );
+    await openMenu(el);
+
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (i) => i.textContent?.trim() === 'Manage Microsoft Teams…'
+    );
+    await act(async () => item!.click());
+
+    expect(showModal).not.toHaveBeenCalled();
   });
 });

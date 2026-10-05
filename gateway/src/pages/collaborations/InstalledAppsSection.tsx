@@ -15,7 +15,7 @@ import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type InstalledApp, beginAppInstall } from "../../data/api";
 import { useInstallablePlatforms, useInstalledApps } from "../../data/hooks";
-import { EM_DASH, MONO_SX, formatDate, titleCase } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, formatDate, platformLabel, titleCase } from "../../theme/hootFormat";
 import DisconnectAppDialog from "./DisconnectAppDialog";
 
 /**
@@ -91,7 +91,7 @@ export default function InstalledAppsSection({
         headerName: "Platform",
         width: 130,
         renderCell: ({ value }) => (
-          <Chip label={titleCase(String(value))} size="small" />
+          <Chip label={platformLabel(String(value))} size="small" />
         ),
       },
       {
@@ -194,7 +194,7 @@ export default function InstalledAppsSection({
                 }
                 onClick={() => handleInstall(platform)}
               >
-                Add to {titleCase(platform)}
+                Add to {platformLabel(platform)}
               </Button>
             ))}
           </Stack>
