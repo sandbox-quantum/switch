@@ -22,6 +22,7 @@ _BASE_KWARGS = dict(
     jwt_secret_key="jwt",
     gateway_admin_email="admin@example.com",
     gateway_admin_password="pw",
+    secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 )
 
 

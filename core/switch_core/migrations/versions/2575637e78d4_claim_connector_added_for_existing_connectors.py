@@ -1,7 +1,7 @@
 """claim connector_added for every connector that already exists
 
 Revision ID: 2575637e78d4
-Revises: a9e1c3f75b20
+Revises: e4a7c1d93b25
 
 `connector_added` reports a connector's setup time — configuration saved to
 first connect — once, on that first connect, guarded by a claim in
@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "2575637e78d4"
-down_revision: str | Sequence[str] | None = "a9e1c3f75b20"
+down_revision: str | Sequence[str] | None = "e4a7c1d93b25"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

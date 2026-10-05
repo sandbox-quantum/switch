@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from tests.switch_core.test_migration_oidc_identities_backfill import _upgrade_to
 
 _DB = "migration_claim_existing_connectors"
-_PRE_MIGRATION_REVISION = "a9e1c3f75b20"
+_PRE_MIGRATION_REVISION = "e4a7c1d93b25"
 _MIGRATION_UNDER_TEST = "2575637e78d4"
 
 

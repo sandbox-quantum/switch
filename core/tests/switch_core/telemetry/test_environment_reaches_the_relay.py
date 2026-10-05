@@ -34,6 +34,7 @@ def _config(environment: str) -> SwitchConfig:
         jwt_secret_key="k",
         gateway_admin_email="a@b.test",
         gateway_admin_password="pw",
+        secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         telemetry_enabled=True,
         telemetry_endpoint="https://relay.example",
         telemetry_environment=environment,
