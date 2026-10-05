@@ -488,6 +488,14 @@ class TestAuthCacheConfig:
         with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_TTL_SECONDS"):
             _config(agent_auth_cache_ttl_seconds=-1)
 
+    def test_a_ttl_whose_jitter_reaches_the_heartbeat_ttl_fails_at_startup(
+        self,
+    ) -> None:
+        longest = HEARTBEAT_TTL_SECONDS / (1 + EXPIRY_JITTER)
+        assert _config(agent_auth_cache_ttl_seconds=longest - 0.1)
+        with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_TTL_SECONDS"):
+            _config(agent_auth_cache_ttl_seconds=longest)
+
     def test_an_unbounded_cache_fails_at_startup(self) -> None:
         with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_MAX_ENTRIES"):
             _config(agent_auth_cache_max_entries=0)
