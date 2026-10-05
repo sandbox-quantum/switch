@@ -14,7 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
-from switch_core.db.models import AgentControllerEnrollmentCode
+from switch_core.db.models import (
+    CONTROLLER_REVOKED_KEY_TYPE,
+    AgentControllerEnrollmentCode,
+)
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.management.bindings import load_bindings
 from switch_core.management.controller_routes import ASSIGNMENT_FORMAT
@@ -231,7 +234,49 @@ class TestTokenExchange:
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "invalid_credential"
 
-    async def test_a_revoked_controllers_credential_no_longer_exchanges(
+    async def test_a_revoked_controllers_credential_is_told_it_is_revoked(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            revoked = await client.delete(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                cookies=cookies_for(owner),
+            )
+            assert revoked.status_code == 200, revoked.text
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/token",
+                json={"credential": controller.credential},
+            )
+        assert response.status_code == 401
+        assert response.json() == {
+            "error": {
+                "code": "controller_revoked",
+                "message": "The controller has been revoked.",
+                "retryable": False,
+            }
+        }
+
+    async def test_a_revoked_credential_for_another_controller_is_only_invalid(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            first = await enroll_console(harness, client, owner, "one")
+            second = await enroll_console(harness, client, owner, "two")
+            await client.delete(
+                f"/gateway/management/controllers/{first.controller_id}",
+                cookies=cookies_for(owner),
+            )
+            response = await client.post(
+                f"/v1/management/controllers/{second.controller_id}/token",
+                json={"credential": first.credential},
+            )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_credential"
+
+    async def test_revocation_retires_the_credential_rather_than_deleting_it(
         self, harness: Harness
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -241,13 +286,12 @@ class TestTokenExchange:
                 f"/gateway/management/controllers/{controller.controller_id}",
                 cookies=cookies_for(owner),
             )
-            response = await client.post(
-                f"/v1/management/controllers/{controller.controller_id}/token",
-                json={"credential": controller.credential},
+        async with harness.session_factory() as session:
+            key = await ApiKeyStore().get_by_hash(
+                session, hashlib.sha256(controller.credential.encode()).hexdigest()
             )
-        # Revocation deletes the credential, so it no longer resolves at all.
-        assert response.status_code == 401
-        assert response.json()["error"]["code"] == "invalid_credential"
+        assert key is not None
+        assert key.type == CONTROLLER_REVOKED_KEY_TYPE
 
 
 class TestCredentialRotation:

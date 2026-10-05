@@ -215,6 +215,30 @@ class TestRefusals:
         )
         assert _refusal(sent) == (401, "controller_revoked")
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/v1/management/controllers/x/assignment",
+            "/agents/x/ops/post_message",
+            "/agents/register",
+        ],
+    )
+    async def test_a_revoked_controllers_credential_authenticates_nothing(
+        self, harness: Harness, path: str
+    ) -> None:
+        controller = await _enrolled(harness)
+        async with harness.client() as client:
+            await client.delete(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                cookies=cookies_for(controller.owner),
+            )
+        mw, captured = _middleware(
+            harness, controller_auth=harness.management.authenticator
+        )
+        sent = await _dispatch(mw, path, controller.credential)
+        assert sent[0]["status"] == 401
+        assert captured == {}
+
     @pytest.mark.parametrize("token", [None, "an-agent-api-key", "swcc_credential"])
     async def test_anything_but_an_access_token_is_refused(
         self, harness: Harness, token: str | None

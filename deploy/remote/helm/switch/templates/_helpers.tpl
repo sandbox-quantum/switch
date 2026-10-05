@@ -48,11 +48,24 @@ rendered from this one source and cannot drift from the release's own.
 {{- if not .Values.postgresql.existingSecret }}
 POSTGRES_PASSWORD: {{ required "secrets.postgresPassword is required (unless postgresql.existingSecret is set)" .Values.secrets.postgresPassword | b64enc | quote }}
 {{- end }}
+{{- if and (eq .Values.postgresql.mode "managed") .Values.secrets.dbRuntimePassword (not .Values.postgresql.managed.runtimeExistingSecret) }}
+DB_RUNTIME_PASSWORD: {{ .Values.secrets.dbRuntimePassword | b64enc | quote }}
+{{- end }}
 {{- if and .Values.postgresql.owner.username (not .Values.postgresql.owner.existingSecret) }}
 DB_OWNER_PASSWORD: {{ required "secrets.dbOwnerPassword is required when postgresql.owner.username is set (unless postgresql.owner.existingSecret is set)" .Values.secrets.dbOwnerPassword | b64enc | quote }}
 {{- end }}
 AGENT_REGISTRATION_TOKEN: {{ required "secrets.agentRegistrationToken is required" .Values.secrets.agentRegistrationToken | b64enc | quote }}
-JWT_SECRET_KEY: {{ required "secrets.jwtSecretKey is required" .Values.secrets.jwtSecretKey | b64enc | quote }}
+SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see values.yaml)" .Values.secrets.secretKeys | b64enc | quote }}
+{{- with .Values.secrets.jwtSecretKey }}
+JWT_SECRET_KEY: {{ . | b64enc | quote }}
+{{- end }}
+{{- if .Values.switchCore.agentManagementEnabled }}
+{{- $controllerTokenSecret := required "secrets.controllerTokenSecret is required when switchCore.agentManagementEnabled is true (at least 32 characters, see values.yaml)" .Values.secrets.controllerTokenSecret }}
+{{- if lt (len $controllerTokenSecret) 32 }}
+{{- fail (printf "secrets.controllerTokenSecret must be at least 32 characters, got %d." (len $controllerTokenSecret)) }}
+{{- end }}
+CONTROLLER_TOKEN_SECRET: {{ $controllerTokenSecret | b64enc | quote }}
+{{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
 GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
 {{- if .Values.mattermost.enabled }}
@@ -177,6 +190,42 @@ external secret (e.g. one synced by external-secrets / sealed-secrets).
 
 {{- define "switch.postgresSecretKey" -}}
 {{- .Values.postgresql.existingSecretKey | default "POSTGRES_PASSWORD" -}}
+{{- end }}
+
+{{/*
+Where DB_USER's password comes from. In mode: managed the runtime role has a
+password of its own when secrets.dbRuntimePassword or
+postgresql.managed.runtimeExistingSecret is set, and shares the superuser's
+otherwise. In mode: existing DB_USER's password is POSTGRES_PASSWORD, as
+before.
+*/}}
+{{- define "switch.runtimePasswordSeparate" -}}
+{{- if and .Values.secrets.existingSecret .Values.secrets.dbRuntimePassword -}}
+{{- fail "secrets.dbRuntimePassword cannot be used with secrets.existingSecret: the chart renders no Secret to put it in. Store the password in a Secret and name it in postgresql.managed.runtimeExistingSecret (it may be the same Secret as secrets.existingSecret)." -}}
+{{- end -}}
+{{- if and (eq .Values.postgresql.mode "managed") (or .Values.postgresql.managed.runtimeExistingSecret .Values.secrets.dbRuntimePassword) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{- define "switch.runtimeSecretName" -}}
+{{- if not (include "switch.runtimePasswordSeparate" .) -}}
+{{- include "switch.postgresSecretName" . -}}
+{{- else if .Values.postgresql.managed.runtimeExistingSecret -}}
+{{- .Values.postgresql.managed.runtimeExistingSecret -}}
+{{- else -}}
+{{- include "switch.secretName" . -}}
+{{- end -}}
+{{- end }}
+
+{{- define "switch.runtimeSecretKey" -}}
+{{- if not (include "switch.runtimePasswordSeparate" .) -}}
+{{- include "switch.postgresSecretKey" . -}}
+{{- else if .Values.postgresql.managed.runtimeExistingSecret -}}
+{{- .Values.postgresql.managed.runtimeExistingSecretKey | default "DB_RUNTIME_PASSWORD" -}}
+{{- else -}}
+DB_RUNTIME_PASSWORD
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -502,6 +551,11 @@ switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
 Include with `nindent 12`.
+
+Pass `omitOwnerCredentials: true` in the context for the serving container:
+it gets no DB_OWNER_* and DB_MIGRATE_ON_BOOT=false, because its init container
+has already migrated as the owner. Only the init container and the Job hold
+the owner's password.
 */}}
 {{- define "switch.coreEnv" -}}
 - name: DB_HOST
@@ -513,12 +567,15 @@ Include with `nindent 12`.
 - name: DB_PASSWORD
   valueFrom:
     secretKeyRef:
-      name: {{ include "switch.postgresSecretName" . }}
-      key: {{ include "switch.postgresSecretKey" . }}
+      name: {{ include "switch.runtimeSecretName" . }}
+      key: {{ include "switch.runtimeSecretKey" . }}
 - name: DB_NAME
   value: {{ include "switch.postgresDatabase" . | quote }}
 {{- $ownerUser := include "switch.postgresOwnerUser" . }}
-{{- if $ownerUser }}
+{{- if .omitOwnerCredentials }}
+- name: DB_MIGRATE_ON_BOOT
+  value: "false"
+{{- else if $ownerUser }}
 - name: DB_OWNER_USER
   value: {{ $ownerUser | quote }}
 - name: DB_OWNER_PASSWORD
@@ -575,11 +632,26 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: AGENT_REGISTRATION_TOKEN
+- name: SECRET_KEYS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: SECRET_KEYS
 - name: JWT_SECRET_KEY
   valueFrom:
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
+      optional: true
+- name: AGENT_MANAGEMENT_ENABLED
+  value: {{ .Values.switchCore.agentManagementEnabled | quote }}
+{{- if .Values.switchCore.agentManagementEnabled }}
+- name: CONTROLLER_TOKEN_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: CONTROLLER_TOKEN_SECRET
+{{- end }}
 - name: GATEWAY_ADMIN_EMAIL
   valueFrom:
     secretKeyRef:
@@ -635,6 +707,14 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
+{{- $outboundHosts := .Values.switchCore.outbound.allowedPrivateHosts }}
+{{- if .Values.mattermost.enabled }}
+{{- $outboundHosts = append $outboundHosts (include "switch.mattermostHost" .) }}
+{{- end }}
+{{- if $outboundHosts }}
+- name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
+  value: {{ join "," $outboundHosts | quote }}
+{{- end }}
 {{- with .Values.switchCore.smtp }}
 {{- if .enabled }}
 {{- if not $.Values.switchCore.frontendBaseUrl }}

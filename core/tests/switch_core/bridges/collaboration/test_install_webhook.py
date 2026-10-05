@@ -62,13 +62,14 @@ from switch_core.db.stores.messaging_event_store import (
     MessagingEventReceiptStore,
 )
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.keys import Keyring
 from switch_core.tenant_context import current_tenant_id
 from tests.conftest import RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
 
 _SIGNING_SECRET = "test-signing-secret"
-_SECRET = "test-secret"
+_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 _ORIGIN = "https://switch.example"
 
 
@@ -282,7 +283,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
         public_origin=_ORIGIN,
-        secret=_SECRET,
+        keyring=_KEYRING,
     )
 
     app = FastAPI()

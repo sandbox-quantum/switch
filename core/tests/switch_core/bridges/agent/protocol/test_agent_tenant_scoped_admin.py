@@ -44,6 +44,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
 
 TENANT_B = "tenant-b"
@@ -91,7 +92,9 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc.user_store = UserStore()  # type: ignore[attr-defined]
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
-    svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]
+    svc.config = SimpleNamespace(
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+    )  # type: ignore[attr-defined]
     return svc
 
 

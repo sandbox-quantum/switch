@@ -134,7 +134,7 @@ async def login(
     set_session_cookie(
         response,
         user,
-        config.jwt_secret_key,
+        config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
     )
@@ -225,7 +225,7 @@ async def signup(
         set_session_cookie(
             response,
             user,
-            config.jwt_secret_key,
+            config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
         )
@@ -254,7 +254,7 @@ async def refresh(
     set_session_cookie(
         response,
         user,
-        config.jwt_secret_key,
+        config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
     )

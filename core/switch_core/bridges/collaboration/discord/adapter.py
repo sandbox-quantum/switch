@@ -550,6 +550,10 @@ class DiscordAdapter(PlatformAdapter):
     #: it may always delete.
     removes_answered_cards: ClassVar[bool] = True
 
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        return f"Discord server {connection_config['guild_id']}"
+
     def __init__(self, *, config: DiscordConnectionConfig) -> None:
         super().__init__()
         self._config = config

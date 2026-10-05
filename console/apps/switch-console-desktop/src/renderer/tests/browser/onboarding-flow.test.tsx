@@ -1,3 +1,6 @@
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 /**
  * The path a fresh install takes to its first server.
  *
@@ -7,9 +10,8 @@
  * the one thing the first-run form does differently — not asking for a name —
  * still produces a server with a name on it.
  */
-import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ModalProvider from '@renderer/lib/modal/modal-provider';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 const addServer = vi.hoisted(() => vi.fn());
 const setActive = vi.hoisted(() => vi.fn());
@@ -82,6 +84,24 @@ vi.mock('@renderer/features/switch-servers/local-server-store', () => ({
 
 vi.mock('@renderer/lib/telemetry/report', () => ({ report: vi.fn() }));
 
+const showModal = vi.hoisted(() => vi.fn());
+
+vi.mock('@renderer/lib/modal/modal-provider', async (importOriginal) => ({
+  ...(await importOriginal<typeof ModalProvider>()),
+  useShowModal: () => showModal,
+}));
+
+/** The workspace pages reduced to their way on: they ask a server this test has none of. */
+vi.mock('@renderer/features/onboarding/pick-workspace-page', () => ({
+  PickWorkspacePage: ({ onPicked }: { onPicked: () => void }) => (
+    <button onClick={onPicked}>Use this workspace</button>
+  ),
+}));
+
+vi.mock('@renderer/features/switch-servers/link-accounts-step', () => ({
+  LinkAccountsStep: () => <p>Link your accounts</p>,
+}));
+
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 
@@ -97,6 +117,7 @@ beforeEach(() => {
   switchCloud.mockReset();
   switchCloud.mockResolvedValue(null);
   connectToSwitchCloud.mockReset();
+  showModal.mockReset();
   servers.length = 0;
   onboardingStore.reset();
   Object.assign(localServer, {
@@ -398,6 +419,21 @@ describe('the first-run flow', () => {
     expect(onboardingStore.server).toBeNull();
     expect(el).toBeDefined();
   });
+
+  it('goes on from the workspace to linking accounts on a server that was typed in', async () => {
+    const server = serverAdded('srv-1');
+    const el = await renderFlow();
+    await act(async () => {
+      onboardingStore.connected(server as SwitchServer, 'external');
+      onboardingStore.goTo('pickWorkspace');
+    });
+
+    await act(async () => button(el, 'Use this workspace').click());
+
+    expect(onboardingStore.page).toBe('linkAccounts');
+    expect(el.textContent).toContain('Link your accounts');
+    expect(showModal).not.toHaveBeenCalled();
+  });
 });
 
 describe('the first-run flow with Switch Cloud named', () => {
@@ -442,5 +478,44 @@ describe('the first-run flow with Switch Cloud named', () => {
 
     expect(onboardingStore.page).toBe('welcome');
     expect(el.querySelector('[role="alert"]')?.textContent).toContain('disk full');
+  });
+
+  it('goes on from the workspace to connecting providers, GitHub and a first cloud agent', async () => {
+    const el = await renderFlow();
+    await act(async () => button(el, 'Continue with Switch Cloud').click());
+    await act(async () => {
+      onboardingStore.signedIn('No capacity in your region.');
+      onboardingStore.goTo('pickWorkspace');
+    });
+
+    await act(async () => button(el, 'Use this workspace').click());
+
+    expect(showModal).toHaveBeenCalledWith({
+      cloudSetup: {
+        server: CLOUD,
+        machineUnavailable: 'No capacity in your region.',
+        firstRun: true,
+      },
+    });
+    expect(setActive).toHaveBeenCalledWith('cloud-1');
+    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'cloud-1' });
+    expect(onboardingStore.inProgress).toBe(false);
+  });
+
+  it('carries no machine warning into the cloud setup from an earlier attempt', async () => {
+    const el = await renderFlow();
+    await act(async () => button(el, 'Continue with Switch Cloud').click());
+    await act(async () => {
+      onboardingStore.signedIn('No capacity in your region.');
+      onboardingStore.goTo('welcome');
+    });
+    await act(async () => button(el, 'Continue with Switch Cloud').click());
+    await act(async () => onboardingStore.goTo('pickWorkspace'));
+
+    await act(async () => button(el, 'Use this workspace').click());
+
+    expect(showModal).toHaveBeenCalledWith({
+      cloudSetup: { server: CLOUD, machineUnavailable: null, firstRun: true },
+    });
   });
 });

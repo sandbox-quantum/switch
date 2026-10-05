@@ -83,7 +83,7 @@ export default function AgentDetailPage() {
   if (error || !agent) {
     return (
       <Box>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate("/agents")}>
+        <Button startIcon={<ArrowBack />} onClick={() => navigate("/agent-directory")}>
           Back to agents
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
@@ -98,7 +98,7 @@ export default function AgentDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/agents")} size="small">
+        <IconButton onClick={() => navigate("/agent-directory")} size="small">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -550,7 +550,7 @@ function SubagentsSection({ children }: { children: AgentSummary[] }) {
             label={child.name}
             size="small"
             variant="outlined"
-            onClick={() => navigate(`/agents/${child.id}`)}
+            onClick={() => navigate(`/agent-directory/${child.id}`)}
             sx={{ cursor: "pointer" }}
           />
         ))}

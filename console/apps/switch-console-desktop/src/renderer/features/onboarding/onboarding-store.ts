@@ -66,6 +66,11 @@ class OnboardingStore {
    */
   invite: InviteLink | null = null;
   /**
+   * Why the account just signed in to has no cloud machine warming, kept for
+   * the cloud setup steps that follow the workspace pages.
+   */
+  machineUnavailable: string | null = null;
+  /**
    * The flow was opened on purpose from a dev or canary build that already has
    * servers, to walk through the first-run pages again. It keeps the flow on
    * screen from its welcome page, which a launch with servers would otherwise
@@ -107,8 +112,13 @@ class OnboardingStore {
       this.joinOfferCount = 0;
       this.registeredOn = null;
       this.invite = null;
+      this.machineUnavailable = null;
     }
     this.page = page;
+  }
+
+  signedIn(machineUnavailable: string | null): void {
+    this.machineUnavailable = machineUnavailable;
   }
 
   /**
@@ -163,6 +173,7 @@ class OnboardingStore {
     this.joinOfferCount = 0;
     this.registeredOn = null;
     this.invite = null;
+    this.machineUnavailable = null;
     this.rehearsal = false;
   }
 }

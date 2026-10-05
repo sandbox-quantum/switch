@@ -57,10 +57,14 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
+from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.wiring import Management, build_management
 
-JWT_SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
+KEYRING = Keyring.parse(
+    "test:unit-test-jwt-key-unit-test-jwt-key-unit-test",  # gitleaks:allow
+    legacy_secret=None,
+)
 TOKEN_SECRET = "unit-test-controller-token-secret-0123456789"  # gitleaks:allow
 STATUS_INTERVAL = 60
 SERVER_URL = "https://switch-api.example.test"
@@ -129,7 +133,7 @@ def protocol_service(
     svc.api_key_cache = cache
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[assignment]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
-    svc.config = SimpleNamespace(jwt_secret_key=JWT_SECRET)  # type: ignore[assignment]
+    svc.config = SimpleNamespace(keyring=KEYRING)  # type: ignore[assignment]
     svc.telemetry = None
     svc.event_buffer = EventBuffer(sequence_base=0)
     svc.connections = AgentConnectionRegistry()
@@ -220,7 +224,7 @@ def build_harness(
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        jwt_secret_key=JWT_SECRET, gateway_tenant_choice_enabled=False
+        keyring=KEYRING, gateway_tenant_choice_enabled=False
     )
     agent_app.mount("/gateway", gateway_app)
     agent_app.add_middleware(
@@ -258,7 +262,7 @@ async def add_member(
 
 def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
     return {
-        "switch_auth": create_jwt(user.id, user.email, user.role, JWT_SECRET, tenant_id)
+        "switch_auth": create_jwt(user.id, user.email, user.role, KEYRING, tenant_id)
     }
 
 

@@ -10,7 +10,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, ClassVar, Literal, NoReturn
+from urllib.parse import urlsplit
 
+import aiohttp
 import httpx
 from pydantic import BaseModel, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -36,6 +38,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     ChannelType,
     DirectoryUser,
     InboundAgentJoin,
@@ -244,6 +247,9 @@ class SlackConnectionConfig(BridgeConnectionConfig):
 # A turn whose end never arrives — the agent died, the session was dropped —
 # leaves its stream open with nothing to close it. Far more than this many at
 # once is a bridge holding turns nobody is waiting on, so the oldest goes.
+# Where Slack serves private files from, commercial and GovSlack.
+_SLACK_FILE_DOMAINS = ("slack.com", "slack-gov.com")
+
 _MAX_OPEN_STREAMS = 100
 
 # Far above the open-stream bound on purpose. An entry here is what stops a
@@ -351,10 +357,46 @@ class SlackAdapter(PlatformAdapter):
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
-    # bridge minted. Rebind it to a fresh instance to isolate a test.
+    # bridge minted; the directory keeps each tenant's apart. Rebind it to a
+    # fresh instance to isolate a test.
     agent_group_directory: ClassVar[SlackAgentGroupDirectory] = (
         SlackAgentGroupDirectory()
     )
+
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        return f"Slack workspace {connection_config['workspace_id']}"
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Check the bot token works and belongs to the configured workspace.
+
+        `workspace_id` is what a workspace is claimed by, so it has to be the
+        token's workspace and not merely a value someone typed. On an
+        Enterprise Grid org it may name the org rather than the workspace.
+        """
+        config = SlackConnectionConfig.model_validate(connection_config)
+        try:
+            auth = await AsyncWebClient(token=config.bot_token).auth_test()
+        except SlackApiError as exc:
+            raise BridgeCredentialError(
+                f"Slack refused the bot token: {exc.response.get('error', exc)}"
+            ) from exc
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise BridgeCredentialError(
+                f"Could not reach Slack to check the bot token: "
+                f"{exc or type(exc).__name__}. Try again."
+            ) from exc
+        authenticated = {
+            str(auth.get("team_id") or ""),
+            str(auth.get("enterprise_id") or ""),
+        } - {""}
+        if config.workspace_id not in authenticated:
+            raise BridgeCredentialError(
+                f"The bot token belongs to Slack workspace "
+                f"{auth.get('team_id')}, not {config.workspace_id}. Set "
+                "workspace_id to the workspace the app is installed in."
+            )
 
     def __init__(self, *, config: SlackConnectionConfig) -> None:
         super().__init__()
@@ -364,6 +406,7 @@ class SlackAdapter(PlatformAdapter):
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
+        self._tenant_id: str | None = None
         self._user_cache: dict[str, SlackUser] = {}
         self._channel_name_cache: dict[str, str] = {}
         self._seen_ts: OrderedDict[str, None] = OrderedDict()
@@ -497,6 +540,17 @@ class SlackAdapter(PlatformAdapter):
             await self._socket_client.connect()
             logger.info("Slack Socket Mode connected")
 
+    def set_tenant_id(self, tenant_id: str) -> None:
+        self._tenant_id = tenant_id
+
+    def _directory_tenant(self) -> str:
+        if self._tenant_id is None:
+            raise RuntimeError(
+                "Slack adapter used the shared agent group directory before "
+                "set_tenant_id() was called"
+            )
+        return self._tenant_id
+
     async def stop(self) -> None:
         if self._socket_client:
             try:
@@ -505,7 +559,8 @@ class SlackAdapter(PlatformAdapter):
                 pass
             self._socket_client = None
         self._web_client = None
-        self.agent_group_directory.forget(self._team_id)
+        if self._tenant_id is not None:
+            self.agent_group_directory.forget(self._tenant_id, self._team_id)
         logger.info("Slack adapter stopped")
 
     # ── Messaging ────────────────────────────────────────────────────────────
@@ -2268,7 +2323,9 @@ class SlackAdapter(PlatformAdapter):
         await self._web_client.usergroups_disable(usergroup=group_id)
         self._agent_group_ids.pop(folded, None)
         self._agent_group_names.pop(group_id, None)
-        self.agent_group_directory.discard(self._team_id, group_id)
+        self.agent_group_directory.discard(
+            self._directory_tenant(), self._team_id, group_id
+        )
         self._agent_groups_disabled[folded] = group_id
         logger.info("Disabled Slack user group %s for agent %s", group_id, agent_name)
 
@@ -2413,7 +2470,9 @@ class SlackAdapter(PlatformAdapter):
     def _remember_agent_group(self, group_id: str, agent_name: str) -> None:
         self._agent_group_ids[agent_name.casefold()] = group_id
         self._agent_group_names[group_id] = agent_name
-        self.agent_group_directory.add(self._team_id, group_id, agent_name)
+        self.agent_group_directory.add(
+            self._directory_tenant(), self._team_id, group_id, agent_name
+        )
 
     @staticmethod
     def _usergroup_handle(agent_name: str) -> str:
@@ -2491,7 +2550,9 @@ class SlackAdapter(PlatformAdapter):
             else:
                 self._remember_agent_group(group_id, name)
 
-        self.agent_group_directory.replace(self._team_id, self._agent_group_names)
+        self.agent_group_directory.replace(
+            self._directory_tenant(), self._team_id, self._agent_group_names
+        )
         self._agent_groups_loaded = True
         logger.info(
             "Loaded %d Slack agent user groups (%d disabled, %d other groups seen)",
@@ -3040,7 +3101,18 @@ class SlackAdapter(PlatformAdapter):
         return attachments, failures
 
     async def _download_file(self, url: str) -> bytes:
-        """Fetch a Slack private file URL with the bot token, returning bytes."""
+        """Fetch a Slack private file URL with the bot token, returning bytes.
+
+        Refuses any host but Slack's own: the request carries the bot token,
+        and the URL is read out of an event rather than built here.
+        """
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if parts.scheme != "https" or not any(
+            host == domain or host.endswith(f".{domain}")
+            for domain in _SLACK_FILE_DOMAINS
+        ):
+            raise ValueError(f"{url!r} is not a Slack file URL")
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 url,
@@ -3262,7 +3334,7 @@ class SlackAdapter(PlatformAdapter):
             group_id = match.group(1)
             agent_name = self._agent_group_names.get(
                 group_id
-            ) or self.agent_group_directory.resolve(group_id)
+            ) or self.agent_group_directory.resolve(self._directory_tenant(), group_id)
             if agent_name:
                 return f"@{agent_name}"
             label = match.group(2)

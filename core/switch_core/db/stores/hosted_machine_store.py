@@ -9,8 +9,8 @@ from uuid import uuid4
 from sqlalchemy import exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import HostedLaunch, HostedMachine, require_tenant_id
+from switch_core.keys import Keyring
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
 MACHINE_NEEDS_ATTENTION = (
@@ -344,7 +344,7 @@ class HostedMachineStore:
             )
         )
 
-    def issue_capability(self, machine: HostedMachine, secret_key: str) -> str:
+    def issue_capability(self, machine: HostedMachine, keyring: Keyring) -> str:
         """The machine capability for the machine's current revision.
 
         The same bytes for every call at one revision; a new revision mints new
@@ -355,9 +355,9 @@ class HostedMachineStore:
             machine.machine_capability_revision == machine.revision
             and machine.machine_capability_encrypted is not None
         ):
-            return decrypt_token(machine.machine_capability_encrypted, secret_key)
+            return keyring.decrypt(machine.machine_capability_encrypted)
         capability = secrets.token_urlsafe(32)
-        machine.machine_capability_encrypted = encrypt_token(capability, secret_key)
+        machine.machine_capability_encrypted = keyring.encrypt(capability)
         machine.machine_capability_hash = capability_hash(capability)
         machine.machine_capability_revision = machine.revision
         return capability

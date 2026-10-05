@@ -1000,7 +1000,7 @@ function AgentRow({
       direction="row"
       alignItems="center"
       spacing={1.5}
-      onClick={() => navigate(`/agents/${agentId}`)}
+      onClick={() => navigate(`/agent-directory/${agentId}`)}
       sx={{
         px: 1.5,
         py: 0.75,

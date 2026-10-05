@@ -36,7 +36,6 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.hosted_workers import ConsoleView
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     Client,
@@ -76,6 +75,7 @@ from switch_core.providers.github_installation import (
 )
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
+    KEYRING,
     make_owner,
     make_service,
 )
@@ -117,7 +117,7 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
                 user_id=owner,
                 provider="github",
                 kind="oauth",
-                encrypted_credential=encrypt_token(
+                encrypted_credential=KEYRING.encrypt(
                     json.dumps(
                         {
                             "access_token": "SYNTHETIC-GITHUB",
@@ -125,8 +125,7 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
                                 datetime.now(UTC) + timedelta(hours=1)
                             ).timestamp(),
                         }
-                    ),
-                    "test-secret",
+                    )
                 ),
                 verified_at=datetime.now(UTC),
             )
@@ -135,7 +134,7 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
             session,
             owner,
             "setup-token",
-            encrypt_token("SYNTHETIC-CLAUDE", "test-secret"),
+            KEYRING.encrypt("SYNTHETIC-CLAUDE"),
             datetime.now(UTC),
         )
         machine = await seed_machine(
@@ -177,7 +176,7 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
         launch = await session.get(
             HostedLaunch, (require_tenant_id(), request_id), populate_existing=True
         )
-        capability = HostedLaunchStore().issue_worker_capability(launch, "test-secret")
+        capability = HostedLaunchStore().issue_worker_capability(launch, KEYRING)
         await session.commit()
     settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
@@ -320,7 +319,7 @@ async def _bump(factory, request_id: str) -> None:
 async def issue_capability(factory, request_id: str) -> str:
     async with factory() as session:
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
-        capability = HostedLaunchStore().issue_worker_capability(launch, "test-secret")
+        capability = HostedLaunchStore().issue_worker_capability(launch, KEYRING)
         await session.commit()
         return capability
 
@@ -1203,7 +1202,7 @@ async def test_relay_with_real_auth_opens_two_transactions(worker_app):
     service.config.gateway_tenant_choice_enabled = False
     owner = (await _launch(factory, request_id)).owner_id
     client.cookies.set(
-        "switch_auth", create_jwt(owner, "owner@test", "user", "test-secret", None)
+        "switch_auth", create_jwt(owner, "owner@test", "user", KEYRING, None)
     )
     begins: list[object] = []
     engine = factory.kw["bind"].sync_engine

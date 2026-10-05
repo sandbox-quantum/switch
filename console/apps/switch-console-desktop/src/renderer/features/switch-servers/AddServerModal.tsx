@@ -87,6 +87,17 @@ type Props = BaseModalProps<void> & {
   /** Jump straight to a step, skipping the chooser. `external` is the
    * connect-by-URL form; `remoteHost` sets up a managed stack on an SSH host. */
   mode?: 'local' | 'remoteHost' | 'external';
+  /** Open on setting up a signed-in Switch Cloud account's agents — providers,
+   * GitHub, a first cloud agent — skipping the chooser and the sign-in. */
+  cloudSetup?: CloudSetup;
+};
+
+type CloudSetup = {
+  server: SwitchServer;
+  /** Why the account has no cloud machine warming, or null when nothing says so. */
+  machineUnavailable: string | null;
+  /** Reached from the first-run pages, which report their steps as such. */
+  firstRun: boolean;
 };
 
 type Step =
@@ -148,8 +159,13 @@ const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
 
 export const AddServerModal = observer(function AddServerModal(props: Props) {
   const isEdit = props.serverId != null;
-  const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
+  const openedAt: Step = isEdit
+    ? 'external'
+    : props.cloudSetup
+      ? 'managedReady'
+      : (props.mode ?? 'choose');
   const openedWith = CHOICE_FOR_STEP[openedAt] ?? 'none';
+  const firstRun = props.cloudSetup?.firstRun ?? false;
   const [step, setStep] = useState<Step>(openedAt);
   const [providerIndex, setProviderIndex] = useState(0);
   const [selectedProviders, setSelectedProviders] = useState<AgentProviderId[]>([]);
@@ -176,8 +192,8 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   useEffect(() => {
     if (isEdit || reportedOpening.current) return;
     reportedOpening.current = true;
-    report('add_server_step', { step: openedAt, choice: openedWith, first_run: false });
-  }, [isEdit, openedAt, openedWith]);
+    report('add_server_step', { step: openedAt, choice: openedWith, first_run: firstRun });
+  }, [isEdit, openedAt, openedWith, firstRun]);
 
   /**
    * Move to a step, and report reaching it.
@@ -191,15 +207,17 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     const nextChoice = CHOICE_FOR_STEP[next] ?? choice;
     setChoice(nextChoice);
     setStep(next);
-    report('add_server_step', { step: next, choice: nextChoice, first_run: false });
+    report('add_server_step', { step: next, choice: nextChoice, first_run: firstRun });
   };
   // The server the wizard just created, and the subject of every step after
   // it. Null in edit mode and on the two managed paths, which is what
   // distinguishes the standalone edit form from step 2 of the wizard.
-  const [connected, setConnected] = useState<SwitchServer | null>(null);
+  const [connected, setConnected] = useState<SwitchServer | null>(props.cloudSetup?.server ?? null);
   // Why the account just created has no cloud machine warming, carried into
   // the managed steps so it is not lost with the sign-in form.
-  const [machineUnavailable, setMachineUnavailable] = useState<string | null>(null);
+  const [machineUnavailable, setMachineUnavailable] = useState<string | null>(
+    props.cloudSetup?.machineUnavailable ?? null
+  );
   const machineNotice = machineUnavailable && (
     <MachineUnavailableNotice reason={machineUnavailable} />
   );

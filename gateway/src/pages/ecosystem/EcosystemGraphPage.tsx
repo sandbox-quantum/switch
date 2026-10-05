@@ -202,7 +202,7 @@ export default function EcosystemGraphPage() {
   const handleNodeClick = useCallback(
     (node: GraphNode) => {
       if (node.kind === "agent" || node.kind === "agent_type") {
-        navigate("/agents");
+        navigate("/agent-directory");
       } else if (node.kind === "bridge") {
         navigate("/collaborations");
       }

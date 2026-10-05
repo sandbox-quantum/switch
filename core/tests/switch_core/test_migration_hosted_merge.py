@@ -66,6 +66,9 @@ _MAIN_HEAD = "c4e9a1f7b203"
 # Main's head when it was last merged in: a database already there takes the
 # whole hosted chain on its next upgrade.
 _LATER_MAIN_HEAD = "a9e1c3f75b20"
+# The hosted pilot's head once main's audit events were merged on the hosted
+# branch: a database there takes the agent management chain on its next upgrade.
+_HOSTED_AUDIT_HEAD = "8f2c4a6e1d93"
 _MANIFEST_REVISION = "a3c9e5f71d28"
 # The last revision a database with cloud agents that are not removed can
 # reach: `b4e1d7a2c9f0` refuses one until they are.
@@ -789,6 +792,33 @@ async def test_later_main_database_takes_the_hosted_chain(main_url: str) -> None
     assert cutover == ([], [])
 
 
+async def test_hosted_audit_database_takes_the_agent_management_chain(
+    main_url: str,
+) -> None:
+    engine = create_async_engine(main_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_HOSTED_AUDIT_HEAD))
+            assert (
+                await connection.scalar(text("SELECT to_regclass('agent_controllers')"))
+                is None
+            )
+
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to("heads"))
+
+        async with engine.begin() as connection:
+            await _assert_merged_schema(connection)
+            await _assert_runtime_grants(connection)
+            controllers = await connection.scalar(
+                text("SELECT to_regclass('agent_controllers')")
+            )
+    finally:
+        await engine.dispose()
+
+    assert controllers is not None
+
+
 async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
     pilot_url: str,
 ) -> None:
@@ -990,6 +1020,7 @@ def _migration_config(url: str, monkeypatch: pytest.MonkeyPatch) -> SwitchConfig
         "MATRIX_SERVER_NAME": "example.invalid",
         "AGENT_REGISTRATION_TOKEN": "placeholder-registration-token",
         "JWT_SECRET_KEY": "placeholder-jwt-secret-0123456789abcdef",
+        "SECRET_KEYS": "test:placeholder-secret-key-0123456789abcdef",
         "GATEWAY_ADMIN_EMAIL": "admin@example.invalid",
         "GATEWAY_ADMIN_PASSWORD": "placeholder-password",
     }

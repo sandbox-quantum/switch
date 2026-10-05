@@ -20,7 +20,6 @@ from switch_core.bridges.agent.api.hosted_worker_routes import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -817,7 +816,7 @@ async def create(
         try:
             await verifier.verify(
                 connection.kind,
-                decrypt_token(connection.encrypted_credential, config.jwt_secret_key),
+                config.keyring.decrypt(connection.encrypted_credential),
             )
         except ClaudeVerificationError as error:
             raise HTTPException(422, str(error)) from None

@@ -47,7 +47,7 @@ interface DimState {
   mode: DimMode;
   ids: string[];
 }
-interface RuleState {
+export interface RuleState {
   rooms: DimState;
   room_groups: DimState;
   users: DimState;
@@ -104,12 +104,15 @@ function fromRuleState(state: RuleState): AddressingRule {
 function dimMatchesNobody(state: DimState): boolean {
   return state.mode === "none" || (state.mode === "specific" && state.ids.length === 0);
 }
-function ruleIsDead(rule: RuleState): boolean {
-  return (
-    dimMatchesNobody(rule.rooms) ||
-    dimMatchesNobody(rule.room_groups) ||
-    (dimMatchesNobody(rule.users) && dimMatchesNobody(rule.agents))
-  );
+export function ruleIsDead(rule: RuleState): boolean {
+  const noContext = dimMatchesNobody(rule.rooms) || dimMatchesNobody(rule.room_groups);
+  const noSender =
+    dimMatchesNobody(rule.users) &&
+    dimMatchesNobody(rule.agents) &&
+    !rule.owner &&
+    !rule.owner_agents &&
+    !rule.platform;
+  return noContext || noSender;
 }
 
 const EMPTY_RULE: RuleState = {

@@ -15,6 +15,13 @@ beforeEach(() => {
   vi.resetAllMocks();
   mock.dispose.mockResolvedValue(undefined);
 });
+vi.mock('../opencode/server', () => ({
+  startOpencodeServer: vi.fn(async () => ({
+    url: 'http://127.0.0.1:1',
+    authorization: 'Basic x',
+  })),
+  stopOpencodeServer: vi.fn(async () => {}),
+}));
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn(async () => {}),
   writeFile: vi.fn(async () => {}),
@@ -84,5 +91,37 @@ it('reports Antigravity handshake failures', async () => {
   mock.request.mockRejectedValueOnce(new Error('Sign in required'));
   expect((await checkProviderReadiness({ ...input, provider: 'antigravity' })).status).toBe(
     'unauthenticated'
+  );
+});
+// Shapes of `GET /provider` taken from opencode 1.18 on a fresh install and
+// with an OpenCode key in the environment.
+function opencodeInventory(connected: string[], options: Record<string, unknown>) {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+    Response.json({ connected, all: [{ id: 'opencode', options }, { id: 'anthropic' }] })
+  );
+}
+it('does not report the keyless built-in OpenCode backend as signed in, nor block it', async () => {
+  opencodeInventory(['opencode'], { apiKey: 'public' });
+  const result = await checkProviderReadiness({ ...input, provider: 'opencode' });
+  expect(result.status).toBe('unknown');
+  expect(result.message).toContain('free built-in models');
+  expect(result.message).toContain('opencode auth login');
+});
+it('reports OpenCode with a keyed backend as authenticated', async () => {
+  opencodeInventory(['opencode'], {});
+  expect((await checkProviderReadiness({ ...input, provider: 'opencode' })).status).toBe(
+    'authenticated'
+  );
+});
+it('reports OpenCode with another signed-in backend as authenticated', async () => {
+  opencodeInventory(['anthropic', 'opencode'], { apiKey: 'public' });
+  expect((await checkProviderReadiness({ ...input, provider: 'opencode' })).status).toBe(
+    'authenticated'
+  );
+});
+it('reports OpenCode with no connected backend as unconfigured', async () => {
+  opencodeInventory([], {});
+  expect((await checkProviderReadiness({ ...input, provider: 'opencode' })).status).toBe(
+    'unconfigured'
   );
 });

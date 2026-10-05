@@ -27,6 +27,7 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.db.models import Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.keys import Keyring
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -69,7 +70,9 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
-    svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]
+    svc.config = SimpleNamespace(
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+    )  # type: ignore[attr-defined]
     # Duck-typed: the attribute exists on AgentCore after the api-key
     # cache landed on main; a no-op stand-in keeps this test valid on both
     # sides of that merge.

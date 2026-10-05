@@ -65,7 +65,6 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
@@ -422,7 +421,7 @@ class AgentCore:
 
         api_key = secrets.token_urlsafe(32)
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        encrypted_key = encrypt_token(api_key, self.config.jwt_secret_key)
+        encrypted_key = self.config.keyring.encrypt(api_key)
 
         # Reported only for a genuinely new agent: a re-registration rotates a
         # key on an agent that already existed, and counting it would make a

@@ -67,6 +67,7 @@ from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
+from switch_core.keys import Purpose
 from switch_core.providers.claude_verifier import ClaudeVerifier
 from switch_core.providers.github import GitHubConnections
 from switch_core.providers.hosted import HostedControllerSettings
@@ -182,9 +183,12 @@ def create_gateway_app(
     # (`session`) is separate from the `switch_auth` auth cookie.
     app.add_middleware(
         SessionMiddleware,
-        secret_key=config.jwt_secret_key,
+        # Current key only: this cookie lives for one login round trip, so a
+        # rotation costs at most a login started in the minutes before it.
+        secret_key=config.keyring.derive(Purpose.OIDC_LOGIN_COOKIE).hex(),
         same_site="lax",
         max_age=600,
+        https_only=config.gateway_cookie_secure,
     )
     if config.gateway_oidc_enabled:
         register_oidc_client(config)

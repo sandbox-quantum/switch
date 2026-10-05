@@ -24,7 +24,15 @@ export function useProviderReadiness(
   dir: string,
   enabled: boolean
 ) {
-  return useQuery({
+  return useQuery({ ...providerReadinessQuery(providerId, sshHost, dir), enabled });
+}
+
+export function providerReadinessQuery(
+  providerId: AgentProviderId,
+  sshHost: string | null,
+  dir: string
+) {
+  return {
     queryKey: ['provider-readiness', providerId, sshHost, dir],
     queryFn: () => rpc.agents.providerReadiness({ providerId, sshHost, dir }),
     // Signing in is not something that changes minute to minute, and this is
@@ -33,8 +41,7 @@ export function useProviderReadiness(
     // starts a provider process on the execution machine.
     staleTime: 5 * 60_000,
     retry: false,
-    enabled,
-  });
+  };
 }
 
 /** What is wrong with a provider on a machine, in a few words, or null when nothing is known to be. */

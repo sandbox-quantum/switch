@@ -1,5 +1,5 @@
 import { Alert, Box, Button, CircularProgress } from "@mui/material";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
 import { appView, readPendingInvite } from "./data/sessionState";
 import PageShell from "./layout/PageShell";
@@ -134,8 +134,10 @@ export function AppRoutes() {
           path="resources/templates/:id"
           element={<TemplateDetailPage />}
         />
-        <Route path="agents" element={<AgentsPage />} />
-        <Route path="agents/:agentId" element={<AgentDetailPage />} />
+        <Route path="agent-directory" element={<AgentsPage />} />
+        <Route path="agent-directory/:agentId" element={<AgentDetailPage />} />
+        <Route path="agents" element={<Navigate to="/agent-directory" replace />} />
+        <Route path="agents/:agentId" element={<LegacyAgentRedirect />} />
         <Route path="machines" element={<MachinesPage />} />
         <Route path="collaborations" element={<CollaborationsPage />} />
         <Route path="registration-keys" element={<RegistrationKeysPage />} />
@@ -147,6 +149,13 @@ export function AppRoutes() {
       <Route path="/login" element={<Navigate to="/" replace />} />
     </Routes>
   );
+}
+
+// The agent bridge API owns /agents on a shared origin, so the agent pages
+// live elsewhere; links to /agents that reach the app are forwarded.
+function LegacyAgentRedirect() {
+  const { agentId = "" } = useParams();
+  return <Navigate to={`/agent-directory/${encodeURIComponent(agentId)}`} replace />;
 }
 
 export default function App() {

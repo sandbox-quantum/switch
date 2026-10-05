@@ -70,11 +70,11 @@ import {
 } from './managed-run-location-notice';
 import { useConfigureAgentForm, usePickMode } from './modes';
 import {
-  machineFor,
+  isCloudRunLocation,
   machineIdOf,
   machineLabel,
-  machineRunLocation,
   machineRunLocations,
+  reconciledRunLocation,
   sshHostIsMachine,
   thisComputerIsMachine,
 } from './server-run-locations';
@@ -141,12 +141,12 @@ export const NewAgentForm = observer(function NewAgentForm({
     (server) => server.id === selectedServerId
   );
   const isManagedCloud = !!selectedServer && isSwitchCloudServer(selectedServer);
-  const isCloudRun = isManagedCloud || runHost === 'cloud';
+  const isCloudRun = isCloudRunLocation(runHost, isManagedCloud);
 
   // On a server with agent management the server lists where agents can run:
   // every machine the user owns there. Null when it does not run management.
   const askForMachines =
-    !isManagedCloud && !!selectedServerId && !!workspacesStore.idOnServerInScope(selectedServerId);
+    !!selectedServerId && !!workspacesStore.idOnServerInScope(selectedServerId);
   const machinesQuery = useQuery({
     queryKey: [MANAGED_AGENTS_KEY, selectedServerId, 'machines'],
     queryFn: () => rpc.managedAgents.machines(selectedServerId!),
@@ -236,19 +236,9 @@ export const NewAgentForm = observer(function NewAgentForm({
   // This computer or an SSH host that is a machine on the server is picked as
   // that machine; a machine the server no longer lists falls back to this computer.
   useEffect(() => {
-    if (runHost === 'cloud') return;
-    const id = machineIdOf(runHost);
-    if (!serverMachines) {
-      if (id !== null) setRunHost(LOCAL_RUN_LOCATION);
-      return;
-    }
-    if (id !== null) {
-      if (!serverMachines.some((candidate) => candidate.id === id)) setRunHost(LOCAL_RUN_LOCATION);
-      return;
-    }
-    const enrolled = machineFor(runHost, serverMachines);
-    if (enrolled) setRunHost(machineRunLocation(enrolled.id));
-  }, [serverMachines, runHost]);
+    const next = reconciledRunLocation(runHost, serverMachines, isManagedCloud);
+    if (next !== null) setRunHost(next);
+  }, [serverMachines, runHost, isManagedCloud]);
 
   // Everything chosen below the run location belongs to the machine it was
   // chosen on, so changing machines clears it.
@@ -776,8 +766,8 @@ export const NewAgentForm = observer(function NewAgentForm({
               thing: this machine, and hosts reached over SSH. The names alone
               do not say which is which. */}
               <Select
-                value={isManagedCloud ? 'cloud' : runHost}
-                disabled={isManagedCloud}
+                value={isCloudRun ? 'cloud' : runHost}
+                disabled={isManagedCloud && !serverMachines?.length}
                 onValueChange={(v) => setRunHost(v ?? LOCAL_RUN_LOCATION)}
               >
                 <SelectTrigger className="w-full">
@@ -877,6 +867,15 @@ export const NewAgentForm = observer(function NewAgentForm({
               )}
               {!isCloudRun && (machineQuery.error || (askForMachines && machinesQuery.error)) && (
                 <p className="text-xs text-destructive">{machineReason}</p>
+              )}
+              {isCloudRun && askForMachines && machinesQuery.error && (
+                <p className="text-xs text-destructive">
+                  {failureText(
+                    machinesQuery.error,
+                    'Your machines on this server could not be listed.'
+                  )}{' '}
+                  Only Switch cloud is offered.
+                </p>
               )}
               {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
               {/* Not while it is still checking: the provider picker below is

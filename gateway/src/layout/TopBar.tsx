@@ -7,7 +7,7 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/ecosystem", "Ecosystem"],
   ["/rooms", "Rooms"],
   ["/resources", "Resources"],
-  ["/agents", "Agents"],
+  ["/agent-directory", "Agents"],
   ["/collaborations", "Messaging Apps"],
   ["/registration-keys", "API Keys"],
   ["/users", "Users"],

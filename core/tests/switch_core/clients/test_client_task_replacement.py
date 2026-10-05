@@ -42,6 +42,7 @@ def _service() -> ClientLifecycleService:
         client_factory=MagicMock(),
         session_factory=MagicMock(),
         config=MagicMock(),
+        tenants_isolated=True,
     )
 
 

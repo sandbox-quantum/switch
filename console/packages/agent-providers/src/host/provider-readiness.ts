@@ -79,7 +79,29 @@ export async function checkProviderReadiness(input: {
           signal: AbortSignal.timeout(15000),
         });
         if (!response.ok) return result('unknown', 'Could not check OpenCode backend connections.');
-        const inventory = z.object({ connected: z.array(z.string()) }).parse(await response.json());
+        const inventory = z
+          .object({
+            connected: z.array(z.string()),
+            all: z.array(
+              z.object({
+                id: z.string(),
+                options: z.object({ apiKey: z.unknown() }).partial().optional(),
+              })
+            ),
+          })
+          .parse(await response.json());
+        // OpenCode always connects its built-in Zen backend. With no key it
+        // keeps only the free models and marks the backend with the
+        // placeholder key "public": it runs, but nothing is signed in.
+        if (
+          inventory.connected.length === 1 &&
+          inventory.connected[0] === 'opencode' &&
+          inventory.all.find((entry) => entry.id === 'opencode')?.options?.apiKey === 'public'
+        )
+          return result(
+            'unknown',
+            "No OpenCode backend is signed in; only OpenCode Zen's free built-in models are available. Sign in on the execution machine with opencode auth login to use others."
+          );
         return result(
           inventory.connected.length ? 'authenticated' : 'unconfigured',
           inventory.connected.length

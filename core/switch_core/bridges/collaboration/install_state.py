@@ -27,10 +27,11 @@ victim's tenant — message injection into someone else's rooms. Single use is
 the missing half and only the database can provide it: the row named here is
 burnt with a conditional update, and a second attempt finds nothing to burn.
 
-The signing key is derived from `JWT_SECRET_KEY` rather than being another
-value to deploy, but it is *derived* rather than reused: a token minted here
-must never be mistakable for an agent's JWT, or for whatever the next thing to
-want a signature turns out to be.
+The signing key is the keyring's key for this purpose (`keys.Purpose`),
+derived rather than reused: a token minted here must never be mistakable for a
+session JWT, or for whatever the next thing to want a signature turns out to
+be. Verification accepts any key in the keyring, and while `JWT_SECRET_KEY` is
+still set, a state minted with it before `SECRET_KEYS` existed.
 """
 
 from __future__ import annotations
@@ -41,10 +42,11 @@ import hmac
 import json
 from dataclasses import dataclass
 
-#: Distinguishes this key from every other use of `JWT_SECRET_KEY`, and this
-#: token format from whatever replaces it. Changing either string invalidates
-#: every state in flight, which for a flow measured in seconds is free.
-_KEY_INFO = b"switch/messaging-install-state/v1"
+from switch_core.keys import Keyring, Purpose
+
+#: How a state was signed with `JWT_SECRET_KEY` before `SECRET_KEYS`; kept so
+#: a state in flight across the upgrade still verifies.
+_LEGACY_KEY_INFO = b"switch/messaging-install-state/v1"
 
 _PREFIX = "v1."
 
@@ -74,8 +76,15 @@ class InstallState:
     platform: str
 
 
-def _signing_key(secret: str) -> bytes:
-    return hmac.new(secret.encode(), _KEY_INFO, hashlib.sha256).digest()
+def _verification_keys(keyring: Keyring) -> list[bytes]:
+    keys = keyring.verification_keys(Purpose.INSTALL_STATE)
+    if keyring.legacy_secret is not None:
+        keys.append(
+            hmac.new(
+                keyring.legacy_secret.encode(), _LEGACY_KEY_INFO, hashlib.sha256
+            ).digest()
+        )
+    return keys
 
 
 def _b64(raw: bytes) -> str:
@@ -86,7 +95,7 @@ def _unb64(encoded: str) -> bytes:
     return base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
 
 
-def mint(state: InstallState, *, secret: str) -> str:
+def mint(state: InstallState, *, keyring: Keyring) -> str:
     """Sign a state for the platform to hand back to us unchanged."""
     payload = _b64(
         json.dumps(
@@ -95,11 +104,13 @@ def mint(state: InstallState, *, secret: str) -> str:
             sort_keys=True,
         ).encode()
     )
-    signature = hmac.new(_signing_key(secret), payload.encode(), hashlib.sha256)
+    signature = hmac.new(
+        keyring.derive(Purpose.INSTALL_STATE), payload.encode(), hashlib.sha256
+    )
     return f"{_PREFIX}{payload}.{_b64(signature.digest())}"
 
 
-def verify(token: str, *, secret: str) -> InstallState:
+def verify(token: str, *, keyring: Keyring) -> InstallState:
     """Recover the state from a token, or raise.
 
     Nothing here touches the database, and nothing here is trusted before the
@@ -114,11 +125,14 @@ def verify(token: str, *, secret: str) -> InstallState:
     except ValueError:
         raise InstallStateError("install state is malformed") from None
 
-    expected = hmac.new(_signing_key(secret), payload.encode(), hashlib.sha256).digest()
     try:
-        matches = hmac.compare_digest(_unb64(signature), expected)
+        presented = _unb64(signature)
     except ValueError:
         raise InstallStateError("install state is malformed") from None
+    matches = False
+    for key in _verification_keys(keyring):
+        expected = hmac.new(key, payload.encode(), hashlib.sha256).digest()
+        matches = hmac.compare_digest(presented, expected) or matches
     if not matches:
         raise InstallStateError("install state was not signed by this deployment")
 

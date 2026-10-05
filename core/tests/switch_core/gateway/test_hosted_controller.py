@@ -37,7 +37,6 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentExistsError
 from switch_core.bridges.agent.protocol.hosted_workers import IdleReport, WorkerBinding
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -76,6 +75,7 @@ from switch_core.providers.github_installation import (
 from switch_core.providers.github_revocations import queue_revocation, revoke_pending
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
+    KEYRING,
     PROFILE,
     make_owner,
     make_service,
@@ -161,7 +161,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
                 user_id=owner,
                 provider="github",
                 kind="oauth",
-                encrypted_credential=encrypt_token(
+                encrypted_credential=KEYRING.encrypt(
                     json.dumps(
                         {
                             "access_token": "SYNTHETIC-GITHUB",
@@ -169,8 +169,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
                                 datetime.now(UTC) + timedelta(hours=1)
                             ).timestamp(),
                         }
-                    ),
-                    "test-secret",
+                    )
                 ),
                 verified_at=datetime.now(UTC),
             )
@@ -179,7 +178,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
             session,
             owner,
             "setup-token",
-            encrypt_token("SYNTHETIC-CLAUDE", "test-secret"),
+            KEYRING.encrypt("SYNTHETIC-CLAUDE"),
             datetime.now(UTC),
         )
         await session.commit()
@@ -1903,8 +1902,8 @@ async def test_failed_revocations_do_not_starve_newer_tokens(
                     owner_id=first.owner_id,
                     launch_id=request_id,
                     launch_revision=1,
-                    encrypted_token=encrypt_token(
-                        f"SYNTHETIC-TOKEN-{number}", service.config.jwt_secret_key
+                    encrypted_token=service.config.keyring.encrypt(
+                        f"SYNTHETIC-TOKEN-{number}"
                     ),
                     expires_at=first.expires_at + timedelta(seconds=1),
                     revoke_requested=True,
@@ -1955,9 +1954,7 @@ async def test_revocation_warning_is_scoped_to_action_owner(
                 owner_id=other,
                 launch_id=other_launch.id,
                 launch_revision=1,
-                encrypted_token=encrypt_token(
-                    "SYNTHETIC-OTHER-TOKEN", service.config.jwt_secret_key
-                ),
+                encrypted_token=service.config.keyring.encrypt("SYNTHETIC-OTHER-TOKEN"),
                 expires_at=first.expires_at,
                 revoke_requested=True,
                 attempts=0,

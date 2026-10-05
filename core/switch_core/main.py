@@ -16,6 +16,7 @@ import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -88,13 +89,14 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
-from switch_core.crypto import encrypt_token
+from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
 )
+from switch_core.db.key_rotation import reencrypt_stored_secrets
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     ApiKey,
@@ -106,6 +108,7 @@ from switch_core.db.runtime_role import (
     grant_runtime_role,
     verify_restricted_role,
 )
+from switch_core.db.schema_version import require_schema_at_head
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -331,25 +334,58 @@ async def _prepare_database(config: SwitchConfig) -> None:
     )
 
 
-async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> None:
+_INSUFFICIENT_PRIVILEGE = "42501"
+
+
+async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> bool:
     """Refuse to serve on a connection the policies do not apply to.
 
     Before anything else touches the database, because the first thing that
     does is the admin seeding, and a deployment that is not isolating tenants
     should not get as far as writing a row.
+
+    Returns whether isolation is in force. False only with
+    DB_REQUIRE_RESTRICTED_ROLE off, and then the server keeps to the one
+    workspace it has: no further tenant may be created while it runs.
     """
     try:
         await verify_restricted_role(engine)
     except RuntimeRoleError as exc:
         if config.db_require_restricted_role:
             raise
+        try:
+            tenant_count = len(await all_tenant_ids(create_session_factory(engine)))
+        except DBAPIError as count_error:
+            if getattr(count_error.orig, "sqlstate", None) != _INSUFFICIENT_PRIVILEGE:
+                raise
+            # The role cannot run the lookups because boot had no owner
+            # connection to grant them with. Nothing can resolve a tenant on
+            # such a connection, let alone serve a second one, so the count is
+            # not needed to keep tenants apart; the role check's own error
+            # already names what is missing.
+            logger.error(
+                "Tenant isolation is NOT in force on this deployment, and the "
+                "number of workspaces could not be checked: %s Continuing only "
+                "because DB_REQUIRE_RESTRICTED_ROLE is false.",
+                exc,
+            )
+            return False
+        if tenant_count > 1:
+            raise RuntimeRoleError(
+                f"{exc} DB_REQUIRE_RESTRICTED_ROLE=false is only allowed on a "
+                f"single-tenant deployment, and this one has {tenant_count} "
+                "workspaces."
+            ) from exc
         logger.error(
             "Tenant isolation is NOT in force on this deployment: %s "
             "Continuing only because DB_REQUIRE_RESTRICTED_ROLE is false. "
             "Every row-level-security policy in this schema is inert, and any "
-            "second tenant onboarded here can read the first's data.",
+            "second tenant onboarded here can read the first's data, so none "
+            "can be created while it runs.",
             exc,
         )
+        return False
+    return True
 
 
 async def run(config: SwitchConfig) -> None:
@@ -359,8 +395,9 @@ async def run(config: SwitchConfig) -> None:
     # — see `main._migrate_and_grant`, which `main()` awaits first. Both use
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
+    encrypted_json.configure(config.keyring)
     engine = create_engine_from_config(config)
-    await _check_tenant_isolation(config, engine)
+    tenants_isolated = await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
     # Wired here rather than inside the engine factory, so the database layer
     # keeps knowing nothing about observability. Unconditional: the listeners
@@ -477,6 +514,7 @@ async def run(config: SwitchConfig) -> None:
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
+    await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
     provisioning: Provisioning = PostgresProvisioning(
@@ -536,6 +574,7 @@ async def run(config: SwitchConfig) -> None:
         client_factory=client_factory,
         session_factory=session_factory,
         config=config,
+        tenants_isolated=tenants_isolated,
     )
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
@@ -629,8 +668,9 @@ async def run(config: SwitchConfig) -> None:
         api_key_store=api_key_store,
         protocol=protocol,
         session_factory=session_factory,
-        encryption_secret=config.jwt_secret_key,
+        keyring=config.keyring,
         telemetry=telemetry,
+        outbound_policy=config.outbound_policy,
     )
     connector_lifecycle.register_connector_type(
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
@@ -674,7 +714,7 @@ async def run(config: SwitchConfig) -> None:
             installers=installers,
             lifecycle=collab_lifecycle,
             public_origin=config.messaging_public_url,
-            secret=config.jwt_secret_key,
+            keyring=config.keyring,
         )
 
     # ── Gateway app ───────────────────────────────────────────────────────────
@@ -1083,9 +1123,7 @@ async def _seed_agent_registration_bootstrap_key(
         token_hash = hashlib.sha256(
             config.agent_registration_token.encode()
         ).hexdigest()
-        encrypted_key = encrypt_token(
-            config.agent_registration_token, config.jwt_secret_key
-        )
+        encrypted_key = config.keyring.encrypt(config.agent_registration_token)
 
         # Filtered on this tenant as well as on the type, for the same reason
         # every other fan-out in this change is: `get_by_type` carries no
@@ -1432,8 +1470,7 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
     `asyncio.to_thread`, on a worker thread that starts with no event loop of
     its own, which is exactly what that inner `asyncio.run` needs.
     """
-    alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
-    alembic_cfg = AlembicConfig(str(alembic_ini))
+    alembic_cfg = _alembic_config()
     async with boot_lock(config):
         await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
         await _prepare_database(config)
@@ -1441,6 +1478,27 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
         "Database migrations applied as %s",
         config.db_owner_user or config.db_user,
     )
+
+
+async def _check_schema_at_head(config: SwitchConfig) -> None:
+    """Stand in for `_migrate_and_grant` on a server that does not migrate."""
+    if config.db_owner_password is not None:
+        logger.warning(
+            "DB_OWNER_PASSWORD is set on a server with DB_MIGRATE_ON_BOOT=false, "
+            "which never uses it. Remove it from this process's environment."
+        )
+    engine = create_async_engine(
+        config.database_url, poolclass=NullPool, connect_args=config.db_connect_args
+    )
+    try:
+        await require_schema_at_head(engine, _alembic_config())
+    finally:
+        await engine.dispose()
+    logger.info("Database schema is at head; migrations were applied before boot")
+
+
+def _alembic_config() -> AlembicConfig:
+    return AlembicConfig(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
 
 
 def migrate() -> None:
@@ -1479,7 +1537,10 @@ def main() -> None:
     for warning in deprecated_env_names():
         logger.warning(warning)
 
-    asyncio.run(_migrate_and_grant(config))
+    if config.db_migrate_on_boot:
+        asyncio.run(_migrate_and_grant(config))
+    else:
+        asyncio.run(_check_schema_at_head(config))
 
     asyncio.run(run(config))
 

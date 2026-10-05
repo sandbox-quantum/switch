@@ -124,7 +124,7 @@ export class SwitchRoomsStore {
     const server = switchServersStore.servers.find((s) => s.id === serverId);
     if (!server) return null;
     const base = server.gatewayUrl.replace(/\/+$/, '');
-    return `${base}/agents/${switchAgentId}`;
+    return `${base}/agent-directory/${switchAgentId}`;
   }
 
   /**

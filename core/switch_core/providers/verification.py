@@ -7,8 +7,8 @@ from fastapi import HTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import ProviderVerification, require_tenant_id
+from switch_core.keys import Keyring
 
 ACTIVE = ("queued", "running", "finishing")
 FAILURE = "The provider could not complete the connection check. Sign in again and retry. If it still fails, check your plan or API billing."
@@ -53,7 +53,7 @@ async def queue(
     provider: str,
     kind: str,
     credential: str,
-    secret: str,
+    keyring: Keyring,
 ) -> dict:
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
@@ -66,7 +66,7 @@ async def queue(
             if (
                 previous.kind != kind
                 or not previous.encrypted_credential
-                or decrypt_token(previous.encrypted_credential, secret) != credential
+                or keyring.decrypt(previous.encrypted_credential) != credential
             ):
                 raise HTTPException(
                     409,
@@ -94,8 +94,8 @@ async def queue(
         user_id=user_id,
         provider=provider,
         kind=kind,
-        encrypted_credential=encrypt_token(credential, secret),
-        encrypted_token=encrypt_token(token, secret),
+        encrypted_credential=keyring.encrypt(credential),
+        encrypted_token=keyring.encrypt(token),
         token_hash=hashlib.sha256(token.encode()).hexdigest(),
         state="queued",
         created_at=now,

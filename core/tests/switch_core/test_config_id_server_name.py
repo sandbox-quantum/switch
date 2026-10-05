@@ -15,7 +15,7 @@ _REQUIRED = {
     "DB_OWNER_USER": "switch_owner",
     "DB_OWNER_PASSWORD": "x",
     "AGENT_REGISTRATION_TOKEN": "x",
-    "JWT_SECRET_KEY": "x",
+    "SECRET_KEYS": "test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "GATEWAY_ADMIN_EMAIL": "admin@example.com",
     "GATEWAY_ADMIN_PASSWORD": "x",
 }

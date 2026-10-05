@@ -194,7 +194,7 @@ class AgentControllerStore:
                 AgentController.tenant_id == tenant_id,
                 AgentController.id == controller_id,
             )
-            .values(revoked_at=revoked_at, api_key_id=None)
+            .values(revoked_at=revoked_at)
             .execution_options(synchronize_session=False)
         )
 

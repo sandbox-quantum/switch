@@ -45,7 +45,6 @@ from switch_core.config import SwitchConfig
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import create_session_factory
 from switch_core.db.hosted_cutover_gate import (
-    RETAINED,
     RUNNING_LAUNCHES,
     cutover_gate_problems,
 )
@@ -275,8 +274,10 @@ async def queue_all_imports(config: SwitchConfig) -> None:
                 await conn.execute(
                     text(
                         "SELECT v.tenant_id, v.launch_id FROM hosted_cutover_volumes v "
-                        + RETAINED.format(alias="v")
-                        + "WHERE v.preflight_state = 'complete' "
+                        "JOIN hosted_launches l ON l.tenant_id = v.tenant_id "
+                        "AND l.id = v.launch_id "
+                        "AND l.state NOT IN ('deleting', 'deleted') "
+                        "WHERE v.preflight_state = 'complete' "
                         "AND v.imports_queued_at IS NULL ORDER BY v.launch_id"
                     )
                 )

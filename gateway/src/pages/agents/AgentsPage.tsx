@@ -296,7 +296,7 @@ export default function AgentsPage() {
           rows={filteredAgents}
           columns={columns}
           fillHeight
-          onRowClick={(params) => navigate(`/agents/${params.id}`)}
+          onRowClick={(params) => navigate(`/agent-directory/${params.id}`)}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />
       )}

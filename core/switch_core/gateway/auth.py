@@ -35,6 +35,7 @@ from switch_core.gateway.schemas import (
     SessionStateUser,
     TenantMembershipResponse,
 )
+from switch_core.keys import Keyring, KeyringError, Purpose
 from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
@@ -68,7 +69,7 @@ def verify_password(password: str, password_hash: str | None) -> bool:
 
 
 def create_jwt(
-    user_id: str, email: str, role: str, secret_key: str, tenant_id: str | None
+    user_id: str, email: str, role: str, keyring: Keyring, tenant_id: str | None
 ) -> str:
     """Sign a session JWT. `tenant_id` is the caller's selected tenant, or
     `None` for a session that has not selected one yet (a fresh login, or a
@@ -87,13 +88,18 @@ def create_jwt(
         + datetime.timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.datetime.now(datetime.UTC),
     }
-    return jwt.encode(payload, secret_key, algorithm=JWT_ALGORITHM)
+    return jwt.encode(
+        payload,
+        keyring.derive(Purpose.SESSION),
+        algorithm=JWT_ALGORITHM,
+        headers={"kid": keyring.current.id},
+    )
 
 
 def set_session_cookie(
     response: Response,
     user: User,
-    secret_key: str,
+    keyring: Keyring,
     secure: bool,
     tenant_id: str | None,
 ) -> None:
@@ -109,7 +115,7 @@ def set_session_cookie(
     `secure` gates the Secure flag: True on HTTPS deployments so the JWT is
     never sent over plain HTTP, False for local dev served over http://.
     """
-    token = create_jwt(user.id, user.email, user.role, secret_key, tenant_id)
+    token = create_jwt(user.id, user.email, user.role, keyring, tenant_id)
     response.set_cookie(
         key="switch_auth",
         value=token,
@@ -121,9 +127,30 @@ def set_session_cookie(
     )
 
 
-def decode_jwt(token: str, secret_key: str) -> dict:
+def _session_key(token: str, keyring: Keyring) -> bytes | str:
+    """The key a session token was signed with, named by its `kid`.
+
+    A token with no `kid` was signed with `JWT_SECRET_KEY` before
+    `SECRET_KEYS`, and verifies only while that is still set.
+    """
+    key_id = jwt.get_unverified_header(token).get("kid")
+    if key_id is None:
+        if keyring.legacy_secret is None:
+            raise jwt.InvalidTokenError("session predates SECRET_KEYS")
+        return keyring.legacy_secret
+    if not isinstance(key_id, str):
+        raise jwt.InvalidTokenError("malformed kid")
     try:
-        return jwt.decode(token, secret_key, algorithms=[JWT_ALGORITHM])
+        return keyring.derive(Purpose.SESSION, key_id)
+    except KeyringError as exc:
+        raise jwt.InvalidTokenError(str(exc)) from exc
+
+
+def decode_jwt(token: str, keyring: Keyring) -> dict:
+    try:
+        return jwt.decode(
+            token, _session_key(token, keyring), algorithms=[JWT_ALGORITHM]
+        )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
@@ -152,7 +179,7 @@ def _session_claims(request: Request, config: SwitchConfig) -> dict:
     token = request.cookies.get("switch_auth")
     if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return decode_jwt(token, config.jwt_secret_key)
+    return decode_jwt(token, config.keyring)
 
 
 async def _require_user_exists(

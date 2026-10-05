@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import (
     ProviderConnection,
     ProviderVerification,
@@ -121,7 +120,7 @@ async def prepare(
     ):
         raise HTTPException(409, "Connection check is no longer pending.")
     response.headers["Cache-Control"] = "no-store"
-    return {"token": decrypt_token(job.encrypted_token, config.jwt_secret_key)}
+    return {"token": config.keyring.decrypt(job.encrypted_token)}
 
 
 class Observation(BaseModel):
@@ -171,7 +170,7 @@ async def credential(
     return {
         "provider": job.provider,
         "kind": job.kind,
-        "credential": decrypt_token(job.encrypted_credential, config.jwt_secret_key),
+        "credential": config.keyring.decrypt(job.encrypted_credential),
     }
 
 
@@ -213,7 +212,7 @@ async def result(
     job.result = value["succeeded"]
     job.state = "finishing"
     if job.result and updated is not None:
-        job.encrypted_credential = encrypt_token(updated, config.jwt_secret_key)
+        job.encrypted_credential = config.keyring.encrypt(updated)
     current = await latest(session, job.user_id, job.provider)
     member = await session.get(TenantMember, (require_tenant_id(), job.user_id))
     if not current or current.id != job.id or not member:

@@ -26,7 +26,6 @@ from switch_core.bridges.agent.dependencies import (
 )
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -49,6 +48,7 @@ from switch_core.gateway.hosted_launches import router as launch_router
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
+    KEYRING,
     make_owner,
     make_service,
 )
@@ -112,7 +112,7 @@ async def wire(session_factory, monkeypatch, tmp_path):
             session,
             owner,
             "setup-token",
-            encrypt_token("SYNTHETIC-CLAUDE", "test-secret"),
+            KEYRING.encrypt("SYNTHETIC-CLAUDE"),
             datetime.now(UTC),
         )
         await session.commit()

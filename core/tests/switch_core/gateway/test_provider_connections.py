@@ -9,7 +9,6 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
-from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     HostedLaunch,
     HostedMachine,
@@ -22,10 +21,13 @@ from switch_core.db.stores.provider_connection_store import ProviderConnectionSt
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.provider_connections import router
+from switch_core.keys import Keyring
 from switch_core.providers.claude_verifier import ClaudeVerificationError
 from switch_core.providers.credentials import validate_provider_credential
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.hosted_machine_helpers import seed_machine
+
+KEY = Keyring.parse("test:" + "synthetic-encryption-test-key" * 2, legacy_secret=None)
 
 
 @pytest.fixture
@@ -63,7 +65,7 @@ async def connection_app(session_factory):
     )
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(
-        jwt_secret_key="synthetic-encryption-test-key",
+        keyring=KEY,
         hosted_provider_verification_enabled=False,
     )
     async with httpx.AsyncClient(
@@ -85,10 +87,7 @@ async def test_save_is_encrypted_scoped_and_survives_new_request(connection_app)
     async with factory() as session:
         row = await ProviderConnectionStore().get(session, "first")
         assert row.encrypted_credential != credential
-        assert (
-            decrypt_token(row.encrypted_credential, "synthetic-encryption-test-key")
-            == credential
-        )
+        assert KEY.decrypt(row.encrypted_credential) == credential
     assert (await client.get("/provider-connections/claude")).json()[
         "status"
     ] == "connected"
@@ -233,10 +232,7 @@ async def test_other_provider_credentials_remain_unverified_until_worker_checks_
         )
         assert row is not None
         assert row.encrypted_credential != credential
-        assert (
-            decrypt_token(row.encrypted_credential, "synthetic-encryption-test-key")
-            == credential
-        )
+        assert KEY.decrypt(row.encrypted_credential) == credential
     identity["user"] = SimpleNamespace(id="second")
     assert (await client.get(url)).json() == {"status": "not_connected"}
     await client.delete(url)
@@ -338,7 +334,7 @@ async def test_opencode_stores_only_its_own_login(connection_app):
             ProviderConnection, (require_tenant_id(), "first", "opencode")
         )
         assert (
-            decrypt_token(row.encrypted_credential, "synthetic-encryption-test-key")
+            KEY.decrypt(row.encrypted_credential)
             == '{"opencode":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"}}'
         )
 

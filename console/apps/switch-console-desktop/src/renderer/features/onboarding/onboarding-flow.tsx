@@ -9,11 +9,13 @@ import {
   SignInStep,
 } from '@renderer/features/switch-servers/AddServerModal';
 import { LinkAccountsStep } from '@renderer/features/switch-servers/link-accounts-step';
+import { machineUnavailableReason } from '@renderer/features/switch-servers/server-sign-in';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useSwitchCloud } from '@renderer/features/switch-servers/use-switch-cloud';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { report } from '@renderer/lib/telemetry/report';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
@@ -174,9 +176,29 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
   const welcomeCloud: WelcomeCloud =
     cloud.kind === 'open' ? { ...cloud, ...cloudAttempt, onConnect: connectToCloud } : cloud;
 
+  const showAddServerModal = useShowModal('addServerModal');
+
+  /**
+   * Go on from the workspace pages.
+   *
+   * A Switch Cloud account goes on to setting up its cloud agents — providers,
+   * then GitHub, then a first agent — as the Add server dialog does after
+   * signing in to the Cloud. Those steps are that dialog's, so they open over
+   * the server's page rather than being drawn full window.
+   */
+  const afterWorkspace = (chosen: SwitchServer) => {
+    if (onboardingStore.via !== 'cloud') {
+      goTo('linkAccounts');
+      return;
+    }
+    const machineUnavailable = onboardingStore.machineUnavailable;
+    finish(chosen.id);
+    showAddServerModal({ cloudSetup: { server: chosen, machineUnavailable, firstRun: true } });
+  };
+
   return (
     <WizardChromeProvider chrome="page" exit={exit}>
-      {currentPage(server, welcomeCloud, goTo, finish)}
+      {currentPage(server, welcomeCloud, goTo, finish, afterWorkspace)}
     </WizardChromeProvider>
   );
 });
@@ -215,7 +237,8 @@ function currentPage(
   server: SwitchServer | null,
   welcomeCloud: WelcomeCloud,
   goTo: (page: OnboardingPage) => void,
-  finish: (serverId: string | null) => void
+  finish: (serverId: string | null) => void,
+  afterWorkspace: (server: SwitchServer) => void
 ) {
   switch (onboardingStore.page) {
     case 'welcome':
@@ -290,9 +313,10 @@ function currentPage(
             )
           }
           onClose={null}
-          onSignedIn={() =>
-            goTo(onboardingStore.invite !== null ? 'acceptInvite' : 'pickWorkspace')
-          }
+          onSignedIn={(signedIn) => {
+            onboardingStore.signedIn(machineUnavailableReason(signedIn));
+            goTo(onboardingStore.invite !== null ? 'acceptInvite' : 'pickWorkspace');
+          }}
         />
       );
     case 'pickWorkspace':
@@ -301,7 +325,7 @@ function currentPage(
         <PickWorkspacePage
           server={server}
           onBack={() => goTo('signIn')}
-          onPicked={() => goTo('linkAccounts')}
+          onPicked={() => afterWorkspace(server)}
           onCreate={() => goTo('createWorkspace')}
         />
       );
@@ -314,7 +338,7 @@ function currentPage(
           // no invitation: the picker sent the user straight here, and
           // returning to it would be a door onto a list with nothing in it.
           onBack={onboardingStore.pickerHasChoices ? () => goTo('pickWorkspace') : null}
-          onCreated={() => goTo('linkAccounts')}
+          onCreated={() => afterWorkspace(server)}
         />
       );
     case 'acceptInvite': {
@@ -326,7 +350,7 @@ function currentPage(
           invite={invite}
           onAccepted={() => {
             onboardingStore.dropInvite();
-            goTo('linkAccounts');
+            afterWorkspace(server);
           }}
           onSkip={() => {
             onboardingStore.dropInvite();

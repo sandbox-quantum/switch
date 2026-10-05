@@ -31,11 +31,15 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_launches import LAUNCH_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
+from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
 
 pytestmark = pytest.mark.no_ambient_tenant
 
-SECRET = "SYNTHETIC-SIGNING-KEY-FOR-SIGNUP-TESTS-ONLY"  # gitleaks:allow
+KEYRING = Keyring.parse(
+    "test:SYNTHETIC-SIGNING-KEY-FOR-SIGNUP-TESTS-ONLY",  # gitleaks:allow
+    legacy_secret=None,
+)
 PASSWORD = "correct horse battery"
 
 
@@ -55,7 +59,7 @@ async def signup_app(session_factory):
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
         hosted_launch_capacity=2,
-        jwt_secret_key=SECRET,
+        keyring=KEYRING,
         gateway_cookie_secure=False,
     )
     identity: dict[str, User] = {}
@@ -195,7 +199,7 @@ async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
     user = await _user(app, "new.person@example.com")
     assert body["id"] == user.id
     assert verify_password(PASSWORD, user.password_hash)
-    token = decode_jwt(response.cookies["switch_auth"], SECRET)
+    token = decode_jwt(response.cookies["switch_auth"], KEYRING)
     assert token["sub"] == user.id
     async with app.factory() as session:
         member = await session.get(TenantMember, (TENANT_ZERO_ID, user.id))

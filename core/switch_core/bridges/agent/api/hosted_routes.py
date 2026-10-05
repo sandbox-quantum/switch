@@ -13,7 +13,6 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_config, get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Agent,
     HostedLaunch,
@@ -65,9 +64,7 @@ async def provider_credential(
         "kind": connection.kind,
         "provider": connection.provider,
         "revision": str(connection.verified_at),
-        "credential": decrypt_token(
-            connection.encrypted_credential, config.jwt_secret_key
-        ),
+        "credential": config.keyring.decrypt(connection.encrypted_credential),
     }
 
 

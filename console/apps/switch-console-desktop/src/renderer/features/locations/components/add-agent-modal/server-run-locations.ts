@@ -82,3 +82,33 @@ export function machineFor(runLocation: string, machines: OwnedMachine[]): Owned
     ) ?? null
   );
 }
+
+/**
+ * Whether a run location runs the agent in Switch cloud. On a Switch Cloud
+ * server that is everything but one of the owner's machines: it offers neither
+ * this computer nor SSH hosts except as machines.
+ */
+export function isCloudRunLocation(runLocation: string, managedCloud: boolean): boolean {
+  return runLocation === 'cloud' || (managedCloud && machineIdOf(runLocation) === null);
+}
+
+/**
+ * The run location to move to once the server's machines are known, or null to
+ * stay. A machine the server no longer lists falls back to the default; off
+ * Switch Cloud, this computer or an SSH host that is a machine is picked as it.
+ */
+export function reconciledRunLocation(
+  runLocation: string,
+  machines: OwnedMachine[] | null,
+  managedCloud: boolean
+): string | null {
+  if (runLocation === 'cloud') return null;
+  const id = machineIdOf(runLocation);
+  if (id !== null) {
+    if (machines?.some((machine) => machine.id === id)) return null;
+    return managedCloud ? 'cloud' : 'local';
+  }
+  if (!machines || managedCloud) return null;
+  const enrolled = machineFor(runLocation, machines);
+  return enrolled ? machineRunLocation(enrolled.id) : null;
+}

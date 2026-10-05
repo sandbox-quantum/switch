@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "./App";
 import type { Session, TenantMembership } from "./data/api";
@@ -43,6 +43,23 @@ function renderAt(path: string) {
     </MemoryRouter>,
   );
 }
+
+function LocationProbe() {
+  return <div data-testid="location">{useLocation().pathname}</div>;
+}
+
+/** Path prefixes a shared-origin ingress sends to switch-core rather than the
+ * gateway (the chart's `ingress.agentApiPaths`). A page under one of them
+ * cannot be reached by a full page load. */
+const CORE_OWNED_PREFIXES = [
+  "/agents",
+  "/hosted",
+  "/mcp",
+  "/oauth",
+  "/.well-known",
+  "/messaging",
+  "/health",
+];
 
 const authConfig = {
   oidc_enabled: true,
@@ -106,6 +123,41 @@ describe("AppRoutes", () => {
     expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Workspace/ })).toBeTruthy();
     expect(screen.queryByRole("link", { name: /Users/ })).toBeNull();
+  });
+
+  it("keeps every page off the paths the ingress routes to switch-core", async () => {
+    mockFetch({
+      "/auth/session": [200, session({ state: "ready", tenant: acme, tenants: [acme] })],
+    });
+    renderAt("/workspace");
+    await screen.findByRole("heading", { name: "Acme" });
+    const pages = screen
+      .getAllByRole("link")
+      .map((link) => link.getAttribute("href") ?? "")
+      .filter((href) => href.startsWith("/"));
+    expect(pages).toContain("/agent-directory");
+    for (const page of pages) {
+      for (const prefix of CORE_OWNED_PREFIXES) {
+        expect(page === prefix || page.startsWith(`${prefix}/`)).toBe(false);
+      }
+    }
+  });
+
+  it("forwards an old agent link to the agent's page", async () => {
+    mockFetch({
+      "/auth/session": [200, session({ state: "ready", tenant: acme, tenants: [acme] })],
+    });
+    render(
+      <MemoryRouter initialEntries={["/agents/a1"]}>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/agent-directory/a1"),
+    );
   });
 
   it("puts a pending invite before everything else", async () => {

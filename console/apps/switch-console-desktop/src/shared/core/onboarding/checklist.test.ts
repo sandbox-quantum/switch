@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  anyProviderConnected,
   countCompletedSteps,
   deriveOnboardingSteps,
   EMPTY_ONBOARDING_PROGRESS,
@@ -98,5 +99,50 @@ describe('countCompletedSteps', () => {
   it('counts met steps regardless of order', () => {
     expect(countCompletedSteps(progress())).toBe(0);
     expect(countCompletedSteps(progress({ agentProviders: true, createRoom: true }))).toBe(2);
+  });
+});
+
+describe('anyProviderConnected', () => {
+  const signedIn = { installed: true, status: 'authenticated' };
+  const verified = {
+    status: 'connected',
+    kind: 'api-key',
+    verified_at: '2026-01-01T00:00:00Z',
+  } as const;
+  const pending = {
+    kind: 'api-key',
+    verification_id: 'v-1',
+    created_at: '2026-01-01T00:00:00Z',
+    error: null,
+  } as const;
+
+  it('is false with nothing answered yet', () => {
+    expect(anyProviderConnected([undefined], [undefined])).toBe(false);
+    expect(anyProviderConnected([], [])).toBe(false);
+  });
+
+  it('does not count an installed CLI nobody has signed in to', () => {
+    expect(anyProviderConnected([{ installed: true, status: 'unauthenticated' }], [])).toBe(false);
+    expect(anyProviderConnected([{ installed: true, status: 'unknown' }], [])).toBe(false);
+  });
+
+  it('does not count a sign-in whose CLI is not installed', () => {
+    expect(anyProviderConnected([{ installed: false, status: 'authenticated' }], [])).toBe(false);
+  });
+
+  it('counts a provider signed in on this computer', () => {
+    expect(anyProviderConnected([undefined, signedIn], [])).toBe(true);
+  });
+
+  it('counts a provider connected on Switch Cloud', () => {
+    expect(anyProviderConnected([], [{ status: 'not_connected' }, verified])).toBe(true);
+    expect(anyProviderConnected([], [{ ...verified, status: 'configured' }])).toBe(true);
+  });
+
+  it('does not count a cloud credential still being checked or one that failed', () => {
+    expect(anyProviderConnected([], [{ ...pending, status: 'verifying' }])).toBe(false);
+    expect(anyProviderConnected([], [{ ...pending, status: 'failed', error: 'rejected' }])).toBe(
+      false
+    );
   });
 });

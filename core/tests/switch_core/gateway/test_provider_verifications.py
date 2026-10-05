@@ -7,7 +7,6 @@ import pytest
 from fastapi import FastAPI
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
-from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     HostedMachine,
     ProviderConnection,
@@ -26,13 +25,14 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.provider_connections import router as connections
 from switch_core.gateway.provider_verifications import router as verifications
+from switch_core.keys import Keyring
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import make_owner
 from tests.switch_core.hosted_machine_helpers import seed_machine
 
 CONTROLLER = "SYNTHETIC-CONTROLLER-VERIFICATION-TEST"
 HEADERS = {"Authorization": "Bearer " + CONTROLLER}
-KEY = "placeholder-encryption-key"
+KEY = Keyring.parse("test:" + "placeholder-encryption-key" * 2, legacy_secret=None)
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ async def verification_app(session_factory, tmp_path):
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(
-        jwt_secret_key=KEY, hosted_provider_verification_enabled=True
+        keyring=KEY, hosted_provider_verification_enabled=True
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
@@ -128,10 +128,7 @@ async def test_verification_succeeds_before_cleanup_and_remains_queued_for_clean
         connection = await session.get(
             ProviderConnection, (require_tenant_id(), owner, "codex")
         )
-        assert (
-            decrypt_token(connection.encrypted_credential, KEY)
-            == "placeholder-refreshed"
-        )
+        assert KEY.decrypt(connection.encrypted_credential) == "placeholder-refreshed"
         verified_at = connection.verified_at
         job.deadline = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
@@ -155,10 +152,7 @@ async def test_verification_succeeds_before_cleanup_and_remains_queued_for_clean
             ProviderConnection, (require_tenant_id(), owner, "codex")
         )
         assert connection.verified_at == verified_at
-        assert (
-            decrypt_token(connection.encrypted_credential, KEY)
-            == "placeholder-refreshed"
-        )
+        assert KEY.decrypt(connection.encrypted_credential) == "placeholder-refreshed"
         job = await session.get(ProviderVerification, (require_tenant_id(), job_id))
         assert job.encrypted_credential is None and job.encrypted_token is None
     assert (await client.get(base + "/credential", headers=worker)).status_code == 403
@@ -259,9 +253,7 @@ async def test_failed_replacement_preserves_verified_connection(verification_app
             ProviderConnection, (require_tenant_id(), owner, "codex")
         )
         assert saved.verification_status == "verified"
-        assert (
-            decrypt_token(saved.encrypted_credential, KEY) == "placeholder-credential"
-        )
+        assert KEY.decrypt(saved.encrypted_credential) == "placeholder-credential"
 
 
 async def agents_version(factory, machine_id: str) -> int:
@@ -379,9 +371,7 @@ async def test_repeated_result_cannot_replace_verified_credential(verification_a
         saved = await session.get(
             ProviderConnection, (require_tenant_id(), owner, "codex")
         )
-        assert (
-            decrypt_token(saved.encrypted_credential, KEY) == "placeholder-credential"
-        )
+        assert KEY.decrypt(saved.encrypted_credential) == "placeholder-credential"
 
 
 @pytest.mark.parametrize("action", ["observe", "result"])

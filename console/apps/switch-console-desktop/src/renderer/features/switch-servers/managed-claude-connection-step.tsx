@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { CircleCheck } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -28,6 +29,9 @@ export function ManagedClaudeConnectionStep({
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const changed = () =>
+    void queryClient.invalidateQueries({ queryKey: ['cloud-provider', serverId, 'claude'] });
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -52,6 +56,7 @@ export function ManagedClaudeConnectionStep({
         onSave={async (kind, credential) => {
           const result = await rpc.switchServers.connectClaude(serverId, kind, credential);
           setConnection(result);
+          changed();
           setEditing(false);
           setError(null);
         }}
@@ -114,6 +119,7 @@ export function ManagedClaudeConnectionStep({
                 try {
                   await rpc.switchServers.disconnectClaude(serverId);
                   setConnection({ status: 'not_connected' });
+                  changed();
                 } catch (cause) {
                   setError(failureText(cause, 'Could not remove the Claude connection.'));
                 } finally {

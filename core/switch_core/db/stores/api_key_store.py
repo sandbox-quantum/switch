@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Agent, ApiKey
@@ -70,6 +70,14 @@ class ApiKeyStore:
         """
         result = await session.execute(select(ApiKey).where(ApiKey.label == label))
         return list(result.scalars().all())
+
+    async def set_type(self, session: AsyncSession, key_id: str, key_type: str) -> None:
+        await session.execute(
+            update(ApiKey)
+            .where(ApiKey.id == key_id)
+            .values(type=key_type)
+            .execution_options(synchronize_session=False)
+        )
 
     async def delete(self, session: AsyncSession, key_id: str) -> None:
         key = await session.get(ApiKey, key_id)

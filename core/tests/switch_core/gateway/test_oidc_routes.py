@@ -25,7 +25,7 @@ from switch_core.gateway.auth_routes import auth_config
 
 def _tenant_claim(set_cookie: str) -> str | None:
     token = set_cookie.split("switch_auth=", 1)[1].split(";", 1)[0]
-    claim: str | None = decode_jwt(token, "secret").get("tenant_id")
+    claim: str | None = decode_jwt(token, _config().keyring).get("tenant_id")
     return claim
 
 
@@ -38,7 +38,7 @@ def _config(**overrides: object) -> SwitchConfig:
         db_name="d",
         id_server_name="m",
         agent_registration_token="t",
-        jwt_secret_key="secret",
+        secret_keys="test:" + "x" * 40,
         gateway_admin_email="a@b.c",
         gateway_admin_password="pw",
         gateway_oidc_issuer_url="https://idp.example",

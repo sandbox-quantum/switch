@@ -5,11 +5,11 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import ProviderConnection, User
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.connection_catalog import router
 from switch_core.gateway.dependencies import get_session
+from tests.switch_core.bridges.agent.protocol.registration_harness import KEYRING
 
 
 @pytest.fixture
@@ -49,8 +49,8 @@ async def link_github(session_factory, user_id):
                 user_id=user_id,
                 provider="github",
                 kind="oauth",
-                encrypted_credential=encrypt_token(
-                    json.dumps({"access_token": "SYNTHETIC"}), "test-secret"
+                encrypted_credential=KEYRING.encrypt(
+                    json.dumps({"access_token": "SYNTHETIC"})
                 ),
                 verified_at=datetime.now(UTC),
             )

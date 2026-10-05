@@ -73,6 +73,7 @@ def _service(
         client_factory=_StubFactory(),  # type: ignore[arg-type]
         session_factory=session_factory,
         config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
+        tenants_isolated=True,
     )
 
 

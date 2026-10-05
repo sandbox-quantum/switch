@@ -15,10 +15,10 @@ from switch_core.db.stores.hosted_machine_store import (
     machine_starting,
     owner_stopped,
 )
+from tests.switch_core.bridges.agent.protocol.registration_harness import KEYRING
 from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
 SLOTS = ["slot-a", "slot-b"]
-SECRET = "test-secret"
 
 
 @pytest.fixture
@@ -429,14 +429,14 @@ async def test_machine_capability_is_stable_per_revision_and_rotates(factory):
     store = HostedMachineStore()
     machine = await claim(factory, "owner-a")
     assert not store.capability_matches(machine, "anything")
-    first = store.issue_capability(machine, SECRET)
-    assert store.issue_capability(machine, SECRET) == first
+    first = store.issue_capability(machine, KEYRING)
+    assert store.issue_capability(machine, KEYRING) == first
     assert machine.machine_capability_revision == 1
     assert store.capability_matches(machine, first)
     assert not store.capability_matches(machine, first + "x")
     store.stop(machine, "owner", datetime.now(UTC))
     assert store.capability_matches(machine, first)
-    second = store.issue_capability(machine, SECRET)
+    second = store.issue_capability(machine, KEYRING)
     assert second != first
     assert machine.machine_capability_revision == 2
     assert store.capability_matches(machine, second)

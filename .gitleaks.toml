@@ -51,6 +51,8 @@ regexes = [
   # A cache's time-to-live passed by keyword in a management test harness; the
   # generic-api-key rule reads "auth" in the variable name as a secret.
   '''ttl_seconds=controller_auth_ttl_seconds,''',
+  # Test fixtures name their dummy secrets "placeholder-…" so they read as fake.
+  '''"placeholder-[a-z-]*[0-9a-f]*"''',
 ]
 paths = [
   # Log-redaction tests exercise deliberately fake vendor tokens. Both spellings

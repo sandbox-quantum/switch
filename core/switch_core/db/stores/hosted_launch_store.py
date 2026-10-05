@@ -9,7 +9,6 @@ from sqlalchemy import and_, case, exists, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import (
     Agent,
     ApprovalRequest,
@@ -29,6 +28,7 @@ from switch_core.db.stores.hosted_machine_store import (
     machine_starting,
 )
 from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore
+from switch_core.keys import Keyring
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -209,7 +209,7 @@ class HostedLaunchStore:
             HostedLaunch, (require_tenant_id(), launch_id), populate_existing=True
         )
 
-    def issue_worker_capability(self, launch: HostedLaunch, secret_key: str) -> str:
+    def issue_worker_capability(self, launch: HostedLaunch, keyring: Keyring) -> str:
         """The worker capability for the launch's current revision.
 
         The same bytes for every call at one revision, so a lost `prepare`
@@ -220,9 +220,9 @@ class HostedLaunchStore:
             launch.worker_capability_revision == launch.revision
             and launch.worker_capability_encrypted is not None
         ):
-            return decrypt_token(launch.worker_capability_encrypted, secret_key)
+            return keyring.decrypt(launch.worker_capability_encrypted)
         capability = secrets.token_urlsafe(32)
-        launch.worker_capability_encrypted = encrypt_token(capability, secret_key)
+        launch.worker_capability_encrypted = keyring.encrypt(capability)
         launch.worker_capability_hash = capability_hash(capability)
         launch.worker_capability_revision = launch.revision
         return capability

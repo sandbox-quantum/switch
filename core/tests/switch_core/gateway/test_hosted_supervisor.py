@@ -6,7 +6,6 @@ from uuid import uuid4
 
 import pytest
 
-from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -17,6 +16,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_machine_store import lock_machine
+from tests.switch_core.bridges.agent.protocol.registration_harness import KEYRING
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     HEADERS,
     SPEC,
@@ -449,7 +449,7 @@ async def test_agents_sends_no_skills_to_a_provider_without_a_skills_directory(
                 user_id=launch.owner_id,
                 provider="cursor",
                 kind="api-key",
-                encrypted_credential=encrypt_token("SYNTHETIC-CURSOR", "test-secret"),
+                encrypted_credential=KEYRING.encrypt("SYNTHETIC-CURSOR"),
                 verified_at=datetime.now(UTC),
             )
         )

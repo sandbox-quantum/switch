@@ -1,24 +1,15 @@
 {{- if eq .Values.postgresql.mode "managed" }}
 {{- $secretOverride := "" }}
 {{/*
-The pre-upgrade copy of the Secret, on exactly the condition that makes it
-exist. A hook runs before helm applies the release's ordinary resources, so a
-chart-managed Secret read here is the *previous* release's — which is why
-migrate-prereqs.yaml renders a copy at a lower hook weight, and why this Job
-reads that copy when there is one.
-
-`switchCore.migrations.preUpgradeJob` has to be part of the condition rather
-than only `secrets.existingSecret`: the copy is rendered by that same
-template, so turning the migration Job off (to run migrations out of band)
-also removes the copy, and a Job naming a Secret nobody creates does not fail
-somewhere later — its pod never starts, the hook never succeeds, and every
-upgrade of the release is blocked. Falling back to the release's own Secret is
-correct there: in managed mode the target is always the in-cluster
-StatefulSet, whose superuser password was fixed when its volume was
-bootstrapped and which no later values change can move, so the previous
-release's copy of it is the one that still authenticates.
+A hook runs before helm applies the release's ordinary resources, so a
+chart-managed Secret read here would be the *previous* release's: a runtime
+password set or changed in this upgrade would be missing from it, the pod
+would never start, and every upgrade of the release would be blocked.
+migrate-prereqs.yaml renders a copy of this release's Secret at a lower hook
+weight whenever this Job exists, and this Job reads that copy. An existing
+Secret is already in place before the hook runs and is read directly.
 */}}
-{{- if and .Values.switchCore.migrations.preUpgradeJob (not .Values.secrets.existingSecret) }}
+{{- if not .Values.secrets.existingSecret }}
 {{- $secretOverride = printf "%s-migrate" (include "switch.secretName" .) }}
 {{- end }}
 {{- $ctx := merge (dict "secretNameOverride" $secretOverride) . }}
@@ -74,7 +65,7 @@ spec:
               set -eu
               psql -v ON_ERROR_STOP=1 --host "$PGHOST" --port "$PGPORT" \
                 --username {{ include "switch.postgresSuperUser" . }} --dbname postgres \
-                -v role="$RUNTIME_ROLE" -v pw="$PGPASSWORD" <<'SQL'
+                -v role="$RUNTIME_ROLE" -v pw="$RUNTIME_ROLE_PASSWORD" <<'SQL'
               SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', :'role', :'pw')
               WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role')
               \gexec
@@ -87,14 +78,16 @@ spec:
               value: {{ include "switch.postgresPort" . | quote }}
             - name: RUNTIME_ROLE
               value: {{ include "switch.postgresUser" . | quote }}
-            # The same secret PGPASSWORD authenticates this connection as the
-            # superuser AND the value ALTER ROLE sets the runtime role's
-            # password to — see the values.yaml comment on
-            # postgresql.managed.runtimeUsername for why that is one password,
-            # not two.
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "switch.postgresSecretName" $ctx }}
                   key: {{ include "switch.postgresSecretKey" $ctx }}
+            # The superuser's own unless a separate runtime password is
+            # configured; see postgresql.managed.runtimeUsername in values.yaml.
+            - name: RUNTIME_ROLE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "switch.runtimeSecretName" $ctx }}
+                  key: {{ include "switch.runtimeSecretKey" $ctx }}
 {{- end }}

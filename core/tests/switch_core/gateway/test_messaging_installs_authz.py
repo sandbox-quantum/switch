@@ -20,8 +20,10 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt, require_admin, require_tenant_admin
 from switch_core.gateway.messaging_installs import router
+from switch_core.keys import Keyring
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
+_KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
 _TENANT = "messaging-installs-authz"
 
 
@@ -54,7 +56,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     app.dependency_overrides[gw_deps.get_install_service] = lambda: None
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        jwt_secret_key=_SECRET, gateway_tenant_choice_enabled=False
+        keyring=_KEYRING, gateway_tenant_choice_enabled=False
     )
     return app
 
@@ -77,7 +79,7 @@ async def _member(
 async def _list_installs(
     session_factory: async_sessionmaker[AsyncSession], user_id: str, name: str
 ) -> httpx.Response:
-    token = create_jwt(user_id, f"{name}@example.invalid", "user", _SECRET, _TENANT)
+    token = create_jwt(user_id, f"{name}@example.invalid", "user", _KEYRING, _TENANT)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app(session_factory)),
         base_url="http://test",

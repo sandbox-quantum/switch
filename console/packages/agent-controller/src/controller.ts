@@ -1,6 +1,6 @@
 import type { OpenAgentStream } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
-import { AccessTokens, ControllerClient, type Fetch, isRevoked } from './api';
+import { AccessTokens, ControllerApiError, ControllerClient, type Fetch, isRevoked } from './api';
 import { ConfigurationError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
@@ -146,8 +146,12 @@ class SerialQueue {
  * every ten minutes regardless. Status goes out when something changes, and
  * at least every `report_within_s`.
  *
- * Before any of that, the cached assignment is reconciled, so agents come back
- * after a reboot even while the server is unreachable.
+ * Before any of that, the credential is exchanged, and only then is the cached
+ * assignment reconciled: a controller revoked while it was down ends with
+ * `'revoked'` without starting an agent, and one whose credential Switch
+ * refuses starts none until Switch accepts it. A server that cannot be reached
+ * gives no verdict, so the cached agents start anyway and come back after a
+ * reboot while it is down.
  */
 export async function runController(
   deps: ControllerDeps,
@@ -208,6 +212,8 @@ export async function runController(
   let etag: string | null = cached.kind === 'saved' ? cached.etag : null;
   let reportWithinS = timing.defaultReportWithinS;
   let revocation: Promise<void> | null = null;
+  /** Switch refused the credential at startup and has not accepted it since. */
+  let credentialRefused = false;
   let reporter: StatusReporter | null = null;
 
   const hub = new AgentHub({
@@ -354,6 +360,7 @@ export async function runController(
       if (stop.signal.aborted) return;
       try {
         const pulled = await client.assignment(etag);
+        credentialRefused = false;
         if (pulled.kind === 'changed') {
           assignment = pulled.assignment;
           etag = pulled.etag;
@@ -436,7 +443,7 @@ export async function runController(
     localQueued = true;
     return queue.run(async () => {
       localQueued = false;
-      if (!assignment || stop.signal.aborted) return;
+      if (!assignment || credentialRefused || stop.signal.aborted) return;
       try {
         await reconcile(assignment, reconcileDeps);
       } catch (error) {
@@ -495,10 +502,34 @@ export async function runController(
     }
   };
 
-  await reconcileLocally();
+  /** Switch's verdict on the credential, asked before any cached agent starts. */
+  const firstToken = async (): Promise<'accepted' | 'revoked' | 'refused' | 'unreachable'> => {
+    try {
+      await tokens.get();
+      return 'accepted';
+    } catch (error) {
+      if (isRevoked(error)) return 'revoked';
+      if (error instanceof ControllerApiError && !error.retryable) {
+        log.error(
+          'Switch refused this controller’s credential; no agent starts until it accepts it.',
+          { code: error.code, error: errorMessage(error) }
+        );
+        return 'refused';
+      }
+      log.warn('Switch could not be reached; starting the agents of the last assignment pulled.', {
+        error: errorMessage(error),
+      });
+      return 'unreachable';
+    }
+  };
+  const verdict = await firstToken();
+  credentialRefused = verdict === 'refused';
+  if (verdict === 'revoked') await revoke();
+  else await reconcileLocally();
   relay.setReady();
 
-  void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
+  if (!stop.signal.aborted)
+    void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
 
   const resync = setInterval(() => {
     void sync('periodic resync');

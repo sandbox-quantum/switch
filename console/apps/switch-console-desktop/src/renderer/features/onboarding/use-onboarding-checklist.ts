@@ -1,3 +1,4 @@
+import { useQueries } from '@tanstack/react-query';
 import { useCallback, useEffect } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -6,18 +7,22 @@ import {
   managedCloudServerId,
   useCloudLaunches,
 } from '@renderer/features/switch-servers/use-cloud-launches';
+import { providerReadinessQuery } from '@renderer/lib/components/provider-connection-status';
+import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { report } from '@renderer/lib/telemetry/report';
 import {
+  anyProviderConnected,
   deriveOnboardingSteps,
   isOnboardingComplete,
   type OnboardingProgress,
   type OnboardingStep,
   type OnboardingStepId,
 } from '@shared/core/onboarding/checklist';
+import { AGENT_PROVIDERS, asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
  * Live answer to "which setup steps are done", read from the things the steps
@@ -32,12 +37,32 @@ import {
  */
 export function useOnboardingProgress(): OnboardingProgress {
   const { data: agentTypes } = useAgentTypeAvailability();
-  const cloud = useCloudLaunches(managedCloudServerId());
+  const cloudServerId = managedCloudServerId();
+  const cloud = useCloudLaunches(cloudServerId);
   const hasCloudAgent = cloud.data?.some((agent) => agent.state === 'ready') ?? false;
+  const localReadiness = useQueries({
+    queries: (agentTypes ?? [])
+      .filter((type) => type.available)
+      .map((type) => providerReadinessQuery(asAgentProviderId(type.agentId), null, '')),
+  });
+  const cloudSignedIn = cloudServerId !== null && switchServersStore.isConnected(cloudServerId);
+  const cloudConnections = useQueries({
+    queries: AGENT_PROVIDERS.map((provider) => ({
+      queryKey: ['cloud-provider', cloudServerId, provider.id],
+      queryFn: () => rpc.switchServers.getCloudProviderConnection(cloudServerId!, provider.id),
+      enabled: cloudSignedIn,
+      retry: false,
+    })),
+  });
 
   return {
     addServer: switchServersStore.servers.length > 0,
-    agentProviders: hasCloudAgent || (agentTypes ?? []).some((type) => type.available),
+    agentProviders:
+      hasCloudAgent ||
+      anyProviderConnected(
+        localReadiness.map((query) => query.data),
+        cloudSignedIn ? cloudConnections.map((query) => query.data) : []
+      ),
     onboardAgents: hasCloudAgent || appState.locations.locations.size > 0,
     createRoom: switchRoomsStore.listedRoomsInAllWorkspaces.length > 0,
   };
@@ -72,9 +97,19 @@ export function useOnboardingChecklist(): OnboardingChecklist {
         case 'addServer':
           showAddServerModal({});
           return;
-        case 'agentProviders':
+        case 'agentProviders': {
+          // Cloud agents use the credentials connected on Switch Cloud, not
+          // the CLIs signed in on this computer.
+          const cloudServer = switchServersStore.serverById(managedCloudServerId());
+          if (cloudServer !== null && switchServersStore.isConnected(cloudServer.id)) {
+            showAddServerModal({
+              cloudSetup: { server: cloudServer, machineUnavailable: null, firstRun: false },
+            });
+            return;
+          }
           navigate('settings', { tab: 'clis-models' });
           return;
+        }
         case 'onboardAgents':
           showAddAgentModal({ entryPoint: 'onboarding' });
           return;

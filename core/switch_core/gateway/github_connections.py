@@ -12,12 +12,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select, text, update
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import (
     GitHubIssuedToken,
@@ -332,9 +330,7 @@ async def confirm(
         )
     )
     for other in other_links:
-        identity = json.loads(
-            decrypt_token(other.encrypted_credential, config.jwt_secret_key)
-        )
+        identity = json.loads(config.keyring.decrypt(other.encrypted_credential))
         if identity.get("user_id") == flow.credentials["user_id"]:
             raise HTTPException(
                 409,
@@ -344,34 +340,30 @@ async def confirm(
         select(ProviderConnection).where(*conditions(user.id))
     )
     previous_token = (
-        json.loads(decrypt_token(previous.encrypted_credential, config.jwt_secret_key))[
+        json.loads(config.keyring.decrypt(previous.encrypted_credential))[
             "access_token"
         ]
         if previous
         else None
     )
     await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
-    encrypted = encrypt_token(json.dumps(flow.credentials), config.jwt_secret_key)
+    encrypted = config.keyring.encrypt(json.dumps(flow.credentials))
     now = datetime.now(UTC)
-    await session.execute(
-        insert(ProviderConnection)
-        .values(
-            tenant_id=require_tenant_id(),
-            user_id=user.id,
-            provider="github",
-            kind="oauth",
-            encrypted_credential=encrypted,
-            verified_at=now,
+    if previous is None:
+        session.add(
+            ProviderConnection(
+                tenant_id=require_tenant_id(),
+                user_id=user.id,
+                provider="github",
+                kind="oauth",
+                encrypted_credential=encrypted,
+                verified_at=now,
+            )
         )
-        .on_conflict_do_update(
-            index_elements=["tenant_id", "user_id", "provider"],
-            set_={
-                "kind": "oauth",
-                "encrypted_credential": encrypted,
-                "verified_at": now,
-            },
-        )
-    )
+    else:
+        previous.kind = "oauth"
+        previous.encrypted_credential = encrypted
+        previous.verified_at = now
     await session.commit()
     github.flows.pop(flow_id, None)
     logger.info(
@@ -420,9 +412,7 @@ async def _credentials(
         )
         if row is None:
             return None
-        credentials = json.loads(
-            decrypt_token(row.encrypted_credential, config.jwt_secret_key)
-        )
+        credentials = json.loads(config.keyring.decrypt(row.encrypted_credential))
         if credentials["expires_at"] < time.time() + 60:
             if credentials["refresh_expires_at"] <= time.time():
                 raise GitHubAuthorizationError(
@@ -443,8 +433,8 @@ async def _credentials(
                     ProviderConnection.verified_at == row.verified_at,
                 )
                 .values(
-                    encrypted_credential=encrypt_token(
-                        json.dumps(credentials), config.jwt_secret_key
+                    encrypted_credential=config.keyring.encrypt(
+                        json.dumps(credentials)
                     ),
                     verified_at=revision,
                 )
@@ -515,9 +505,7 @@ async def disconnect(
     await lock(session, user.id)
     row = await session.scalar(select(ProviderConnection).where(*conditions(user.id)))
     token = (
-        json.loads(decrypt_token(row.encrypted_credential, config.jwt_secret_key))[
-            "access_token"
-        ]
+        json.loads(config.keyring.decrypt(row.encrypted_credential))["access_token"]
         if row
         else None
     )

@@ -7,7 +7,6 @@ from sqlalchemy import delete, exists, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import (
     GitHubIssuedToken,
     HostedLaunch,
@@ -37,7 +36,7 @@ def remember_repository_token(
         owner_id=launch.owner_id,
         launch_id=launch.id,
         launch_revision=launch.revision,
-        encrypted_token=encrypt_token(credential.token, config.jwt_secret_key),
+        encrypted_token=config.keyring.encrypt(credential.token),
         expires_at=credential.expires_at,
         revoke_requested=False,
         attempts=0,
@@ -141,7 +140,7 @@ async def _revoke_pending(
         try:
             async with asyncio.timeout(8):
                 await GitHubInstallationCredentials.revoke(
-                    decrypt_token(row.encrypted_token, config.jwt_secret_key)
+                    config.keyring.decrypt(row.encrypted_token)
                 )
             return row.id
         except Exception as error:

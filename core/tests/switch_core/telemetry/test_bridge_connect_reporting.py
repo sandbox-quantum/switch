@@ -39,6 +39,7 @@ from switch_core.db.models import Client, CollaborationBridge
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.keys import Keyring
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 from tests.switch_core.bridges.collaboration.test_lifecycle_callback_endpoint import (
@@ -85,7 +86,7 @@ def _service_with_telemetry(
     config.gateway_public_url = "https://gw.example"
     config.collaboration_callback_host = "127.0.0.1"
     config.collaboration_callback_port = callback_port
-    config.jwt_secret_key = "server-secret-for-tests"
+    config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     service = CollaborationBridgeLifecycleService(
         bridge_store=CollaborationBridgeStore(),
         external_user_store=MagicMock(),

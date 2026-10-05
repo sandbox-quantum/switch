@@ -13,7 +13,6 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select, text
 
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import (
     GitHubIssuedToken,
     HostedLaunch,
@@ -24,8 +23,11 @@ from switch_core.db.models import (
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.gateway.github_connections import router
+from switch_core.keys import Keyring
 from switch_core.providers.github import GitHubConnections, GitHubError
 from switch_core.tenant_context import tenant_scope
+
+KEY = Keyring.parse("test:" + "synthetic-encryption-test-key" * 2, legacy_secret=None)
 
 
 @pytest.fixture
@@ -88,9 +90,7 @@ async def github_app(tmp_path, session_factory):
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_session] = sessions
-    app.dependency_overrides[get_config] = lambda: SimpleNamespace(
-        jwt_secret_key="SYNTHETIC-ENCRYPTION-KEY"
-    )
+    app.dependency_overrides[get_config] = lambda: SimpleNamespace(keyring=KEY)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
     ) as client:
@@ -181,9 +181,7 @@ async def test_browser_handoff_requires_console_completion_and_saves_encrypted(
         )
         assert "SYNTHETIC-ACCESS" not in row.encrypted_credential
         assert (
-            json.loads(
-                decrypt_token(row.encrypted_credential, "SYNTHETIC-ENCRYPTION-KEY")
-            )["access_token"]
+            json.loads(KEY.decrypt(row.encrypted_credential))["access_token"]
             == "SYNTHETIC-ACCESS"
         )
     assert (await confirm(client, flow_id)).status_code == 410
@@ -263,9 +261,7 @@ async def test_refresh_saved_before_repository_failure(github_app):
         row = await session.scalar(
             select(ProviderConnection).where(ProviderConnection.provider == "github")
         )
-        saved = json.loads(
-            decrypt_token(row.encrypted_credential, "SYNTHETIC-ENCRYPTION-KEY")
-        )
+        saved = json.loads(KEY.decrypt(row.encrypted_credential))
         assert saved["refresh_token"] == "NEW-SYNTHETIC-REFRESH"
 
 
@@ -397,9 +393,7 @@ async def test_concurrent_refresh_exchanges_once_and_saves_on_cancel(github_app)
         row = await session.scalar(
             select(ProviderConnection).where(ProviderConnection.provider == "github")
         )
-        saved = json.loads(
-            decrypt_token(row.encrypted_credential, "SYNTHETIC-ENCRYPTION-KEY")
-        )
+        saved = json.loads(KEY.decrypt(row.encrypted_credential))
         assert saved["refresh_token"] == "NEW-SYNTHETIC-REFRESH"
 
 
@@ -456,9 +450,7 @@ async def test_relink_queues_existing_installation_tokens(github_app, monkeypatc
             owner_id=launch.owner_id,
             launch_id=launch.id,
             launch_revision=1,
-            encrypted_token=encrypt_token(
-                "SYNTHETIC-INSTALLATION", "SYNTHETIC-ENCRYPTION-KEY"
-            ),
+            encrypted_token=KEY.encrypt("SYNTHETIC-INSTALLATION"),
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             revoke_requested=False,
             attempts=0,

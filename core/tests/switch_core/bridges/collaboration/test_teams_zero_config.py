@@ -388,7 +388,7 @@ def test_outbound_only_adapters_claim_nothing() -> None:
 
 # The one tenant these tests pretend the deployment has. Named rather than
 # repeated: the stubbed lookup answers with it, and the fake rows have to
-# carry it, or the per-tenant filter in `_reject_resource_conflict` drops them.
+# carry it, or the per-tenant filter in `reject_claim_conflict` drops them.
 _STUB_TENANT = "tenant-a"
 
 

@@ -62,7 +62,7 @@ def _config(token: str, *, admin_email: str = ADMIN_EMAIL) -> SwitchConfig:
         db_name="unused",
         id_server_name="test",
         agent_registration_token=token,
-        jwt_secret_key="test-jwt-secret",
+        secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         gateway_admin_email=admin_email,
         gateway_admin_password="unused",
     )
@@ -85,7 +85,7 @@ def _config_for(postgres_url: str) -> SwitchConfig:
         db_name=url.database,
         id_server_name="test",
         agent_registration_token="unused",
-        jwt_secret_key="test-jwt-secret",
+        secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         gateway_admin_email=ADMIN_EMAIL,
         gateway_admin_password="unused",
     )

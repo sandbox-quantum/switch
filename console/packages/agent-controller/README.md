@@ -154,6 +154,11 @@ session hosts it launches with `process.execPath` run as Node too.
 - Exchanges its long-lived credential for a one-hour access token. It refreshes the
   token at 80% of its lifetime, and exchanges once more if a request is refused
   with a 401.
+- Exchanges the credential at startup before it starts any agent from the cached
+  assignment. If the exchange is refused as `controller_revoked`, it starts
+  nothing and handles the revocation as below. If the credential is refused for
+  another reason, it starts nothing until Switch accepts it. If Switch cannot be
+  reached, it starts the cached agents anyway.
 
 ### The controller stream
 

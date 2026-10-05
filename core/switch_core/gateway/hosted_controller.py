@@ -394,7 +394,7 @@ async def prepare(
         raise HTTPException(
             409, "The cloud machine's owner is no longer a workspace member."
         )
-    capability = HostedMachineStore().issue_capability(machine, config.jwt_secret_key)
+    capability = HostedMachineStore().issue_capability(machine, config.keyring)
     if machine.state == "queued":
         machine.state = "provisioning"
         machine.updated_at = now

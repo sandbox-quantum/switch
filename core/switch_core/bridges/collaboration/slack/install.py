@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 from urllib.parse import parse_qsl, urlencode
 
+import aiohttp
 from slack_sdk.errors import SlackApiError
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web.async_client import AsyncWebClient
@@ -205,6 +206,10 @@ class SlackAppInstaller(MessagingAppInstaller):
     async def revoke(self, *, bot_token: str) -> None:
         try:
             response = await AsyncWebClient(token=bot_token).auth_revoke()
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise MessagingInstallError(
+                f"Could not reach Slack to revoke the bot token: {error!r}"
+            ) from error
         except SlackApiError as error:
             reason = error.response.get("error", "")
             if reason in _ALREADY_DEAD:

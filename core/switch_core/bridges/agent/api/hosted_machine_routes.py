@@ -24,7 +24,6 @@ from switch_core.bridges.agent.dependencies import (
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
 from switch_core.connections.loader import CATALOG, SKILL_PROVIDERS, deployment_skills
-from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -201,14 +200,12 @@ async def _agent_entry(
         "provider": provider,
         "provider_credential_kind": None if connection is None else connection.kind,
         "worker_capability": HostedLaunchStore().issue_worker_capability(
-            launch, config.jwt_secret_key
+            launch, config.keyring
         ),
         "switch_credentials": {
             "env": {
                 "SWITCH_API_ENDPOINT": settings.agent_api_endpoint,
-                "SWITCH_API_TOKEN": decrypt_token(
-                    key.encrypted_key, config.jwt_secret_key
-                ),
+                "SWITCH_API_TOKEN": config.keyring.decrypt(key.encrypted_key),
                 "SWITCH_AGENT_ID": launch.agent_id,
             }
         },

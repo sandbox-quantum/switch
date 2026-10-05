@@ -45,6 +45,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
+    CONTROLLER_REVOKED_KEY_TYPE,
     Agent,
     AgentController,
     AgentControllerOperation,
@@ -281,12 +282,18 @@ class ManagementService:
             401, reason_codes.INVALID_CREDENTIAL, "The credential is not valid."
         )
         key = await self.api_keys.get_by_hash(session, tokens.hash_secret(credential))
-        if key is None or key.type != CONTROLLER_KEY_TYPE:
+        if key is None or key.type not in (
+            CONTROLLER_KEY_TYPE,
+            CONTROLLER_REVOKED_KEY_TYPE,
+        ):
             raise invalid
         controller = await self.controllers.get_by_api_key(session, tenant_id, key.id)
         if controller is None or controller.id != controller_id:
             raise invalid
-        if self.state_of(controller) == "revoked":
+        if (
+            key.type == CONTROLLER_REVOKED_KEY_TYPE
+            or self.state_of(controller) == "revoked"
+        ):
             raise ManagementError(
                 401, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )
@@ -571,7 +578,11 @@ class ManagementService:
     async def revoke_controller(
         self, session: AsyncSession, tenant_id: str, owner_id: str, controller_id: str
     ) -> None:
-        """Revoke: delete the credential, cancel open operations, and nudge.
+        """Revoke: retire the credential, cancel open operations, and nudge.
+
+        The credential's row is kept, retyped so nothing accepts it, so that
+        a controller that missed the nudge is told it was revoked when it next
+        exchanges the credential, rather than that the credential is unknown.
 
         Definitions placed on it stay placed, and are shown against a revoked
         controller until their owner moves or removes them.
@@ -586,7 +597,7 @@ class ManagementService:
             session, tenant_id, controller_id, self.now()
         )
         if key_id is not None:
-            await self.api_keys.delete(session, key_id)
+            await self.api_keys.set_type(session, key_id, CONTROLLER_REVOKED_KEY_TYPE)
         await self.operations.cancel_open(
             session, tenant_id, controller_id=controller_id, agent_id=None
         )

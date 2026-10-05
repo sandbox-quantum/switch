@@ -27,6 +27,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.keys import Keyring
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -425,7 +426,9 @@ def _agent_core(
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
     svc.event_buffer = SimpleNamespace(remove=lambda _agent_id: None)  # type: ignore[attr-defined]
-    svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]
+    svc.config = SimpleNamespace(
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+    )  # type: ignore[attr-defined]
     return svc
 
 
@@ -437,7 +440,7 @@ _CONFIG_KWARGS = dict(
     db_name="switch",
     id_server_name="switch.local",
     agent_registration_token="token",
-    jwt_secret_key="jwt",
+    secret_keys="test:" + "x" * 40,
     gateway_admin_email="admin@example.com",
     gateway_admin_password="pw",
 )

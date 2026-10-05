@@ -45,7 +45,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Ecosystem", path: "/ecosystem", icon: AccountTreeOutlined },
   { label: "Rooms", path: "/rooms", icon: MeetingRoomOutlined },
   { label: "Resources", path: "/resources", icon: FolderOutlined },
-  { label: "Agents", path: "/agents", icon: SmartToyOutlined },
+  { label: "Agents", path: "/agent-directory", icon: SmartToyOutlined },
   { label: "Apps", path: "/collaborations", icon: ChatBubbleOutlineOutlined },
   { label: "API Keys", path: "/registration-keys", icon: VpnKeyOutlined },
   { label: "Workspace", path: "/workspace", icon: WorkspacesOutlined },

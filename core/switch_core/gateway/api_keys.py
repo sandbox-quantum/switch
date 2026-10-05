@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.config import SwitchConfig
-from switch_core.crypto import decrypt_token, encrypt_token
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import HASH_ONLY_KEY_TYPES, ApiKey, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.auth import get_current_user
@@ -83,11 +83,20 @@ async def create_api_key(
     key = ApiKey(
         user_id=user.id,
         key_hash=key_hash,
-        encrypted_key=encrypt_token(plaintext, config.jwt_secret_key),
+        encrypted_key=config.keyring.encrypt(plaintext),
         label=req.label,
         type="registration",
     )
     await api_key_store.create(session, key)
+    await record_audit_event(
+        session,
+        tenant_id=key.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.API_KEY_CREATED,
+        target_type="api_key",
+        target_id=key.id,
+        details={"label": key.label, "type": key.type},
+    )
     await session.commit()
 
     logger.info("Created API key '%s' for user %s", req.label, user.email)
@@ -116,7 +125,17 @@ async def reveal_api_key(
     if key.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to reveal this key")
 
-    plaintext = decrypt_token(key.encrypted_key, config.jwt_secret_key)
+    plaintext = config.keyring.decrypt(key.encrypted_key)
+    await record_audit_event(
+        session,
+        tenant_id=key.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.API_KEY_REVEALED,
+        target_type="api_key",
+        target_id=key.id,
+        details={"label": key.label},
+    )
+    await session.commit()
     return RevealKeyResponse(key=plaintext)
 
 
@@ -133,6 +152,15 @@ async def delete_api_key(
     if key.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this key")
     key_hash = key.key_hash
+    await record_audit_event(
+        session,
+        tenant_id=key.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.API_KEY_DELETED,
+        target_type="api_key",
+        target_id=key.id,
+        details={"label": key.label, "type": key.type},
+    )
     await api_key_store.delete(session, key_id)
     await session.commit()
     get_protocol().api_key_cache.invalidate(key_hash)
