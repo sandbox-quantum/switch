@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { runAgentHost } from './agent-host';
-import { ensureSessions, serveControl } from './control';
+import { AttachmentTransfers } from './attachment-transfers';
+import { type ControlContext, ensureSessions, serveControl } from './control';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
+import { hostedWorker } from './hosted-watcher';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
@@ -109,6 +112,7 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
+      logRedactions: [],
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
@@ -121,6 +125,16 @@ async function main(): Promise<void> {
     const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
+    const transfers = new AttachmentTransfers(resolve(root));
+    await transfers.clear();
+    const context: ControlContext = {
+      agentId: config.session.agentId,
+      links,
+      ensure,
+      watcher: control,
+      transfers,
+    };
+    const hosted = await hostedWorker(config, resolve(root), context);
     // Console reads the watcher's connection state from this file, with the
     // rest of the host's watcher state, rather than from the control port.
     const stopRecording = recordWatcherHealth(resolve(root), control);
@@ -130,8 +144,10 @@ async function main(): Promise<void> {
     // start it again.
     try {
       await Promise.all([
-        runAgentHost(root, config, stop.signal, supervision, control).finally(() => stop.abort()),
-        serveControl(resolve(root), links, ensure, control, stop.signal),
+        runAgentHost(root, config, stop.signal, supervision, control, hosted).finally(() =>
+          stop.abort()
+        ),
+        serveControl(resolve(root), context, stop.signal),
       ]);
     } finally {
       stopRecording();
@@ -206,17 +222,23 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  if (
-    root !== '--probe' &&
-    root !== '--models' &&
-    mode !== '--supervise' &&
-    mode !== '--watch-supervise'
-  ) {
-    await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
-    await replaceOwner(join(root, 'supervisor', 'failure.json'), {
-      message: error instanceof Error ? error.message : String(error),
-    });
+  if (error instanceof WorkerObsoleteError) {
+    // Not a failure of this bundle's to record: the worker service waits for a current one.
+    console.error(error.message);
+    process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
+  } else {
+    if (
+      root !== '--probe' &&
+      root !== '--models' &&
+      mode !== '--supervise' &&
+      mode !== '--watch-supervise'
+    ) {
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+      await replaceOwner(join(root, 'supervisor', 'failure.json'), {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    console.error(error);
+    process.exitCode = 1;
   }
-  console.error(error);
-  process.exitCode = 1;
 }

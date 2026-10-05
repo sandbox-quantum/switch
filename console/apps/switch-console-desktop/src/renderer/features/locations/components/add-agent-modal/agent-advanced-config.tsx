@@ -10,7 +10,7 @@ import {
   advancedFields,
   attributesFromForm,
   DefinitionFieldInput,
-  emptyForm,
+  formFromAttributes,
   type FormState,
   type FormValue,
 } from '../agent-definition-fields';
@@ -25,13 +25,18 @@ import { fieldCatalogueState } from '../agent-model-catalogue';
  */
 export function AgentAdvancedConfig({
   providerId,
+  cloud,
   sshHost,
   dir,
+  initial,
   onChange,
 }: {
   providerId: AgentProviderId | null;
+  cloud: boolean;
   sshHost: string | null;
   dir: string;
+  /** The attributes the form starts from; pass a stable value, a new one resets the form. */
+  initial: RepoAgentAttributes;
   onChange: (attributes: RepoAgentAttributes) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -41,6 +46,14 @@ export function AgentAdvancedConfig({
     enabled: !!providerId && !!dir.trim(),
     staleTime: 60000,
   });
+  const executionCatalogue = dir.trim()
+    ? catalogue
+    : {
+        kind: 'unavailable' as const,
+        reason: cloud
+          ? 'Model suggestions are unavailable before the cloud worker starts. You can enter a model alias or ID.'
+          : 'No execution directory is configured yet. You can enter a model alias or ID.',
+      };
   const { data: allFields } = useQuery({
     queryKey: ['agentDefinitionFields', providerId],
     queryFn: () => (providerId ? rpc.agents.definitionFields({ providerId }) : Promise.resolve([])),
@@ -55,10 +68,10 @@ export function AgentAdvancedConfig({
   // changes, so switching agent type does not carry stale values. `onChange` is a
   // stable callback from the modal, so including it does not re-run this.
   useEffect(() => {
-    const initial = emptyForm(fields);
-    setState(initial);
-    onChange(attributesFromForm(fields, initial));
-  }, [fields, onChange]);
+    const form = formFromAttributes(fields, initial);
+    setState(form);
+    onChange(attributesFromForm(fields, form));
+  }, [fields, initial, onChange]);
 
   if (!providerId || fields.length === 0) return null;
 
@@ -91,14 +104,14 @@ export function AgentAdvancedConfig({
                 {field.required || field.type === 'boolean' ? '' : ' (optional)'}
               </FieldLabel>
               <DefinitionFieldInput
-                suggestions={fieldCatalogueState(field, state, catalogue).suggestions}
+                suggestions={fieldCatalogueState(field, state, executionCatalogue).suggestions}
                 field={field}
                 value={state[field.key] ?? (field.type === 'boolean' ? false : '')}
                 onChange={(value) => setField(field.key, value)}
               />
-              {fieldCatalogueState(field, state, catalogue).note && (
+              {fieldCatalogueState(field, state, executionCatalogue).note && (
                 <FieldDescription>
-                  {fieldCatalogueState(field, state, catalogue).note}
+                  {fieldCatalogueState(field, state, executionCatalogue).note}
                 </FieldDescription>
               )}
               {field.help && (

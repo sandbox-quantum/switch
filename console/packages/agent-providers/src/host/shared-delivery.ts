@@ -5,7 +5,7 @@ import type { HostBody, HostEvent, ServerEvent, Session } from '@switch-console/
 import { z } from 'zod';
 import { Journal } from './journal';
 
-const recordSchema = z.discriminatedUnion('type', [
+export const deliveryRecordSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('event'),
     sourceSequence: z.number().int().positive(),
@@ -24,7 +24,7 @@ export class SharedDelivery {
   private readonly unrecorded: number[] = [];
 
   private constructor(
-    private readonly journal: Journal<z.infer<typeof recordSchema>>,
+    private readonly journal: Journal<z.infer<typeof deliveryRecordSchema>>,
     private readonly session: Session,
     sourceBase: number
   ) {
@@ -68,7 +68,7 @@ export class SharedDelivery {
   static async load(root: string, session: Session, sourceBase = 0): Promise<SharedDelivery> {
     const journal = await Journal.load(
       join(root, `delivery-${createHash('sha256').update(session.epoch).digest('hex')}.jsonl`),
-      (value) => recordSchema.parse(value)
+      (value) => deliveryRecordSchema.parse(value)
     );
     const delivery = new SharedDelivery(journal, session, sourceBase);
     for (const hostSequence of delivery.unrecorded)

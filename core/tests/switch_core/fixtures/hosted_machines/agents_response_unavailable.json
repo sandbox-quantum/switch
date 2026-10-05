@@ -1,0 +1,16 @@
+{
+  "machine_id": "3f1c2b4a-0000-4000-8000-000000000001",
+  "revision": 2,
+  "desired_state": "stopped",
+  "agents_version": 3,
+  "agents": [
+    {
+      "launch_id": "3f1c2b4a-0000-4000-8000-0000000000c1",
+      "agent_id": "3f1c2b4a-0000-4000-8000-0000000000a1",
+      "name": "reviewer",
+      "revision": 1,
+      "desired_state": "running",
+      "unavailable": "agent_key_missing"
+    }
+  ]
+}

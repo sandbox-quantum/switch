@@ -1,6 +1,7 @@
 import { CircleCheck, Cloud, Globe, Info, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { NewAgentForm } from '@renderer/features/locations/components/add-agent-modal/new-agent-form';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -19,6 +20,7 @@ import {
   lockHolderSentence,
   othersRecentlySeen,
 } from '@shared/core/managed-switch-server/managed-switch-server';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -27,12 +29,20 @@ import type {
   ServerApiUrlPropagation,
   SwitchServer,
 } from '@shared/core/switch-servers/switch-servers';
+import { ConnectionsStep } from './connections-step';
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
+import { ManagedProviderConnectionSequence } from './managed-provider-connection-step';
+import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
 import { type RemoteSetupAction, remoteSetupAction } from './remote-setup-action';
-import { ServerSignInFields, useServerSignIn } from './server-sign-in';
+import {
+  machineUnavailableReason,
+  type SignedIn,
+  ServerSignInFields,
+  useServerSignIn,
+} from './server-sign-in';
 import { affectedSentence } from './shared-consoles';
 import { switchServersStore } from './switch-servers-store';
 import { useSwitchCloud } from './use-switch-cloud';
@@ -79,7 +89,17 @@ type Props = BaseModalProps<void> & {
   mode?: 'local' | 'remoteHost' | 'external';
 };
 
-type Step = 'choose' | 'local' | 'remoteHost' | 'external' | 'signIn' | 'linkAccounts';
+type Step =
+  | 'managedAgent'
+  | 'managedGitHub'
+  | 'managedClaude'
+  | 'managedReady'
+  | 'choose'
+  | 'local'
+  | 'remoteHost'
+  | 'external'
+  | 'signIn'
+  | 'linkAccounts';
 
 /**
  * This wizard's steps and the shared list of step names say the same thing.
@@ -115,6 +135,10 @@ void _stepsAreComplete;
  */
 const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   choose: 'none',
+  managedReady: 'cloud',
+  managedClaude: 'cloud',
+  managedGitHub: 'cloud',
+  managedAgent: 'cloud',
   local: 'local',
   remoteHost: 'remoteHost',
   external: 'external',
@@ -127,6 +151,8 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
   const openedWith = CHOICE_FOR_STEP[openedAt] ?? 'none';
   const [step, setStep] = useState<Step>(openedAt);
+  const [providerIndex, setProviderIndex] = useState(0);
+  const [selectedProviders, setSelectedProviders] = useState<AgentProviderId[]>([]);
   // Which path was taken at the chooser, carried so every later step can be
   // attributed to it. `none` while still on the chooser, which is what makes a
   // drop-off before choosing distinguishable from one after.
@@ -171,6 +197,12 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   // it. Null in edit mode and on the two managed paths, which is what
   // distinguishes the standalone edit form from step 2 of the wizard.
   const [connected, setConnected] = useState<SwitchServer | null>(null);
+  // Why the account just created has no cloud machine warming, carried into
+  // the managed steps so it is not lost with the sign-in form.
+  const [machineUnavailable, setMachineUnavailable] = useState<string | null>(null);
+  const machineNotice = machineUnavailable && (
+    <MachineUnavailableNotice reason={machineUnavailable} />
+  );
   const { navigate } = useNavigate();
 
   /**
@@ -182,11 +214,16 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
    */
   /**
    * Switch Cloud has no form: its address is the build's. So it goes straight
-   * from the chooser to signing in, and that step's Back returns to the
-   * chooser rather than to a connect-by-URL form it never passed through.
+   * from the chooser to signing in — or past it, to the cloud setup steps, when
+   * already signed in — and the sign-in step's Back returns to the chooser
+   * rather than to a connect-by-URL form it never passed through.
    */
   const enterCloud = (server: SwitchServer) => {
     setConnected(server);
+    if (switchServersStore.isConnected(server.id)) {
+      goToStep('managedReady');
+      return;
+    }
     setChoice('cloud');
     setStep('signIn');
     report('add_server_step', { step: 'signIn', choice: 'cloud', first_run: false });
@@ -233,13 +270,75 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       />
     );
   }
+  if (step === 'managedClaude' && connected) {
+    return (
+      <>
+        {machineNotice}
+        <ManagedProviderConnectionSequence
+          serverId={connected.id}
+          providers={selectedProviders}
+          index={providerIndex}
+          onIndexChange={setProviderIndex}
+          onBack={() => goToStep('managedReady')}
+          onDone={() => goToStep('managedGitHub')}
+          doneStepName="GitHub"
+        />
+      </>
+    );
+  }
+  if (step === 'managedAgent' && connected) {
+    return (
+      <>
+        {machineNotice}
+        <NewAgentForm
+          entryPoint="onboarding"
+          initialRunLocation="cloud"
+          serverId={connected.id}
+          onBack={() => goToStep('managedGitHub')}
+          onClose={() => finish(connected.id)}
+        />
+      </>
+    );
+  }
+  if (step === 'managedGitHub' && connected) {
+    return (
+      <>
+        {machineNotice}
+        <ConnectionsStep
+          onContinue={() => goToStep('managedAgent')}
+          serverId={connected.id}
+          onBack={() => goToStep('managedClaude')}
+          onSkip={() => finish(connected.id)}
+        />
+      </>
+    );
+  }
+  if (step === 'managedReady' && connected) {
+    return (
+      <>
+        {machineNotice}
+        <ManagedProvidersStep
+          selected={selectedProviders}
+          onSelectionChange={setSelectedProviders}
+          onContinue={() => {
+            setProviderIndex(0);
+            goToStep('managedClaude');
+          }}
+          onSkip={() => finish(connected.id)}
+        />
+      </>
+    );
+  }
   if (step === 'signIn' && connected) {
     return (
       <SignInStep
         server={connected}
         onBack={() => goToStep(choice === 'cloud' ? 'choose' : 'external')}
         onClose={props.onClose}
-        onSignedIn={() => goToStep('linkAccounts')}
+        onSignedIn={(signedIn) => {
+          setMachineUnavailable(machineUnavailableReason(signedIn));
+          goToStep(choice === 'cloud' ? 'managedReady' : 'linkAccounts');
+        }}
       />
     );
   }
@@ -1242,14 +1341,16 @@ export const SignInStep = observer(function SignInStep({
   onBack: () => void;
   /** Null where there is nothing to close onto — the first-run pages. */
   onClose: (() => void) | null;
-  onSignedIn: () => void;
+  onSignedIn: (signedIn: SignedIn) => void;
 }) {
   const signIn = useServerSignIn(server.id);
-  const canUsePassword = signIn.config?.passwordLoginEnabled ?? false;
+  const signingUp = signIn.mode === 'signUp';
+  const canUsePassword = signingUp || (signIn.config?.passwordLoginEnabled ?? false);
   const canUseOidc = signIn.config?.oidcEnabled ?? false;
 
   const submit = async () => {
-    if (await signIn.signInWithPassword()) onSignedIn();
+    const signedIn = await signIn.submitForm();
+    if (signedIn) onSignedIn(signedIn);
   };
 
   // One const for the footer's Back and the pager's back arrow that repeats it.
@@ -1257,7 +1358,7 @@ export const SignInStep = observer(function SignInStep({
 
   return (
     <WizardFrame
-      title={`Sign in to ${server.name}`}
+      title={signingUp ? `Create an account on ${server.name}` : `Sign in to ${server.name}`}
       subtitle={null}
       pager={{ pageName: 'Sign in', onBack: goBack, onNext: null }}
       footer={
@@ -1266,11 +1367,8 @@ export const SignInStep = observer(function SignInStep({
             Back
           </Button>
           {canUsePassword ? (
-            <ConfirmButton
-              onClick={() => void submit()}
-              disabled={!signIn.canSubmitPassword || signIn.submitting}
-            >
-              {signIn.submitting ? 'Signing in…' : 'Sign in'}
+            <ConfirmButton onClick={() => void submit()} disabled={!signIn.canSubmitForm}>
+              {signIn.submitLabel}
             </ConfirmButton>
           ) : (
             // Nothing for a primary button to do: either the only method is the
@@ -1287,6 +1385,14 @@ export const SignInStep = observer(function SignInStep({
         </>
       }
     >
+      {signIn.configCheckFailed && !signIn.configChecking && (
+        <Button
+          variant="outline"
+          onClick={() => void switchServersStore.refreshAuthConfig(server.id)}
+        >
+          Retry sign-in options
+        </Button>
+      )}
       <ServerSignInFields
         signIn={signIn}
         idPrefix="connect-server-sign-in"
@@ -1296,3 +1402,16 @@ export const SignInStep = observer(function SignInStep({
     </WizardFrame>
   );
 });
+
+/** A just-created account whose cloud machine the server could not start. */
+function MachineUnavailableNotice({ reason }: { reason: string }) {
+  return (
+    <div className="shrink-0 px-6 pt-6">
+      <Alert>
+        <TriangleAlert className="size-4" />
+        <AlertTitle>Your cloud machine is not starting</AlertTitle>
+        <AlertDescription>{reason}</AlertDescription>
+      </Alert>
+    </div>
+  );
+}

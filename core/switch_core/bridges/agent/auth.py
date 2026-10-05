@@ -45,6 +45,9 @@ PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # Slack event carries no credential of ours — so each route proves its own
     # origin from the platform's signature before it does anything else.
     MESSAGING_INSTALL_PREFIX,
+    # A cloud machine's supervisor, which holds a machine capability rather
+    # than an agent key; the routes check the capability themselves.
+    "/hosted/machines",
 )
 
 

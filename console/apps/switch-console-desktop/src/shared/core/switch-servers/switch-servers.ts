@@ -130,6 +130,9 @@ export type SwitchAuthConfig = {
   oidcEnabled: boolean;
   /** Button label for the OIDC provider (e.g. "Okta"), or null. */
   oidcProviderLabel: string | null;
+  /** Whether anyone may create an account with an email and password. False
+   * for a server predating the field. */
+  signupEnabled: boolean;
 };
 
 /** What a switch-core says about itself to an authenticated client (CHOO-1865).
@@ -170,6 +173,24 @@ export type PasswordLoginParams = {
   serverId: string;
   email: string;
   password: string;
+};
+
+export type SignupParams = PasswordLoginParams & {
+  /** Omitted to let the server name the account after its email. */
+  displayName?: string;
+};
+
+/** Whether the server began warming the new account's cloud machine, and why
+ * not when it did not. */
+export type SignupMachine = {
+  status: 'starting' | 'unavailable';
+  reason: string | null;
+};
+
+/** A created account: signed in, as after a password login. */
+export type SignupResult = {
+  user: SwitchUser;
+  machine: SignupMachine;
 };
 
 /** Read-only summary of a remote agent (mirrors the gateway `AgentSummary`). */

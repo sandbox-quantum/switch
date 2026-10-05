@@ -1,12 +1,23 @@
 import type { Result } from '@switch-console/shared';
+import { z } from 'zod';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { appService } from '@main/core/app/service';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import {
+  validateClaudeCredential,
+  type ClaudeCredentialKind,
+} from '@shared/core/switch-servers/claude-credential';
+import type {
+  CloudConfigurationInput,
+  CloudLaunchInput,
+} from '@shared/core/switch-servers/cloud-launch';
 import {
   type InviteServer,
   SWITCH_CLOUD_NAME,
@@ -18,6 +29,8 @@ import type {
   PasswordLoginParams,
   RenameServerParams,
   ServerConnectionStatus,
+  SignupParams,
+  SignupResult,
   SwitchAuthConfig,
   SwitchServer,
   UpdateServerParams,
@@ -26,9 +39,24 @@ import type {
 import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { type LoginError, oidcLogin, passwordLogin } from './auth';
+import { type LoginError, oidcLogin, passwordLogin, type SignupError, signup } from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
+  getConnectionCatalog,
+  getGitHubConnection,
+  createCloudLaunch,
+  cloudLifecycle,
+  getCloudLaunchConfiguration,
+  updateCloudLaunchConfiguration,
+  cloudMachineLifecycle,
+  ensureCloudMachine,
+  getCloudProviderConnection,
+  connectCloudProvider,
+  disconnectCloudProvider,
+  disconnectGitHub,
+  getClaudeConnection,
+  connectClaude,
+  disconnectClaude,
   acceptInvitation,
   acceptPendingInvitation,
   joinWorkspaceByDomain,
@@ -41,6 +69,19 @@ import {
   type RemoteTenant,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
+import {
+  startGitHubBrowserFlow,
+  getGitHubBrowserFlow,
+  confirmGitHubBrowserFlow,
+  cancelGitHubBrowserFlow,
+} from './github-browser-flow';
+import {
+  getLocalProviderSignIn,
+  localProviderAuthPath,
+  readLocalProviderSignIn,
+  type LocalSignInProvider,
+} from './local-provider-sign-in';
+import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
 import {
   addServer,
@@ -65,6 +106,18 @@ const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
 
 function signInFailureReason(result: Result<unknown, LoginError>): TelemetrySignInFailure {
   return result.success ? 'none' : SIGN_IN_FAILURE[result.error.kind];
+}
+
+const SIGNUP_FAILURE: Record<SignupError['kind'], TelemetrySignInFailure> = {
+  disabled: 'disabled',
+  email_taken: 'email_taken',
+  invalid: 'invalid',
+  rate_limited: 'rate_limited',
+  failed: 'failed',
+};
+
+function signupFailureReason(result: Result<unknown, SignupError>): TelemetrySignInFailure {
+  return result.success ? 'none' : SIGNUP_FAILURE[result.error.kind];
 }
 
 /**
@@ -145,7 +198,80 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   return server;
 }
 
+/** The agent definition a cloud launch carries, rendered by its provider like a local one. */
+function renderCloudDefinition(input: CloudConfigurationInput): string {
+  const definitions = getPlugin(input.provider).behavior.repoAgents;
+  return definitions
+    ? definitions.renderDefinition({
+        ...input.definition_attributes,
+        name: input.name,
+        description: input.description,
+        instructions: input.instructions,
+      })
+    : '';
+}
+
 export const switchServersController = createRPCController({
+  getLocalProviderSignIn,
+  connectLocalProviderSignIn: async (serverId: string, provider: LocalSignInProvider) => {
+    const server = await requireReachableServer(serverId);
+    const credential = await readLocalProviderSignIn(provider, localProviderAuthPath(provider));
+    if (!credential) throw new Error('Local sign-in file is missing. Sign in locally first.');
+    return connectCloudProvider(server, provider, 'auth-json', credential);
+  },
+  getCloudProviderConnection: async (serverId: string, provider: AgentProviderId) =>
+    getCloudProviderConnection(await requireReachableServer(serverId), provider),
+  connectCloudProvider: async (
+    serverId: string,
+    provider: Exclude<AgentProviderId, 'claude'>,
+    kind: 'api-key' | 'auth-json',
+    credential: string
+  ) => connectCloudProvider(await requireReachableServer(serverId), provider, kind, credential),
+  disconnectCloudProvider: async (serverId: string, provider: Exclude<AgentProviderId, 'claude'>) =>
+    disconnectCloudProvider(await requireReachableServer(serverId), provider),
+  createCloudLaunch: async (serverId: string, input: CloudLaunchInput) =>
+    createCloudLaunch(await requireReachableServer(serverId), {
+      ...input,
+      definition: renderCloudDefinition(input),
+    }),
+  getCloudLaunchConfiguration: async (serverId: string, requestId: string) =>
+    getCloudLaunchConfiguration(await requireReachableServer(serverId), requestId),
+  updateCloudLaunchConfiguration: async (
+    serverId: string,
+    requestId: string,
+    input: CloudConfigurationInput
+  ) =>
+    updateCloudLaunchConfiguration(await requireReachableServer(serverId), requestId, {
+      instructions: input.instructions,
+      definition_attributes: input.definition_attributes,
+      definition: renderCloudDefinition(input),
+    }),
+  cloudLifecycle: async (
+    serverId: string,
+    requestId: string,
+    action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
+    revision: number
+  ) => cloudLifecycle(await requireReachableServer(serverId), requestId, action, revision),
+  cloudMachineLifecycle: async (
+    serverId: string,
+    machineId: string,
+    action: 'stop' | 'start' | 'retry',
+    revision: number
+  ) =>
+    cloudMachineLifecycle(
+      await requireReachableServer(serverId),
+      machineId,
+      z.enum(['stop', 'start', 'retry']).parse(action),
+      revision
+    ),
+  getClaudeConnection: async (serverId: string) =>
+    getClaudeConnection(await requireServer(serverId)),
+  connectClaude: async (serverId: string, kind: ClaudeCredentialKind, credential: string) => {
+    const value = validateClaudeCredential(kind, credential);
+    return connectClaude(await requireServer(serverId), kind, value);
+  },
+  disconnectClaude: async (serverId: string) => disconnectClaude(await requireServer(serverId)),
+
   listServers: (): Promise<SwitchServer[]> => listServers(),
 
   // Both outcomes are reported here rather than the success at the store's
@@ -209,6 +335,31 @@ export const switchServersController = createRPCController({
   renameServer: (params: RenameServerParams): Promise<SwitchServer> => renameServer(params),
 
   removeServer: (serverId: string): Promise<void> => removeServer(serverId),
+
+  getConnectionCatalog: async (serverId: string) =>
+    getConnectionCatalog(await requireReachableServer(serverId)),
+  getGitHubConnection: async (serverId: string) =>
+    getGitHubConnection(await requireReachableServer(serverId)),
+  startGitHubConnection: async (serverId: string) =>
+    startGitHubBrowserFlow(await requireReachableServer(serverId), (url) =>
+      appService.openExternal(url)
+    ),
+  getGitHubFlow: async (serverId: string, id: string) =>
+    getGitHubBrowserFlow(await requireReachableServer(serverId), id),
+  confirmGitHubConnection: async (serverId: string, id: string) =>
+    confirmGitHubBrowserFlow(await requireReachableServer(serverId), id),
+  cancelGitHubConnection: async (serverId: string, id: string) =>
+    cancelGitHubBrowserFlow(await requireReachableServer(serverId), id),
+  disconnectGitHub: async (serverId: string) =>
+    disconnectGitHub(await requireReachableServer(serverId)),
+  openGitHubInstallation: async (serverId: string) => {
+    const connection = await getGitHubConnection(await requireReachableServer(serverId));
+    if (
+      !/^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(connection.install_url)
+    )
+      throw new Error('The server returned an invalid GitHub installation URL.');
+    await appService.openExternal(connection.install_url);
+  },
 
   setActiveServer: (serverId: string): Promise<void> => setActiveServerId(serverId),
 
@@ -349,10 +500,31 @@ export const switchServersController = createRPCController({
     return result;
   },
 
+  signup: async (params: SignupParams): Promise<Result<SignupResult, SignupError>> => {
+    const server = await requireServer(params.serverId);
+    const unreachable = hostUnreachable(server);
+    if (unreachable) {
+      reportSignIn('signup', server, 'unreachable');
+      throw unreachable;
+    }
+    const result = await signup(server, {
+      email: params.email,
+      password: params.password,
+      displayName: params.displayName,
+    });
+    reportSignIn('signup', server, signupFailureReason(result));
+    if (result.success) await adoptWorkspaces(server);
+    return result;
+  },
+
+  ensureCloudMachine: async (serverId: string) =>
+    ensureCloudMachine(await requireReachableServer(serverId)),
+
   logout: async (serverId: string): Promise<void> => {
     // Read before the cookie goes, so the kind of server is still knowable — and
     // caught, because nobody should be unable to sign out because of it.
     const server = await getServer(serverId).catch(() => null);
+    await deleteManagedClaudeCredential(serverId);
     await deleteSessionCookie(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
   },

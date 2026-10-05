@@ -31,6 +31,7 @@ PROFILE = IntegrationProfile(
     event_reporting=[],
     task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
+KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 
 class FakeClientLifecycle:
@@ -75,9 +76,7 @@ def make_service(
     svc.api_key_cache = ApiKeyCache(ttl_seconds=5.0, max_entries=8)  # type: ignore[attr-defined]
     svc.client_lifecycle = FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = NoBridges()  # type: ignore[attr-defined]
-    svc.config = SimpleNamespace(
-        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
-    )  # type: ignore[attr-defined]
+    svc.config = SimpleNamespace(keyring=KEYRING)  # type: ignore[attr-defined]
     return svc
 
 

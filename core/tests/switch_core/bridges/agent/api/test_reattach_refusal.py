@@ -32,7 +32,7 @@ CONN_ID = "conn-1"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
         self.connections = AgentConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None
@@ -66,6 +66,7 @@ async def _reopen(protocol: _Protocol, expected_generation: int | None) -> Any:
         AGENT_ID,
         SimpleNamespace(id=AGENT_ID, metadata_={}),  # type: ignore[arg-type]
         protocol,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
         accept="text/event-stream",
         connection_id=CONN_ID,
         protocol_version=PROTOCOL_VERSION,

@@ -1,0 +1,15 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+*.sqlite*
+*.db
+*.db-*
+controller.local.json
+assignment.local.json

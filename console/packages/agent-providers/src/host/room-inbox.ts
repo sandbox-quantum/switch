@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
@@ -108,6 +109,35 @@ const recordSchema = z.discriminatedUnion('type', [
 type Received = z.infer<typeof receivedSchema>;
 const identity = (event: Pick<Received, 'roomId' | 'messageId'>): string =>
   JSON.stringify([event.roomId, event.messageId]);
+
+/**
+ * Whether the session host at `root` took this room message into its room
+ * inbox and has not given it back. Read without opening the journal, so a
+ * session that never had a room inbox is left as it was.
+ */
+export async function roomInboxHolds(
+  root: string,
+  event: { roomId: string; messageId: string }
+): Promise<boolean> {
+  let text: string;
+  try {
+    text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  if (text && !text.endsWith('\n'))
+    throw new Error(`${join(root, 'room-inbox.jsonl')} has an incomplete record.`);
+  const key = identity(event);
+  let holds = false;
+  for (const line of text.split('\n').filter(Boolean)) {
+    const record = recordSchema.parse(JSON.parse(line));
+    if ((record.type === 'received' || record.type === 'handoff') && identity(record) === key)
+      holds = true;
+    else if (record.type === 'release' && record.identity === key) holds = false;
+  }
+  return holds;
+}
 
 export class SharedRoomInbox {
   private readonly received = new Map<string, Received>();

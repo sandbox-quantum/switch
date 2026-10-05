@@ -48,6 +48,8 @@ regexes = [
   # these are obvious dummies in a config-validator test — but the default
   # `discord-client-id` rule flags any 17-19 digit number next to the keyword.
   '''discord_app_(?:client|application)_id="\d{17,19}"''',
+  # Test fixtures name their dummy secrets "placeholder-…" so they read as fake.
+  '''"placeholder-[a-z-]*[0-9a-f]*"''',
 ]
 paths = [
   # Log-redaction tests exercise deliberately fake vendor tokens. Both spellings

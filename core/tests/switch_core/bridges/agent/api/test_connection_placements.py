@@ -27,7 +27,7 @@ FOREIGN_ROOM = "room-foreign"
 class _Protocol:
     def __init__(self) -> None:
         self.connections = AgentConnectionRegistry()
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         if room_id == FOREIGN_ROOM:
@@ -37,6 +37,7 @@ class _Protocol:
 class _Agent:
     def __init__(self, agent_id: str) -> None:
         self.id = agent_id
+        self.metadata_: dict[str, str] | None = None
 
 
 def _open(

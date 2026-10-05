@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import logging
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -169,14 +170,26 @@ async def _authenticate(
     honest way to read it. Shared by `get_current_user` (which goes on to bind
     one) and `get_authenticated_user_id` (which deliberately does not).
     """
+    payload = _session_claims(request, config)
+    await _require_user_exists(session_factory, user_store, payload["sub"])
+    return payload
+
+
+def _session_claims(request: Request, config: SwitchConfig) -> dict:
     token = request.cookies.get("switch_auth")
     if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = decode_jwt(token, config.keyring)
+    return decode_jwt(token, config.keyring)
+
+
+async def _require_user_exists(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> None:
     async with session_factory() as system_session:
-        if not await user_store.exists(system_session, payload["sub"]):
+        if not await user_store.exists(system_session, user_id):
             raise HTTPException(status_code=401, detail="User not found")
-    return payload
 
 
 async def get_authenticated_user_id(
@@ -533,8 +546,14 @@ async def _resolve_tenant_id(
     `tenants_of_user` is read once and used for every case below it, including
     the 409's body, so this is one round trip to the exemption regardless of
     which case answers.
+
+    It also stands in for the account check: a `tenant_members` row references
+    its `users` row, so a caller with a membership exists. Only with none is
+    `users` asked, so a deleted account still gets 401 rather than a 403.
     """
     memberships = await tenants_of_user(session_factory, user_id)
+    if not memberships:
+        await _require_user_exists(session_factory, user_store, user_id)
 
     if tenant_claim is not None:
         if tenant_claim in memberships:
@@ -585,6 +604,35 @@ async def _resolve_tenant_id(
     )
 
 
+@asynccontextmanager
+async def _bound_user(
+    request: Request,
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    config: SwitchConfig,
+) -> AsyncIterator[User]:
+    payload = _session_claims(request, config)
+    user_id = payload["sub"]
+    tenant_claim = payload.get("tenant_id")
+
+    tenant_id = await _resolve_tenant_id(
+        session_factory,
+        user_store,
+        user_id,
+        tenant_claim,
+        config.gateway_tenant_choice_enabled,
+    )
+    request.state.tenant_id = tenant_id
+
+    with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
+        user = await user_store.get(session, user_id)
+        if user is None:
+            # Deleted between the two reads; rare, and still not a 500.
+            raise HTTPException(status_code=401, detail="User not found")
+        yield user
+
+
 async def get_current_user(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -609,28 +657,35 @@ async def get_current_user(
     re-mint the cookie carrying it forward — the one mint that has no other
     way to learn which tenant this session had selected.
     """
-    payload = await _authenticate(request, session_factory, user_store, config)
-    user_id = payload["sub"]
-    tenant_claim = payload.get("tenant_id")
-
-    tenant_id = await _resolve_tenant_id(
-        session_factory,
-        user_store,
-        user_id,
-        tenant_claim,
-        config.gateway_tenant_choice_enabled,
-    )
-    request.state.tenant_id = tenant_id
-
-    with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
-        user = await user_store.get(session, user_id)
-        if user is None:
-            # Deleted between the two reads; rare, and still not a 500.
-            raise HTTPException(status_code=401, detail="User not found")
+    async with _bound_user(
+        request, session, session_factory, user_store, config
+    ) as user:
         # Return the auth read's connection before an endpoint borrows another
         # session or waits on external I/O. expire_on_commit=False keeps this
         # User attached and readable; endpoint mutations still commit normally.
         await session.commit()
+        yield user
+
+
+async def get_current_user_in_transaction(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AsyncIterator[User]:
+    """`get_current_user`, with the user read's transaction left open.
+
+    For a hot endpoint whose next step is one more read on the same session,
+    and which ends the transaction itself before it waits on anything: the
+    read then shares the transaction and connection checkout instead of
+    opening its own. Every check is `get_current_user`'s.
+    """
+    async with _bound_user(
+        request, session, session_factory, user_store, config
+    ) as user:
         yield user
 
 

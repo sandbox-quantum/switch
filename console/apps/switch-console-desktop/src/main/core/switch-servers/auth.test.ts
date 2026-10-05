@@ -20,7 +20,7 @@ const consoleIdentityHeaders = vi.hoisted(() =>
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, error: vi.fn(), info: vi.fn() } }));
 
-const { reauthenticateManagedServer, refreshSession } = await import('./auth');
+const { reauthenticateManagedServer, refreshSession, signup } = await import('./auth');
 
 const REMOTE = {
   id: 'srv-remote',
@@ -135,6 +135,139 @@ describe('refreshSession', () => {
     fetchMock.mockResolvedValue({ ok: false, status: 401, headers: { getSetCookie: () => [] } });
 
     expect(await refreshSession(REMOTE, 'old-jwt')).toBeNull();
+    expect(setSessionCookie).not.toHaveBeenCalled();
+  });
+});
+
+const SERVER = {
+  id: 'srv-1',
+  name: 'S',
+  gatewayUrl: 'https://switch.example.com',
+  managed: false,
+} as never;
+
+const USER = { id: 'u1', name: 'ada', email: 'ada@example.com', role: 'user', server: null };
+
+function response(status: number, body: unknown, cookies: string[] = []): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: cookies.map((cookie) => ['Set-Cookie', cookie] as [string, string]),
+  });
+}
+
+describe('signup', () => {
+  it('creates the account and stores its session as a login does', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(201, { ...USER, machine: { status: 'starting', reason: null } }, [
+        'switch_auth=SYNTHETIC-JWT; HttpOnly; Path=/',
+      ])
+    );
+
+    const result = await signup(SERVER, { email: 'ada@example.com', password: 'correct-horse' });
+
+    expect(result).toEqual({
+      success: true,
+      data: { user: USER, machine: { status: 'starting', reason: null } },
+    });
+    expect(setSessionCookie).toHaveBeenCalledWith('srv-1', 'SYNTHETIC-JWT');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://switch.example.com/gateway/auth/signup');
+    expect(JSON.parse(init?.body as string)).toEqual({
+      email: 'ada@example.com',
+      password: 'correct-horse',
+    });
+  });
+
+  it('sends a display name when one is given', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(201, { ...USER, machine: { status: 'unavailable', reason: 'None free.' } }, [
+        'switch_auth=SYNTHETIC-JWT',
+      ])
+    );
+
+    const result = await signup(SERVER, {
+      email: 'ada@example.com',
+      password: 'correct-horse',
+      displayName: 'Ada',
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toMatchObject({
+      display_name: 'Ada',
+    });
+    expect(result.success && result.data.machine).toEqual({
+      status: 'unavailable',
+      reason: 'None free.',
+    });
+  });
+
+  it('reports an existing email with the server’s explanation', async () => {
+    fetchMock.mockResolvedValueOnce(response(409, { detail: 'Email already registered' }));
+
+    const result = await signup(SERVER, { email: 'ada@example.com', password: 'correct-horse' });
+
+    expect(result).toEqual({
+      success: false,
+      error: { kind: 'email_taken', message: 'Email already registered' },
+    });
+    expect(setSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it('reports the server’s sign-up cap with its explanation and no HTTP prefix', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(429, {
+        detail: 'Too many sign-ups on this server in the last hour. Try again later.',
+      })
+    );
+
+    const result = await signup(SERVER, { email: 'ada@example.com', password: 'correct-horse' });
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        kind: 'rate_limited',
+        message: 'Too many sign-ups on this server in the last hour. Try again later.',
+      },
+    });
+    expect(setSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it('renders a validation refusal one sentence per field', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(422, {
+        detail: [
+          {
+            type: 'string_too_short',
+            loc: ['body', 'password'],
+            msg: 'String should have at least 8 characters',
+          },
+          {
+            type: 'value_error',
+            loc: ['body', 'display_name'],
+            msg: 'Value error, Too long.',
+          },
+        ],
+      })
+    );
+
+    const result = await signup(SERVER, { email: 'ada@example.com', password: 'short' });
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        kind: 'invalid',
+        message: 'Password: String should have at least 8 characters. Display name: Too long.',
+      },
+    });
+  });
+
+  it('fails without a session cookie rather than reporting a sign-in', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(201, { ...USER, machine: { status: 'starting', reason: null } })
+    );
+
+    const result = await signup(SERVER, { email: 'ada@example.com', password: 'correct-horse' });
+
+    expect(result).toMatchObject({ success: false, error: { kind: 'failed' } });
     expect(setSessionCookie).not.toHaveBeenCalled();
   });
 });

@@ -128,6 +128,7 @@ export function inProcessSupervision(
         signal: stop.signal,
         build: entrypoint,
         links,
+        logRedactions: [],
       })
         .catch((error: unknown) => {
           console.error(`Session host at ${root} stopped: ${String(error)}`);

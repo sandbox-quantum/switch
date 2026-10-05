@@ -4,13 +4,17 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { describeFailure, type FailureDescription } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
+import { log } from '@renderer/utils/logger';
 import type { InviteServer } from '@shared/core/switch-servers/switch-cloud';
 import type {
   ServerConnectionStatus,
+  SignupMachine,
+  SignupParams,
   SwitchAuthConfig,
   SwitchServer,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
+import { urlOrigin } from '@shared/core/switch-servers/switch-servers';
 
 /**
  * How long the first read of the server list may take before the window says so
@@ -97,6 +101,11 @@ export class SwitchServersStore {
   installIsEmpty = false;
   /** The read in flight, so callers arriving together share one. Nothing renders it. */
   initInFlight: Promise<void> | null = null;
+  /** Switch Cloud's origin as this build or run names it; null while unread or
+   * when it names none. A failed read is shown by the Cloud choice itself. */
+  switchCloudUrl: string | null = null;
+  /** The Switch Cloud read in flight or done, so it runs once per app run. */
+  private switchCloudRead: Promise<void> | null = null;
   /**
    * Which read is allowed to write. Bumped by each new read and by the deadline
    * below, so a read that has been given up on cannot land later and overwrite
@@ -105,7 +114,10 @@ export class SwitchServersStore {
   private listReadGeneration = 0;
 
   constructor() {
-    makeAutoObservable(this, { initInFlight: false });
+    makeAutoObservable<this, 'switchCloudRead'>(this, {
+      initInFlight: false,
+      switchCloudRead: false,
+    });
   }
 
   /** Headline and detail as one string, for the modals that have a single slot. */
@@ -196,6 +208,7 @@ export class SwitchServersStore {
    * stale answer to someone refreshing after a change of their own.
    */
   init(): Promise<void> {
+    this.switchCloudRead ??= this.readSwitchCloud();
     if (this.initInFlight) return this.initInFlight;
     // Only if it is still ours: a read given up on below is unhooked while it
     // is still running, and its eventual settling must not unhook the read that
@@ -205,6 +218,27 @@ export class SwitchServersStore {
     });
     this.initInFlight = read;
     return read;
+  }
+
+  /** The registered server that is Switch Cloud, or null when none is. */
+  get switchCloudServerId(): string | null {
+    const cloud = this.switchCloudUrl;
+    if (cloud === null) return null;
+    return this.servers.find((server) => urlOrigin(server.gatewayUrl) === cloud)?.id ?? null;
+  }
+
+  private async readSwitchCloud(): Promise<void> {
+    try {
+      const endpoint = await rpc.switchServers.switchCloud();
+      runInAction(() => {
+        this.switchCloudUrl = endpoint?.url ?? null;
+      });
+    } catch (cause) {
+      log.error('Could not read the Switch Cloud configuration', cause);
+      runInAction(() => {
+        this.switchCloudRead = null;
+      });
+    }
   }
 
   private async readServers(): Promise<void> {
@@ -642,6 +676,28 @@ export class SwitchServersStore {
     // belongs to, so the list this app holds is stale the moment it returns.
     await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
     return true;
+  }
+
+  /** Resolves the new account's machine status once signed in, or null when
+   * the account was not created (the reason is in `error`). */
+  async signup(params: SignupParams): Promise<SignupMachine | null> {
+    this.clearError();
+    let result: Awaited<ReturnType<typeof rpc.switchServers.signup>>;
+    try {
+      result = await rpc.switchServers.signup(params);
+    } catch (cause) {
+      this.setError(cause, 'Could not create the account.');
+      return null;
+    }
+    if (!result.success) {
+      runInAction(() => {
+        this.error = result.error.message;
+        this.errorDetail = null;
+      });
+      return null;
+    }
+    await Promise.all([this.refreshStatus(params.serverId), workspacesStore.refresh()]);
+    return result.data.machine;
   }
 
   async oidcLogin(serverId: string): Promise<boolean> {

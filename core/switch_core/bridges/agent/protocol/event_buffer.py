@@ -162,7 +162,14 @@ class EventBuffer:
         self,
         max_events_per_agent: int = DEFAULT_MAX_EVENTS_PER_AGENT,
         retention_seconds: float = DEFAULT_RETENTION_SECONDS,
+        *,
+        sequence_base: int,
     ) -> None:
+        # Each boot numbers from its own base, above every earlier boot's, so a
+        # sequence number is never reused and a cursor from a previous boot is
+        # recognisably below this one's floor.
+        self.sequence_floor = sequence_base + 1
+        self.boot = sequence_base >> 32
         self._max_events = max_events_per_agent
         self._retention_seconds = retention_seconds
         self._events: dict[str, deque[BufferedEvent]] = {}
@@ -204,7 +211,11 @@ class EventBuffer:
 
     def enqueue(self, agent_id: str, room_id: str, event: AgentEvent) -> int:
         """Append an event for an agent and return its sequence number."""
-        seq = self._next_seq.get(agent_id, 1)
+        seq = self._next_seq.get(agent_id, self.sequence_floor)
+        if seq >= self.sequence_floor - 1 + (1 << 32):
+            raise RuntimeError(
+                "Agent event sequence range exhausted; restart the server."
+            )
         self._next_seq[agent_id] = seq + 1
 
         events = self._events.setdefault(agent_id, deque())
@@ -293,8 +304,8 @@ class EventBuffer:
         return self._notify.setdefault(agent_id, asyncio.Event())
 
     def head(self, agent_id: str) -> int:
-        """The sequence number of the most recent event (0 if none)."""
-        return self._next_seq.get(agent_id, 1) - 1
+        """The sequence number of the most recent event (the floor less one if none)."""
+        return self._next_seq.get(agent_id, self.sequence_floor) - 1
 
     def oldest_retained(self, agent_id: str) -> int:
         """Sequence number of the oldest retained event (0 if the buffer is empty)."""
@@ -496,7 +507,6 @@ class EventBuffer:
 
     def remove(self, agent_id: str) -> None:
         self._events.pop(agent_id, None)
-        self._next_seq.pop(agent_id, None)
         self._notify.pop(agent_id, None)
         self._cursors.pop(agent_id, None)
         self._dropped_through.pop(agent_id, None)

@@ -1,3 +1,4 @@
+import { EditCloudAgentModal } from '@renderer/features/cloud-agents/edit-cloud-agent-modal';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
@@ -14,6 +15,7 @@ import { AddServerModal } from '@renderer/features/switch-servers/AddServerModal
 import { AssignServerModal } from '@renderer/features/switch-servers/assign-server-modal';
 import { BundledChatSignInModal } from '@renderer/features/switch-servers/BundledChatSignIn';
 import { ClaimIdentityModal } from '@renderer/features/switch-servers/ClaimIdentityModal';
+import { ConnectionsModal } from '@renderer/features/switch-servers/ConnectionsModal';
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { CreateRoomModal } from '@renderer/features/switch-servers/CreateRoomModal';
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
@@ -82,11 +84,16 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   deleteServerModal: createModal(DeleteServerModal, { size: 'sm' }),
+  editCloudAgentModal: createModal(EditCloudAgentModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   createRoomModal: createModal(CreateRoomModal, { size: 'lg', dismissOnOutsideClick: false }),
   connectMessagingAppModal: createModal(ConnectMessagingAppModal, {
     size: 'md',
     dismissOnOutsideClick: false,
   }),
+  connectionsModal: createModal(ConnectionsModal, { size: 'md' }),
   claimIdentityModal: createModal(ClaimIdentityModal, {
     size: 'md',
     dismissOnOutsideClick: false,

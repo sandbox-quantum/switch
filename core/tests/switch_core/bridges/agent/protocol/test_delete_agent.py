@@ -50,7 +50,7 @@ class TestDeleteAgentInARoom:
         svc = make_service(session_factory)
         lifecycle = _DeletingClientLifecycle(session_factory)
         svc.client_lifecycle = lifecycle  # type: ignore[assignment]
-        svc.event_buffer = EventBuffer()
+        svc.event_buffer = EventBuffer(sequence_base=0)
 
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "in-a-room", owner)

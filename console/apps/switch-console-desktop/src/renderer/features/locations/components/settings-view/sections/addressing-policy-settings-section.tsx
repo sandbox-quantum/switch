@@ -52,7 +52,7 @@ export function AddressingPolicySettingsSection({
   );
 }
 
-function AddressingPolicyRow({
+export function AddressingPolicyRow({
   workspaceId,
   serverId,
   agentId,

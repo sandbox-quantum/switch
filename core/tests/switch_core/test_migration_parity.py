@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 import switch_core.db.models  # noqa: F401 — registers every table on Base.metadata
 from switch_core.db.base import Base
+from switch_core.db.runtime_role import _refuse_forced_row_level_security
 
 _CORE = Path(__file__).resolve().parents[2]
 _PARITY_DB = "migration_parity"
@@ -95,6 +96,7 @@ async def test_migrations_match_the_models(migrated_url: str) -> None:
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to_head)
         async with engine.connect() as connection:
+            await _refuse_forced_row_level_security(connection)
             diff = await connection.run_sync(_diff)
             # New publication storage must be protected in an upgraded database,
             # not only in the metadata.create_all schema used by most tests.
@@ -115,3 +117,35 @@ async def test_migrations_match_the_models(migrated_url: str) -> None:
         "the migrations and the models disagree; autogenerate would emit:\n"
         + "\n".join(f"  {entry}" for entry in drift)
     )
+
+
+def _downgrade_github_cleanup(connection: Connection) -> None:
+    config = Config(str(_CORE / "alembic.ini"))
+    script = _script_directory(config)
+
+    def do_downgrade(revision: str, context: Any) -> Any:
+        return script._downgrade_revs("62cf05b128e3", revision)
+
+    with EnvironmentContext(config, script, fn=do_downgrade) as environment:
+        environment.configure(connection=connection, target_metadata=Base.metadata)
+        with environment.begin_transaction():
+            environment.run_migrations()
+
+
+async def test_github_cleanup_migrations_round_trip(migrated_url: str) -> None:
+    engine = create_async_engine(migrated_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to_head)
+            await connection.run_sync(_downgrade_github_cleanup)
+            assert (
+                await connection.scalar(
+                    text("SELECT to_regclass('github_issued_tokens')")
+                )
+                is None
+            )
+            await connection.run_sync(_upgrade_to_head)
+            diff = await connection.run_sync(_diff)
+            assert not [entry for entry in diff if _is_real_drift(entry)]
+    finally:
+        await engine.dispose()

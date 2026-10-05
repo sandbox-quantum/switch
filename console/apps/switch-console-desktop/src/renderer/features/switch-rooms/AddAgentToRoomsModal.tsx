@@ -78,7 +78,10 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
           direction: 'room_to_agents',
         });
       }
-      await switchRoomsStore.refreshRoomState();
+      await Promise.all([
+        switchRoomsStore.fetchAgentRooms(workspaceId, switchAgentId, { force: true }),
+        switchRoomsStore.refreshRoomState(),
+      ]);
       onSuccess();
     } catch (cause) {
       setError(failureText(cause, 'Could not add the agent to the selected rooms.'));
