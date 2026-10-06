@@ -95,7 +95,15 @@ def test_it_asks_for_nothing_per_team() -> None:
     permission."""
     manifest, _ = _package()
     assert "authorization" not in manifest
-    assert "webApplicationInfo" not in manifest
+
+
+def test_it_names_its_entra_app_so_it_can_install_itself() -> None:
+    """Graph installs a Teams app into a team under the app's "itself"
+    permission only when the package's webApplicationInfo names the app whose
+    token asks; without it the install is refused as one of another app.
+    No resource: that is for single sign-on, which the app does not use."""
+    manifest, _ = _package()
+    assert manifest["webApplicationInfo"] == {"id": APP_ID}
 
 
 def test_it_works_in_private_and_shared_channels() -> None:
@@ -142,6 +150,7 @@ def test_an_unfilled_placeholder_in_the_template_is_a_loud_failure(
     manifest = {
         "id": "placeholder",
         "bots": [{"botId": "placeholder"}],
+        "webApplicationInfo": {"id": "placeholder"},
         "developer": {},
         "unfilled": "{{SOMETHING}}",
     }

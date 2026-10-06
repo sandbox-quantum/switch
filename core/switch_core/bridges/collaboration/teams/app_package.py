@@ -10,8 +10,11 @@ app id, its name, the host the bot is reached on, the privacy and terms pages
 The template carries no resource-specific permissions: the organisation's
 admin grants the app's permissions once, organisation-wide, and asking for
 the same access again per team would only add a consent prompt and a broader
-install permission. Nor does it carry `webApplicationInfo`, which only those
-permissions and single sign-on use.
+install permission. It does carry `webApplicationInfo`, naming the Entra app:
+that is how Microsoft knows this Teams app is the one the app's token belongs
+to, which installing it into a team under the app's own "itself" permission
+(`TeamsAppInstallation.ReadWriteSelfForTeam.All`) requires. It names no
+`resource`, which only single sign-on uses.
 
 `version` is the template's. Raise it whenever the template changes, so an
 organisation holding the old one can be offered the new.
@@ -58,6 +61,7 @@ def build_distributed_app_package(
     # value is always a JSON string whatever characters it holds.
     manifest["id"] = app_id
     manifest["bots"][0]["botId"] = app_id
+    manifest["webApplicationInfo"]["id"] = app_id
     manifest["validDomains"] = [str(urlsplit(messaging_public_url).hostname)]
     manifest["developer"]["privacyUrl"] = privacy_url
     manifest["developer"]["termsOfUseUrl"] = terms_url
