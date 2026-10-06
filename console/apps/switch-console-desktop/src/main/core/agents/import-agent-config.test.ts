@@ -33,12 +33,16 @@ const CONFIG_PATH = '.switch/config/reviewer.json';
 
 const claudeRepoAgents = getPlugin('claude').behavior.repoAgents!;
 
-function importClaude(pluginFs = createPluginFs(dir)) {
+function importClaude(
+  pluginFs = createPluginFs(dir),
+  ifNothing: 'leave-missing' | 'create-empty' = 'leave-missing'
+) {
   return importAgentConfig({
     workdirFs: pluginFs,
     repoAgents: claudeRepoAgents,
     name: NAME,
     providerConfig: null,
+    ifNothing,
   });
 }
 
@@ -205,9 +209,30 @@ describe('importAgentConfig', () => {
     expect(config?.settings).toMatchObject({ model: 'opus' });
   });
 
-  it('gives an agent with nothing on disk an empty config file', async () => {
-    expect(await importClaude()).toBe(true);
+  it('leaves a known agent with nothing on disk without a config file', async () => {
+    // Its definition was deleted. An empty file would hide that and launch the
+    // agent as if it never had instructions; a missing one is reported.
+    expect(await importClaude()).toBe(false);
+    expect(await readAgentConfigFile(createPluginFs(dir), NAME)).toBeNull();
+  });
+
+  it('gives an agent new to this Console an empty config file when it has nothing', async () => {
+    expect(await importClaude(createPluginFs(dir), 'create-empty')).toBe(true);
     expect(await readAgentConfigFile(createPluginFs(dir), NAME)).toEqual({});
+  });
+
+  it('leaves a known agent of a provider without definitions missing when its row is empty', async () => {
+    const pluginFs = createPluginFs(dir);
+    expect(
+      await importAgentConfig({
+        workdirFs: pluginFs,
+        repoAgents: null,
+        name: NAME,
+        providerConfig: null,
+        ifNothing: 'leave-missing',
+      })
+    ).toBe(false);
+    expect(await readAgentConfigFile(pluginFs, NAME)).toBeNull();
   });
 
   it('never writes the definition', async () => {
@@ -237,6 +262,7 @@ describe('importAgentConfig', () => {
         providerId: 'codex',
         values: { model: 'gpt-5', instructions: 'Be brief.' },
       },
+      ifNothing: 'leave-missing',
     });
 
     const config = await readAgentConfigFile(pluginFs, NAME);
@@ -258,6 +284,7 @@ describe('importAgentConfig', () => {
           providerId: 'codex',
           values: { instructions: 'From the row.' },
         },
+        ifNothing: 'leave-missing',
       })
     ).toBe(false);
     expect((await readAgentConfigFile(pluginFs, NAME))?.instructions).toBe('From the file.');

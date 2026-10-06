@@ -107,6 +107,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
         repoAgents: behavior ?? null,
         name,
         providerConfig: agent.providerConfig,
+        ifNothing: 'leave-missing',
       })
     ) {
       changed = true;

@@ -42,6 +42,13 @@ import { agentConfigRelativePath } from './switch-settings-paths';
  * A provider without definitions kept its settings on the agent row, which
  * seeds a config file only when there is none.
  *
+ * When there is no config file and nothing to take one over from, `ifNothing`
+ * decides. An agent this Console already knew had its definition somewhere, so
+ * finding none means it was deleted: `leave-missing` writes nothing, and the
+ * agent reports a missing config instead of launching as if it never had
+ * instructions. An agent being brought into this Console for the first time may
+ * genuinely have none: `create-empty` gives it an empty config.
+ *
  * Returns whether the config file was written. Throws when an existing config
  * file cannot be parsed — writing over it would lose what it holds.
  */
@@ -51,9 +58,22 @@ export async function importAgentConfig(params: {
   repoAgents: IRepoAgentsBehavior | null;
   name: string;
   providerConfig: AgentProviderConfig | null;
+  ifNothing: 'leave-missing' | 'create-empty';
 }): Promise<boolean> {
-  const { workdirFs, repoAgents, name, providerConfig } = params;
+  const { workdirFs, repoAgents, name, providerConfig, ifNothing } = params;
   const existing = await readAgentConfigFile(workdirFs, name);
+
+  if (
+    existing === null &&
+    ifNothing === 'leave-missing' &&
+    !(await hasSomethingToImport({ workdirFs, repoAgents, name, providerConfig }))
+  ) {
+    log.warn('importAgentConfig: agent has no config file and nothing to rebuild it from', {
+      name,
+      configPath: agentConfigRelativePath(name),
+    });
+    return false;
+  }
 
   const imported = repoAgents
     ? await importDefinition({ workdirFs, repoAgents, name, existing })
@@ -173,6 +193,17 @@ function offeredSettings(
     }
   }
   return kept;
+}
+
+async function hasSomethingToImport(params: {
+  workdirFs: PluginFs;
+  repoAgents: IRepoAgentsBehavior | null;
+  name: string;
+  providerConfig: AgentProviderConfig | null;
+}): Promise<boolean> {
+  const { workdirFs, repoAgents, name, providerConfig } = params;
+  if (repoAgents) return (await workdirFs.read(repoAgents.definitionPath(name))) !== null;
+  return Object.keys(attributesFromProviderConfig(providerConfig)).length > 0;
 }
 
 function hasFrontmatter(content: string): boolean {

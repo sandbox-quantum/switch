@@ -204,6 +204,7 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
       repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
       name,
       providerConfig: null,
+      ifNothing: 'create-empty',
     });
   } finally {
     workdir.close();

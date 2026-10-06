@@ -121,6 +121,22 @@ export function AgentInstructionsSection({
     },
   });
 
+  // The way out of a missing settings file, as a deliberate choice: the page
+  // reports the file missing rather than showing empty instructions, since a
+  // definition that disappeared may still be recoverable elsewhere.
+  const startEmpty = useMutation({
+    mutationFn: () => rpc.agents.startWithEmptyConfig({ agentId: agentId as string }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agent-instructions', agentId] });
+      void queryClient.invalidateQueries({ queryKey: ['agent-advanced-config', agentId] });
+      void queryClient.invalidateQueries({ queryKey: ['agent-template-origin', agentId] });
+    },
+    onError: (error) => {
+      const { headline, detail } = describeFailure(error, 'Could not create the settings file.');
+      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
+    },
+  });
+
   const saveMutation = save.mutateAsync;
   const onSave = useCallback(async () => {
     await saveMutation(value);
@@ -154,6 +170,18 @@ export function AgentInstructionsSection({
           {headline}
           {detail ? <span className="block text-foreground-muted">{detail}</span> : null}
         </p>
+        <div>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            disabled={startEmpty.isPending}
+            onClick={() => startEmpty.mutate()}
+            title="Only when the settings file is missing. An existing file is never changed."
+          >
+            {startEmpty.isPending ? 'Creating…' : 'Start with empty settings'}
+          </Button>
+        </div>
       </Field>
     );
   }

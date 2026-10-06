@@ -12,6 +12,7 @@ import {
 } from './agent-advanced-config';
 import {
   readAgentInstructions,
+  startWithEmptyAgentConfig,
   readAgentTemplateOrigin,
   setAgentInstructions,
 } from './agent-config';
@@ -68,6 +69,7 @@ export const agentsController = createRPCController({
    * the agent rather than one of its provider's settings.
    */
   readInstructions: (params: { agentId: string }) => readAgentInstructions(params.agentId),
+  startWithEmptyConfig: (params: { agentId: string }) => startWithEmptyAgentConfig(params.agentId),
   readTemplateOrigin: (params: { agentId: string }) => readAgentTemplateOrigin(params.agentId),
   updateInstructions: (params: { agentId: string; instructions: string }): Promise<void> =>
     setAgentInstructions(params).then(() => undefined),

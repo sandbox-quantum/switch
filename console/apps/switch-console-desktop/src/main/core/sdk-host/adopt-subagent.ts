@@ -42,6 +42,7 @@ export async function adoptSubagent(
       repoAgents: getPlugin(parent.providerId).behavior.repoAgents ?? null,
       name,
       providerConfig: parent.providerConfig,
+      ifNothing: 'create-empty',
     });
   } finally {
     workdir.close();

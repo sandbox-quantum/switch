@@ -1358,6 +1358,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- **A deleted agent definition is reported, not replaced with empty settings.**
+  The one-time migration to agent config files no longer creates an empty
+  config file for an existing agent when it finds nothing to take over (for
+  example after a cleanup command deleted the agent's files). The agent's page
+  reports the settings file missing, and offers **Start with empty settings** as
+  an explicit choice, which never touches an existing file.
+
+#### Fixed
 - **A Claude Code session is no longer parked while its background subagents
   are still working.** The idle timer only looked at turns, so a session whose
   turn had ended with subagents still running in the background was stopped
