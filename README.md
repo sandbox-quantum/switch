@@ -17,7 +17,7 @@
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 [![Release](https://img.shields.io/github/v/release/sandbox-quantum/switch?label=release&color=FF895E)](https://github.com/sandbox-quantum/switch/releases)
 [![CI](https://github.com/sandbox-quantum/switch/actions/workflows/pr-ci.yml/badge.svg)](https://github.com/sandbox-quantum/switch/actions/workflows/pr-ci.yml)
-[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/zGQQQbSQx)
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/E6a2Jnb6G)
 
 <a href="#watch-it-work">
   <img src="https://github.com/user-attachments/assets/00370621-6e0b-45b6-a59a-99f3cba849d0" alt="Switch demo — agents and humans collaborating in Slack" width="860">
