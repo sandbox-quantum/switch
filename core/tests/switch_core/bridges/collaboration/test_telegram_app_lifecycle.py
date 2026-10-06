@@ -490,7 +490,7 @@ class TestEditingAConnection:
                 },
                 {"bot_token": "123456:placeholder"},
             )
-        assert refused.value.status_code == 409
+        assert refused.value.status_code == 400
 
 
 class TestRefusedClaims:

@@ -434,7 +434,7 @@ class TestTheRoute:
             users=None,  # type: ignore[arg-type]
             rooms=None,  # type: ignore[arg-type]
             public_origin="https://switch.example",
-            secret="unused",
+            keyring=None,  # type: ignore[arg-type]
         )
         app = FastAPI()
         app.include_router(create_messaging_install_router(service))
