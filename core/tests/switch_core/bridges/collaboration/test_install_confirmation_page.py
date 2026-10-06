@@ -59,6 +59,28 @@ async def test_the_callback_renders_a_confirmation_and_connects_nothing(
     assert fixture.lifecycle.registered == []
 
 
+async def test_a_workspace_already_connected_is_explained_at_the_callback(
+    rls_harness: RLSHarness,
+) -> None:
+    fixture = await _fixture(rls_harness)
+    fixture.lifecycle.claim_conflict = (
+        f"Slack workspace {fixture.workspace} is already claimed"
+    )
+    state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+
+    async with _client(fixture.service) as client:
+        response = await client.get(
+            "/messaging/slack/oauth/callback",
+            params={"code": "the-code", "state": state},
+        )
+
+    assert response.status_code == 409
+    assert "Workspace already connected" in response.text
+    assert "already claimed" in response.text
+    assert 'name="ticket"' not in response.text
+    assert fixture.lifecycle.registered == []
+
+
 async def test_connect_on_the_page_finishes_the_install(
     rls_harness: RLSHarness,
 ) -> None:
