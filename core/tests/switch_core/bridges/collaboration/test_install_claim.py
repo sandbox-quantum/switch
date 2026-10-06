@@ -50,6 +50,7 @@ from switch_core.bridges.collaboration.install_state import (
     mint_compact,
 )
 from switch_core.db.models import (
+    AuditEvent,
     Client,
     CollaborationBridge,
     MessagingInstall,
@@ -439,6 +440,29 @@ class TestOneBridgePerTenant:
         assert len(fixture.lifecycle.registered) == 1
         assert fixture.lifecycle.registered[0]["channel_creation_enabled"] is False
         assert install.bridge_id is not None
+
+    async def test_a_claim_is_recorded_in_the_audit_log(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """As an OAuth install is, naming who asked for the link and which
+        account on the platform used it."""
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+
+        install = await _claim(fixture, token, "-1001")
+
+        async with rls_harness.owner() as session:
+            rows = await session.execute(
+                select(AuditEvent).where(AuditEvent.tenant_id == fixture.tenant_a)
+            )
+            (event,) = rows.scalars()
+        assert event.action == "messaging_install.connected"
+        assert event.actor_user_id == fixture.admin_a
+        assert event.target_id == install.id
+        assert event.details["external_workspace_id"] == "-1001"
+        assert event.details["claimed_by"] == "42"
 
     async def test_later_claims_share_it(self, rls_harness: RLSHarness) -> None:
         """The reason for the design: identities are per bridge, so a bridge

@@ -815,6 +815,22 @@ class MessagingInstallService:
                 attached = await self._store.attach_bridge(
                     session, install_id=install.id, bridge_id=bridge_id
                 )
+                await record_audit_event(
+                    session,
+                    tenant_id=state.tenant_id,
+                    actor_user_id=burnt.created_by_user_id,
+                    action=AuditAction.MESSAGING_INSTALL_CONNECTED,
+                    target_type="messaging_install",
+                    target_id=install.id,
+                    details={
+                        "platform": platform,
+                        "external_workspace_id": claim.grant.external_workspace_id,
+                        "workspace_name": claim.grant.workspace_name,
+                        "bridge_id": bridge_id,
+                        "scopes": claim.grant.scopes,
+                        "claimed_by": claim.claimant,
+                    },
+                )
                 await session.commit()
 
             logger.info(

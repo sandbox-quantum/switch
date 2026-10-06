@@ -39,6 +39,7 @@ _TENANT = "00000000-0000-0000-0000-00000000000a"
 def _install(install_id: str, platform: str) -> SimpleNamespace:
     return SimpleNamespace(
         id=install_id,
+        tenant_id=_TENANT,
         platform=platform,
         external_workspace_id=f"ws-{install_id}",
         status="active",
@@ -110,8 +111,22 @@ class _Service:
 
 
 class _Session:
+    """Collects what the routes add, which is only ever their audit events."""
+
+    def __init__(self) -> None:
+        self.added: list[Any] = []
+
+    def add(self, row: Any) -> None:
+        self.added.append(row)
+
+    async def flush(self) -> None:
+        return None
+
     async def commit(self) -> None:
         return None
+
+    def audited(self) -> list[tuple[str, str | None]]:
+        return [(event.action, event.target_id) for event in self.added]
 
 
 def _user(role: str = "user") -> User:
@@ -158,16 +173,19 @@ class TestWhatIsOffered:
 
 class TestClaimLinks:
     async def test_a_member_gets_a_link_once_it_is_connected(self) -> None:
-        started = await begin_claim(
-            "telegram",
-            _Session(),
-            _Service(connected=True),
-            _user(),
-            False,  # type: ignore[arg-type]
-        )
+        session = _Session()
+        with tenant_scope(_TENANT):
+            started = await begin_claim(
+                "telegram",
+                session,  # type: ignore[arg-type]
+                _Service(connected=True),  # type: ignore[arg-type]
+                _user(),
+                False,
+            )
         assert started.url.startswith("https://t.me/")
         assert started.code == "c1code"
         assert started.bot_handle == "@switch_app_bot"
+        assert session.audited() == [("messaging_install.started", None)]
 
     async def test_a_member_cannot_turn_it_on(self) -> None:
         with pytest.raises(HTTPException) as refused:
@@ -181,13 +199,14 @@ class TestClaimLinks:
         assert refused.value.status_code == 403
 
     async def test_an_admin_can(self) -> None:
-        started = await begin_claim(
-            "telegram",
-            _Session(),
-            _Service(connected=False),
-            _user(),
-            True,  # type: ignore[arg-type]
-        )
+        with tenant_scope(_TENANT):
+            started = await begin_claim(
+                "telegram",
+                _Session(),  # type: ignore[arg-type]
+                _Service(connected=False),  # type: ignore[arg-type]
+                _user(),
+                True,
+            )
         assert started.code == "c1code"
 
     async def test_an_oauth_platform_has_no_claim_link(self) -> None:
@@ -220,13 +239,14 @@ class TestOAuthIsATenantAdmins:
         assert refused.value.status_code == 403
 
     async def test_a_tenant_admin_can(self) -> None:
-        started = await begin_install(
-            "slack",
-            _Session(),
-            _Service(),
-            _user(),
-            True,  # type: ignore[arg-type]
-        )
+        with tenant_scope(_TENANT):
+            started = await begin_install(
+                "slack",
+                _Session(),  # type: ignore[arg-type]
+                _Service(),  # type: ignore[arg-type]
+                _user(),
+                True,
+            )
         assert started.authorize_url == "https://slack.example/authorize"
 
     async def test_a_member_cannot_disconnect_an_oauth_install(self) -> None:
@@ -255,9 +275,11 @@ class TestChats:
 
     async def test_a_member_disconnects_one_chat(self) -> None:
         service = _Service()
+        session = _Session()
         with tenant_scope(_TENANT):
-            await disconnect_install("t1", _Session(), service, _user(), False)  # type: ignore[arg-type]
+            await disconnect_install("t1", session, service, _user(), False)  # type: ignore[arg-type]
         assert service.disconnected == ["t1"]
+        assert session.audited() == [("messaging_install.disconnected", "t1")]
 
 
 class TestPrivateRooms:

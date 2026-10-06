@@ -198,6 +198,15 @@ async def begin_claim(
     except MessagingInstallError as failure:
         # The shared bot has not connected yet, so there is no link to offer.
         raise HTTPException(status_code=503, detail=str(failure)) from failure
+    await record_audit_event(
+        session,
+        tenant_id=require_tenant_id(),
+        actor_user_id=user.id,
+        action=AuditAction.MESSAGING_INSTALL_STARTED,
+        target_type="messaging_install",
+        target_id=None,
+        details={"platform": platform},
+    )
     await session.commit()
     logger.info("Started a %s claim for user %s", platform, user.id)
     return ClaimStart(url=link.url, code=link.code, bot_handle=link.bot_handle)
