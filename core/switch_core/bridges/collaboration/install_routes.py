@@ -36,7 +36,10 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
+    ClaimAnswer,
     ClaimantMayNotConnect,
+    ClaimOutcome,
+    ClaimProposal,
     ClaimRefusal,
     InboundWebhook,
     InstallClaim,
@@ -347,29 +350,28 @@ def create_messaging_install_router(
                 target.tenant_id,
             )
 
-    async def _claim(
+    async def _propose(
         platform: str, claim: InstallClaim, background: BackgroundTasks
     ) -> None:
-        """Install the workspace a claim names, or say why not.
+        """Ask the chat a claim came from whether to connect it, or say why not.
 
-        A refused claim is not a refused event. The event is resolved next
-        either way, and that is right in every case a claim can fail: a replay
-        of a claim that succeeded resolves to the install it made, and receipts
-        drop the duplicate; a workspace another tenant holds resolves to them,
-        exactly as it would have without the claim; and one nobody holds is
-        dropped as any unowned workspace is.
+        A claim connects nothing by itself, and a refused claim is not a
+        refused event. The event is resolved next either way, and that is right
+        in every case: a claim posted in a chat this tenant already holds
+        reaches it as any message does; a chat another tenant holds resolves to
+        them, exactly as it would have without the claim; and one nobody holds
+        is dropped as any unowned workspace is.
 
-        Saying why is the installer's, after the platform has been answered. A
-        retry of a claim that already succeeded is not a refusal and says
-        nothing.
+        Asking and saying why are the installer's, after the platform has been
+        answered. A claim in a chat its own tenant already holds is not a
+        refusal and says nothing.
         """
         reason: ClaimRefusal
         refusal: Exception
         try:
-            await service.claim(platform=platform, claim=claim)
-            return
+            proposal = await service.propose(platform=platform, claim=claim)
         except InstallClaimRepeated as repeated:
-            logger.info("Ignored a repeated %s claim: %s", platform, repeated)
+            logger.info("Ignored a %s claim: %s", platform, repeated)
             return
         except InstallStateError as failure:
             reason, refusal = "unrecognised", failure
@@ -381,6 +383,9 @@ def create_messaging_install_router(
             reason, refusal = "not_permitted", failure
         except ClaimantMayNotConnect as failure:
             reason, refusal = "not_chat_admin", failure
+        else:
+            background.add_task(_proposed, platform, claim, proposal)
+            return
         logger.warning(
             "Refused a claim of %s workspace %s: %s",
             platform,
@@ -388,6 +393,80 @@ def create_messaging_install_router(
             refusal,
         )
         background.add_task(_claim_refused, platform, claim, reason)
+
+    async def _answer_claim(
+        platform: str, answer: ClaimAnswer, background: BackgroundTasks
+    ) -> bool:
+        """Connect or decline what an admin of the chat answered; True if connected.
+
+        Whoever answered must be an admin of the chat, and the answer must
+        come from the chat the claim was put to; the state, burnt when it was
+        put, is decided once. An answer repeated after it connected the chat
+        is the platform retrying, and is closed as connected again rather than
+        refused.
+        """
+        outcome: ClaimOutcome
+        refusal: Exception | None = None
+        try:
+            if answer.decision == "connect":
+                await service.connect(platform=platform, claim=answer.claim)
+                outcome = "connected"
+            else:
+                await service.decline(platform=platform, claim=answer.claim)
+                outcome = "cancelled"
+        except InstallClaimRepeated as repeated:
+            logger.info("Ignored a repeated %s answer: %s", platform, repeated)
+            outcome = "connected"
+        except InstallStateError as failure:
+            outcome, refusal = "unrecognised", failure
+        except MessagingInstallStateError as failure:
+            outcome, refusal = "expired", failure
+        except MessagingInstallClaimedError as failure:
+            outcome, refusal = "already_connected", failure
+        except InstallClaimNotPermitted as failure:
+            outcome, refusal = "not_permitted", failure
+        except ClaimantMayNotConnect as failure:
+            outcome, refusal = "not_chat_admin", failure
+        if refusal is not None:
+            logger.warning(
+                "Refused an answer to a claim of %s workspace %s: %s",
+                platform,
+                answer.claim.grant.external_workspace_id,
+                refusal,
+            )
+        background.add_task(_answered, platform, answer, outcome)
+        return outcome == "connected"
+
+    async def _proposed(
+        platform: str, claim: InstallClaim, proposal: ClaimProposal
+    ) -> None:
+        """Let the installer ask the chat; logged, never raised."""
+        try:
+            await service.installer(platform).on_claim_proposed(
+                claim=claim, proposal=proposal
+            )
+        except Exception:
+            logger.exception(
+                "Failed to ask %s workspace %s to confirm its claim",
+                platform,
+                claim.grant.external_workspace_id,
+            )
+
+    async def _answered(
+        platform: str, answer: ClaimAnswer, outcome: ClaimOutcome
+    ) -> None:
+        """Let the installer close an answer; logged, never raised."""
+        try:
+            await service.installer(platform).on_claim_answered(
+                answer=answer, outcome=outcome
+            )
+        except Exception:
+            logger.exception(
+                "Failed to tell %s workspace %s how its answer ended (%s)",
+                platform,
+                answer.claim.grant.external_workspace_id,
+                outcome,
+            )
 
     async def _claim_refused(
         platform: str, claim: InstallClaim, reason: ClaimRefusal
@@ -602,14 +681,25 @@ def create_messaging_install_router(
                     handled += 1
                     continue
 
-                # Before resolving too, and handled before answering rather
-                # than after: the event goes on to be delivered below, and
-                # whether it has anywhere to go is what the claim decides.
+                # Before resolving too: the workspace a claim names is not
+                # installed yet. Checked before answering, so a refusal
+                # Telegram could not be asked about is retried rather than
+                # lost.
                 claim = service.claim_of(platform=platform, event=event)
                 if claim is not None:
-                    await _claim(platform, claim, background)
+                    await _propose(platform, claim, background)
 
-                target = await resolve(event, wait_for_start=claim is not None)
+                # An answer is the install's, and goes on to be delivered only
+                # when it connected its chat: then it is the event that creates
+                # the room.
+                answer = service.answer_of(platform=platform, event=event)
+                if answer is not None and not await _answer_claim(
+                    platform, answer, background
+                ):
+                    handled += 1
+                    continue
+
+                target = await resolve(event, wait_for_start=answer is not None)
                 await service.follow_migration(
                     platform=platform, event=event, target=target
                 )

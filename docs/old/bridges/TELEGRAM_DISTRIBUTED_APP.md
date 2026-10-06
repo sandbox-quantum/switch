@@ -100,13 +100,23 @@ the workspace has its Telegram connection, anyone can use **Add to Telegram…**
 in that connection's menu.
 
 - **A group:** the link opens Telegram's chat picker. Adding the bot through it
-  posts the code into the group, which connects it; Switch creates the group's
-  room and the bot says what it can see.
+  posts the code into the group.
 - **A channel:** Telegram carries nothing when a bot is added to a channel, so
   add the bot as an administrator with permission to post — **Administrators**
   → **Add Admin**, searching for the full `@username` the dialog shows, since
   Telegram does not find a bot by part of it — then post `/connect <code>` in
   the channel.
+
+Either way the code connects nothing yet. The bot asks in the chat, naming the
+Switch organisation and the person who made the link, with **Connect** and
+**Cancel**: a link can be forwarded to anyone, so whoever used it may not know
+whose it is. Asking spends the code, so it cannot be copied out of the chat and
+used elsewhere, and only a press in that chat answers it, within 15 minutes.
+When an admin of the chat chooses Connect, Switch creates the chat's room and
+the bot says what it can see. Cancel connects nothing and the bot leaves. A
+press from anyone else gets a private notice, and the question stays for an
+admin to answer. A restart of Switch forgets an unanswered question; its
+buttons then say the code has expired.
 
   What agents say in the room is posted to the channel either way. Posts in
   the channel reach the room only when its **Sign Messages** and **Show
@@ -116,10 +126,11 @@ in that connection's menu.
 Who may connect one:
 
 - **In Telegram, only the chat's creator or an admin.** Whoever adds the bot
-  through the link, or posts `/connect <code>`, must be one; Switch asks
-  Telegram before spending the code, so if someone else tries, a group admin
-  can still use the same link. In a channel only admins can post, and an
-  anonymous admin's message counts as an admin's.
+  through the link, or posts `/connect <code>`, must be one, and so must
+  whoever chooses Connect or Cancel. Switch asks Telegram before spending the
+  code, so if someone else tries, a group admin can still use the same link.
+  In a channel only admins can post, and an anonymous admin's message counts
+  as an admin's.
 - **The first chat is an admin's.** It creates the organisation's Telegram
   connection, which is what turns Telegram on for it.
 - **After that, any member** may connect more chats and disconnect any one of
@@ -138,8 +149,8 @@ When a connection does not happen, the bot says why in the chat: the link or
 code has expired or was used, the code is not from this deployment, the chat is already
 connected to Switch, only an admin can connect the first chat, or only an admin
 of the group can connect it. It never says
-which organisation holds a chat. A retry Telegram sends of a claim that worked
-is not answered.
+which organisation holds a chat. A code posted in a chat its organisation already
+holds is not answered.
 
 A chat's room comes only from connecting it. The room form's **Use existing
 channel** is off for the Telegram app, and a room cannot be moved onto it with

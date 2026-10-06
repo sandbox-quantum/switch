@@ -218,8 +218,8 @@ def _update(**body: Any) -> dict[str, Any]:
 
 class TestDelivery:
     async def test_a_claim_in_a_group_is_its_join(self) -> None:
-        """The bot's own add was dropped while the chat belonged to nobody, so
-        the claim is what provisions the room."""
+        """A claim reaching a bridge was posted in a chat it already holds;
+        provisioning is idempotent, and the claim is not relayed as a message."""
         adapter = _shared_adapter()
         adapter.attach_shared_connection(await _client())
         joined = _joins(adapter)
@@ -238,6 +238,35 @@ class TestDelivery:
         )
 
         assert [(j.channel_id, j.channel_name) for j in joined] == [("-1001", "Acme")]
+
+    async def test_an_admins_connect_is_its_join(self) -> None:
+        """The press that connected the chat is the first update its tenant
+        receives. The install route closes the press, so the bridge does not."""
+        client = await _client()
+        adapter = _shared_adapter()
+        adapter.attach_shared_connection(client)
+        joined = _joins(adapter)
+
+        await adapter.dispatch_event(
+            envelope_type="events",
+            payload=_update(
+                callback_query={
+                    "id": "press-1",
+                    "chat_instance": "1",
+                    "from": {"id": 42, "is_bot": False, "first_name": "Ada"},
+                    "data": "c:c1token",
+                    "message": {
+                        "message_id": 8,
+                        "date": 0,
+                        "chat": {"id": -1001, "type": "supergroup", "title": "Acme"},
+                        "text": "Connect this chat to Switch?",
+                    },
+                }
+            ),
+        )
+
+        assert [(j.channel_id, j.channel_name) for j in joined] == [("-1001", "Acme")]
+        assert client.bot.answers == []  # type: ignore[attr-defined]
 
     async def test_connect_in_a_channel_is_its_join(self) -> None:
         """A channel post has no sender and is otherwise dropped unread."""

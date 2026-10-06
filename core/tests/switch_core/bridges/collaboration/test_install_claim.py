@@ -28,7 +28,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from switch_core.bridges.collaboration import install_service as install_service_module
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
+    ClaimAnswer,
     ClaimantMayNotConnect,
+    ClaimProposal,
     InboundWebhook,
     InstallClaim,
     InstallGrant,
@@ -102,6 +104,8 @@ class _ClaimInstaller(MessagingAppInstaller):
         self.release_error: Exception | None = None
         self.unowned: list[tuple[str, bool]] = []
         self.refused: list[tuple[str, str]] = []
+        self.proposed: list[tuple[str, ClaimProposal]] = []
+        self.answered: list[tuple[str, str]] = []
         self.claimant_check: Exception | None = None
 
     async def require_claimant_may_connect(self, claim: InstallClaim) -> None:
@@ -110,6 +114,14 @@ class _ClaimInstaller(MessagingAppInstaller):
 
     async def on_claim_refused(self, *, claim: InstallClaim, reason: Any) -> None:
         self.refused.append((claim.grant.external_workspace_id, reason))
+
+    async def on_claim_proposed(
+        self, *, claim: InstallClaim, proposal: ClaimProposal
+    ) -> None:
+        self.proposed.append((claim.grant.external_workspace_id, proposal))
+
+    async def on_claim_answered(self, *, answer: ClaimAnswer, outcome: Any) -> None:
+        self.answered.append((answer.claim.grant.external_workspace_id, outcome))
 
     async def release(self, *, external_workspace_id: str) -> None:
         if self.release_error is not None:
@@ -175,8 +187,25 @@ class _ClaimInstaller(MessagingAppInstaller):
             token=token, grant=_grant(str(payload["chat"])), claimant="42"
         )
 
+    def answer_of_event(self, payload: Mapping[str, object]) -> ClaimAnswer | None:
+        token = payload.get("answer")
+        if not isinstance(token, str):
+            return None
+        return ClaimAnswer(
+            claim=InstallClaim(
+                token=token, grant=_grant(str(payload["chat"])), claimant="42"
+            ),
+            decision="cancel" if payload.get("decision") == "cancel" else "connect",
+            press={},
+        )
+
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
         return {"event_delivery": "shared"}
+
+
+def _connect(chat_id: str, token: str) -> dict[str, Any]:
+    """An admin's Connect on the proposal a claim with `token` posted."""
+    return {"chat": chat_id, "answer": token, "decision": "connect"}
 
 
 def _grant(chat_id: str) -> InstallGrant:
@@ -349,8 +378,18 @@ async def _link(
     return parse_qs(urlparse(url).query)["startgroup"][0]
 
 
+async def _ask(fixture: _Fixture, token: str, chat_id: str) -> ClaimProposal:
+    """Put a claim to its chat, as posting it there does."""
+    return await fixture.service.propose(
+        platform=_PLATFORM,
+        claim=InstallClaim(token=token, grant=_grant(chat_id), claimant="42"),
+    )
+
+
 async def _claim(fixture: _Fixture, token: str, chat_id: str) -> MessagingInstall:
-    return await fixture.service.claim(
+    """Put a claim to its chat and connect it, as an admin choosing Connect."""
+    await _ask(fixture, token, chat_id)
+    return await fixture.service.connect(
         platform=_PLATFORM,
         claim=InstallClaim(token=token, grant=_grant(chat_id), claimant="42"),
     )
@@ -724,8 +763,78 @@ class TestWhatAClaimWillNotDo:
             await _claim(fixture, token, "-1001")
 
 
+class TestProposals:
+    """A chat is only asked about a claim that could still connect it."""
+
+    async def test_it_names_the_organisation_and_who_asked(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+
+        proposal = await fixture.service.propose(
+            platform=_PLATFORM,
+            claim=InstallClaim(token=token, grant=_grant("-1001"), claimant="42"),
+        )
+
+        assert proposal == ClaimProposal(
+            organisation=fixture.tenant_a, requested_by="admin-a"
+        )
+
+    async def test_a_used_link_is_not_proposed(self, rls_harness: RLSHarness) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        await _claim(fixture, token, "-1001")
+
+        with pytest.raises(MessagingInstallStateError):
+            await fixture.service.propose(
+                platform=_PLATFORM,
+                claim=InstallClaim(token=token, grant=_grant("-1002"), claimant="42"),
+            )
+
+    async def test_a_chat_another_tenant_holds_is_not_proposed(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        await _claim(
+            fixture,
+            await _link(
+                rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+            ),
+            "-1001",
+        )
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_b, fixture.admin_b
+        )
+
+        with pytest.raises(MessagingInstallClaimedError):
+            await fixture.service.propose(
+                platform=_PLATFORM,
+                claim=InstallClaim(token=token, grant=_grant("-1001"), claimant="42"),
+            )
+
+    async def test_turning_it_on_is_not_proposed_from_a_members_link(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.member_a
+        )
+
+        with pytest.raises(InstallClaimNotPermitted):
+            await fixture.service.propose(
+                platform=_PLATFORM,
+                claim=InstallClaim(token=token, grant=_grant("-1001"), claimant="42"),
+            )
+
+
 class TestTheRoute:
-    """A claim arrives as an ordinary event, and is then delivered as one."""
+    """A claim arrives as an ordinary event and only asks; an admin's answer,
+    another event, is what connects the chat, and is then delivered as one."""
 
     async def _client(self, fixture: _Fixture) -> httpx.AsyncClient:
         app = FastAPI()
@@ -740,18 +849,41 @@ class TestTheRoute:
         )
         return response.status_code
 
-    async def test_a_claim_installs_the_chat_and_is_delivered_to_it(
+    async def test_a_claim_asks_and_connects_nothing(
         self, rls_harness: RLSHarness
     ) -> None:
-        """Delivered because the claim is also the event that creates the
-        room: the add that preceded it was dropped, the chat being unowned."""
+        """A forwarded link reaches whoever it was forwarded to, so the chat is
+        told which organisation, and who asked, before anything is spent."""
         fixture = await _fixture(rls_harness)
         token = await _link(
             rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
         )
-        body = {"chat": "-1001", "claim": token}
 
         async with await self._client(fixture) as client:
+            assert await self._post(client, {"chat": "-1001", "claim": token}) == 200
+
+        assert await _active_installs(rls_harness) == []
+        assert fixture.lifecycle.registered == []
+        assert fixture.installer.proposed == [
+            (
+                "-1001",
+                ClaimProposal(organisation=fixture.tenant_a, requested_by="admin-a"),
+            )
+        ]
+
+    async def test_connect_installs_the_chat_and_is_delivered_to_it(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Delivered because Connect is also the event that creates the room:
+        the add and the claim before it were dropped, the chat being unowned."""
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        body = _connect("-1001", token)
+
+        async with await self._client(fixture) as client:
+            assert await self._post(client, {"chat": "-1001", "claim": token}) == 200
             assert await self._post(client, body) == 200
 
         (install,) = await _active_installs(rls_harness)
@@ -759,6 +891,88 @@ class TestTheRoute:
         adapter = fixture.lifecycle.adapters[install.bridge_id]  # type: ignore[index]
         assert isinstance(adapter, _RecordingAdapter)
         assert adapter.dispatched == [("events", body)]
+        assert fixture.installer.answered == [("-1001", "connected")]
+
+    async def test_cancel_connects_nothing_and_spends_the_link(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+
+        async with await self._client(fixture) as client:
+            assert await self._post(client, {"chat": "-1001", "claim": token}) == 200
+            cancel = {"chat": "-1001", "answer": token, "decision": "cancel"}
+            assert await self._post(client, cancel) == 200
+            assert await self._post(client, _connect("-1001", token)) == 200
+
+        assert await _active_installs(rls_harness) == []
+        assert fixture.installer.answered == [
+            ("-1001", "cancelled"),
+            ("-1001", "expired"),
+        ]
+
+    async def test_a_claim_telegram_sends_twice_asks_once(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+
+        async with await self._client(fixture) as client:
+            for _ in range(2):
+                assert (
+                    await self._post(client, {"chat": "-1001", "claim": token}) == 200
+                )
+
+        assert [chat for chat, _ in fixture.installer.proposed] == ["-1001"]
+        assert fixture.installer.refused == []
+
+    async def test_a_code_copied_into_another_chat_cannot_be_answered_there(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Anyone in the first chat saw the code. Putting it to the chat spent
+        it, so it asks nothing elsewhere, and an answer naming it from another
+        chat connects nothing."""
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+
+        async with await self._client(fixture) as client:
+            assert await self._post(client, {"chat": "-1001", "claim": token}) == 200
+            assert await self._post(client, {"chat": "-1002", "claim": token}) == 200
+            assert await self._post(client, _connect("-1002", token)) == 200
+
+        assert await _active_installs(rls_harness) == []
+        assert [chat for chat, _ in fixture.installer.proposed] == ["-1001"]
+        assert fixture.installer.refused == [("-1002", "expired")]
+        assert fixture.installer.answered == [("-1002", "expired")]
+
+    async def test_an_answer_from_someone_not_an_admin_connects_nothing(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """And leaves the link for an admin, who can still connect."""
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        async with await self._client(fixture) as client:
+            assert await self._post(client, {"chat": "-1001", "claim": token}) == 200
+            fixture.installer.claimant_check = ClaimantMayNotConnect("a member")
+            assert await self._post(client, _connect("-1001", token)) == 200
+            assert await _active_installs(rls_harness) == []
+            fixture.installer.claimant_check = None
+            assert await self._post(client, _connect("-1001", token)) == 200
+
+        (install,) = await _active_installs(rls_harness)
+        assert install.external_workspace_id == "-1001"
+        assert fixture.installer.answered == [
+            ("-1001", "not_chat_admin"),
+            ("-1001", "connected"),
+        ]
 
     async def test_a_refused_claim_in_an_unowned_chat_is_dropped(
         self, rls_harness: RLSHarness
@@ -820,11 +1034,12 @@ class TestTheSharedConnection:
         token = await _link(
             rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
         )
+        await _ask(fixture, token, "-1001")
 
         async with await self._client(fixture) as client:
             response = await client.post(
                 f"/messaging/{_PLATFORM}/events",
-                content=json.dumps({"chat": "-1001", "claim": token}).encode(),
+                content=json.dumps(_connect("-1001", token)).encode(),
             )
 
         assert response.status_code == 200
@@ -1162,12 +1377,12 @@ class TestRefusedClaims:
 
 
 class TestABridgeStillStarting:
-    """A claim's first event is the claim itself, delivered moments after the
-    claim launched the tenant's bridge — before the bridge has handed its
-    adapter the callbacks that provision the chat's room. Delivered early, the
-    room would never be made. So any event carrying a claim waits for its
-    bridge to start — a first claim, Telegram's retry of one, or a claim on a
-    bridge that is restarting — and nothing else does."""
+    """A chat's first delivered event is the Connect that connected it,
+    delivered moments after it launched the tenant's bridge — before the
+    bridge has handed its adapter the callbacks that provision the chat's
+    room. Delivered early, the room would never be made. So a connecting
+    answer waits for its bridge to start — a first one, Telegram's retry of
+    one, or one on a bridge that is restarting — and nothing else does."""
 
     async def _post(self, fixture: _Fixture, body: dict[str, Any]) -> int:
         app = FastAPI()
@@ -1194,8 +1409,9 @@ class TestABridgeStillStarting:
         token = await _link(
             rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
         )
+        await _ask(fixture, token, "-1001")
 
-        assert await self._post(fixture, {"chat": "-1001", "claim": token}) == 200
+        assert await self._post(fixture, _connect("-1001", token)) == 200
 
         (install,) = await _active_installs(rls_harness)
         adapter = fixture.lifecycle.adapters[install.bridge_id]  # type: ignore[index]
@@ -1211,8 +1427,9 @@ class TestABridgeStillStarting:
         token = await _link(
             rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
         )
+        await _ask(fixture, token, "-1001")
 
-        assert await self._post(fixture, {"chat": "-1001", "claim": token}) == 503
+        assert await self._post(fixture, _connect("-1001", token)) == 503
 
         (install,) = await _active_installs(rls_harness)
         adapter = fixture.lifecycle.adapters[install.bridge_id]  # type: ignore[index]
@@ -1222,7 +1439,7 @@ class TestABridgeStillStarting:
     async def test_an_ordinary_event_does_not_wait(
         self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Only the claim that made the bridge waits. Every other event is
+        """Only the answer that made the bridge waits. Every other event is
         routed exactly as before, which is what keeps Slack's untouched."""
         fixture = await _fixture(rls_harness)
         owned = await _claim(
@@ -1240,11 +1457,11 @@ class TestABridgeStillStarting:
         assert isinstance(adapter, _AttachableAdapter)
         assert len(adapter.dispatched) == 1
 
-    async def test_a_retried_claim_waits_too(
+    async def test_a_retried_answer_waits_too(
         self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Telegram retries the claim while the bridge is still coming up. The
-        retry is a repeated claim, and it must wait as the first one did, or
+        """Telegram retries the press while the bridge is still coming up. The
+        retry is a repeated answer, and it must wait as the first one did, or
         it reaches the half-started adapter and the room is lost."""
         monkeypatch.setattr(install_service_module, "_BRIDGE_START_WAIT", 0.2)
         fixture = await _fixture(rls_harness)
@@ -1253,7 +1470,8 @@ class TestABridgeStillStarting:
         token = await _link(
             rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
         )
-        body = {"chat": "-1001", "claim": token}
+        body = _connect("-1001", token)
+        await _ask(fixture, token, "-1001")
 
         assert await self._post(fixture, body) == 503
         assert await self._post(fixture, body) == 503
@@ -1268,10 +1486,10 @@ class TestABridgeStillStarting:
         assert len(adapter.dispatched) == 1
         assert fixture.installer.refused == []
 
-    async def test_a_claim_on_a_restarting_bridge_waits(
+    async def test_an_answer_on_a_restarting_bridge_waits(
         self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A tenant's second group claimed while its bridge restarts: the
+        """A tenant's second group connected while its bridge restarts: the
         bridge exists and resolves, and its adapter is not started yet."""
         monkeypatch.setattr(install_service_module, "_BRIDGE_START_WAIT", 0.2)
         fixture = await _fixture(rls_harness)
@@ -1287,7 +1505,8 @@ class TestABridgeStillStarting:
         token = await _link(
             rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
         )
-        body = {"chat": "-1002", "claim": token}
+        body = _connect("-1002", token)
+        await _ask(fixture, token, "-1002")
 
         assert await self._post(fixture, body) == 503
         adapter = fixture.lifecycle.adapters[first.bridge_id]  # type: ignore[index]

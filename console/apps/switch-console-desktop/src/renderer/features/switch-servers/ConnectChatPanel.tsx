@@ -134,8 +134,8 @@ export function ChatClaimDetails({ platform, claim }: { platform: string; claim:
           Add to a {label} group
         </Button>
         <p className="text-xs text-foreground-muted">
-          Pick a group and confirm. The bot joins, Switch creates the group’s room, and the bot says
-          in the group that it is connected.
+          Pick a group and confirm. The bot joins and asks which Switch organisation the group is
+          for; when a group admin chooses Connect, Switch creates the group’s room.
         </p>
       </div>
 
@@ -145,7 +145,10 @@ export function ChatClaimDetails({ platform, claim }: { platform: string; claim:
           full username:
         </p>
         <CopyableValue value={claim.botHandle} label="the bot’s username" />
-        <p>Keep its permission to post, save, then post this in the channel:</p>
+        <p>
+          Keep its permission to post, save, then post this in the channel and choose Connect when
+          the bot asks:
+        </p>
         <CopyableValue value={`/connect ${claim.code}`} label="the command" />
         <p className="text-foreground-muted">
           Agents can always post to the channel. For posts in the channel to reach agents, turn on
@@ -155,8 +158,8 @@ export function ChatClaimDetails({ platform, claim }: { platform: string; claim:
       </div>
 
       <p className="rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs">
-        The link and the code work once, for ten minutes. Anyone who has them in that time can
-        connect a chat to this workspace, so share them only with people who should.
+        The link and the code work once, for ten minutes. Anyone who has them in that time can ask
+        to connect a chat to this workspace, so share them only with people who should.
       </p>
     </div>
   );

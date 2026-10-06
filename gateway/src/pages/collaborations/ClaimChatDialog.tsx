@@ -66,9 +66,9 @@ export default function ClaimChatDialog({ platform, claim, onClose }: Props) {
               Add to a {name} group
             </Button>
             <Typography variant="body2" color="text.secondary">
-              Pick a group and confirm. The bot joins, Switch creates the
-              group&apos;s room, and the bot says in the group that it is
-              connected.
+              Pick a group and confirm. The bot joins and asks which Switch
+              organisation the group is for; when a group admin chooses
+              Connect, Switch creates the group&apos;s room.
             </Typography>
           </Stack>
 
@@ -84,7 +84,8 @@ export default function ClaimChatDialog({ platform, claim, onClose }: Props) {
               onCopy={copy}
             />
             <Typography variant="body2">
-              Keep its permission to post, save, then post this in the channel:
+              Keep its permission to post, save, then post this in the
+              channel and choose Connect when the bot asks:
             </Typography>
             <Copyable
               text={command}
@@ -102,8 +103,8 @@ export default function ClaimChatDialog({ platform, claim, onClose }: Props) {
 
           <Alert severity="info" variant="outlined">
             The link and the code work once, for ten minutes. Anyone who has
-            them in that time can connect a chat to this organisation, so share
-            them only with people who should.
+            them in that time can ask to connect a chat to this organisation,
+            so share them only with people who should.
           </Alert>
         </Stack>
       </DialogContent>

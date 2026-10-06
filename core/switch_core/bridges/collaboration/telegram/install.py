@@ -23,10 +23,15 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, ClassVar
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, Forbidden, TelegramError
 
 from switch_core.bridges.collaboration.install import (
+    ClaimAnswer,
     ClaimantMayNotConnect,
+    ClaimDecision,
+    ClaimOutcome,
+    ClaimProposal,
     ClaimRefusal,
     InboundWebhook,
     InstallClaim,
@@ -98,6 +103,42 @@ CLAIM_REFUSED: dict[ClaimRefusal, str] = {
     ),
 }
 
+#: The prefixes of a proposal's two buttons, each followed by `:<state>`. One
+#: letter each, because Telegram allows 64 bytes of callback data and the
+#: compact state is 61 characters. Distinct from the bridge's own (`sw`, `sx`),
+#: so neither reads the other's presses.
+CONNECT_PREFIX = "c"
+CANCEL_PREFIX = "x"
+_DECISIONS: dict[str, ClaimDecision] = {
+    CONNECT_PREFIX: "connect",
+    CANCEL_PREFIX: "cancel",
+}
+
+#: What a proposal says. Plain text: the organisation's name is the tenant's
+#: to choose and is not escaped for markup.
+PROPOSAL = (
+    "Connect this chat to Switch?\n\n"
+    "Organisation: {organisation}\n"
+    "Requested by: {requested_by}\n\n"
+    "An admin of this chat needs to choose. If you don't recognise the "
+    "organisation or the person, choose Cancel."
+)
+
+#: What a proposal is edited to once answered.
+ANSWERED: dict[ClaimOutcome, str] = {
+    "connected": "Connected to Switch.",
+    "cancelled": "Not connected to Switch. The bot is leaving this chat.",
+    "expired": CLAIM_REFUSED["expired"],
+    "unrecognised": CLAIM_REFUSED["unrecognised"],
+    "already_connected": CLAIM_REFUSED["already_connected"],
+    "not_permitted": CLAIM_REFUSED["not_permitted"],
+    "not_chat_admin": CLAIM_REFUSED["not_chat_admin"],
+}
+
+#: The alert a press from someone who is not an admin gets. The proposal stays
+#: for an admin to answer.
+NOT_AN_ADMIN_ALERT = "Only an admin of this chat can choose."
+
 DIRECT_MESSAGE_REPLY = (
     "👋 Direct messages to this bot aren't routed to anyone. Connect a group "
     "or channel from Switch, then mention an agent there."
@@ -134,6 +175,23 @@ def _claimant_of(message: dict[str, Any], chat: dict[str, Any]) -> str | None:
     return str(sender["id"])
 
 
+def is_connect_press(data: str) -> bool:
+    """Whether a button press is a proposal's Connect, which the bridge the
+    chat now belongs to receives as its join."""
+    prefix, separator, token = data.partition(":")
+    return prefix == CONNECT_PREFIX and bool(separator) and bool(token)
+
+
+def _grant_for(chat: dict[str, Any]) -> InstallGrant:
+    return InstallGrant(
+        external_workspace_id=str(chat["id"]),
+        workspace_name=_BRIDGE_NAME,
+        bot_token=None,
+        scopes="",
+        platform_data={},
+    )
+
+
 def _chat_of(payload: Mapping[str, object]) -> dict[str, Any] | None:
     member = _as_dict(payload.get("my_chat_member"))
     if member is not None:
@@ -155,6 +213,10 @@ class TelegramAppInstaller(MessagingAppInstaller):
     def __init__(self, *, client: TelegramAppClient, webhook_secret: str) -> None:
         self._client = client
         self._webhook_secret = webhook_secret.encode()
+        # Chats with a proposal waiting for an answer, which are unowned but
+        # not to be told so. In memory: the app runs on one pod, and a restart
+        # only risks a needless notice.
+        self._proposed: set[str] = set()
 
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
         """The link that adds the bot to a group and claims it.
@@ -305,16 +367,40 @@ class TelegramAppInstaller(MessagingAppInstaller):
         if claimant is None:
             return None
 
-        return InstallClaim(
-            token=parts[1],
-            grant=InstallGrant(
-                external_workspace_id=str(chat["id"]),
-                workspace_name=_BRIDGE_NAME,
-                bot_token=None,
-                scopes="",
-                platform_data={},
+        return InstallClaim(token=parts[1], grant=_grant_for(chat), claimant=claimant)
+
+    def answer_of_event(self, payload: Mapping[str, object]) -> ClaimAnswer | None:
+        """A press of a proposal's Connect or Cancel.
+
+        Who answered is who pressed, which Telegram fills in and the button
+        cannot: the state in it says what is being answered, never by whom.
+        """
+        press = _as_dict(payload.get("callback_query"))
+        if press is None:
+            return None
+        data = press.get("data")
+        if not isinstance(data, str):
+            return None
+        prefix, separator, token = data.partition(":")
+        decision = _DECISIONS.get(prefix)
+        if decision is None or not separator or not token:
+            return None
+        chat = _as_dict((_as_dict(press.get("message")) or {}).get("chat"))
+        presser = _as_dict(press.get("from"))
+        if (
+            chat is None
+            or chat.get("type") == "private"
+            or chat.get("id") is None
+            or presser is None
+            or presser.get("id") is None
+        ):
+            return None
+        return ClaimAnswer(
+            claim=InstallClaim(
+                token=token, grant=_grant_for(chat), claimant=str(presser["id"])
             ),
-            claimant=claimant,
+            decision=decision,
+            press=press,
         )
 
     async def require_claimant_may_connect(self, claim: InstallClaim) -> None:
@@ -400,6 +486,61 @@ class TelegramAppInstaller(MessagingAppInstaller):
             text=CLAIM_REFUSED[reason],
         )
 
+    async def on_claim_proposed(
+        self, *, claim: InstallClaim, proposal: ClaimProposal
+    ) -> None:
+        """Post the proposal, with Connect and Cancel, in the chat."""
+        chat_id = claim.grant.external_workspace_id
+        self._proposed.add(chat_id)
+        await self._client.bot.send_message(
+            chat_id=int(chat_id),
+            text=PROPOSAL.format(
+                organisation=proposal.organisation,
+                requested_by=proposal.requested_by,
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "Connect", callback_data=f"{CONNECT_PREFIX}:{claim.token}"
+                        ),
+                        InlineKeyboardButton(
+                            "Cancel", callback_data=f"{CANCEL_PREFIX}:{claim.token}"
+                        ),
+                    ]
+                ]
+            ),
+        )
+
+    async def on_claim_answered(
+        self, *, answer: ClaimAnswer, outcome: ClaimOutcome
+    ) -> None:
+        """Close the press, and the proposal unless someone else must answer it.
+
+        A press from someone who is not an admin leaves the proposal for one
+        who is, and only the presser hears why. Every other outcome replaces
+        the proposal with how it ended, so its buttons cannot be pressed again,
+        and a cancelled one takes the bot out of the chat.
+        """
+        chat_id = answer.claim.grant.external_workspace_id
+        query_id = str(answer.press.get("id") or "")
+        if outcome == "not_chat_admin":
+            await self._client.bot.answer_callback_query(
+                callback_query_id=query_id, text=NOT_AN_ADMIN_ALERT, show_alert=True
+            )
+            return
+        self._proposed.discard(chat_id)
+        await self._client.bot.answer_callback_query(callback_query_id=query_id)
+        message = _as_dict(answer.press.get("message")) or {}
+        if message.get("message_id") is not None:
+            await self._client.bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message["message_id"]),
+                text=ANSWERED[outcome],
+            )
+        if outcome == "cancelled":
+            await self.release(external_workspace_id=chat_id)
+
     async def on_unowned_event(
         self,
         *,
@@ -424,7 +565,7 @@ class TelegramAppInstaller(MessagingAppInstaller):
             if status not in _PRESENT_STATUSES or chat.get("type") in _UNANSWERED_ADDS:
                 return
             await asyncio.sleep(UNCLAIMED_NOTICE_GRACE)
-            if await still_unowned():
+            if workspace_id not in self._proposed and await still_unowned():
                 await self._client.bot.send_message(
                     chat_id=int(workspace_id), text=UNCLAIMED_NOTICE
                 )

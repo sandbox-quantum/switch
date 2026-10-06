@@ -272,6 +272,42 @@ ClaimRefusal = Literal[
 ]
 
 
+@dataclass(frozen=True)
+class ClaimProposal:
+    """What a claim would connect its chat to, for the chat's admins to check.
+
+    The claim-based counterpart of OAuth's confirmation page. A link can be
+    forwarded to anyone, so whoever used it may not be whoever asked for it,
+    and nothing is connected until an admin of the chat has seen which Switch
+    organisation it is for and chosen Connect. `requested_by` is a name, not
+    the email the page shows: everyone in the chat sees this.
+    """
+
+    organisation: str
+    requested_by: str
+
+
+ClaimDecision = Literal["connect", "cancel"]
+
+
+@dataclass(frozen=True)
+class ClaimAnswer:
+    """An answer to a proposal, from the chat it was posted in.
+
+    `claim.claimant` is whoever answered, which is who must be an admin of the
+    chat. `press` is the platform's own record of the answer, handed back to
+    the installer to close it.
+    """
+
+    claim: InstallClaim
+    decision: ClaimDecision
+    press: Mapping[str, object]
+
+
+#: How an answer ended: connected, cancelled, or refused for a claim's reason.
+ClaimOutcome = Literal["connected", "cancelled"] | ClaimRefusal
+
+
 #: Which state token an installer's platform can carry. `v1` for a platform
 #: that hands the state back through a redirect; `compact` for one whose only
 #: carrier is short (see `install_state`).
@@ -508,12 +544,22 @@ class MessagingAppInstaller(ABC):
         """The install this event asks for, or `None` if it asks for none.
 
         Only a platform with no OAuth leg overrides this; for the rest an
-        install arrives at the callback and never as an event.
+        install arrives at the callback and never as an event. A claim
+        installs nothing by itself: it is proposed to the chat, and an admin's
+        answer (:meth:`answer_of_event`) is what connects it.
 
         Asked before the event is resolved, because the workspace it names is
         by definition not installed yet and resolving it would drop the one
         event that could change that. Pure, like :meth:`workspace_of_event`:
         the token is verified and redeemed by the install service, not here.
+        """
+        return None
+
+    def answer_of_event(self, payload: Mapping[str, object]) -> ClaimAnswer | None:
+        """The answer this event gives to a proposal, or `None` if it is none.
+
+        Pure, like :meth:`claim_of_event`, and asked before the event is
+        resolved for the same reason.
         """
         return None
 
@@ -537,6 +583,29 @@ class MessagingAppInstaller(ABC):
         install row is keyed by that id and has to follow it, or the chat's
         events stop resolving to anyone. Pure, like `workspace_of_event`,
         which for such an event answers the *old* id so it still resolves.
+        """
+        return None
+
+    async def on_claim_proposed(
+        self, *, claim: InstallClaim, proposal: ClaimProposal
+    ) -> None:
+        """Ask the chat a claim came from whether to connect it.
+
+        Runs after the platform has been answered. A claim-based platform must
+        override this, since without it nobody is asked and nothing connects.
+        """
+        raise MessagingInstallError(
+            f"{self.platform} is not installed by claiming a chat, so there is "
+            "no chat to ask"
+        )
+
+    async def on_claim_answered(
+        self, *, answer: ClaimAnswer, outcome: ClaimOutcome
+    ) -> None:
+        """Close an answer: say how it ended, where it was given.
+
+        Runs after the platform has been answered. Must say nothing about
+        which tenant holds a chat that is already connected.
         """
         return None
 

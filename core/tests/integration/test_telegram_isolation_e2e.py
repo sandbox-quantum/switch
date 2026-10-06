@@ -60,6 +60,7 @@ from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomCreateConfig
 from switch_core.tenant_context import tenant_scope
+from tests.conftest import TEST_KEYRING
 from tests.integration.conftest import Harness
 from tests.switch_core.bridges.collaboration.test_telegram_adapter import _FakeBot
 
@@ -152,7 +153,7 @@ async def _world(harness: Harness) -> tuple[_World, MessagingInstallService]:
         users=UserStore(),
         rooms=harness.room_service,
         public_origin=_ORIGIN,
-        secret="integration-jwt-secret",
+        keyring=TEST_KEYRING,
     )
     app = FastAPI()
     app.include_router(create_messaging_install_router(service))
@@ -268,10 +269,20 @@ async def _connect(
             },
         }
     )
-    # Then the claim. Telegram retries a 503 — a bridge still starting — so
-    # this does too, as Telegram would.
+    # Then the claim, which only asks; then an admin's Connect. Telegram
+    # retries a 503 — a bridge still starting — so this does too, as Telegram
+    # would.
+    assert await world.post(message=_message(chat, f"/start@{_USERNAME} {code}")) == 200
     for _ in range(10):
-        status = await world.post(message=_message(chat, f"/start@{_USERNAME} {code}"))
+        status = await world.post(
+            callback_query={
+                "id": f"press-{chat['id']}",
+                "chat_instance": "1",
+                "from": _ADA,
+                "data": f"c:{code}",
+                "message": _message(chat, "Connect this chat to Switch?"),
+            }
+        )
         if status == 200:
             break
         await asyncio.sleep(0.2)

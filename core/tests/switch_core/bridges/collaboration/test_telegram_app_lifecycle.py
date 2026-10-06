@@ -21,6 +21,7 @@ from telegram.error import BadRequest, Forbidden, TimedOut
 
 from switch_core.bridges.collaboration.install import (
     ClaimantMayNotConnect,
+    ClaimProposal,
     InstallClaim,
     InstallGrant,
     MessagingInstallError,
@@ -38,8 +39,10 @@ from switch_core.bridges.collaboration.telegram.app_client import (
     bot_resource,
 )
 from switch_core.bridges.collaboration.telegram.install import (
+    ANSWERED,
     CLAIM_REFUSED,
     DIRECT_MESSAGE_REPLY,
+    NOT_AN_ADMIN_ALERT,
     UNCLAIMED_NOTICE,
     TelegramAppInstaller,
 )
@@ -80,6 +83,8 @@ class _Bot:
     member_status: str = "administrator"
     member_error: Exception | None = None
     members_asked: list[tuple[int, int]] = field(default_factory=list)
+    answered: list[dict[str, Any]] = field(default_factory=list)
+    edited: list[dict[str, Any]] = field(default_factory=list)
 
     async def initialize(self) -> None:
         return None
@@ -101,6 +106,12 @@ class _Bot:
 
     async def send_message(self, **kwargs: Any) -> None:
         self.sent.append(kwargs)
+
+    async def answer_callback_query(self, **kwargs: Any) -> None:
+        self.answered.append(kwargs)
+
+    async def edit_message_text(self, **kwargs: Any) -> None:
+        self.edited.append(kwargs)
 
     async def get_chat_member(self, *, chat_id: int, user_id: int) -> _Member:
         self.members_asked.append((chat_id, user_id))
@@ -511,3 +522,156 @@ class TestRefusedClaims:
         await installer.on_claim_refused(claim=claim, reason=reason)  # type: ignore[arg-type]
 
         assert bot.sent == [{"chat_id": -1001, "text": CLAIM_REFUSED[reason]}]  # type: ignore[index]
+
+
+#: As long as a real compact state: `c1` and 44 bytes, base64 without padding.
+_TOKEN = "c1" + "A" * 59
+
+
+def _proposal_claim() -> InstallClaim:
+    return InstallClaim(
+        token=_TOKEN,
+        grant=InstallGrant(
+            external_workspace_id="-1001",
+            workspace_name="Telegram",
+            bot_token=None,
+            scopes="",
+        ),
+        claimant="42",
+    )
+
+
+def _press(data: str, *, chat_type: str = "supergroup") -> dict[str, Any]:
+    return {
+        "update_id": 2,
+        "callback_query": {
+            "id": "press-1",
+            "from": {"id": 7, "is_bot": False, "first_name": "Ada"},
+            "data": data,
+            "message": {
+                "message_id": 55,
+                "chat": {"id": -1001, "type": chat_type},
+            },
+        },
+    }
+
+
+class TestAskingTheChat:
+    """A claim is put to the chat it was posted in, naming the organisation and
+    who asked, and connects nothing until one of the chat's admins answers."""
+
+    async def test_it_names_the_organisation_and_who_asked(self) -> None:
+        installer, bot = await _installer()
+
+        await installer.on_claim_proposed(
+            claim=_proposal_claim(),
+            proposal=ClaimProposal(organisation="Acme", requested_by="Ada Lovelace"),
+        )
+
+        (sent,) = bot.sent
+        assert sent["chat_id"] == -1001
+        assert "Organisation: Acme" in sent["text"]
+        assert "Requested by: Ada Lovelace" in sent["text"]
+        (row,) = sent["reply_markup"].inline_keyboard
+        assert [(b.text, b.callback_data) for b in row] == [
+            ("Connect", f"c:{_TOKEN}"),
+            ("Cancel", f"x:{_TOKEN}"),
+        ]
+
+    async def test_its_buttons_fit_telegrams_callback_data(self) -> None:
+        installer, bot = await _installer()
+
+        await installer.on_claim_proposed(
+            claim=_proposal_claim(),
+            proposal=ClaimProposal(organisation="Acme", requested_by="Ada"),
+        )
+
+        (row,) = bot.sent[0]["reply_markup"].inline_keyboard
+        assert all(len(b.callback_data.encode()) <= 64 for b in row)
+
+    async def test_an_add_waiting_on_an_answer_is_not_told_to_connect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(install_module, "UNCLAIMED_NOTICE_GRACE", 0.0)
+        installer, bot = await _installer()
+        await installer.on_claim_proposed(
+            claim=_proposal_claim(),
+            proposal=ClaimProposal(organisation="Acme", requested_by="Ada"),
+        )
+
+        await _answer(installer, _added(), owned=False)
+
+        assert len(bot.sent) == 1
+
+
+class TestAnswers:
+    async def test_connect_and_cancel_are_read_with_who_pressed(self) -> None:
+        installer, _ = await _installer()
+
+        connect = installer.answer_of_event(_press(f"c:{_TOKEN}"))
+        cancel = installer.answer_of_event(_press(f"x:{_TOKEN}"))
+
+        assert connect is not None and cancel is not None
+        assert (connect.decision, cancel.decision) == ("connect", "cancel")
+        assert connect.claim.token == _TOKEN
+        assert connect.claim.claimant == "7"
+        assert connect.claim.grant.external_workspace_id == "-1001"
+
+    @pytest.mark.parametrize("data", ["sw:token:1", "sx:turn", "c:", "connect"])
+    def test_any_other_press_is_not_one(self, data: str) -> None:
+        installer = TelegramAppInstaller(client=MagicMock(), webhook_secret=_SECRET)
+        assert installer.answer_of_event(_press(data)) is None
+
+    async def test_connected_closes_the_press_and_the_proposal(self) -> None:
+        installer, bot = await _installer()
+        answer = installer.answer_of_event(_press(f"c:{_TOKEN}"))
+        assert answer is not None
+
+        await installer.on_claim_answered(answer=answer, outcome="connected")
+
+        assert bot.answered == [{"callback_query_id": "press-1"}]
+        assert bot.edited == [
+            {"chat_id": -1001, "message_id": 55, "text": ANSWERED["connected"]}
+        ]
+        assert bot.left == []
+
+    async def test_cancelled_takes_the_bot_out(self) -> None:
+        installer, bot = await _installer()
+        answer = installer.answer_of_event(_press(f"x:{_TOKEN}"))
+        assert answer is not None
+
+        await installer.on_claim_answered(answer=answer, outcome="cancelled")
+
+        assert bot.edited[0]["text"] == ANSWERED["cancelled"]
+        assert bot.left == [-1001]
+
+    async def test_a_press_from_someone_not_an_admin_leaves_the_proposal(
+        self,
+    ) -> None:
+        """Only the presser hears why, and an admin can still answer."""
+        installer, bot = await _installer()
+        answer = installer.answer_of_event(_press(f"c:{_TOKEN}"))
+        assert answer is not None
+
+        await installer.on_claim_answered(answer=answer, outcome="not_chat_admin")
+
+        assert bot.answered == [
+            {
+                "callback_query_id": "press-1",
+                "text": NOT_AN_ADMIN_ALERT,
+                "show_alert": True,
+            }
+        ]
+        assert bot.edited == []
+
+    async def test_a_link_that_ran_out_says_so_in_place_of_the_proposal(
+        self,
+    ) -> None:
+        installer, bot = await _installer()
+        answer = installer.answer_of_event(_press(f"c:{_TOKEN}"))
+        assert answer is not None
+
+        await installer.on_claim_answered(answer=answer, outcome="expired")
+
+        assert bot.edited[0]["text"] == CLAIM_REFUSED["expired"]
+        assert bot.left == []

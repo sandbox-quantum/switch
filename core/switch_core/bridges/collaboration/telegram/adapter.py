@@ -90,6 +90,7 @@ from switch_core.bridges.collaboration.telegram.chunking import (
     chunk_message,
 )
 from switch_core.bridges.collaboration.telegram.commands import command_menu
+from switch_core.bridges.collaboration.telegram.install import is_connect_press
 from switch_core.observability.catalogue import BRIDGE_THROTTLE_HELD
 from switch_core.observability.metrics import metrics
 from switch_core.room_wide_mention import (
@@ -2429,7 +2430,17 @@ class TelegramAdapter(PlatformAdapter):
         message = getattr(query, "message", None)
         chat = getattr(message, "chat", None)
         user = getattr(query, "from_user", None)
-        dispatch = _press_action(str(getattr(query, "data", "") or ""))
+        data = str(getattr(query, "data", "") or "")
+        if is_connect_press(data) and chat is not None:
+            # The install route connected the chat on this press and closes
+            # it itself; what is left here is the join.
+            await self._provision_claimed(
+                str(chat.id),
+                self._channel_type_of(chat),
+                getattr(chat, "title", None),
+            )
+            return
+        dispatch = _press_action(data)
         if dispatch is None or chat is None or user is None:
             await self._answer_callback(query_id, None)
             return
@@ -2845,19 +2856,13 @@ class TelegramAdapter(PlatformAdapter):
         channel_type: ChannelType,
         channel_name: str | None,
     ) -> bool:
-        """Treat the claim that brought a chat to this bridge as its join.
+        """Take a claim posted in a chat this bridge already holds as a join.
 
-        On the shared bot the bot's own add arrives while the chat still
-        belongs to nobody, so it is dropped before any bridge sees it, and the
-        room it would have provisioned is not there. The claim — `/start
-        <state>` from the link, or `/connect <state>` — is the first update the
-        chat's tenant receives, so it does the add's work instead: provision the
-        room, then say what the bot can see.
-
-        Provisioning is idempotent, so a claim repeated in a chat that already
-        has its room changes nothing. The claim itself was verified and
-        redeemed by the install route before this update was delivered here;
-        this only reads that one arrived.
+        A claim no longer connects a chat; an admin's Connect does, and that
+        press is what provisions the room (`_provision_claimed`). A claim
+        reaches a bridge only when it is posted in a chat the bridge already
+        holds, and provisioning is idempotent, so this changes nothing there
+        but keeps the claim from being relayed as a message.
         """
         parsed = self._parse_command(text)
         if (
@@ -2867,13 +2872,31 @@ class TelegramAdapter(PlatformAdapter):
             or channel_type == "lobby"
         ):
             return False
+        await self._provision_claimed(chat_id, channel_type, channel_name)
+        return True
+
+    async def _provision_claimed(
+        self, chat_id: str, channel_type: ChannelType, channel_name: str | None
+    ) -> None:
+        """Do the add's work for a chat the shared bot was connected to.
+
+        On the shared bot the bot's own add arrives while the chat still
+        belongs to nobody, so it is dropped before any bridge sees it, and the
+        room it would have provisioned is not there. The first update the
+        chat's tenant receives is the Connect press that connected it, so it
+        provisions the room instead, then says what the bot can see. The press
+        was checked and the claim redeemed by the install route before it was
+        delivered here.
+        """
+        if channel_type == "lobby":
+            return
         if self._on_app_joined is None:
-            # Absorbing the claim without provisioning would lose the chat's
-            # room for good. The install route holds an event carrying a claim
-            # until its bridge has started, so reaching here means that wait
-            # was bypassed.
+            # Taking the press without provisioning would lose the chat's room
+            # for good. The install route holds a connecting press until its
+            # bridge has started, so reaching here means that wait was
+            # bypassed.
             raise RuntimeError(
-                f"Telegram chat {chat_id} was claimed on a bridge that has not "
+                f"Telegram chat {chat_id} was connected on a bridge that has not "
                 "started, so its room cannot be provisioned"
             )
         await self._on_app_joined(
@@ -2884,7 +2907,6 @@ class TelegramAdapter(PlatformAdapter):
             )
         )
         await self.announce_visibility(chat_id)
-        return True
 
     @staticmethod
     def _missing_argument(name: str) -> CommandArg | None:
