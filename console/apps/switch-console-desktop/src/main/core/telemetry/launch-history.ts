@@ -1,6 +1,7 @@
 import { KV } from '@main/db/kv';
 import { log } from '@main/lib/logger';
 import type { TelemetryInstallKind } from './events';
+import { trackEvent } from './telemetry-service';
 
 /**
  * Which kind of launch this is, from what the last launch recorded.
@@ -52,6 +53,26 @@ export async function recordLaunch({
   current = installKindFor({ lastVersion, version, databaseExisted });
   await store.set(key, version);
   return current;
+}
+
+/**
+ * Record this launch and report it as `app_launched`. Never rejects, so boot
+ * can start it without waiting on it: nothing telemetry does may stop the app
+ * opening. A launch that cannot be recorded is logged and goes unreported,
+ * rather than reported with a kind nobody worked out.
+ */
+export async function reportLaunch(
+  read: () => Promise<{
+    version: string;
+    channel: 'canary' | 'stable';
+    databaseExisted: boolean;
+  }>
+): Promise<void> {
+  try {
+    trackEvent('app_launched', { install_kind: await recordLaunch(await read()) });
+  } catch (error) {
+    log.warn('telemetry: could not record this launch, so app_launched is not sent', { error });
+  }
 }
 
 /**

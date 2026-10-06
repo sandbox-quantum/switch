@@ -35,9 +35,9 @@ import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { currentInternalFlag } from './core/telemetry/internal-account';
-import { recordLaunch } from './core/telemetry/launch-history';
+import { reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
-import { telemetryService, trackEvent } from './core/telemetry/telemetry-service';
+import { telemetryService } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
@@ -148,14 +148,12 @@ void app.whenReady().then(async () => {
   // before it is sent, and never before the database it is read from.
   registerTelemetryListeners();
   telemetryService.setInternalSource(currentInternalFlag);
-  trackEvent('app_launched', {
-    install_kind: await recordLaunch({
-      version: await resolveAppVersion(),
-      channel: IS_CANARY ? 'canary' : 'stable',
-      // Imported here, not at the top: the client opens the database on import.
-      databaseExisted: (await import('./db/client')).databaseExistedAtStart,
-    }),
-  });
+  void reportLaunch(async () => ({
+    version: await resolveAppVersion(),
+    channel: IS_CANARY ? 'canary' : 'stable',
+    // Imported here, not at the top: the client opens the database on import.
+    databaseExisted: (await import('./db/client')).databaseExistedAtStart,
+  }));
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below
