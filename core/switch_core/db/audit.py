@@ -76,6 +76,8 @@ class AuditAction(StrEnum):
     OWNERSHIP_TRANSFERRED = "ownership.transferred"
     RETENTION_POLICY_SET = "retention_policy.set"
     RETENTION_POLICY_CLEARED = "retention_policy.cleared"
+    PERSON_ERASURE_REQUESTED = "person_erasure.requested"
+    PERSON_ERASURE_COMPLETED = "person_erasure.completed"
 
 
 class OrganizationAuditAction(StrEnum):

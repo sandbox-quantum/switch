@@ -214,21 +214,58 @@ class MessageStore:
         """Delete up to `limit` of the bound tenant's oldest messages sent before
         `cutoff`, with their attachments. Returns their transport event ids.
 
+        See `_delete_where` for what else changes and what does not.
+        """
+        return await self._delete_where(session, Message.sent_at < cutoff, limit=limit)
+
+    async def delete_sent_by(
+        self, session: AsyncSession, *, transport_user_id: str, limit: int
+    ) -> list[str]:
+        """Delete up to `limit` of the messages one participant sent in the bound
+        tenant, with their attachments. Returns their transport event ids.
+
+        Matched on `sender_id`, the participant's transport id, rather than
+        `sender_client_id`: every row has the first, while the second is null
+        on reconstructed history and on rows older than the column. See
+        `_delete_where` for the rest.
+        """
+        return await self._delete_where(
+            session, Message.sender_id == transport_user_id, limit=limit
+        )
+
+    async def attachment_uris_sent_by(
+        self, session: AsyncSession, *, transport_user_id: str
+    ) -> set[str]:
+        """The files on every message one participant sent in the bound tenant."""
+        result = await session.execute(
+            select(MessageAttachment.uri)
+            .join(Message, Message.id == MessageAttachment.message_id)
+            .where(
+                Message.tenant_id == require_tenant_id(),
+                Message.sender_id == transport_user_id,
+            )
+            .distinct()
+        )
+        return set(result.scalars())
+
+    async def _delete_where(
+        self, session: AsyncSession, condition: ColumnElement[bool], *, limit: int
+    ) -> list[str]:
+        """Delete up to `limit` of the bound tenant's oldest messages matching
+        `condition`, with their attachments. Returns their transport event ids.
+
         Each room's `seq_floor` is raised to the highest live position deleted
         from it, in the same transaction, so `_next_seq` never reissues one.
         The bytes behind the attachments are not touched: a blob may be quoted
-        by a message that is kept, so `RetentionStore.delete_unreferenced_media` finds
-        the ones nothing points at any more.
+        by a message that is kept, so `RetentionStore.delete_unreferenced_media`
+        finds the ones nothing points at any more.
         """
         rows = (
             await session.execute(
                 select(
                     Message.id, Message.room_id, Message.seq, Message.transport_event_id
                 )
-                .where(
-                    Message.tenant_id == require_tenant_id(),
-                    Message.sent_at < cutoff,
-                )
+                .where(Message.tenant_id == require_tenant_id(), condition)
                 .order_by(Message.sent_at)
                 .limit(limit)
             )

@@ -1,0 +1,447 @@
+"""Erasing a person, against real Postgres.
+
+What matters here is what is gone and what is not: every message the person
+sent, in every room, with the files only they carried, their identity rows,
+claims, memberships and client, and their name on approval answers; while
+other people's messages, files those still quote, and other identities stay.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from switch_core.db.models import (
+    Agent,
+    ApiKey,
+    ApprovalRequest,
+    AuditEvent,
+    Client,
+    ClientRoom,
+    CollaborationBridge,
+    ExternalUser,
+    ExternalUserClaim,
+    MediaBlob,
+    Message,
+    MessageAttachment,
+    PersonErasure,
+    Room,
+    User,
+)
+from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.erasure_store import (
+    ERASED_ANSWERER,
+    ErasureAlreadyQueued,
+    ErasureStore,
+    UnknownIdentity,
+)
+from switch_core.db.stores.message_store import MessageStore
+from switch_core.retention.erasure import ErasureService
+
+NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+
+
+class _Clients:
+    def __init__(self, fail_on_stop: bool = False) -> None:
+        self.stopped: list[str] = []
+        self._fail = fail_on_stop
+
+    async def stop(self, client_id: str) -> None:
+        if self._fail:
+            raise RuntimeError("client would not stop")
+        self.stopped.append(client_id)
+
+    async def delete_record(self, session: AsyncSession, client_id: str) -> None:
+        await ClientStore().delete(session, client_id)
+
+
+class _Bridges:
+    def __init__(self) -> None:
+        self.forgotten: list[tuple[str, str, str]] = []
+
+    async def forget_human(
+        self, bridge_id: str, external_user_id: str, transport_user_id: str
+    ) -> None:
+        self.forgotten.append((bridge_id, external_user_id, transport_user_id))
+
+
+async def _bridge(session: AsyncSession) -> CollaborationBridge:
+    client = Client(
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+        display_name="bridge",
+        type="bridge",
+    )
+    session.add(client)
+    await session.flush()
+    bridge = CollaborationBridge(
+        type="slack", display_name="Acme Slack", client_id=client.id, status="active"
+    )
+    session.add(bridge)
+    await session.flush()
+    return bridge
+
+
+async def _person(
+    session: AsyncSession, bridge: CollaborationBridge, username: str
+) -> ExternalUser:
+    client = Client(
+        transport_user_id=f"@switch-slack-{bridge.id}-{username}:test",
+        display_name=username,
+        type="user",
+    )
+    session.add(client)
+    await session.flush()
+    person = ExternalUser(
+        bridge_id=bridge.id,
+        external_user_id=f"U-{username}",
+        external_username=username,
+        client_id=client.id,
+    )
+    session.add(person)
+    await session.flush()
+    return person
+
+
+async def _room(session: AsyncSession, name: str, *, archived: bool = False) -> Room:
+    room = Room(
+        transport_room_id=f"!{name}-{uuid.uuid4().hex[:8]}:test",
+        name=name,
+        description=name,
+        archived_at=NOW if archived else None,
+    )
+    session.add(room)
+    await session.flush()
+    return room
+
+
+async def _say(
+    session: AsyncSession,
+    room: Room,
+    sender: Client,
+    event_id: str,
+    uri: str | None = None,
+) -> Message:
+    attachments = (
+        []
+        if uri is None
+        else [MessageAttachment(uri=uri, filename="f", mimetype="text/plain", size=1)]
+    )
+    return await MessageStore().create(
+        session,
+        Message(
+            room_id=room.id,
+            transport_event_id=event_id,
+            sender_id=sender.transport_user_id,
+            sender_client_id=sender.id,
+            event_type="m.room.message",
+            msgtype="m.text",
+            body=event_id,
+            content={"msgtype": "m.text", "body": event_id},
+        ),
+        attachments,
+    )
+
+
+async def _blob(session: AsyncSession, uri: str) -> None:
+    session.add(
+        MediaBlob(uri=uri, content_type="text/plain", filename="f", size=1, data=b"x")
+    )
+    await session.flush()
+
+
+async def _client_of(session: AsyncSession, person: ExternalUser) -> Client:
+    client = await session.get(Client, person.client_id)
+    assert client is not None
+    return client
+
+
+async def _agent(session: AsyncSession) -> Agent:
+    name = f"agent-{uuid.uuid4().hex[:6]}"
+    user = User(name=name, email=f"{name}@example.invalid", role="user")
+    session.add(user)
+    await session.flush()
+    api_key = ApiKey(
+        user_id=user.id,
+        key_hash=f"h-{name}",
+        encrypted_key="e",
+        label=name,
+        type="agent",
+    )
+    client = Client(transport_user_id=f"@{name}:test", display_name=name, type="agent")
+    session.add_all([api_key, client])
+    await session.flush()
+    agent = Agent(
+        name=name,
+        description=name,
+        agent_type="always_on",
+        connector_type="claude_code",
+        integration_profile={"connection_model": "always_on"},
+        client_id=client.id,
+        api_key_id=api_key.id,
+    )
+    session.add(agent)
+    await session.flush()
+    return agent
+
+
+async def _queue(
+    session_factory: async_sessionmaker[AsyncSession], external_user_ids: list[str]
+) -> str:
+    async with session_factory() as session:
+        owner = User(
+            name=f"owner-{uuid.uuid4().hex[:6]}",
+            email=f"{uuid.uuid4().hex[:6]}@example.invalid",
+            role="user",
+        )
+        session.add(owner)
+        await session.flush()
+        erasure = await ErasureStore().queue(
+            session, external_user_ids=external_user_ids, requested_by_user_id=owner.id
+        )
+        await session.commit()
+        return erasure.id
+
+
+class TestErasing:
+    async def test_everything_they_sent_goes_and_everything_else_stays(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            bridge = await _bridge(session)
+            ana = await _person(session, bridge, "ana")
+            bo = await _person(session, bridge, "bo")
+            ana_client = await _client_of(session, ana)
+            bo_client = await _client_of(session, bo)
+            active = await _room(session, "active")
+            archived = await _room(session, "archived", archived=True)
+            session.add_all(
+                [
+                    ClientRoom(client_id=ana_client.id, room_id=active.id),
+                    ClientRoom(client_id=bo_client.id, room_id=active.id),
+                ]
+            )
+            claimant = User(name="ana-member", email="ana@example.invalid", role="user")
+            session.add(claimant)
+            await session.flush()
+            session.add(ExternalUserClaim(external_user_id=ana.id, user_id=claimant.id))
+            for uri in ("switch-media://ana-only", "switch-media://shared"):
+                await _blob(session, uri)
+            await _say(session, active, ana_client, "$ana1", "switch-media://ana-only")
+            await _say(session, archived, ana_client, "$ana2", "switch-media://shared")
+            await _say(session, active, bo_client, "$bo1", "switch-media://shared")
+            last = await _say(session, active, ana_client, "$ana3")
+            agent = await _agent(session)
+            for request_id, answered_by in (
+                ("by-ana", ana_client.transport_user_id),
+                ("by-bo", bo_client.transport_user_id),
+            ):
+                session.add(
+                    ApprovalRequest(
+                        agent_id=agent.id,
+                        session_id="s",
+                        request_id=request_id,
+                        turn_id="t",
+                        kind="approval",
+                        title="t",
+                        options=[],
+                        questions=[],
+                        state="answered",
+                        answered_by=answered_by,
+                    )
+                )
+            await session.commit()
+            ana_id, ana_client_id, ana_tid = (
+                ana.id,
+                ana_client.id,
+                ana_client.transport_user_id,
+            )
+            bridge_id, active_id, last_seq = bridge.id, active.id, last.seq
+
+        erasure_id = await _queue(session_factory, [ana_id])
+        clients, bridges = _Clients(), _Bridges()
+        await ErasureService(session_factory, clients, bridges).work_once()
+
+        async with session_factory() as session:
+            events = set(
+                (await session.execute(select(Message.transport_event_id))).scalars()
+            )
+            blobs = set((await session.execute(select(MediaBlob.uri))).scalars())
+            identities = set(
+                (
+                    await session.execute(select(ExternalUser.external_username))
+                ).scalars()
+            )
+            claims = await session.scalar(
+                select(func.count()).select_from(ExternalUserClaim)
+            )
+            memberships = set(
+                (await session.execute(select(ClientRoom.client_id))).scalars()
+            )
+            answers = dict(
+                (
+                    await session.execute(
+                        select(ApprovalRequest.request_id, ApprovalRequest.answered_by)
+                    )
+                ).all()
+            )
+            erasure = await session.get(PersonErasure, erasure_id)
+            audit = (
+                await session.execute(
+                    select(AuditEvent.action, AuditEvent.details).where(
+                        AuditEvent.target_id == erasure_id
+                    )
+                )
+            ).all()
+            fresh = await _say(
+                session, await session.get(Room, active_id), bo_client, "$bo2"
+            )
+            client_gone = await session.get(Client, ana_client_id) is None
+
+        assert events == {"$bo1"}
+        assert blobs == {"switch-media://shared"}
+        assert identities == {"bo"}
+        assert claims == 0
+        assert memberships == {bo_client.id}
+        assert client_gone
+        assert answers == {
+            "by-ana": ERASED_ANSWERER,
+            "by-bo": bo_client.transport_user_id,
+        }
+        assert clients.stopped == [ana_client_id]
+        assert bridges.forgotten == [(bridge_id, ana_id, ana_tid)]
+        assert fresh.seq == last_seq + 1
+        assert erasure is not None
+        assert (erasure.state, erasure.messages_deleted, erasure.files_deleted) == (
+            "done",
+            3,
+            1,
+        )
+        assert erasure.identities_erased == 1 and erasure.completed_at is not None
+        assert audit == [
+            (
+                "person_erasure.completed",
+                {"messages_deleted": 3, "files_deleted": 1, "identities_erased": 1},
+            )
+        ]
+
+    async def test_a_person_on_two_platforms_is_erased_from_both(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            slack, other = await _bridge(session), await _bridge(session)
+            on_slack = await _person(session, slack, "ana")
+            on_other = await _person(session, other, "ana")
+            room = await _room(session, "r")
+            await _say(session, room, await _client_of(session, on_slack), "$a")
+            await _say(session, room, await _client_of(session, on_other), "$b")
+            await session.commit()
+            ids = [on_slack.id, on_other.id]
+
+        erasure_id = await _queue(session_factory, ids)
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once()
+
+        async with session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(Message)) == 0
+            assert (
+                await session.scalar(select(func.count()).select_from(ExternalUser))
+                == 0
+            )
+            erasure = await session.get(PersonErasure, erasure_id)
+        assert erasure is not None
+        assert (erasure.identities_erased, erasure.messages_deleted) == (2, 2)
+
+    async def test_a_failure_is_recorded_on_the_request_and_not_retried(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            await session.commit()
+            person_id = person.id
+        erasure_id = await _queue(session_factory, [person_id])
+        service = ErasureService(
+            session_factory, _Clients(fail_on_stop=True), _Bridges()
+        )
+
+        with pytest.raises(RuntimeError):
+            await service.work_once()
+
+        async with session_factory() as session:
+            erasure = await session.get(PersonErasure, erasure_id)
+            still_there = await session.get(ExternalUser, person_id)
+        assert erasure is not None
+        assert erasure.state == "failed"
+        assert erasure.error == "RuntimeError: client would not stop"
+        assert still_there is not None
+        assert await service.work_once() is None
+
+    async def test_a_request_left_running_by_a_restart_is_finished(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            await session.commit()
+            person_id = person.id
+        erasure_id = await _queue(session_factory, [person_id])
+        async with session_factory() as session:
+            erasure = await session.get(PersonErasure, erasure_id)
+            assert erasure is not None
+            erasure.state = "running"
+            await session.commit()
+
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once()
+
+        async with session_factory() as session:
+            erasure = await session.get(PersonErasure, erasure_id)
+        assert erasure is not None and erasure.state == "done"
+
+
+class TestQueue:
+    async def test_people_are_listed_with_their_message_counts_and_claimants(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            bridge = await _bridge(session)
+            ana = await _person(session, bridge, "ana")
+            await _person(session, bridge, "Bo")
+            room = await _room(session, "r")
+            for index in range(3):
+                await _say(session, room, await _client_of(session, ana), f"$a{index}")
+            member = User(name="Ana Member", email="am@example.invalid", role="user")
+            session.add(member)
+            await session.flush()
+            session.add(ExternalUserClaim(external_user_id=ana.id, user_id=member.id))
+            await session.commit()
+
+            people = await ErasureStore().list_people(session)
+
+        assert [(p.username, p.message_count) for p in people] == [
+            ("ana", 3),
+            ("Bo", 0),
+        ]
+        assert [c.name for c in people[0].claimed_by] == ["Ana Member"]
+        assert (people[0].platform, people[0].bridge_name) == ("slack", "Acme Slack")
+
+    async def test_an_identity_from_nowhere_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        with pytest.raises(UnknownIdentity):
+            await _queue(session_factory, ["not-a-person"])
+
+    async def test_an_identity_already_being_erased_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            bridge = await _bridge(session)
+            ana = await _person(session, bridge, "ana")
+            bo = await _person(session, bridge, "bo")
+            await session.commit()
+            ana_id, bo_id = ana.id, bo.id
+        await _queue(session_factory, [ana_id])
+
+        with pytest.raises(ErasureAlreadyQueued):
+            await _queue(session_factory, [bo_id, ana_id])
+        await _queue(session_factory, [bo_id])

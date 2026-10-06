@@ -2748,6 +2748,8 @@ class Message(TenantScoped, Base):
             "seq",
             postgresql_where=text("event_type = 'com.switch.command'"),
         ),
+        # Erasing a person and counting what they sent both ask by sender.
+        Index("ix_messages_tenant_sender", "tenant_id", "sender_id"),
         Index(
             "ix_messages_thread_root",
             "room_id",
@@ -4104,6 +4106,59 @@ class TenantRetentionPolicy(TenantScoped, Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class PersonErasure(TenantScoped, Base):
+    """A workspace owner's request to erase one person from the workspace.
+
+    `external_user_ids` names the platform identities to erase: one row of
+    `external_users` per platform the person was seen on. Erasing them deletes
+    every message they sent, the files those carried, their identity records
+    and the client standing in for each, and their name on approval answers
+    (`retention/erasure.py`). Queued here and worked by a background loop, so
+    a person with years of history cannot time out the request that asked.
+
+    Nothing here names the person once they are erased: the ids are internal
+    and point at rows that no longer exist, and the counts are counts.
+    """
+
+    __tablename__ = "person_erasures"
+    __table_args__ = (
+        Index("ix_person_erasures_tenant_id", "tenant_id"),
+        CheckConstraint(
+            "state IN ('queued', 'running', 'done', 'failed')",
+            name="ck_person_erasures_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    external_user_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    messages_deleted: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    files_deleted: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    identities_erased: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

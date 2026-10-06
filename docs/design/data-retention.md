@@ -119,42 +119,79 @@ below, in the order it is likely to be needed.
 | Session activity | `session_activity_items`, `approval_requests` | Who answered what. Prompt and tool text. Already pruned after 7 days (activity) or 30 days once settled (approvals). |
 | Logs and backups | outside the database | Whatever the deployment's log and backup policy keeps |
 
-### Erase a person (not built)
+### Erase a person (built)
 
-An owner action that removes one person's data from one workspace:
+A workspace owner can erase one person from the People list on the Workspace
+page, for example to answer an Art. 17 request. Admins cannot; the action
+cannot be undone.
 
-1. Resolve the person to their identities in the workspace: their Switch user
-   (if a member) and every `external_users` row claimed by them or named by the
-   request.
-2. Delete every message whose sender is one of those identities, with its
-   attachments, using the same machinery as retention:
-   `MessageStore.delete_sent_before` generalised to a sender filter, keeping
-   the `seq_floor` update. The hourly sweep then removes orphaned files.
-3. Delete the `external_users` rows and their claims. A person who later writes
-   again from the same platform account is recorded afresh.
-4. Remove the membership, if any. Deleting the Switch account itself is a
-   deployment-level action, because one account may belong to several
-   workspaces.
-5. Record `person.erased` in the audit log, naming who was erased and who
-   asked, but not what was deleted.
+**Who a person is.** Everyone in a room is a chat-platform identity: an
+`external_users` row on one bridge, standing behind a `clients` row that is
+the room participant. Most have no Switch account. One person seen on two
+platforms is two identities. When a member has claimed identities, the
+confirmation dialog offers every identity that member claims, ticked by
+default.
 
-Open questions:
+**The flow.**
 
-- **Quotes and mentions in other people's messages.** Erasing them would rewrite
-  other people's records. The usual reading of Art. 17 does not require it, and
-  this design leaves them alone.
-- **Agents' copies.** An agent may have the person's messages in its own
-  transcript or memory, on a machine Switch does not control. The action can
-  tell connected agents, but it cannot guarantee anything for them.
-- **Bridged platforms.** As with retention, the platform's copy is the
-  customer's to erase in that platform.
+1. The owner picks the person and confirms by typing their name. The typed
+   name is not stored.
+2. `POST /tenants/{id}/erasures` queues a `person_erasures` row naming the
+   identities, and records `person_erasure.requested` (who asked, the internal
+   identity ids). It refuses an identity outside the workspace (404) or one
+   already being erased (409).
+3. A background loop (`retention/erasure.py`, every 5 s) works the queue. For
+   each identity it:
+   - deletes every message it sent, in every room including archived ones,
+     in batches with their attachments and bridge post mappings, keeping each
+     room's `seq_floor`;
+   - stops the client that stood in for the person;
+   - in one transaction, deletes anything sent meanwhile, replaces their name
+     on approval answers with `erased`, and deletes the identity row (claims
+     go by cascade), its room memberships and its client;
+   - tells the running bridge to forget the identity, so writing again
+     provisions a new one;
+   - deletes the stored files that only their messages carried. There is no
+     grace period, because these files are known to have been attached.
+4. The page polls `GET /tenants/{id}/erasures` for progress. On success the
+   request records counts and `person_erasure.completed`. On failure it is
+   marked `failed` with the error, not retried, and the owner can queue it
+   again. Every step is safe to repeat, so a request interrupted by a restart
+   is finished on the next pass.
+
+**The client row goes, it is not renamed.** Its transport id is built from the
+person's username, so keeping it would keep the name. With every message they
+sent deleted, nothing would show a placeholder anyway.
+
+**What stays, and why.**
+
+- **Quotes and mentions in other people's messages.** Erasing them would
+  rewrite other people's records. The usual reading of Art. 17 does not
+  require it.
+- **Their Switch account and membership.** Removing a member is its own
+  action, and deleting an account is deployment-level because one account may
+  belong to several workspaces.
+- **Copies on chat platforms.** The platform's copy is the customer's to
+  erase in that platform. The dialog says so.
+- **Agents' copies.** An agent may hold the person's messages in its own
+  transcript or memory, on a machine Switch does not control.
+- **Session activity lines** may quote what the person wrote. They are pruned
+  after 7 days.
+- **The bridge's in-memory mention map** keeps the platform's
+  username-to-id pair until the bridge restarts. The person is still on that
+  platform, so the pair is the platform's data, not Switch's record of them.
+
+**A known window.** A message the person sends after their client is stopped
+but before its rows are deleted fails to post (an error is logged). The
+window lasts one transaction.
 
 ### Data export (not built)
 
 An owner or admin export of everything held about one person in the workspace,
 as machine-readable JSON: account fields, platform identities, and messages
 they sent, with attachments. The same identity resolution as erasure applies.
-This is a natural next step after erasure, since it needs the same lookup.
+This is the natural next step, since it needs the same identity lookup as
+erasure (`ErasureStore.list_people`).
 
 ### Deleting a workspace (not built)
 

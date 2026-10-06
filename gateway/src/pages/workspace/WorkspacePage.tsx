@@ -3,6 +3,7 @@ import { useAuth } from "../../data/AuthContext";
 import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
+import PeopleSection from "./PeopleSection";
 import RetentionSection from "./RetentionSection";
 
 export default function WorkspacePage() {
@@ -36,6 +37,7 @@ export default function WorkspacePage() {
           </Alert>
         )}
         {canAdminTenant && <RetentionSection tenantId={tenant.id} />}
+        {tenant.role === "admin" && <PeopleSection tenantId={tenant.id} />}
         {/* An admin membership, not the operator's bypass: the server checks the same. */}
         {tenant.role === "admin" && (
           <DeleteWorkspaceSection tenantId={tenant.id} tenantName={tenant.name} />
