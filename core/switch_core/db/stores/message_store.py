@@ -217,7 +217,7 @@ class MessageStore:
         Each room's `seq_floor` is raised to the highest live position deleted
         from it, in the same transaction, so `_next_seq` never reissues one.
         The bytes behind the attachments are not touched: a blob may be quoted
-        by a message that is kept, so `MediaStore.delete_unreferenced` finds
+        by a message that is kept, so `RetentionStore.delete_unreferenced_media` finds
         the ones nothing points at any more.
         """
         rows = (
