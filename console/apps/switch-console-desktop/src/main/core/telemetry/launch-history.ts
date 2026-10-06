@@ -32,7 +32,12 @@ export function installKindFor({
  */
 const store = new KV<Record<string, string>>('telemetry-launches');
 
-let current: TelemetryInstallKind | null = null;
+/**
+ * This launch's recording, once boot has started it. Kept as the promise rather
+ * than its result, because boot does not wait for it and something can ask
+ * before it settles. Settles to null when the launch could not be recorded.
+ */
+let recording: Promise<TelemetryInstallKind | null> | null = null;
 
 /**
  * Record this launch and say which kind it is. Recorded on every launch,
@@ -50,9 +55,9 @@ export async function recordLaunch({
 }): Promise<TelemetryInstallKind> {
   const key = `lastLaunchedVersion.${channel}`;
   const lastVersion = (await store.get(key)) ?? null;
-  current = installKindFor({ lastVersion, version, databaseExisted });
+  const kind = installKindFor({ lastVersion, version, databaseExisted });
   await store.set(key, version);
-  return current;
+  return kind;
 }
 
 /**
@@ -68,23 +73,25 @@ export async function reportLaunch(
     databaseExisted: boolean;
   }>
 ): Promise<void> {
+  const recorded = (async () => recordLaunch(await read()))();
+  recording = recorded.catch(() => null);
   try {
-    trackEvent('app_launched', { install_kind: await recordLaunch(await read()) });
+    trackEvent('app_launched', { install_kind: await recorded });
   } catch (error) {
     log.warn('telemetry: could not record this launch, so app_launched is not sent', { error });
   }
 }
 
 /**
- * This launch's kind. Boot records it before any window opens, so nothing a
- * person does can ask first; if something does, it is said in the log rather
- * than passed off as a real answer, and reads as `same`, the kind that claims
- * nothing.
+ * This launch's kind, waited for rather than read: boot does not wait for the
+ * recording, so the window can open and the first-run notice be answered before
+ * the database has said. Never rejects. A launch that could not be recorded, or
+ * that nothing started recording, is `unknown` — never a kind nobody worked out.
  */
-export function currentInstallKind(): TelemetryInstallKind {
-  if (current === null) {
-    log.warn('telemetry: install kind read before this launch was recorded');
-    return 'same';
+export async function launchInstallKind(): Promise<TelemetryInstallKind | 'unknown'> {
+  if (recording === null) {
+    log.warn('telemetry: install kind asked for, but nothing has recorded this launch');
+    return 'unknown';
   }
-  return current;
+  return (await recording) ?? 'unknown';
 }

@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as LaunchHistory from './launch-history';
 
 const h = vi.hoisted(() => ({
   trackEvent: vi.fn(),
@@ -21,7 +22,7 @@ vi.mock('@main/db/kv', () => ({
   },
 }));
 
-const { installKindFor, recordLaunch, reportLaunch } = await import('./launch-history');
+const { installKindFor, recordLaunch } = await import('./launch-history');
 
 describe('which kind of launch this is', () => {
   it('is new on an installation’s very first launch, so counting it counts installs', () => {
@@ -65,33 +66,40 @@ describe('canary and stable, which share one database', () => {
 });
 
 describe('reporting a launch at boot', () => {
-  const inputs = async () => ({
+  // A fresh module per test: the launch record and this launch's kind are
+  // module state, and one test's launch would otherwise be the next one's last.
+  let launches: typeof LaunchHistory;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    h.trackEvent.mockClear();
+    h.warn.mockClear();
+    h.readFails = false;
+    launches = await import('./launch-history');
+  });
+
+  const firstLaunch = async () => ({
     version: '2.0.0',
     channel: 'stable' as const,
     databaseExisted: false,
   });
 
   it('sends app_launched with the kind it recorded', async () => {
-    h.trackEvent.mockClear();
+    await launches.reportLaunch(firstLaunch);
+    await launches.reportLaunch(firstLaunch);
 
-    await reportLaunch(inputs);
-
-    expect(h.trackEvent).toHaveBeenCalledWith('app_launched', {
-      install_kind: expect.stringMatching(/^(new|updated|same)$/),
-    });
+    expect(h.trackEvent.mock.calls).toEqual([
+      ['app_launched', { install_kind: 'new' }],
+      ['app_launched', { install_kind: 'same' }],
+    ]);
   });
 
   it('never rejects when the launch cannot be recorded, so boot is not held up', async () => {
     // Boot starts this without waiting on it; a rejection would be unhandled,
     // and an awaited one would stop everything after it, the window included.
-    h.trackEvent.mockClear();
-    h.warn.mockClear();
     h.readFails = true;
-    try {
-      await expect(reportLaunch(inputs)).resolves.toBeUndefined();
-    } finally {
-      h.readFails = false;
-    }
+
+    await expect(launches.reportLaunch(firstLaunch)).resolves.toBeUndefined();
 
     expect(h.trackEvent).not.toHaveBeenCalled();
     expect(h.warn).toHaveBeenCalledWith(
@@ -101,14 +109,67 @@ describe('reporting a launch at boot', () => {
   });
 
   it('never rejects when what it reads to record the launch fails', async () => {
-    h.trackEvent.mockClear();
-
     await expect(
-      reportLaunch(async () => {
+      launches.reportLaunch(async () => {
         throw new Error('package.json unreadable');
       })
     ).resolves.toBeUndefined();
 
     expect(h.trackEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('asking for this launch’s kind', () => {
+  let launches: typeof LaunchHistory;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    h.warn.mockClear();
+    h.readFails = false;
+    launches = await import('./launch-history');
+  });
+
+  it('is the kind boot recorded', async () => {
+    await launches.reportLaunch(async () => ({
+      version: '2.0.0',
+      channel: 'stable',
+      databaseExisted: false,
+    }));
+
+    expect(await launches.launchInstallKind()).toBe('new');
+  });
+
+  it('waits for a recording boot started but has not finished', async () => {
+    // Boot does not wait for the recording, so the first-run notice can be
+    // answered while it is still reading the database.
+    let read: (inputs: {
+      version: string;
+      channel: 'stable';
+      databaseExisted: boolean;
+    }) => void = () => {};
+    void launches.reportLaunch(() => new Promise((resolve) => (read = resolve)));
+
+    const asked = launches.launchInstallKind();
+    read({ version: '2.0.0', channel: 'stable', databaseExisted: true });
+
+    expect(await asked).toBe('updated');
+  });
+
+  it('is unknown, never a guessed kind, when the launch could not be recorded', async () => {
+    h.readFails = true;
+    await launches.reportLaunch(async () => ({
+      version: '2.0.0',
+      channel: 'stable',
+      databaseExisted: false,
+    }));
+
+    expect(await launches.launchInstallKind()).toBe('unknown');
+  });
+
+  it('is unknown, and says so, when nothing recorded this launch', async () => {
+    expect(await launches.launchInstallKind()).toBe('unknown');
+    expect(h.warn).toHaveBeenCalledWith(
+      expect.stringContaining('nothing has recorded this launch')
+    );
   });
 });

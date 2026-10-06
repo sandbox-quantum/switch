@@ -108,7 +108,7 @@ id, no IP field, no Switch identity.
 | `update_checked` | `trigger`: `user` / `startup` / `scheduled` · `result`: `available` / `up_to_date` / `failed` |
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `success` / `failure` |
-| `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched` |
+| `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
 | `setting_changed` | `setting_key`, one of exactly 15: `theme`, `notifications`, `terminal`, `defaultAgent`, `sessions`, `location`, `localLocation`, `openIn`, `interface`, `browser`, `browserPreview`, `changesViewMode`, `remote`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
 | `search_performed` | `status`: `ok` / `recents` / `query-too-short` / `failed` · `result_count`: `0`, `3`, `17`. **The query is never sent.** |
 

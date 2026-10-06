@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { h } = vi.hoisted(() => ({
   h: {
     trackEvent: vi.fn(),
+    launchInstallKind: vi.fn(),
     get: vi.fn(),
     update: vi.fn(async () => {}),
     reset: vi.fn(async () => {}),
@@ -16,7 +17,9 @@ const { h } = vi.hoisted(() => ({
 }));
 
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
-vi.mock('@main/core/telemetry/launch-history', () => ({ currentInstallKind: () => 'new' }));
+vi.mock('@main/core/telemetry/launch-history', () => ({
+  launchInstallKind: h.launchInstallKind,
+}));
 vi.mock('./settings-service', () => ({
   appSettingsService: {
     get: h.get,
@@ -32,9 +35,13 @@ const { appSettingsController } = await import('./controller');
 
 const NEVER_ASKED = { enabled: false, askedAt: null };
 
+/** The consent report waits for the launch kind, so it lands after `update` returns. */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.get.mockResolvedValue(NEVER_ASKED);
+  h.launchInstallKind.mockResolvedValue('new');
 });
 
 describe('changing a setting', () => {
@@ -85,6 +92,7 @@ describe('putting a setting back to its default', () => {
 describe('agreeing to share usage data', () => {
   it('reports an agreement given at the first-run prompt', async () => {
     await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
+    await settled();
 
     expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
       source: 'first_run',
@@ -96,6 +104,7 @@ describe('agreeing to share usage data', () => {
     h.get.mockResolvedValue({ enabled: false, askedAt: 1 });
 
     await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
+    await settled();
 
     expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
       source: 'settings',
@@ -108,6 +117,7 @@ describe('agreeing to share usage data', () => {
     // every send, so this would be dropped anyway; the point is that we do not
     // try to transmit something from someone at the moment they said not to.
     await appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never);
+    await settled();
 
     const names = h.trackEvent.mock.calls.map(([name]) => name);
     expect(names).not.toContain('telemetry_consent_changed');
@@ -117,6 +127,7 @@ describe('agreeing to share usage data', () => {
     h.get.mockResolvedValue({ enabled: true, askedAt: 1 });
 
     await appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never);
+    await settled();
 
     const names = h.trackEvent.mock.calls.map(([name]) => name);
     expect(names).not.toContain('telemetry_consent_changed');
@@ -128,6 +139,7 @@ describe('agreeing to share usage data', () => {
     h.get.mockResolvedValue({ enabled: true, askedAt: 1 });
 
     await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
+    await settled();
 
     const names = h.trackEvent.mock.calls.map(([name]) => name);
     expect(names).not.toContain('telemetry_consent_changed');
@@ -141,7 +153,44 @@ describe('agreeing to share usage data', () => {
     });
 
     await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
+    await settled();
 
     expect(order).toEqual(['write', 'report']);
+  });
+
+  it('waits for the launch kind when the first-run notice is answered before boot records it', async () => {
+    // Boot records the launch without waiting on it, so a slow database can let
+    // someone answer first. Reading too early would send a kind nobody worked
+    // out, on an event an install only ever sends once.
+    let recorded: (kind: 'new') => void = () => {};
+    h.launchInstallKind.mockReturnValue(new Promise((resolve) => (recorded = resolve)));
+
+    await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
+    await settled();
+
+    expect(h.update).toHaveBeenCalled();
+    expect(h.trackEvent.mock.calls.map(([name]) => name)).not.toContain(
+      'telemetry_consent_changed'
+    );
+
+    recorded('new');
+    await settled();
+
+    expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
+      source: 'first_run',
+      install_kind: 'new',
+    });
+  });
+
+  it('reports the launch kind it is given, unknown included', async () => {
+    h.launchInstallKind.mockResolvedValue('unknown');
+
+    await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
+    await settled();
+
+    expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
+      source: 'first_run',
+      install_kind: 'unknown',
+    });
   });
 });
