@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.protocol.agent_connections import (
     APPROVAL_OUTCOME_PROTOCOL_REVISION,
+    HEARTBEAT_INTERVAL_SECONDS,
     HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
     TAKEN_OVER,
@@ -140,7 +141,7 @@ def _connection_state(conn: AgentConnection) -> dict[str, Any]:
         "rooms": sorted(conn.rooms),
         "cursor": conn.cursor,
         "protocol": PROTOCOL_VERSION,
-        "heartbeat_interval_seconds": 2.0,
+        "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
         "server": server_declaration("agent-protocol"),
         # Echoed back so a client can see what the server understood it to
         # have said — a declaration that silently failed to parse is worse

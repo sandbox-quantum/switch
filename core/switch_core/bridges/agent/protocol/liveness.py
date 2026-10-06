@@ -13,8 +13,17 @@ from typing import Literal
 # Clients tick every HEARTBEAT_INTERVAL_SECONDS; a connection is declared dead
 # once nothing has arrived for HEARTBEAT_TTL_SECONDS. One mechanism replaces
 # /connection/renew, /watch/heartbeat and /leases/renew.
-HEARTBEAT_INTERVAL_SECONDS = 2.0
-HEARTBEAT_TTL_SECONDS = 6.0
+#
+# The server pings each agent's socket every HEARTBEAT_INTERVAL_SECONDS and
+# the pong is the beat. The interval is also advertised on every open
+# (`stream.py`) and to controllers, which beat over HTTP at the pace they are
+# given (`controller_routes.py`). Ten seconds rather than two: when beats were
+# requests they were most of the load on the connection pool, and a
+# controller's still are; on the socket, a slower ping is fewer wakeups per
+# agent for the same answer. The TTL stays three intervals, so one lost tick
+# never costs a connection.
+HEARTBEAT_INTERVAL_SECONDS = 10.0
+HEARTBEAT_TTL_SECONDS = 30.0
 
 CloseCode = Literal["taken_over", "heartbeat_lapsed", "closed", "launch_superseded"]
 

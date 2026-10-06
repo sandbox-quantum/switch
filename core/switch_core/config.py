@@ -584,11 +584,12 @@ class SwitchConfig(BaseSettings):
     template_max_bytes: int = 1024 * 1024
 
     # Every authenticated agent request resolves its bearer token against the
-    # database before the handler runs, and each live agent connection beats
-    # every 2s, so the pool is sized against connection count rather than
-    # human traffic: a fleet of N connections costs roughly N/2 checkouts per
-    # second. Exceeding the pool does not shed load, it queues, and a queued
-    # heartbeat that misses HEARTBEAT_TTL_SECONDS costs the connection.
+    # database before the handler runs, so the pool is sized against connection
+    # count rather than human traffic. An agent's heartbeat rides its socket,
+    # authenticated once, but each controller still beats over HTTP every
+    # HEARTBEAT_INTERVAL_SECONDS, less what the auth cache absorbs. Exceeding
+    # the pool does not shed load, it queues, and a queued heartbeat that
+    # misses HEARTBEAT_TTL_SECONDS costs the connection.
     db_pool_size: int = 30
     db_max_overflow: int = 10
     db_pool_recycle: int = 1800
