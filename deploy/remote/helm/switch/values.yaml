@@ -165,7 +165,7 @@ secrets:
 
   # Distributed Telegram app (required when switchCore.telegramApp.enabled). The
   # bot token is deployment config shared by every tenant, like Discord's. The
-  # webhook secret (1-256 characters of A-Z a-z 0-9 _ -) is the whole of what
+  # webhook secret (32-256 characters of A-Z a-z 0-9 _ -) is the whole of what
   # proves an update came from Telegram.
   telegramAppBotToken: ""
   telegramAppWebhookSecret: ""

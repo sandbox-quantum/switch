@@ -1407,8 +1407,16 @@ class SwitchConfig(BaseSettings):
         # failure reads as Telegram being unreachable rather than as this.
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", self.telegram_app_webhook_secret):
             raise ValueError(
-                "TELEGRAM_APP_WEBHOOK_SECRET must be 1-256 characters of "
+                "TELEGRAM_APP_WEBHOOK_SECRET must be at most 256 characters of "
                 "A-Z, a-z, 0-9, _ and -, which is all Telegram accepts."
+            )
+        # Ours: the same floor as every other secret this deployment chooses,
+        # since it is the whole of what proves an update came from Telegram.
+        if len(self.telegram_app_webhook_secret) < 32:
+            raise ValueError(
+                "TELEGRAM_APP_WEBHOOK_SECRET must be at least 32 characters, got "
+                f"{len(self.telegram_app_webhook_secret)}. `openssl rand -hex 32` "
+                "makes one."
             )
         if not self.messaging_public_url:
             raise ValueError(

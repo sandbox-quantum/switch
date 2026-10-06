@@ -17,16 +17,16 @@ _BASE_KWARGS = dict(
     db_user="postgres",
     db_password="pw",
     db_name="switch",
-    matrix_server_name="switch.local",
+    id_server_name="switch.local",
     agent_registration_token="token",
-    jwt_secret_key="jwt",
+    secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     gateway_admin_email="admin@example.com",
     gateway_admin_password="pw",
 )
 
 _APP = dict(
     telegram_app_bot_token="123456:placeholder-token",
-    telegram_app_webhook_secret="placeholder-secret",
+    telegram_app_webhook_secret="placeholder-webhook-secret-0123456789",
 )
 
 _ORIGIN = "https://switch.example"
@@ -42,7 +42,7 @@ def test_setting_neither_is_the_ordinary_case() -> None:
 
 def test_setting_both_with_a_public_origin_is_accepted() -> None:
     config = _config(**_APP, messaging_public_url=_ORIGIN)
-    assert config.telegram_app_webhook_secret == "placeholder-secret"
+    assert config.telegram_app_webhook_secret == _APP["telegram_app_webhook_secret"]
 
 
 @pytest.mark.parametrize("missing", sorted(_APP))
@@ -57,11 +57,23 @@ def test_an_app_with_no_public_origin_raises() -> None:
         _config(**_APP)
 
 
-@pytest.mark.parametrize("secret", ["has space", "has/slash", "x" * 257, "ümlaut"])
+@pytest.mark.parametrize(
+    "secret", ["has space" * 4, "has/slash" * 4, "x" * 257, "ümlaut" * 6]
+)
 def test_a_secret_telegram_would_refuse_raises(secret: str) -> None:
     with pytest.raises(ValueError, match="TELEGRAM_APP_WEBHOOK_SECRET"):
         _config(
             **{**_APP, "telegram_app_webhook_secret": secret},
+            messaging_public_url=_ORIGIN,
+        )
+
+
+def test_a_short_secret_raises() -> None:
+    """Telegram would take one character; this deployment holds the secret to
+    the same 32-character floor as the others it chooses."""
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        _config(
+            **{**_APP, "telegram_app_webhook_secret": "x" * 31},
             messaging_public_url=_ORIGIN,
         )
 

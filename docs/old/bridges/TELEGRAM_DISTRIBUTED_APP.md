@@ -53,7 +53,7 @@ every start and would overwrite anything set there.
 | Variable | What it is |
 | --- | --- |
 | `TELEGRAM_APP_BOT_TOKEN` | The token BotFather issued, shaped `<bot id>:<secret>`. |
-| `TELEGRAM_APP_WEBHOOK_SECRET` | A secret Telegram echoes back on every update, 1–256 characters of `A-Z a-z 0-9 _ -`. It is the whole of what proves an update came from Telegram. `openssl rand -hex 32` makes a good one. |
+| `TELEGRAM_APP_WEBHOOK_SECRET` | A secret Telegram echoes back on every update, 32–256 characters of `A-Z a-z 0-9 _ -`. It is the whole of what proves an update came from Telegram. `openssl rand -hex 32` makes a good one. |
 | `MESSAGING_PUBLIC_URL` | The origin Telegram posts to: `https`, scheme and host, no path, on port 443, 80, 88 or 8443 — the only ports Telegram delivers to. |
 
 Set both `TELEGRAM_APP_*` values or neither; setting one is refused at startup,
