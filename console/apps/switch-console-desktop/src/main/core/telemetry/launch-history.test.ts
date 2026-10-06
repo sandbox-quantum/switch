@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as LaunchHistory from './launch-history';
 
@@ -5,9 +7,22 @@ const h = vi.hoisted(() => ({
   trackEvent: vi.fn(),
   warn: vi.fn(),
   readFails: false,
+  isCanary: false,
+  databaseExisted: true,
 }));
 
 vi.mock('./telemetry-service', () => ({ trackEvent: h.trackEvent }));
+vi.mock('@main/core/app/utils', () => ({ resolveAppVersion: async () => '2.3.0' }));
+vi.mock('@shared/app-identity', () => ({
+  get IS_CANARY() {
+    return h.isCanary;
+  },
+}));
+vi.mock('@main/db/client', () => ({
+  get databaseExistedAtStart() {
+    return h.databaseExisted;
+  },
+}));
 vi.mock('@main/lib/logger', () => ({ log: { warn: h.warn } }));
 vi.mock('@main/db/kv', () => ({
   KV: class {
@@ -171,5 +186,64 @@ describe('asking for this launch’s kind', () => {
     expect(h.warn).toHaveBeenCalledWith(
       expect.stringContaining('nothing has recorded this launch')
     );
+  });
+});
+
+describe('what boot records the launch from', () => {
+  let launches: typeof LaunchHistory;
+
+  beforeEach(() => {
+    vi.resetModules();
+    h.trackEvent.mockClear();
+    h.readFails = false;
+  });
+
+  const load = async ({
+    isCanary,
+    databaseExisted,
+  }: {
+    isCanary: boolean;
+    databaseExisted: boolean;
+  }) => {
+    h.isCanary = isCanary;
+    h.databaseExisted = databaseExisted;
+    launches = await import('./launch-history');
+  };
+
+  it('is the app version, the stable channel, and whether the database was already there', async () => {
+    await load({ isCanary: false, databaseExisted: true });
+
+    expect(await launches.readThisLaunch()).toEqual({
+      version: '2.3.0',
+      channel: 'stable',
+      databaseExisted: true,
+    });
+  });
+
+  it('is the canary channel in a canary build, so the two keep separate records', async () => {
+    await load({ isCanary: true, databaseExisted: false });
+
+    expect(await launches.readThisLaunch()).toEqual({
+      version: '2.3.0',
+      channel: 'canary',
+      databaseExisted: false,
+    });
+  });
+
+  it('reports a fresh install as new', async () => {
+    await load({ isCanary: false, databaseExisted: false });
+
+    await launches.reportLaunch(launches.readThisLaunch);
+
+    expect(h.trackEvent).toHaveBeenCalledWith('app_launched', { install_kind: 'new' });
+  });
+
+  it('is started by boot without being waited on', () => {
+    // Boot has no tests of its own, so this reads it. Waiting on the launch
+    // would put a database read and write in front of the window opening.
+    const boot = readFileSync(join(import.meta.dirname, '..', '..', 'index.ts'), 'utf8');
+
+    expect(boot).toContain('void reportLaunch(readThisLaunch);');
+    expect(boot).not.toMatch(/await\s+reportLaunch\b/);
   });
 });

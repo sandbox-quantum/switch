@@ -1,5 +1,7 @@
+import { resolveAppVersion } from '@main/core/app/utils';
 import { KV } from '@main/db/kv';
 import { log } from '@main/lib/logger';
+import { IS_CANARY } from '@shared/app-identity';
 import type { TelemetryInstallKind } from './events';
 import { trackEvent } from './telemetry-service';
 
@@ -39,6 +41,12 @@ const store = new KV<Record<string, string>>('telemetry-launches');
  */
 let recording: Promise<TelemetryInstallKind | null> | null = null;
 
+type LaunchInputs = {
+  version: string;
+  channel: 'canary' | 'stable';
+  databaseExisted: boolean;
+};
+
 /**
  * Record this launch and say which kind it is. Recorded on every launch,
  * whether or not usage is shared: it is local, and the next launch has to know
@@ -48,16 +56,22 @@ export async function recordLaunch({
   version,
   channel,
   databaseExisted,
-}: {
-  version: string;
-  channel: 'canary' | 'stable';
-  databaseExisted: boolean;
-}): Promise<TelemetryInstallKind> {
+}: LaunchInputs): Promise<TelemetryInstallKind> {
   const key = `lastLaunchedVersion.${channel}`;
   const lastVersion = (await store.get(key)) ?? null;
   const kind = installKindFor({ lastVersion, version, databaseExisted });
   await store.set(key, version);
   return kind;
+}
+
+/** What recording this launch needs, read when boot starts it. */
+export async function readThisLaunch(): Promise<LaunchInputs> {
+  return {
+    version: await resolveAppVersion(),
+    channel: IS_CANARY ? 'canary' : 'stable',
+    // Imported here, not at the top: the client opens the database on import.
+    databaseExisted: (await import('@main/db/client')).databaseExistedAtStart,
+  };
 }
 
 /**
@@ -66,13 +80,7 @@ export async function recordLaunch({
  * opening. A launch that cannot be recorded is logged and goes unreported,
  * rather than reported with a kind nobody worked out.
  */
-export async function reportLaunch(
-  read: () => Promise<{
-    version: string;
-    channel: 'canary' | 'stable';
-    databaseExisted: boolean;
-  }>
-): Promise<void> {
+export async function reportLaunch(read: () => Promise<LaunchInputs>): Promise<void> {
   const recorded = (async () => recordLaunch(await read()))();
   recording = recorded.catch(() => null);
   try {

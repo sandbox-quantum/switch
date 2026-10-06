@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
-import { IS_CANARY, PRODUCT_NAME } from '@shared/app-identity';
+import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
@@ -15,7 +15,6 @@ import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migra
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
 import { appService } from './core/app/service';
-import { resolveAppVersion } from './core/app/utils';
 import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
 import { embeddedControllerService } from './core/embedded-controller/embedded-controllers';
@@ -35,7 +34,7 @@ import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { currentInternalFlag } from './core/telemetry/internal-account';
-import { reportLaunch } from './core/telemetry/launch-history';
+import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
 import { telemetryService } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
@@ -148,12 +147,7 @@ void app.whenReady().then(async () => {
   // before it is sent, and never before the database it is read from.
   registerTelemetryListeners();
   telemetryService.setInternalSource(currentInternalFlag);
-  void reportLaunch(async () => ({
-    version: await resolveAppVersion(),
-    channel: IS_CANARY ? 'canary' : 'stable',
-    // Imported here, not at the top: the client opens the database on import.
-    databaseExisted: (await import('./db/client')).databaseExistedAtStart,
-  }));
+  void reportLaunch(readThisLaunch);
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below

@@ -10,6 +10,7 @@ const { h } = vi.hoisted(() => ({
     trackEvent: vi.fn(),
     launchInstallKind: vi.fn(),
     get: vi.fn(),
+    getWithMeta: vi.fn(),
     update: vi.fn(async () => {}),
     reset: vi.fn(async () => {}),
     resetField: vi.fn(async () => {}),
@@ -25,7 +26,7 @@ vi.mock('./settings-service', () => ({
     get: h.get,
     update: h.update,
     getAll: vi.fn(),
-    getWithMeta: vi.fn(),
+    getWithMeta: h.getWithMeta,
     reset: h.reset,
     resetField: h.resetField,
   },
@@ -52,6 +53,21 @@ describe('changing a setting', () => {
 
     expect(h.trackEvent).toHaveBeenCalledWith('setting_changed', { setting_key: 'localLocation' });
     expect(JSON.stringify(h.trackEvent.mock.calls)).not.toContain('secret-project');
+  });
+});
+
+describe('reading a setting', () => {
+  it('passes the value, its defaults and its overrides through, and reports nothing', async () => {
+    const meta = {
+      value: { defaultLocationsDirectory: '/srv/agents' },
+      defaults: { defaultLocationsDirectory: '' },
+      overrides: { defaultLocationsDirectory: '/srv/agents' },
+    };
+    h.getWithMeta.mockResolvedValue(meta);
+
+    expect(await appSettingsController.getWithMeta('localLocation')).toBe(meta);
+    expect(h.getWithMeta).toHaveBeenCalledWith('localLocation');
+    expect(h.trackEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -156,6 +172,20 @@ describe('agreeing to share usage data', () => {
     await settled();
 
     expect(order).toEqual(['write', 'report']);
+  });
+
+  it('still saves telemetry when the previous answer cannot be read, and claims no agreement', async () => {
+    // The read is only there to tell a first agreement from a later one. It
+    // failing must never stop someone turning telemetry off.
+    h.get.mockRejectedValue(new Error('database is locked'));
+
+    await appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never);
+    await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
+    await settled();
+
+    expect(h.update).toHaveBeenCalledTimes(2);
+    const names = h.trackEvent.mock.calls.map(([name]) => name);
+    expect(names).toEqual(['setting_changed', 'setting_changed']);
   });
 
   it('waits for the launch kind when the first-run notice is answered before boot records it', async () => {
