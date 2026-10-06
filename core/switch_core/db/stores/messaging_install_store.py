@@ -329,19 +329,21 @@ class MessagingInstallStore:
 
         A self-registered bridge of the same platform polls its own bot and
         says so in its config, so `event_delivery` is what tells the two apart.
+        It is read here rather than in the query because the config is
+        encrypted at rest.
 
         Two distinct bridges is a broken invariant rather than a choice to make
         here: routing a new chat to either would split one tenant's identities
         across two bridges without anyone having decided to.
         """
         result = await session.execute(
-            select(CollaborationBridge.id).where(
-                CollaborationBridge.type == platform,
-                CollaborationBridge.connection_config["event_delivery"].astext
-                == "shared",
-            )
+            select(CollaborationBridge).where(CollaborationBridge.type == platform)
         )
-        bridge_ids = list(result.scalars())
+        bridge_ids = [
+            bridge.id
+            for bridge in result.scalars()
+            if (bridge.connection_config or {}).get("event_delivery") == "shared"
+        ]
         if len(bridge_ids) > 1:
             raise RuntimeError(
                 f"this organisation has {len(bridge_ids)} shared {platform} "
