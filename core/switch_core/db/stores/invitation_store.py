@@ -99,26 +99,6 @@ class InvitationStore:
         )
         return result.scalar_one_or_none()
 
-    async def get_valid_by_token_hash(
-        self, session: AsyncSession, token_hash: str
-    ) -> Invitation | None:
-        """The invitation named by a token's hash, if it is still usable.
-
-        What `get_by_token_hash` finds says nothing about whether the token
-        still works: a revoked, expired or spent invitation is an ordinary row
-        and reads back like any other. This is the read for anyone about to
-        act on one — showing the invitee what they were invited to, say —
-        and it answers with the same predicate `consume` enforces.
-
-        A `None` here is not permission to skip `consume`'s own check. The row
-        can be spent between the two by whoever else holds the same link;
-        `consume` is where that race is settled.
-        """
-        result = await session.execute(
-            select(Invitation).where(Invitation.token_hash == token_hash, _usable())
-        )
-        return result.scalar_one_or_none()
-
     async def consume(self, session: AsyncSession, invitation_id: str) -> Invitation:
         """Spend one use of an invitation, or refuse.
 

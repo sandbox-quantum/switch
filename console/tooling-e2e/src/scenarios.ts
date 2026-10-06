@@ -269,10 +269,9 @@ const APPROVAL_HINTS = ['approve', 'approval', 'permission', 'allow', 'permit', 
  * the permission request into the room, take `1` (allow) from the channel, and
  * then actually run the command.
  *
- * Requires the agent's session to be running WITHOUT auto-approve. Note that an
- * OpenCode agent's registered profile declares no `pre_invocation_mediation`, so
- * the prompt does not come from Switch mediating the call — it comes from the
- * console runtime relaying OpenCode's own permission request into the room. This
+ * Requires the agent's session to be running WITHOUT auto-approve. Switch does
+ * not mediate tool calls, so the prompt comes from the console runtime relaying
+ * OpenCode's own permission request into the room. This
  * is the scenario most tightly coupled to that runtime.
  */
 export const approval: Scenario = (harness) =>

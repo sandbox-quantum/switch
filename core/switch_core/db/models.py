@@ -906,14 +906,6 @@ class Agent(TenantScoped, Base):
     __tablename__ = "agents"
     __table_args__ = (
         Index("ix_agents_parent_agent_id", "parent_agent_id"),
-        # Deployment-wide, not per tenant: an OIDC sign-in resolves the agent
-        # from its client id before any tenant is known.
-        Index(
-            "uq_agents_oauth_client_id",
-            "oauth_client_id",
-            unique=True,
-            postgresql_where=text("oauth_client_id IS NOT NULL"),
-        ),
         UniqueConstraint("tenant_id", "name", name="uq_agents_tenant_name"),
         UniqueConstraint("id", "tenant_id", name="uq_agents_id_tenant"),
         ForeignKeyConstraint(
@@ -966,7 +958,6 @@ class Agent(TenantScoped, Base):
     # SET NULL so deleting a parent orphans its children rather than removing
     # them (they keep their own identity, rooms, and history).
     parent_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    oauth_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Scoped agent-addressing permissions (CHOO-1585). NULL preserves today's
     # open behaviour (anyone may address the agent); a stored policy is a
     # `switch_core.addressing.AddressingPolicy` blob (an allow-list of rules
@@ -1034,63 +1025,6 @@ class Model(TenantScoped, Base):
     )
 
 
-# ── Skills ─────────────────────────────────────────────────────────────────────
-
-
-agent_skills = Table(
-    "agent_skills",
-    Base.metadata,
-    Column(
-        "tenant_id",
-        Text,
-        ForeignKey("tenants.id", name="fk_agent_skills_tenant"),
-        nullable=False,
-        default=require_tenant_id,
-    ),
-    Column("agent_id", Text, primary_key=True),
-    Column("skill_id", Text, primary_key=True),
-    ForeignKeyConstraint(
-        ["tenant_id", "agent_id"],
-        ["agents.tenant_id", "agents.id"],
-        name="fk_agent_skills_agent",
-    ),
-    ForeignKeyConstraint(
-        ["tenant_id", "skill_id"],
-        ["skills.tenant_id", "skills.id"],
-        name="fk_agent_skills_skill",
-    ),
-    Index("ix_agent_skills_tenant_id", "tenant_id"),
-)
-
-
-class Skill(TenantScoped, Base):
-    __tablename__ = "skills"
-    __table_args__ = (
-        Index("ix_skills_tenant_id", "tenant_id"),
-        UniqueConstraint("id", "tenant_id", name="uq_skills_id_tenant"),
-        ForeignKeyConstraint(
-            ["tenant_id", "owner_agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_skills_owner_agent",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    version: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    visibility: Mapped[str] = mapped_column(Text, nullable=False)
-    owner_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_by: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("users.id"), nullable=True
-    )
-    package_uri: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
 # ── Rooms ──────────────────────────────────────────────────────────────────────
 
 
@@ -1127,31 +1061,6 @@ room_agents = Table(
         name="fk_room_agents_agent",
     ),
     Index("ix_room_agents_tenant_id", "tenant_id"),
-)
-
-room_skills = Table(
-    "room_skills",
-    Base.metadata,
-    Column(
-        "tenant_id",
-        Text,
-        ForeignKey("tenants.id", name="fk_room_skills_tenant"),
-        nullable=False,
-        default=require_tenant_id,
-    ),
-    Column("room_id", Text, primary_key=True),
-    Column("skill_id", Text, primary_key=True),
-    ForeignKeyConstraint(
-        ["tenant_id", "room_id"],
-        ["rooms.tenant_id", "rooms.id"],
-        name="fk_room_skills_room",
-    ),
-    ForeignKeyConstraint(
-        ["tenant_id", "skill_id"],
-        ["skills.tenant_id", "skills.id"],
-        name="fk_room_skills_skill",
-    ),
-    Index("ix_room_skills_tenant_id", "tenant_id"),
 )
 
 
@@ -1213,12 +1122,7 @@ class Room(TenantScoped, Base):
     bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_channel_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     channel_type: Mapped[str | None] = mapped_column(Text, nullable=True)
-    admin_mode: Mapped[bool] = mapped_column(
-        Boolean, server_default="false", nullable=False
-    )
     instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
-    protection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    observe_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
@@ -1336,52 +1240,6 @@ class RoomLink(TenantScoped, Base):
     label: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-# ── Tasks ──────────────────────────────────────────────────────────────────────
-
-
-class Task(TenantScoped, Base):
-    __tablename__ = "tasks"
-    __table_args__ = (
-        Index("ix_tasks_tenant_id", "tenant_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "room_id"],
-            ["rooms.tenant_id", "rooms.id"],
-            name="fk_tasks_room",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "requester_agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_tasks_requester_agent",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "performer_agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_tasks_performer_agent",
-            ondelete="CASCADE",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    room_id: Mapped[str] = mapped_column(Text, nullable=False)
-    requester_agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    performer_agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    updates: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    accepted_at: Mapped[str | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finalised_at: Mapped[str | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
     )
 
 
@@ -1977,33 +1835,6 @@ class MessagingEventReceipt(TenantScoped, Base):
     )
 
 
-# ── Server-Side Connectors ────────────────────────────────────────────────────
-
-
-class ServerConnector(TenantScoped, Base):
-    __tablename__ = "server_connectors"
-    __table_args__ = (
-        Index("ix_server_connectors_tenant_id", "tenant_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "api_key_id"],
-            ["api_keys.tenant_id", "api_keys.id"],
-            name="fk_server_connectors_api_key",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    type: Mapped[str] = mapped_column(Text, nullable=False)
-    display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(
-        EncryptedJSONB, nullable=True
-    )
-    api_key_id: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
 # ── External Users ─────────────────────────────────────────────────────────────
 
 
@@ -2075,17 +1906,11 @@ class ExternalUserClaim(TenantScoped, Base):
 
 
 class AgentSession(TenantScoped, Base):
-    """Tracks agent reachability and MCP-session room bindings.
+    """Tracks agent reachability from heartbeats.
 
-    Each row carries two independent pieces of state:
-
-    - `lifecycle` + `last_seen_at`: reachability. `'heartbeat'` rows are
-      refreshed by poll handlers (always_on, session_addressable) and
-      considered live while `last_seen_at` is within the TTL. `'explicit'`
-      rows (session_passive) exist only as transport bindings and are not
-      used for liveness.
-    - `transport_session_id`: the MCP transport currently bound to this
-      (agent, room) by `connect_to_room`. Heartbeats never clear it.
+    `lifecycle` + `last_seen_at`: `'heartbeat'` rows are refreshed by the
+    heartbeat routes and considered live while `last_seen_at` is within the
+    TTL.
 
     Uniqueness is enforced on `(agent_id, COALESCE(room_id, ''))` so a single
     agent has at most one row per room (and at most one room-agnostic row for
@@ -2102,7 +1927,6 @@ class AgentSession(TenantScoped, Base):
             unique=True,
         ),
         Index("ix_agent_sessions_agent_room", "agent_id", "room_id"),
-        Index("ix_agent_sessions_transport_session_id", "transport_session_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -2120,67 +1944,12 @@ class AgentSession(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    transport_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     lifecycle: Mapped[str] = mapped_column(Text, nullable=False)
     last_seen_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-class AgentRuntimeState(TenantScoped, Base):
-    """The runtime/liveness state of an agent's session as seen in one room.
-
-    Distinct from `AgentSession` (which tracks *reachability*): this captures
-    what the agent's live session is *doing* — `'working'`, `'awaiting-input'`,
-    or `'idle'` — derived from the Switch Console-managed Claude Code session and
-    surfaced on the room's bridged channel. One row per (agent, room), mirroring
-    the `AgentSession` grain, so a state is conceptually tied to that room's
-    session: when the session's heartbeat lapses the sweep resets the row to
-    `'idle'` so a "working" surface doesn't linger after the session leaves.
-    """
-
-    __tablename__ = "agent_runtime_states"
-    __table_args__ = (
-        Index("ix_agent_runtime_states_tenant_id", "tenant_id"),
-        UniqueConstraint(
-            "agent_id", "room_id", name="uq_agent_runtime_states_agent_room"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_agent_runtime_states_agent",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "room_id"],
-            ["rooms.tenant_id", "rooms.id"],
-            name="fk_agent_runtime_states_room",
-            ondelete="CASCADE",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    room_id: Mapped[str] = mapped_column(Text, nullable=False)
-    state: Mapped[str] = mapped_column(Text, nullable=False)
-    # The switchdash://session deeplink the reporting client (Switch Console) last
-    # sent for this (agent, room), so `!status` can surface an on-demand link to
-    # the session. Null for agents whose connector doesn't report one.
-    deeplink_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Which session-control commands (reset/compact/interrupt) the live session
-    # behind this (agent, room) can execute, as reported by its controller
-    # (Switch Console) — e.g. {"reset": true, "compact": true, "interrupt": true}.
-    # Null when no controller reports capabilities (e.g. a standalone `claude`
-    # session), which resolves session_dependent commands to "unsupported".
-    control_capabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    updated_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
     )
 
 
@@ -2248,8 +2017,8 @@ class RoleLease(TenantScoped, Base):
     One lease per agent is enforced by the unique index on `agent_id`;
     `release_role` (or holder death + TTL) frees it, and release stays open to
     any of the agent's sessions. `transport_session_id` records the connection
-    or MCP transport that assumed the role, and identifies the holder when
-    there is no `session_id`.
+    that assumed the role, and identifies the holder when there is no
+    `session_id`.
     """
 
     __tablename__ = "role_leases"
@@ -2392,29 +2161,6 @@ class TelemetrySnapshotWatermark(Base):
     )
 
 
-# ── Feature flags ────────────────────────────────────────────────────────────
-
-
-class FeatureFlag(Base):
-    """Server-global on/off switch keyed by a well-known flag name.
-
-    A row exists only once a flag has been written; an absent row means the
-    flag is OFF (its default). Which keys are writable is enforced in the
-    application layer (see ``switch_core.feature_flags``), not by the table.
-    """
-
-    __tablename__ = "feature_flags"
-
-    key: Mapped[str] = mapped_column(Text, primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    updated_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
 # ── Messages ─────────────────────────────────────────────────────────────────
 
 
@@ -2522,52 +2268,6 @@ class MessageAttachment(TenantScoped, Base):
     size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-class DeliveryCursor(TenantScoped, Base):
-    """How far one agent has been delivered in one room.
-
-    The cursor it replaces lived in memory in the event buffer, so a restart
-    resumed from wherever that buffer happened to be rather than from what the
-    agent had actually been given. Persisting it makes "what has this agent
-    seen" outlive the process, which is what lets delivery be driven from the
-    table instead of from a live connection.
-
-    `last_seq` is a position in the room, not a count: `seq` is a per-room
-    total order, so "everything up to n" is unambiguous and re-reading from it
-    is idempotent. It is only ever advanced, never rewound — a cursor that
-    could go backwards would redeliver, and a redelivered message is
-    indistinguishable to a reader from a new one.
-    """
-
-    __tablename__ = "delivery_cursors"
-    __table_args__ = (
-        Index("ix_delivery_cursors_tenant_id", "tenant_id"),
-        UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"],
-            ["agents.tenant_id", "agents.id"],
-            name="fk_delivery_cursors_agent",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "room_id"],
-            ["rooms.tenant_id", "rooms.id"],
-            name="fk_delivery_cursors_room",
-            ondelete="CASCADE",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    room_id: Mapped[str] = mapped_column(Text, nullable=False)
-    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    updated_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
     )
 
 

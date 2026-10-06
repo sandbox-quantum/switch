@@ -57,18 +57,6 @@ def _caller(session_id: str, room_id: str | None) -> CallContext:
     )
 
 
-class _AbsentSessionStore:
-    """The table a pre-connection caller falls back to, holding nothing.
-
-    Reaching it at all is the failure this file guards against: a caller with a
-    session has already been answered, and one with a live connection covering
-    a room is answered by the connection.
-    """
-
-    async def get_connected_room(self, *_a: Any, **_kw: Any) -> None:
-        raise AssertionError("resolution fell through to the agent_sessions table")
-
-
 @pytest.fixture
 def registry():
     @asynccontextmanager
@@ -79,7 +67,6 @@ def registry():
     init_operations_protocol(
         SimpleNamespace(
             connections=registry,
-            agent_session_store=_AbsentSessionStore(),
             session_factory=session_factory,
         )
     )
@@ -380,11 +367,6 @@ def _protocol_for(registry: AgentConnectionRegistry, room_id: str) -> Any:
     room = SimpleNamespace(id=room_id, name="Room C", description="A room")
     profile = {
         "connection_model": "session_addressable",
-        "message_exchange": True,
-        "pre_invocation_mediation": [],
-        "post_invocation_mediation": [],
-        "event_reporting": [],
-        "task_protocol": {"can_delegate": False, "can_accept": False},
     }
 
     @asynccontextmanager
@@ -403,7 +385,6 @@ def _protocol_for(registry: AgentConnectionRegistry, room_id: str) -> Any:
     return SimpleNamespace(
         connections=registry,
         event_buffer=EventBuffer(sequence_base=0),
-        agent_session_store=_AbsentSessionStore(),
         session_factory=session_factory,
         agent_store=SimpleNamespace(
             get=_returning(

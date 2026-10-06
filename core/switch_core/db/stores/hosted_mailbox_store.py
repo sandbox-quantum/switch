@@ -78,9 +78,7 @@ def room_input_id(event: AgentEvent) -> str | None:
     payload = event.payload.model_dump(mode="json")
     if event.type == "message":
         return payload["message_id"] if payload.get("addressed") is True else None
-    if event.type == "room_join" and payload.get("listening") is not True:
-        return None
-    if event.type != "room_join" and not event.type.startswith("task_"):
+    if event.type != "room_join" or payload.get("listening") is not True:
         return None
     canonical = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False

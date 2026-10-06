@@ -6,9 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
-import jwt
 from fastapi import HTTPException, Request
-from jwt import PyJWKClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -24,10 +22,7 @@ from switch_core.db.models import Agent, ApiKey
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.db.tenant_lookup import (
-    tenant_of_agent_oauth_client,
-    tenant_of_api_key,
-)
+from switch_core.db.tenant_lookup import tenant_of_api_key
 from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
@@ -35,12 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 # Path prefixes that bypass the Bearer middleware entirely. These are either
-# public (health, OAuth flow, external webhooks) or use their own auth scheme
-# (gateway uses cookie-based JWT).
+# public (health, external webhooks) or use their own auth scheme (gateway
+# uses cookie-based JWT).
 PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/health",
-    "/.well-known",
-    "/oauth",
     "/gateway",
     # Public switchdash:// deeplink HTTP redirect — followed by whoever clicks
     # the "Open in Switch Console" link in an external channel, so no bearer token.
@@ -70,9 +63,6 @@ AGENT_ID_HEADER = b"x-switch-agent-id"
 # `/agents/{agent_id}/` and `/agent-sessions/`.
 _AGENT_PATH = re.compile(r"/agents/(?P<segment>[^/]+)(?P<rest>/.*)?")
 _AGENT_SESSIONS_PREFIX = "/agent-sessions/"
-# First segments under `/agents/` that name no agent. On these the agent comes
-# from `X-Switch-Agent-Id` alone.
-_NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
 # Registration: a controller registers nothing, so its token is refused here.
 _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # The connection surface a controller serves its agents itself, from its own
@@ -80,36 +70,8 @@ _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # connection of its own, and the legacy heartbeats would make it look live from
 # a second source.
 _SERVED_ON_THE_CONTROLLER_STREAM = re.compile(
-    r"/(events|notifications|rooms/[^/]+/events|connection/.*|watch/heartbeat)"
+    r"/(events|connection/.*|watch/heartbeat)"
 )
-
-
-class OIDCTokenValidator:
-    def __init__(
-        self,
-        issuer_url: str,
-        audience: str,
-        verify_issuer: bool,
-    ) -> None:
-        self._issuer = issuer_url
-        self._audience = audience
-        self._verify_issuer = verify_issuer
-        jwks_url = f"{issuer_url}/protocol/openid-connect/certs"
-        self._jwk_client = PyJWKClient(jwks_url, cache_keys=True)
-
-    def validate(self, token: str) -> dict:
-        signing_key = self._jwk_client.get_signing_key_from_jwt(token)
-        options: dict[str, bool] = {}
-        if not self._verify_issuer:
-            options["verify_iss"] = False
-        return jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            issuer=self._issuer if self._verify_issuer else None,
-            audience=self._audience,
-            options=options,  # type: ignore[arg-type]
-        )
 
 
 @dataclass(frozen=True)
@@ -165,21 +127,18 @@ class ControllerAuthenticator(Protocol):
 class BearerAuthMiddleware:
     """Authenticate requests carrying a Bearer token.
 
-    Accepts three kinds of credentials:
+    Accepts two kinds of credentials:
 
     1. Agent API key — sets ``scope["agent"]`` and ``scope["agent_id"]``.
-       Used by agent-bridge HTTP endpoints and MCP.
-    2. OIDC token — validated against the configured issuer, mapped to an
-       agent via the ``oauth_client_id`` field on Agent.
-    3. Registration token — an ApiKey row of type ``"registration"`` or
+       Used by the agent-bridge HTTP endpoints.
+    2. Registration token — an ApiKey row of type ``"registration"`` or
        ``"bootstrap"`` (see ``registration_bootstrap.py``) that has no
        associated agent. Used by the registration endpoint
        (``POST /agents``). Sets ``scope["api_key"]`` so downstream
        handlers can validate it again.
 
     Public paths (see ``PUBLIC_PATH_PREFIXES``) bypass authentication
-    entirely. The MCP path also requires an agent — registration tokens
-    are not enough to open an MCP session.
+    entirely.
 
     With agent management enabled, a ``ControllerAuthenticator`` owns the
     controller paths outright: their tokens are controller access tokens and
@@ -192,7 +151,7 @@ class BearerAuthMiddleware:
     controller is the one way in for the agents it runs.
 
     This is where a request's tenant gets bound (see
-    ``switch_core.tenant_context``), for all three credentials — registration
+    ``switch_core.tenant_context``), for every credential — registration
     tokens included, since the request one of those carries is the request
     that *creates* the rows every later request is authenticated against.
 
@@ -200,10 +159,10 @@ class BearerAuthMiddleware:
     routing and dependency injection entirely, so there is no ordering
     question about whether a downstream ``get_session`` might query before the
     tenant is known — it cannot, since it does not run until after
-    ``self.app(...)`` is called below. The lookups that resolve the credential
-    itself (``_resolve_api_key``, ``_try_oidc``) run ahead of that, on
-    sessions of their own, and each is in two steps: the credential's *tenant*
-    comes from one of the seven ``SECURITY DEFINER`` lookups that are the
+    ``self.app(...)`` is called below. The lookup that resolves the credential
+    itself (``_resolve_api_key``) runs ahead of that, on sessions of its own,
+    and in two steps: the credential's *tenant* comes from one of the
+    ``SECURITY DEFINER`` lookups that are the
     whole exemption from row-level security (``db/tenant_lookup.py``), and the
     row itself is then read with that tenant bound, subject to the same
     policies as everything else.
@@ -217,7 +176,6 @@ class BearerAuthMiddleware:
         api_key_store: ApiKeyStore,
         api_key_cache: ApiKeyCache,
         session_factory: async_sessionmaker[AsyncSession],
-        oidc_validator: OIDCTokenValidator | None = None,
         controller_auth: ControllerAuthenticator | None = None,
     ) -> None:
         self.app = app
@@ -225,7 +183,6 @@ class BearerAuthMiddleware:
         self._api_key_store = api_key_store
         self._api_key_cache = api_key_cache
         self._session_factory = session_factory
-        self._oidc_validator = oidc_validator
         self._controller_auth = controller_auth
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -272,13 +229,9 @@ class BearerAuthMiddleware:
 
         # Single ApiKey lookup. If the row exists, branch on its type:
         # agent token → resolve to Agent; registration token → pass through.
-        # If no row exists, fall through to OIDC (where applicable).
         api_key, agent = await self._resolve_api_key(token)
 
-        if agent is None and api_key is None and self._oidc_validator is not None:
-            agent = await self._try_oidc(token)
-
-        if agent is not None:
+        if agent is not None and api_key is not None:
             if (
                 self._controller_auth is not None
                 and self._controller_auth.presence.is_bound(agent.id)
@@ -293,10 +246,8 @@ class BearerAuthMiddleware:
             scope["agent"] = agent
             scope["agent_id"] = agent.id
             # api_key.tenant_id is the source of truth (docs/old/
-            # multi-tenancy-phase1-db.md, "Setting the tenant"); the OIDC
-            # path resolves straight to an Agent with no ApiKey row, so it
-            # falls back to the agent's own tenant.
-            tenant_id = api_key.tenant_id if api_key is not None else agent.tenant_id
+            # multi-tenancy-phase1-db.md, "Setting the tenant").
+            tenant_id = api_key.tenant_id
             with (
                 tenant_scope(tenant_id),
                 log_context(agent_id=agent.id, tenant_id=tenant_id),
@@ -304,12 +255,8 @@ class BearerAuthMiddleware:
                 await self.app(scope, receive, send)
             return
 
-        # Registration token: pass through (handler validates again). MCP rejects.
-        if (
-            api_key is not None
-            and api_key.type in REGISTRATION_KEY_TYPES
-            and not path.startswith("/mcp")
-        ):
+        # Registration token: pass through (handler validates again).
+        if api_key is not None and api_key.type in REGISTRATION_KEY_TYPES:
             scope["api_key"] = api_key
             # The endpoints this reaches *insert* the `api_keys` and `agents`
             # rows a later request will be authenticated against, and the
@@ -507,29 +454,6 @@ class BearerAuthMiddleware:
             self._api_key_cache.put(token_hash, api_key, agent)
         return api_key, agent
 
-    async def _try_oidc(self, token: str) -> Agent | None:
-        assert self._oidc_validator is not None
-        try:
-            claims = self._oidc_validator.validate(token)
-        except Exception:
-            logger.debug("OIDC token validation failed", exc_info=True)
-            return None
-
-        client_id = claims.get("azp") or claims.get("client_id")
-        if client_id is None:
-            logger.warning("OIDC token has no azp or client_id claim")
-            return None
-
-        # Same two steps as `_resolve_api_key`, for the same reason: `agents`
-        # is scoped, and this is the read that decides which agent — and so
-        # which tenant — is asking. `oauth_client_id` is unique across the
-        # deployment, so at most one tenant answers.
-        tenant_id = await tenant_of_agent_oauth_client(self._session_factory, client_id)
-        if tenant_id is None:
-            return None
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            return await self._agent_store.get_by_oauth_client_id(session, client_id)
-
 
 def _controller_refusal(code: str, message: str, status_code: int) -> Response:
     return JSONResponse(
@@ -548,7 +472,7 @@ def _is_agent_route(path: str) -> bool:
 def _path_agent(path: str) -> tuple[str | None, str]:
     """The agent an agent route's path names, if any, and the rest of the path."""
     match = _AGENT_PATH.fullmatch(path)
-    if match is None or match["segment"] in _NOT_AN_AGENT_SEGMENT:
+    if match is None:
         return None, ""
     return match["segment"], match["rest"] or ""
 

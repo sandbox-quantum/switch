@@ -168,10 +168,9 @@ not list.
 
 **Traces** are not implemented. See "What is missing" below.
 
-**The agent event streams are counted but not timed.** A long poll is held
-open until something happens or the caller's own timeout expires, so its
-duration measures a parameter the client chose rather than anything this
-server did. In a latency histogram that is worse than useless: it would make
+**The agent event stream is counted but not timed.** It is held open for as
+long as the agent stays connected, so its duration measures how long the
+client stayed rather than anything this server did. In a latency histogram that is worse than useless: it would make
 those routes' percentiles meaningless and, sharing an axis, flatten every
 other route to the floor. They are counted like everything else.
 
@@ -196,8 +195,7 @@ is one round trip. Read the panel as "the application's queries", not "all
 database work".
 
 **Not every HTTP surface is counted.** `switch.http.*` comes from middleware on
-the FastAPI app, which is the agent bridge, the MCP mount and the gateway
-beneath it. Two listeners sit outside it — the Teams bridge and the
+the FastAPI app, which is the agent bridge and the gateway beneath it. Two listeners sit outside it — the Teams bridge and the
 collaboration callback ingress each run their own `aiohttp` server on their own
 port — so their traffic appears in no request metric. Read the HTTP panels as
 "the main API", not "everything this process serves".
@@ -245,9 +243,6 @@ handled in a way that leaves no trace.
 - **`switch.bridge.errors`** — an inbound bridge failure is a message a person
   sent that nobody received; from the platform it is indistinguishable from
   being ignored.
-- **`switch.connectors.running`** — connectors start fire-and-forget, each
-  failure logged and stepped over, so one that never came up is a dead agent
-  host nothing else reports.
 
 If you add another place that catches an exception to keep something alive,
 this is the list it belongs on.

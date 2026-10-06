@@ -623,10 +623,9 @@ pnpm run test
 - MCP types live under `src/shared/core/mcp/`.
 - Skills types and validation live under `src/shared/core/skills/`.
 - Per-location runtime settings can be supplied through `.switchdash.json`:
-  `preservePatterns`, `scripts.setup`, `scripts.run`, `scripts.teardown`, and
-  `shellSetup`.
-- Location settings such as `locationProvider` are DB-backed, not
-  `.switchdash.json`.
+  `scripts.setup`, `scripts.run`, `scripts.teardown`, and `shellSetup`.
+- Location settings such as `autoRunSetupScriptOnSessionCreation` are DB-backed,
+  not `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
   `SWITCHDASH_REGISTER_DEEPLINK`,

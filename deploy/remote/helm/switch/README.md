@@ -26,7 +26,7 @@ two of the three fail *silently* — the pods are healthy and the dashboard work
 | Surface | Port | Who must reach it | Consequence if unreachable |
 | --- | --- | --- | --- |
 | Gateway dashboard | 3000 | Your operators | You cannot administer Switch |
-| Agent API + MCP | 8000 | Agents, wherever they run | Remote agents cannot connect; local ones are fine |
+| Agent API | 8000 | Agents, wherever they run | Remote agents cannot connect; local ones are fine |
 | Teams bridge listener | 3978 | **Microsoft, from the public internet** | The Teams bridge half-works, silently |
 | Collaboration callbacks | 8081 | Your Mattermost server | Cards still show buttons and every press fails |
 
@@ -54,9 +54,8 @@ it privately, nothing here needs to be on the public internet.
 
 ### The agent API
 
-Port 8000 serves the agent bridge, MCP, and OAuth/MCP discovery. Expose it as
-widely as your agents live and no wider — a VPN or private load balancer is
-fine, and is the better default. `ingress.agentApiPaths` lists the prefixes
+Port 8000 serves the agent bridge. Expose it as widely as your agents live and
+no wider — a VPN or private load balancer is fine, and is the better default. `ingress.agentApiPaths` lists the prefixes
 routed there.
 
 Note it is Bearer-token authenticated, not unauthenticated, but it is still the

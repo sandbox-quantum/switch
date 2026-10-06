@@ -130,8 +130,8 @@ class TestRegistrationDefaultPolicy:
     async def test_owner_only_false_leaves_the_agent_open(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # A service the deployment offers everyone (a server-side connector
-        # agent) is owned by someone only in the bookkeeping sense.
+        # A service the deployment offers everyone is owned by someone only in
+        # the bookkeeping sense.
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
         agent_id = await register(svc, "shared", owner_id, owner_only=False)
@@ -172,7 +172,7 @@ class TestRegisterWithTokenPassesThrough:
 
         async def _register_agent(**kwargs: object) -> object:
             captured.update(kwargs)
-            return SimpleNamespace(agent_id="a1", api_key="k", oauth_client_id=None)
+            return SimpleNamespace(agent_id="a1", api_key="k")
 
         svc.register_agent = _register_agent  # type: ignore[assignment, method-assign]
         svc.api_key_store = SimpleNamespace(  # type: ignore[assignment]
@@ -199,7 +199,7 @@ class TestRegisterWithTokenPassesThrough:
 
         async def _register_agent(**kwargs: object) -> object:
             captured.update(kwargs)
-            return SimpleNamespace(agent_id="a1", api_key="k", oauth_client_id=None)
+            return SimpleNamespace(agent_id="a1", api_key="k")
 
         svc.register_agent = _register_agent  # type: ignore[assignment, method-assign]
         svc.api_key_store = SimpleNamespace(  # type: ignore[assignment]

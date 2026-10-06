@@ -17,7 +17,10 @@ from fastapi import FastAPI, HTTPException
 from sqlalchemy import event as orm_event
 from sqlalchemy import select
 
-from switch_core.bridges.agent.api.handlers import connection_placements, poll_events
+from switch_core.bridges.agent.api.handlers import (
+    connection_placements,
+    open_event_stream,
+)
 from switch_core.bridges.agent.api.hosted_cutover_routes import (
     router as hosted_cutover_router,
 )
@@ -271,7 +274,7 @@ async def _open(
     state_version: int | None = 1,
     expected_generation: int | None = None,
 ) -> Any:
-    return await poll_events(
+    return await open_event_stream(
         agent.id,
         agent,
         service,
@@ -434,15 +437,8 @@ async def test_local_console_cannot_take_over_hosted_stream(worker_app):
     assert await _refusal(
         connection_placements(agent_id, placements, agent, service)
     ) == (403, "hosted_worker_only")
-    assert await _refusal(_poll(service, agent)) == (403, "hosted_worker_only")
     assert worker.stream_generation == generation
     assert service.connections.get(worker_id) is worker
-
-
-async def _poll(service, agent: Agent) -> Any:
-    return await poll_events(
-        agent.id, agent, service, service.config, timeout=0, accept="application/json"
-    )
 
 
 async def test_second_worker_refused_while_first_alive(worker_app):

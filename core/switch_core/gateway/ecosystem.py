@@ -8,15 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.db.models import User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
-from switch_core.db.stores.feature_flag_store import FeatureFlagStore
-from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flags import ECOSYSTEM_SHOW_OWNERS
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_bridge_store,
     get_session,
-    get_user_store,
 )
 from switch_core.gateway.schemas import (
     EcosystemEdge,
@@ -34,7 +30,6 @@ async def get_ecosystem_graph(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
-    user_store: Annotated[UserStore, Depends(get_user_store)],
     _user: Annotated[User, Depends(get_current_user)],
 ) -> EcosystemGraphResponse:
     """Switch-centric ecosystem graph: the Switch at the centre, with agent
@@ -48,21 +43,9 @@ async def get_ecosystem_graph(
     ]
     edges: list[EcosystemEdge] = []
 
-    # "Show owners" is gated by a server-global feature flag. When OFF the
-    # graph withholds owner data entirely, so the frontend toggle is inert.
-    show_owners = await FeatureFlagStore().get(session, ECOSYSTEM_SHOW_OWNERS)
-
     # Agents grouped by connector_type -> one agent-type node per type, with
     # each agent hanging off its type.
     agents = await agent_store.get_all(session)
-
-    owner_names: dict[str, str] = {}
-    if show_owners:
-        owner_ids = {a.owner_id for a in agents if a.owner_id}
-        for oid in owner_ids:
-            owner = await user_store.get(session, oid)
-            if owner:
-                owner_names[oid] = owner.name
 
     by_type: dict[str, list] = {}
     for agent in agents:
@@ -89,9 +72,6 @@ async def get_ecosystem_graph(
                     kind="agent",
                     label=agent.name,
                     sublabel=agent.description or "",
-                    owner_name=(
-                        owner_names.get(agent.owner_id) if agent.owner_id else None
-                    ),
                 )
             )
             edges.append(EcosystemEdge(source=type_node_id, target=agent_node_id))
@@ -110,4 +90,4 @@ async def get_ecosystem_graph(
         )
         edges.append(EcosystemEdge(source=SWITCH_NODE_ID, target=bridge_node_id))
 
-    return EcosystemGraphResponse(nodes=nodes, edges=edges, show_owners=show_owners)
+    return EcosystemGraphResponse(nodes=nodes, edges=edges)

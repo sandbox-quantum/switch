@@ -35,8 +35,6 @@ def test_the_unauthenticated_allowlist_has_not_grown() -> None:
     """
     assert set(PUBLIC_PATH_PREFIXES) == {
         "/health",
-        "/.well-known",
-        "/oauth",
         "/gateway",
         "/deeplink",
         # Workspace installs of the distributed messaging apps: the OAuth

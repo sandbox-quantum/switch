@@ -1,8 +1,8 @@
 """Scoped agent-addressing permissions (CHOO-1585).
 
 Controls WHO may *address* an agent — i.e. cause it to receive a message it is
-expected to respond to (an `@name` / `@alias` / `@role` mention, a targeted
-message, or a task delegation). By default any room participant can address any
+expected to respond to (an `@name` / `@alias` / `@role` mention or a targeted
+message). By default any room participant can address any
 agent; this module adds an opt-in allow-list model per agent.
 
 Model:

@@ -1,5 +1,5 @@
 """Each place Switch fetches a URL a tenant or agent chose goes through the
-outbound policy: bridge and connector configs when stored and started, the
+outbound policy: bridge configs when stored and started, the
 Mattermost driver's redirects, the Mattermost icon fetch, and Slack file
 downloads."""
 
@@ -18,13 +18,6 @@ from aiohttp import web
 from mattermostdriver import Driver
 from mattermostdriver.exceptions import ResourceNotFound
 
-from switch_core.bridges.agent.server_connectors.lifecycle import (
-    ServerSideConnectorLifecycleService,
-)
-from switch_core.bridges.agent.server_connectors.opencode.connector import (
-    OpenCodeConnectionConfig,
-    OpenCodeConnector,
-)
 from switch_core.bridges.collaboration import mattermost
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
@@ -45,7 +38,6 @@ from switch_core.bridges.collaboration.slack.adapter import (
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy, OutboundURLRefused
 
 
@@ -134,32 +126,6 @@ class TestBridgeConfigs:
                 tenant_id="tenant-1",
                 bridge_type="mattermost",
                 connection_config=_mattermost_config("10.1.2.3:8065"),
-            )
-
-
-class TestConnectorConfigs:
-    async def test_registering_a_private_server_url_is_refused(self) -> None:
-        service = ServerSideConnectorLifecycleService(
-            connector_store=MagicMock(),
-            api_key_store=MagicMock(),
-            protocol=MagicMock(),
-            session_factory=MagicMock(),
-            keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None),
-            outbound_policy=OutboundPolicy.parse(""),
-        )
-        service.register_connector_type(
-            "opencode", OpenCodeConnector, OpenCodeConnectionConfig
-        )
-        with pytest.raises(OutboundURLRefused):
-            await service.register(
-                connector_type="opencode",
-                display_name="Internal",
-                connection_config={
-                    "server_url": "http://10.0.0.5:4096",
-                    "username": "u",
-                    "password": "p",
-                },
-                user_id="user-1",
             )
 
 

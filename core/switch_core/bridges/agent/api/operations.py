@@ -1,17 +1,13 @@
 """HTTP front door for the agent operations (CHOO-1857 / CHOO-490).
 
 `POST /agents/{agent_id}/ops/{operation}` with the operation's arguments as the
-JSON body. Operation names are exactly the MCP tool names — one vocabulary, so
-a local runtime translating between the two is `POST /ops/${toolName}` and
-nothing more.
-
-Both front doors are built from the **same** registry: this one dispatches into
-it, and the MCP server registers its tools from it. Parity is therefore
-structural — an operation is reachable through both doors the moment it exists,
-and neither can quietly fall behind the other.
+JSON body. Operation names are exactly the MCP tool names a session's runtime
+serves its agent — one vocabulary, so the runtime's translation is
+`POST /ops/${toolName}` and nothing more. `GET /agents/{agent_id}/ops` lists
+them, straight from the registry.
 
 What is deliberately NOT here: media upload/download (multipart and binary, so
-HTTP semantics matter), the event stream, connection lifecycle, mediation, and
+HTTP semantics matter), the event stream, connection lifecycle, and
 registration. Those are not agent tools.
 """
 
@@ -63,8 +59,8 @@ class BadArgumentsError(Exception):
 def list_operations() -> dict[str, dict[str, Any]]:
     """Every operation, with its parameters.
 
-    Read straight off the registry both doors are built from, so this is the
-    authoritative list — for clients and for the protocol documentation.
+    Read straight off the registry, so this is the authoritative list — for
+    clients and for the protocol documentation.
     """
     return {
         op.name: {
@@ -87,8 +83,7 @@ async def call_operation(
 
     `connection_id` becomes the caller's session key, so an operation that
     depends on the caller's room binding — `connect_to_room`, `post_message`,
-    `assume_role` — resolves it from the connection rather than from an MCP
-    transport session. That is what makes the two doors interchangeable.
+    `assume_role` — resolves it from the connection.
 
     `session` is set when the caller named an SDK session, and is what those
     same operations prefer: it says which room *this* caller is in, where the

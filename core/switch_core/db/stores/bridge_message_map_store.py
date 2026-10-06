@@ -1,4 +1,4 @@
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import BridgeMessageMap
@@ -33,14 +33,3 @@ class BridgeMessageMapStore:
             )
         )
         return result.scalar_one_or_none()
-
-    async def delete_by_transport_event_id(
-        self, session: AsyncSession, bridge_id: str, transport_event_id: str
-    ) -> None:
-        await session.execute(
-            delete(BridgeMessageMap).where(
-                BridgeMessageMap.bridge_id == bridge_id,
-                BridgeMessageMap.transport_event_id == transport_event_id,
-            )
-        )
-        await session.flush()

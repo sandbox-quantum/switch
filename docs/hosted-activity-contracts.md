@@ -839,7 +839,7 @@ the VM awake.
 
 For a hosted agent every addressed event is written in the same transaction
 as `note_addressed` *(#538)*. That happens in `agent_client.py`
-`_note_hosted_addressed` and `on_task_delegate` *(#538)*.
+`_note_hosted_addressed` *(#538)*.
 `ON CONFLICT DO NOTHING` makes a redelivered Matrix event a no-op. Traffic is
 chat-rate, so the cost is one insert per addressed event, for hosted agents
 only.

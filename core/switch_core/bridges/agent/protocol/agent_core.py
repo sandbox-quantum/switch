@@ -5,7 +5,7 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -18,13 +18,12 @@ from switch_core.addressing import (
     parse_policy,
 )
 from switch_core.agent_display_name import normalise_display_name
-from switch_core.agent_icon import normalise_icon_url, validate_icon_url
+from switch_core.agent_icon import normalise_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.mediation import MediationService
 from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -36,14 +35,10 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
-from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
-    AgentEvent,
     AgentStatus,
-    DelegateTaskResult,
     IntegrationProfile,
-    LlmCallReport,
     ModelSpec,
     ParticipantDescriptor,
     RegistrationResult,
@@ -51,7 +46,6 @@ from switch_core.bridges.agent.protocol.types import (
     RoomDetailDescriptor,
     RoomWideMentionStatus,
     SendTargetedResult,
-    ToolCallReport,
     ToolSpec,
 )
 from switch_core.bridges.agent.registration_bootstrap import (
@@ -67,7 +61,6 @@ from switch_core.clients.admin_messages import (
 )
 from switch_core.db.models import (
     Agent,
-    AgentRuntimeState,
     ApiKey,
     HostedLaunch,
     Message,
@@ -78,32 +71,18 @@ from switch_core.db.models import (
     Room,
     RoomGroup,
     RoomRole,
-    Task,
     Tool,
     User,
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.agent_runtime_state_store import (
-    IDLE as RUNTIME_STATE_IDLE,
-)
-from switch_core.db.stores.agent_runtime_state_store import (
-    AgentRuntimeStateStore,
-)
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_api_key
-from switch_core.deeplinks import deeplink_for_platform
-from switch_core.events import (
-    LlmCallReport as RoomLlmCallReport,
-)
-from switch_core.events import (
-    ToolCallReport as RoomToolCallReport,
-)
+from switch_core.db.tenant_lookup import tenant_of_api_key
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
@@ -138,7 +117,6 @@ if TYPE_CHECKING:
     )
     from switch_core.db.stores.external_user_store import ExternalUserStore
     from switch_core.db.stores.room_store import RoomStore
-    from switch_core.db.stores.task_store import TaskStore
     from switch_core.gateway.schemas import AgentDetail
     from switch_core.room_service import RoomCreateResult, RoomService
     from switch_core.rooms_yaml import RoomYamlService
@@ -155,11 +133,6 @@ _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
 # History comes from a single indexed query now, so the only thing this guards
 # is the size of the response.
 HISTORY_MAX_LIMIT = 500
-
-# The post-invocation hooks answer in a different vocabulary from the
-# pre-invocation ones: `ok` / `blocked` / `redacted` rather than `proceed` /
-# `blocked`. Nothing currently returns anything but this.
-POST_INVOCATION_OK = "ok"
 
 
 def _epoch_ms(when: Any) -> int | None:
@@ -281,7 +254,6 @@ class AgentCore:
         collab_lifecycle: CollaborationBridgeLifecycleService,
         event_buffer: EventBuffer,
         connections: AgentConnectionRegistry,
-        task_store: TaskStore,
         resource_service: ResourceService,
         api_key_store: ApiKeyStore,
         api_key_cache: ApiKeyCache,
@@ -300,7 +272,6 @@ class AgentCore:
         self.sessions = SessionReporter(telemetry, connections)
         self.agent_store = agent_store
         self.agent_session_store = agent_session_store
-        self.agent_runtime_state_store = AgentRuntimeStateStore()
         self.room_role_store = RoomRoleStore()
         self.room_group_store = RoomGroupStore()
         self.message_store = MessageStore()
@@ -316,11 +287,7 @@ class AgentCore:
         # visible to all of them. Owning a registry here would split the live
         # connection set in two.
         self.connections = connections
-        self.task_store = task_store
         self.resource_service = resource_service
-        self.mediation = MediationService(
-            session_factory=session_factory, agent_store=agent_store
-        )
         self.api_key_store = api_key_store
         # Shared with the bearer-auth middleware for the same reason as
         # `connections`: a key this service rotates must stop authenticating
@@ -347,7 +314,6 @@ class AgentCore:
         metadata: dict[str, Any] | None = None,
         owner_id: str,
         parent_agent_id: str | None = None,
-        oauth_client_id: str | None = None,
         overwrite: bool = False,
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
@@ -477,7 +443,6 @@ class AgentCore:
                     connector_type=connector_type,
                     integration_profile=profile_data,
                     metadata=metadata,
-                    oauth_client_id=oauth_client_id,
                     owner_id=owner_id,
                     parent_agent_id=parent_agent_id,
                     tools=tool_specs,
@@ -500,7 +465,6 @@ class AgentCore:
                     connector_type=connector_type,
                     integration_profile=profile_data,
                     metadata=metadata,
-                    oauth_client_id=oauth_client_id,
                     owner_id=owner_id,
                     parent_agent_id=parent_agent_id,
                     api_key_hash=api_key_hash,
@@ -538,7 +502,6 @@ class AgentCore:
         return RegistrationResult(
             agent_id=agent_id,
             api_key=api_key,
-            oauth_client_id=oauth_client_id,
         )
 
     async def register_agent_with_token(
@@ -572,15 +535,12 @@ class AgentCore:
         The token also decides the *tenant* the new agent and its API key land
         in, and that is bound here rather than left to the caller. The HTTP
         registration endpoint has ``BearerAuthMiddleware`` in front of it doing
-        the same thing. This path does not: a server-side connector calls it
-        in-process from ``server_connectors/core.py``, which binds its own
-        row's tenant around the call (``_register_agent``) — from boot, and
-        from ``POST /connectors``, where the tenant already bound is the
-        *requesting operator's*, which is not necessarily the connector's.
+        the same thing; an in-process caller has nothing in front of it, and
+        whatever tenant it happens to have bound is not necessarily the
+        token's.
 
-        So the binding here is not filling a vacuum; it is overriding whatever
-        the caller had, with the one thing that is authoritative for these
-        rows. Bearer authentication later reads ``api_keys.tenant_id`` back as
+        So the binding here overrides whatever the caller had, with the one
+        thing that is authoritative for these rows. Bearer authentication later reads ``api_keys.tenant_id`` back as
         the source of truth, so a key filed under the wrong tenant would keep
         confirming itself on every subsequent call.
         """
@@ -641,7 +601,6 @@ class AgentCore:
         connector_type: str,
         integration_profile: dict[str, Any],
         metadata: dict[str, Any] | None,
-        oauth_client_id: str | None,
         owner_id: str,
         parent_agent_id: str | None,
         api_key_hash: str,
@@ -682,7 +641,6 @@ class AgentCore:
             api_key_id=api_key_record.id,
             owner_id=owner_id,
             parent_agent_id=parent_agent_id,
-            oauth_client_id=oauth_client_id,
             metadata_=metadata,
             addressing_policy=(
                 addressing_policy.model_dump()
@@ -730,7 +688,6 @@ class AgentCore:
         connector_type: str,
         integration_profile: dict[str, Any],
         metadata: dict[str, Any] | None,
-        oauth_client_id: str | None,
         owner_id: str,
         parent_agent_id: str | None,
         tools: list[ToolSpec],
@@ -764,7 +721,6 @@ class AgentCore:
             connector_type=connector_type,
             integration_profile=integration_profile,
             metadata_=metadata,
-            oauth_client_id=oauth_client_id,
             parent_agent_id=parent_agent_id,
             **icon_fields,
             **display_name_fields,
@@ -898,28 +854,6 @@ class AgentCore:
             if updates:
                 await self.agent_store.update(session, agent_id, **updates)
                 await session.commit()
-
-    async def set_agent_icon(self, agent_id: str, icon_url: str | None) -> None:
-        """Set, change, or clear an agent's icon.
-
-        A URL replaces whatever the agent has; ``None`` clears it, leaving the
-        agent with no icon so callers fall back to their own default. This is
-        deliberately a separate operation from ``update_agent`` rather than
-        another optional field on it: there, ``None`` means "leave alone", and
-        an icon needs "remove it" to be sayable.
-
-        Raises:
-            InvalidIconUrl: the URL is malformed or points somewhere unsafe.
-            ValueError: no agent with this id exists.
-        """
-        validated = validate_icon_url(icon_url) if icon_url is not None else None
-
-        async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            if agent is None:
-                raise ValueError(f"No such agent: {agent_id}")
-            await self.agent_store.update(session, agent_id, icon_url=validated)
-            await session.commit()
 
     async def _remove_bridge_identities(self, tenant_id: str, agent_name: str) -> None:
         """Remove `agent_name`'s platform identity from the bridges of
@@ -1109,8 +1043,6 @@ class AgentCore:
             alias_by_agent = await self.room_store.list_aliases(session, room_id)
         result: list[ParticipantDescriptor] = []
         for agent in agents:
-            profile = agent.integration_profile or {}
-            task_protocol = profile.get("task_protocol", {})
             result.append(
                 ParticipantDescriptor(
                     id=agent.id,
@@ -1118,8 +1050,6 @@ class AgentCore:
                     type="agent",
                     agent_type=agent.agent_type,
                     display_name=agent.display_name,
-                    can_delegate=bool(task_protocol.get("can_delegate", False)),
-                    can_accept=bool(task_protocol.get("can_accept", False)),
                     status=statuses[agent.id],
                     room_role=room_role_by_agent.get(agent.id),
                     alias=alias_by_agent.get(agent.id),
@@ -1144,17 +1074,6 @@ class AgentCore:
         return await compute_agent_statuses(
             session, agents, room_id, self.agent_session_store, self.connections
         )
-
-    async def get_agent_statuses_by_name(
-        self,
-        room_id: str,
-        agent_names: list[str],
-    ) -> dict[str, AgentStatus]:
-        """Return status keyed by agent name. Unknown names are omitted."""
-        async with self.session_factory() as session:
-            agents = await self.agent_store.get_by_names(session, agent_names)
-            statuses = await self._compute_statuses(session, agents, room_id)
-        return {a.name: statuses[a.id] for a in agents}
 
     async def get_agent_statuses_by_ids(
         self,
@@ -1389,34 +1308,6 @@ class AgentCore:
             "attachments": posted,
         }
 
-    async def _require_can_address(
-        self,
-        session: AsyncSession,
-        target: Agent,
-        *,
-        room_id: str,
-        group_id: str | None,
-        sender_agent_id: str,
-    ) -> None:
-        """Raise unless `sender_agent_id` may address `target` in this room.
-
-        For delegation, which creates a row someone is expected to work. A
-        message the target can decline in the room is checked with
-        :meth:`_can_address` and reported instead.
-        """
-        if await self._can_address(
-            session,
-            target,
-            room_id=room_id,
-            group_id=group_id,
-            sender_agent_id=sender_agent_id,
-        ):
-            return
-        raise PermissionError(
-            f"Agent {sender_agent_id} is not permitted to address "
-            f"{target.name} in this room."
-        )
-
     async def _can_address(
         self,
         session: AsyncSession,
@@ -1567,8 +1458,6 @@ class AgentCore:
         # happens to an `@name` in a plain message. Refusing here would make
         # the same request succeed or fail depending on which tool sent it, and
         # would leave the sender's account of it the only one on record.
-        # Delegation is the exception, and raises: a task is a row someone is
-        # expected to work, not something a room can decline.
         async with self.session_factory() as session:
             room_row = await self.room_store.get(session, room_id)
         group_id = room_row.group_id if room_row is not None else None
@@ -1729,252 +1618,6 @@ class AgentCore:
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
         await collaboration_core.handle_outbound_typing(room.id, agent.name, is_typing)
-
-    async def update_status(self, agent_id: str, room_id: str, detail: str) -> None:
-        """Send a status message to a room."""
-        room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None:
-            raise ValueError("Agent client not running")
-        await client.send_message(
-            room.transport_room_id, f"*{detail}*", format="markdown", metered=True
-        )
-
-    async def set_runtime_state(
-        self,
-        agent_id: str,
-        room_id: str,
-        state: str,
-        *,
-        thread_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        control_capabilities: dict[str, bool] | None = None,
-        anchor_event_id: str | None = None,
-    ) -> None:
-        """Record and broadcast an agent's runtime state in a room.
-
-        Persists the latest state (so it is queryable via `!status`) and emits
-        a `com.switch.agent.runtime_state` room event for protocol clients that
-        watch it. Reported by the Switch Console connector as its managed
-        session transitions.
-
-        What a bridged channel shows of a running turn is the SDK session
-        publication, not this: no collaboration adapter renders the event any
-        more. `thread_id`, `detail` and `anchor_event_id` still ride it as
-        transient routing — never persisted as part of the state — and describe
-        where the turn is happening for a client that wants to draw it.
-
-        The `switchdash://` deeplink is rewritten to a gateway HTTP redirect for
-        platforms that linkify only http(s) (Discord, Telegram), so the "Open in
-        Switch Console" link is clickable there. It takes both a configured
-        `GATEWAY_PUBLIC_URL` and a room whose bridge needs the hop: the redirect
-        lands in the same place the deeplink already points, so handing it to a
-        platform that renders the scheme — Mattermost, Slack — sends the reader
-        through the browser for nothing. A room on no bridge keeps the raw link
-        for the same reason. When `GATEWAY_PUBLIC_URL` is unset the raw deeplink
-        is left untouched whatever the platform.
-
-        The result is what gets persisted and emitted, so the bridged status
-        message and the `!status` command surface the same link.
-        """
-        room = await self.require_room_member(agent_id, room_id)
-        async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            if agent is None:
-                raise ValueError(f"Agent not found: {agent_id}")
-            room_row = await self.room_store.get(session, room.id)
-            bridge_type: str | None = None
-            if room_row is not None and room_row.bridge_id is not None:
-                bridge = await self.bridge_store.get(session, room_row.bridge_id)
-                bridge_type = bridge.type if bridge is not None else None
-            deeplink_url = deeplink_for_platform(
-                deeplink_url,
-                self.config.gateway_public_url,
-                # A room on no bridge has no platform to accommodate, so it
-                # keeps the link Switch Console built.
-                bridge_type is None
-                or self.collab_lifecycle.renders_custom_url_schemes(bridge_type),
-            )
-            await self.agent_runtime_state_store.upsert(
-                session,
-                agent_id,
-                room.id,
-                state,
-                deeplink_url=deeplink_url,
-                control_capabilities=control_capabilities,
-            )
-            await session.commit()
-
-        await self._emit_runtime_state(
-            agent_id=agent_id,
-            agent_name=agent.name,
-            transport_room_id=room.transport_room_id,
-            room_id=room.id,
-            state=state,
-            mention_handle=await self._mention_handle_for(
-                agent, room_row.bridge_id if room_row is not None else None
-            ),
-            thread_id=thread_id,
-            deeplink_url=deeplink_url,
-            detail=detail,
-            anchor_event_id=anchor_event_id,
-        )
-
-    async def _emit_runtime_state(
-        self,
-        *,
-        agent_id: str,
-        agent_name: str,
-        transport_room_id: str,
-        room_id: str,
-        state: str,
-        mention_handle: str | None,
-        thread_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        anchor_event_id: str | None = None,
-    ) -> None:
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None or client.transport is None:
-            logger.debug(
-                "No live client for agent %s; skipping runtime-state emit", agent_id
-            )
-            return
-        await client.send_event(
-            transport_room_id,
-            "com.switch.agent.runtime_state",
-            {
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "room_id": room_id,
-                "state": state,
-                "mention_handle": mention_handle,
-                "thread_id": thread_id,
-                "deeplink_url": deeplink_url,
-                "detail": detail,
-                "anchor_event_id": anchor_event_id,
-            },
-        )
-
-    async def sweep_runtime_states(self) -> None:
-        """Reset to idle any runtime state whose session heartbeat has lapsed.
-
-        There is no reliable session-close signal, so a session that crashes or
-        drops while `working`/`awaiting-input` would otherwise leave its surface
-        stuck on the bridge. Each non-idle row is checked against the same
-        liveness window `!status` uses; stale ones are collapsed to idle and a
-        clear event is emitted.
-
-        Liveness is the same union every other reader takes (CHOO-1857): the
-        heartbeat rows for clients still polling, the live connections for
-        clients on the push transport, and the binding and host lease for a
-        session Switch has a record of — whose connection says nothing about
-        which room it is in once its siblings share it. Checking only the rows
-        made this sweep clear the state of a perfectly live session on every
-        pass — and because the bridge deletes the "working on it…" message on
-        idle and posts a new one on the next update, the visible effect was the
-        status message being deleted and recreated on every refresh rather than
-        edited in place.
-        """
-        # This sweep spans every tenant by nature — it is the one place that
-        # decides whether *any* stale row anywhere needs resetting — so it
-        # asks the exemption which tenants there are (`db/tenant_lookup.py`)
-        # and reads each tenant's rows scoped to it. That is one extra round
-        # trip every five seconds, which is what the enumeration costs now
-        # that a single cross-tenant read is not available to it.
-        #
-        # Everything done *with* a row happens inside that row's own tenant,
-        # including the emit at the end: the clear event goes out to a bridge,
-        # which resolves a mention handle and posts a message, and those are
-        # writes in the row's tenant like any other. Closing the binding after
-        # the upsert and leaving the tail outside it would put exactly the
-        # visible half of the work back on whatever was ambient.
-        rows: list[AgentRuntimeState] = []
-        occupied: set[tuple[str, str]] = set()
-        for tenant_id in await all_tenant_ids(self.session_factory):
-            async with tenant_session(self.session_factory, tenant_id) as session:
-                # Filtered on the row's own tenant, not left to the policy: on an
-                # owner connection no policy narrows this read, and the fan-out
-                # would act on every tenant's rows once per tenant. See
-                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                active = [
-                    row
-                    for row in await self.agent_runtime_state_store.get_active(session)
-                    if row.tenant_id == tenant_id
-                ]
-                rows.extend(active)
-                for agent_id in {row.agent_id for row in active}:
-                    occupied.update(
-                        (agent_id, room)
-                        for room in rooms_occupied(agent_id, self.connections)
-                    )
-        for row in rows:
-            if (row.agent_id, row.room_id) in occupied:
-                continue
-            with tenant_scope(row.tenant_id):
-                await self._sweep_one_runtime_state(row.agent_id, row.room_id)
-
-    async def _sweep_one_runtime_state(self, agent_id: str, room_id: str) -> None:
-        """One stale row's worth of the sweep, under its tenant.
-
-        Split out so the binding is the whole body rather than a prefix of it:
-        an early `return` here cannot accidentally leave later work outside
-        the scope the way an early `continue` in the loop could.
-        """
-        async with self.session_factory() as session:
-            live = await self.agent_session_store.get_live_agent_ids(
-                session, [agent_id], room_id
-            )
-        if agent_id in live:
-            return
-        async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            room = await self.room_store.get(session, room_id)
-            if agent is None or room is None:
-                return
-            await self.agent_runtime_state_store.upsert(
-                session, agent_id, room_id, RUNTIME_STATE_IDLE
-            )
-            await session.commit()
-        await self._emit_runtime_state(
-            agent_id=agent.id,
-            agent_name=agent.name,
-            transport_room_id=room.transport_room_id,
-            room_id=room.id,
-            state=RUNTIME_STATE_IDLE,
-            mention_handle=await self._mention_handle_for(agent, room.bridge_id),
-            thread_id=None,
-        )
-
-    async def _mention_handle_for(
-        self, agent: Agent, bridge_id: str | None
-    ) -> str | None:
-        """The handle to @-mention when this agent needs its operator, on the
-        platform the room is bridged to.
-
-        Resolved from the agent's owner and the messaging account that owner
-        has claimed on this bridge (CHOO-2137), rather than from a handle typed
-        into the agent's config. A handle is per-platform — the same person is
-        one name on Slack and another on Telegram — so a single configured
-        string could only ever be right on one of them, and was silently plain
-        text everywhere else.
-
-        None when the agent has no owner, the room has no bridge, or the owner
-        has claimed nothing here. Callers disclose that rather than dropping
-        the notification quietly.
-        """
-        if agent.owner_id is None or bridge_id is None:
-            return None
-        async with self.session_factory() as session:
-            claimed = await self.external_user_store.get_by_user(
-                session, agent.owner_id
-            )
-        # Claiming is not exclusive and one person may hold several accounts on
-        # a bridge. Sorted so a second account cannot change who gets pinged
-        # from one call to the next.
-        here = sorted(u.external_username for u in claimed if u.bridge_id == bridge_id)
-        return here[0] if here else None
 
     @staticmethod
     def _timeline_entry(
@@ -2175,64 +1818,6 @@ class AgentCore:
 
     # ── Events ───────────────────────────────────────────────────────────────
 
-    async def _rooms_agent_is_in(self, agent_id: str) -> set[str]:
-        """The rooms the agent is a member of, read fresh.
-
-        Archived rooms included: what this is applied as is membership, and an
-        agent still in an archived room was not removed from it.
-        """
-        async with self.session_factory() as session:
-            rooms = await self.room_store.get_rooms_for_agent(
-                session, agent_id, include_archived=True
-            )
-        return {room.id for room in rooms}
-
-    async def poll_events(self, agent_id: str, timeout: float = 10) -> list[AgentEvent]:
-        """Poll for events across all rooms the agent is in.
-
-        Membership is applied here rather than trusted from the buffer, which
-        is keyed by agent and knows nothing about who is in what. Its
-        room-scoped sibling `poll_room_events` calls `require_room_member`;
-        without the same check this call would hand over events from a room
-        the agent has since been removed from.
-
-        `AgentConsumer.on_removed` already empties the buffer of a removed
-        room's events, so this is the second of two answers. It is the
-        authoritative one: that signal is in-process, and this reads the table
-        the removal wrote.
-        """
-        async with self.session_factory() as session:
-            await self.agent_session_store.touch_heartbeat(session, agent_id, None)
-            await session.commit()
-        return await self.event_buffer.poll(
-            agent_id,
-            timeout=timeout,
-            rooms=await self._rooms_agent_is_in(agent_id),
-        )
-
-    async def poll_notifications(
-        self, agent_id: str, timeout: float = 10
-    ) -> list[AgentEvent]:
-        """Long-poll the agent's notification stream across all its rooms.
-
-        Returns only notifiable events (addressed messages, task events, and
-        room_join events the agent listens for) — see EventBuffer. Unlike
-        `poll_events`, this does NOT touch any heartbeat: an auto_session
-        connector maintains its "watching" presence via the dedicated
-        `touch_watch_heartbeat` path, decoupled from this long-poll. Consuming
-        this stream never drains the per-room queues, so live session pollers
-        are unaffected.
-
-        Membership is applied exactly as it is for `poll_events`, and matters
-        more here: this is the stream carrying the messages addressed at the
-        agent.
-        """
-        return await self.event_buffer.poll_notifications(
-            agent_id,
-            timeout=timeout,
-            rooms=await self._rooms_agent_is_in(agent_id),
-        )
-
     async def touch_watch_heartbeat(self, agent_id: str) -> None:
         """Refresh an auto_session connector's global "watching" heartbeat.
 
@@ -2245,339 +1830,6 @@ class AgentCore:
         async with self.session_factory() as session:
             await self.agent_session_store.touch_heartbeat(session, agent_id, None)
             await session.commit()
-
-    async def poll_room_events(
-        self, agent_id: str, room_id: str, timeout: float = 10
-    ) -> list[AgentEvent]:
-        """Poll for events in a specific room.
-
-        Polling no longer refreshes the room-scoped liveness heartbeat —
-        session_addressable agents keep it fresh via the dedicated
-        `touch_connection` renew path (POST /connection/renew), decoupled from
-        the long-poll cadence so the TTL can stay short.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return await self.event_buffer.poll_room(agent_id, room_id, timeout=timeout)
-
-    async def report_events(
-        self,
-        agent_id: str,
-        room_id: str,
-        events: Sequence[ToolCallReport | LlmCallReport],
-    ) -> None:
-        """Report tool call and LLM call events to a room."""
-        room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None:
-            raise ValueError("Agent client not running")
-        if client.transport is None:
-            raise ValueError("Agent client not connected")
-
-        for event in events:
-            if isinstance(event, ToolCallReport):
-                tool_event = RoomToolCallReport(
-                    agent_id=agent_id,
-                    tool_id=event.tool_name,
-                    args=event.arguments,
-                    result=event.result,
-                    duration_ms=event.duration_ms,
-                    cost=event.cost,
-                )
-                await client.send_event(
-                    room.transport_room_id,
-                    "com.switch.report.tool_call",
-                    tool_event.model_dump(exclude_none=True),
-                )
-            elif isinstance(event, LlmCallReport):
-                llm_event = RoomLlmCallReport(
-                    agent_id=agent_id,
-                    model_id=event.model,
-                    messages=event.messages,
-                    response=event.response,
-                    usage=event.usage,
-                    duration_ms=event.duration_ms,
-                    cost=event.cost,
-                )
-                await client.send_event(
-                    room.transport_room_id,
-                    "com.switch.report.llm_call",
-                    llm_event.model_dump(exclude_none=True),
-                )
-
-    # ── Tasks ──────────────────────────────────────────────────────────────────
-
-    async def delegate_task(
-        self,
-        requester_id: str,
-        room_id: str,
-        performer_id: str,
-        summary: str,
-        description: str,
-    ) -> DelegateTaskResult:
-        """Delegate a task from one agent to another.
-
-        Returns task_id and the performer's reachability status at delegation time.
-        Raises ValueError if agents or room not found, or agents not in room,
-        and `BudgetExceeded` if either agent has reached a budget covering it.
-        """
-        room = await self.require_room_poster(requester_id, room_id)
-
-        async with self.session_factory() as session:
-            performer = await self.agent_store.get(session, performer_id)
-            room_row = await self.room_store.get(session, room.id)
-        if performer is None:
-            raise ValueError(f"Performer agent not found: {performer_id}")
-
-        await self.require_room_member(performer_id, room_id)
-
-        # Scoped addressing policy: delegating a task addresses the performer,
-        # so it is subject to the same allow-list as a message. Unlike the
-        # message path (which demotes to unaddressed) a task is explicit, so a
-        # denied delegation fails loud rather than silently vanishing.
-        async with self.session_factory() as session:
-            await self._require_can_address(
-                session,
-                performer,
-                room_id=room.id,
-                group_id=room_row.group_id if room_row is not None else None,
-                sender_agent_id=requester_id,
-            )
-            await self.budget_guard.require_within(
-                session, tenant_id=require_tenant_id(), agent_id=performer_id
-            )
-
-        async with self.session_factory() as session:
-            task = Task(
-                room_id=room.id,
-                requester_agent_id=requester_id,
-                performer_agent_id=performer_id,
-                summary=summary,
-                description=description,
-                status="pending",
-                updates=[],
-            )
-            await self.task_store.create(session, task)
-            await session.commit()
-            task_id = task.id
-
-        client = self.client_lifecycle.get_by_agent_id(requester_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.delegate",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": requester_id,
-                    "performer_agent_id": performer_id,
-                    "summary": summary,
-                    "description": description,
-                },
-            )
-
-        target_status = await self.get_agent_status(performer_id, room_id)
-        return DelegateTaskResult(task_id=task_id, target_status=target_status)
-
-    async def accept_task(self, agent_id: str, task_id: str) -> None:
-        """Accept a pending task (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can accept the task")
-        if task.status != "pending":
-            raise ValueError(f"Task not in pending state: {task.status}")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.accept(session, task_id)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.accept",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                },
-            )
-
-    async def update_task(
-        self,
-        agent_id: str,
-        task_id: str,
-        update: str,
-    ) -> None:
-        """Append a progress update to a task (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can update the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.append_update(session, task_id, update)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.update",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                    "update": update,
-                },
-            )
-
-    async def finalise_task(
-        self,
-        agent_id: str,
-        task_id: str,
-        outcome: str,
-    ) -> None:
-        """Finalise a task with an outcome (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can finalise the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.finalise(session, task_id, outcome)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.finalise",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                    "outcome": outcome,
-                },
-            )
-            await client.send_message(
-                room.transport_room_id, outcome, format="markdown", metered=True
-            )
-
-    async def cancel_task(self, agent_id: str, task_id: str, reason: str) -> None:
-        """Cancel a task (requester only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.requester_agent_id != agent_id:
-            raise PermissionError("Only the requester can cancel the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.cancel(session, task_id, reason)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.cancel",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": agent_id,
-                    "performer_agent_id": task.performer_agent_id,
-                    "reason": reason,
-                },
-            )
-
-    async def get_task(self, agent_id: str, task_id: str) -> Task:
-        """Get a task (requester or performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.requester_agent_id != agent_id and task.performer_agent_id != agent_id:
-            raise PermissionError("Only the requester or performer can view the task")
-        return task
-
-    async def list_tasks(
-        self,
-        agent_id: str,
-        room_id: str | None = None,
-        role: str | None = None,
-        status: str | None = None,
-    ) -> list[Task]:
-        """List tasks for an agent. role: 'delegated' (requester) or 'assigned' (performer)."""
-        async with self.session_factory() as session:
-            if role == "delegated":
-                # Tasks the agent requested
-                query = await session.execute(
-                    select(Task).where(Task.requester_agent_id == agent_id)
-                )
-                tasks = list(query.scalars().all())
-            elif role == "assigned":
-                # Tasks assigned to the agent
-                query = await session.execute(
-                    select(Task).where(Task.performer_agent_id == agent_id)
-                )
-                tasks = list(query.scalars().all())
-            else:
-                # Both
-                tasks = await self.task_store.get_by_agent(session, agent_id)
-
-            if room_id:
-                tasks = [t for t in tasks if t.room_id == room_id]
-            if status:
-                tasks = [t for t in tasks if t.status == status]
-        return tasks
-
-    async def list_delegatable_agents(
-        self, agent_id: str, room_id: str
-    ) -> list[ParticipantDescriptor]:
-        """List the agents in a room (the candidates for task delegation)."""
-        await self.require_room_member(agent_id, room_id)
-        async with self.session_factory() as session:
-            agent_ids = await self.room_store.get_agent_ids(session, room_id)
-            agents: list[Agent] = []
-            for aid in agent_ids:
-                agent = await self.agent_store.get(session, aid)
-                if agent is not None:
-                    agents.append(agent)
-            statuses = await self._compute_statuses(session, agents, room_id)
-        result = []
-        for agent in agents:
-            profile = agent.integration_profile or {}
-            task_protocol = profile.get("task_protocol", {})
-            result.append(
-                ParticipantDescriptor(
-                    id=agent.id,
-                    name=agent.name,
-                    type="agent",
-                    agent_type=agent.agent_type,
-                    display_name=agent.display_name,
-                    can_delegate=bool(task_protocol.get("can_delegate", False)),
-                    can_accept=bool(task_protocol.get("can_accept", False)),
-                    status=statuses[agent.id],
-                )
-            )
-        return result
 
     # ── Moderation ────────────────────────────────────────────────────────────
 
@@ -2615,8 +1867,6 @@ class AgentCore:
         channel_type: str | None,
         bridge_id: str | None,
         internal_only: bool = False,
-        admin_mode: bool = False,
-        security_config: dict[str, Any] | None = None,
         instructions: str | None = None,
         reference_ids: list[str] | None = None,
         package_ids: list[str] | None = None,
@@ -2672,8 +1922,6 @@ class AgentCore:
                 channel_type=channel_type,  # type: ignore[arg-type]
                 bridge_id=bridge_id,
                 internal_only=internal_only,
-                admin_mode=admin_mode,
-                protection_config=security_config,
                 instructions=instructions,
                 created_by=agent.owner_id,
                 created_by_kind="agent",
@@ -2890,7 +2138,7 @@ class AgentCore:
         Changing WHO is in a room must not be granted by a public
         ``write_visibility``: that would let any agent add itself to any
         default-visibility room and unlock the member-gated operations (read
-        context, post, tasks). Confine roster changes to the room's owner, an
+        context, post). Confine roster changes to the room's owner, an
         admin, or an agent that is already a member.
         """
         _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
@@ -3006,8 +2254,7 @@ class AgentCore:
             does once one connection carries several sessions — the
             connection's rooms are then the union of theirs, and naming one
             would be a guess. A seat taken without a session falls back to its
-            connection, and to the binding row for callers predating
-            connections.
+            connection.
 
             A controller-backed holder is here while it is connected and a
             member of this room. Switch does not know where its sessions are,
@@ -3023,14 +2270,9 @@ class AgentCore:
             if lease.transport_session_id is None:
                 return None
             connection = self.connections.get(lease.transport_session_id)
-            if connection is not None:
-                return (
-                    next(iter(connection.rooms)) if len(connection.rooms) == 1 else None
-                )
-            conn = await self.agent_session_store.get_connected_room(
-                session, lease.transport_session_id
-            )
-            return conn[1] if conn is not None else None
+            if connection is None or len(connection.rooms) != 1:
+                return None
+            return next(iter(connection.rooms))
 
         async def _locate(lease: RoleLease) -> tuple[bool, str | None]:
             """Return (present_here, session_room_name) for a lease."""
@@ -3731,7 +2973,6 @@ class AgentCore:
             name=room.name,
             description=room.description,
             channel_type=room.channel_type,
-            admin_mode=room.admin_mode,
             instructions=room.instructions,
             transport_room_id=room.transport_room_id,
             matrix_room_id=room.transport_room_id,
@@ -3800,7 +3041,6 @@ class AgentCore:
         name: str | None = None,
         description: str | None = None,
         instructions: str | None = None,
-        admin_mode: bool | None = None,
         join_event_listeners: dict[str, bool] | None = None,
         bridge_id: str | None = None,
         channel_type: str | None = None,
@@ -3838,7 +3078,6 @@ class AgentCore:
                 name=name,
                 description=description,
                 instructions=instructions,
-                admin_mode=admin_mode,
             )
             settings_by_id: dict[str, bool] = {}
             if join_event_listeners:
@@ -3898,64 +3137,6 @@ class AgentCore:
         # count rose anyway.
         await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
-
-    async def list_all_agents(self, agent_id: str) -> list[Agent]:
-        """List all agents (moderation only)."""
-        async with self.session_factory() as session:
-            agents = await self.agent_store.get_all(session)
-        return agents
-
-    async def pre_tool_call(
-        self,
-        agent_id: str,
-        room_id: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Whether this agent may call this tool. Verdict and reason.
-
-        `arguments` is not inspected. It is accepted because a mediation
-        decision that looks at what is being passed is the obvious next thing
-        to want, and because the hook already sends it.
-        """
-        await self.require_room_member(agent_id, room_id)
-        verdict = await self.mediation.tool_access(agent_id, tool_name)
-        return {"verdict": verdict.verdict, "reason": verdict.reason}
-
-    async def pre_llm_request(
-        self,
-        agent_id: str,
-        room_id: str,
-        model: str,
-        messages: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Whether this agent may call this model. Verdict and reason.
-
-        `messages` is not inspected, for the same reason `arguments` is not.
-        """
-        await self.require_room_member(agent_id, room_id)
-        verdict = await self.mediation.model_access(agent_id, model)
-        return {"verdict": verdict.verdict, "reason": verdict.reason}
-
-    async def post_tool_result(
-        self,
-        agent_id: str,
-        room_id: str,
-        tool_name: str,
-        result: Any,
-    ) -> dict[str, Any]:
-        """The hook point after a tool returns. Nothing is decided here yet.
-
-        It has always returned `ok` unconditionally — the verdict used to be
-        the literal string this method itself put on the wire and then read
-        back off it. Kept as the place a post-invocation check would go, and
-        as the membership check the caller is entitled to fail on.
-
-        Note the vocabulary differs from the pre-invocation hooks: these
-        answer `ok` / `blocked` / `redacted`, not `proceed` / `blocked`.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return {"verdict": POST_INVOCATION_OK}
 
     async def list_room_resources(self, room_id: str) -> dict[str, Any]:
         """Return the {reference_types, references, documents} payload for a
@@ -4098,18 +3279,3 @@ class AgentCore:
             )
             return
         await self._post_agent_notice(client, transport_room_id, body)
-
-    async def post_llm_response(
-        self,
-        agent_id: str,
-        room_id: str,
-        model: str,
-        response: Any,
-    ) -> dict[str, Any]:
-        """The hook point after a model answers. Nothing is decided here yet.
-
-        The counterpart to `post_tool_result`, and unconditional for the same
-        reason.
-        """
-        await self.require_room_member(agent_id, room_id)
-        return {"verdict": POST_INVOCATION_OK}

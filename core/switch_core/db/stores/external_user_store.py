@@ -48,19 +48,6 @@ class ExternalUserStore:
         )
         return list(result.scalars().all())
 
-    async def get_by_bridge_and_names(
-        self, session: AsyncSession, bridge_id: str, usernames: list[str]
-    ) -> list[ExternalUser]:
-        if not usernames:
-            return []
-        result = await session.execute(
-            select(ExternalUser).where(
-                ExternalUser.bridge_id == bridge_id,
-                ExternalUser.external_username.in_(usernames),
-            )
-        )
-        return list(result.scalars().all())
-
     async def get_by_client_id(
         self, session: AsyncSession, client_id: str
     ) -> ExternalUser | None:

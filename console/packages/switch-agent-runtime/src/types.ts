@@ -57,24 +57,12 @@ export interface RoomJoinPayload {
   listening: boolean;
 }
 
-export interface TaskPayload {
-  task_id: string;
-  requester_agent_id: string;
-  performer_agent_id: string;
-  summary?: string;
-  description?: string;
-  update?: string;
-  outcome?: string | null;
-  reason?: string | null;
-}
-
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload | TaskPayload;
+  payload: MessagePayload | CommandPayload | RoomJoinPayload;
   /**
-   * The event's position in the agent's buffer. Present on the push transport,
-   * absent on the legacy poll.
+   * The event's position in the agent's buffer, as the event stream numbers it.
    *
    * Load-bearing when a watcher spawns a session: the session's connection has
    * to start from *before* the message that triggered the spawn, or the very
@@ -84,17 +72,12 @@ export interface AgentBridgeEvent {
   /**
    * How far behind the agent is on unaddressed chatter in this event's room,
    * as of this event. Carried only on events the agent is woken for, and only
-   * by a server that counts it — absent on the legacy poll and against an
-   * older server.
+   * by a server that counts it — absent against an older server.
    *
    * `count` is null when nothing can be said: a zero would be believed, and
    * `reason` is why. A reason alongside a number means the number is a floor.
    */
   missed?: { count: number | null; reason: string | null };
-}
-
-export interface AgentBridgeEventResponse {
-  events: AgentBridgeEvent[];
 }
 
 /** The credentials an agent uses to talk to its Switch instance. */

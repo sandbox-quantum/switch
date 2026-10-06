@@ -79,9 +79,9 @@ just test -k "test_name"         # run specific test
 - `room_service.py` / `rooms_yaml.py` — Room lifecycle, configuration, provisioning
 - `clients/` — room participants: `actor.py` (identity, membership, writes: `HumanActor`, `AgentActor`, `SystemActor`) and `consumer.py` (the delivery loop and hooks: `AgentConsumer`, `CommandConsumer`, `WorkspaceConsumer`)
 - `bridges/` — External integrations
-  - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors); `protocol/agent_core.py` is `AgentCore`, `protocol/agent_connections.py` holds each `AgentConnection`
+  - `agent/` — Agent Bridge (HTTP API: agent operations, SSE event stream, connections); `protocol/agent_core.py` is `AgentCore`, `protocol/agent_connections.py` holds each `AgentConnection`
   - `collaboration/` — Collaboration Bridge: one `CollaborationCore` per workspace, driving a `PlatformAdapter` (Slack, Mattermost, Discord, Teams, Telegram)
-  - `resource/` — Resource Bridge (platform resource management)
+  - `resource/` — Resource Bridge (room references, documents and packages)
 - `gateway/` — Management API for the frontend
 
 **Key patterns:**
@@ -204,6 +204,6 @@ those from the code: `core/switch_core/db/models.py` for the schema,
 `core/switch_core/room_service.py` for room provisioning and lifecycle,
 `core/switch_core/bridges/agent/api/handlers.py` for the HTTP surface, and
 `core/switch_core/bridges/agent/operations/definitions.py` for the agent tool
-surface — one definition serves both the MCP server
-(`bridges/agent/mcp/server.py`) and the HTTP front door
-(`bridges/agent/api/operations.py`), so the two cannot drift.
+surface, served over HTTP by `bridges/agent/api/operations.py`
+(`GET`/`POST /agents/{id}/ops`). Switch hosts no MCP server of its own: each
+session's host runs a local MCP server that forwards tool calls to that route.

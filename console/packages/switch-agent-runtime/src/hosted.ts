@@ -78,7 +78,7 @@ export function runtimeInstructions(): string {
 
 const RUNTIME_LINES = [
   'Events from Switch rooms arrive as `[Switch] …` lines delivered into this session by the process that runs it, each naming the room, the sender and the message id.',
-  'Only addressed messages, room_join events, and task events are delivered — unaddressed room chatter is filtered out.',
+  'Only addressed messages and room_join events are delivered — unaddressed room chatter is filtered out.',
   '',
   'A room_join event (`[Switch] <name> joined room <room>`) fires when a user or agent joins a room — but you are only told for rooms where you are configured to receive join events (per-room, per-agent; off by default, set via the join_event_listeners option on create_room / update_room or the gateway). React if it is relevant — e.g. a welcome agent greets the new arrival and explains the room via post_message, or send_targeted_message to address them directly. Your own join does not produce a room_join event.',
   '',
@@ -99,16 +99,7 @@ const RUNTIME_LINES = [
   "To view a file that appears in read_context history but did NOT arrive with a path (e.g. an unaddressed file posted earlier), call the download_attachment tool with the attachment's mxc (from the read_context attachments field). It writes the file locally and returns the path — then Read that path.",
   'To send files into the room, call the send_attachment tool with `path` (one file) or `paths` (several, delivered as ONE message) plus an optional caption/thread_id. Any file type works. They post as native room attachments and bridged platforms (Slack, Mattermost) receive them as real file uploads.',
   '',
-  'When you receive a task_delegate event (only delivered if your integration profile has can_accept=true):',
-  '1. Call accept_task with the task_id to move it to ongoing.',
-  '2. Call read_context with since if the task summary and description do not tell you enough about the surrounding conversation.',
-  '3. Perform the work described in the task. Optionally call update_task(task_id, update) with progress messages as you work — these are persisted.',
-  '4. Call finalise_task(task_id, outcome) with a one-string description of what happened (success or failure).',
-  '',
-  'When you receive task_accept, task_update, or task_finalise events for tasks you delegated, review the progress/outcome and continue your work accordingly.',
-  'When you receive a task_cancel event, the task is dead — do not finalise it.',
-  '',
-  'read_context, post_message, send_targeted_message and the task tools all act on the room you are connected to, so connect_to_room comes first — once. That connection then holds for the rest of the session: do not reconnect before each call. Call connect_to_room again only to switch rooms, to return after switching, or when a tool fails saying you are not connected.',
+  'read_context, post_message and send_targeted_message all act on the room you are connected to, so connect_to_room comes first — once. That connection then holds for the rest of the session: do not reconnect before each call. Call connect_to_room again only to switch rooms, to return after switching, or when a tool fails saying you are not connected.',
   "read_context also takes an optional room_id: pass one to read any room you are a member of without connecting to it, so you can catch up elsewhere while staying in the room you are attending. It does not move you, and it does not clear the other room's unread count. Reading a room you are not a member of is refused.",
 ];
 

@@ -8,19 +8,15 @@ from pydantic import BaseModel, model_validator
 # ── Agent integration profile ─────────────────────────────────────────────────
 
 
-class TaskProtocolConfig(BaseModel):
-    can_delegate: bool
-    can_accept: bool
-
-
 # How an agent-type supports a session-control command (reset / compact /
 # interrupt):
 #   - "unsupported": the command never applies to this agent-type.
 #   - "always": the agent-type can always act on it, regardless of session.
 #   - "session_dependent": support depends on the specific live session — e.g.
 #     a Claude Code session launched from Switch Console can be controlled, but a
-#     standalone `claude` session started in a plain terminal cannot. The live
-#     session declares its own capabilities via AgentRuntimeState.
+#     standalone `claude` session started in a plain terminal cannot. Switch
+#     relays the command only to a session placed in the room or an agent with
+#     a bound controller.
 CommandLevel = Literal["unsupported", "always", "session_dependent"]
 
 
@@ -34,11 +30,6 @@ class IntegrationProfile(BaseModel):
     connection_model: Literal[
         "always_on", "session_addressable", "session_passive", "auto_session"
     ]
-    message_exchange: bool
-    pre_invocation_mediation: list[str]
-    post_invocation_mediation: list[str]
-    event_reporting: list[str]
-    task_protocol: TaskProtocolConfig
     # Defaults to all-"unsupported" so integration profiles persisted before
     # this feature (which lack the key) re-validate cleanly and behave as
     # "no session-control support" until the agent is re-registered.
@@ -59,33 +50,6 @@ class ModelSpec(BaseModel):
 class RegistrationResult(BaseModel):
     agent_id: str
     api_key: str
-    oauth_client_id: str | None = None
-
-
-# ── Reporting ─────────────────────────────────────────────────────────────────
-
-
-class ToolCallReport(BaseModel):
-    type: Literal["tool_call"] = "tool_call"
-    tool_name: str
-    arguments: dict[str, Any]
-    result: Any
-    request_id: str
-    timestamp: str
-    duration_ms: int | None = None
-    cost: float | None = None
-
-
-class LlmCallReport(BaseModel):
-    type: Literal["llm_call"] = "llm_call"
-    model: str
-    messages: list[dict[str, Any]]
-    response: Any
-    request_id: str
-    timestamp: str
-    usage: dict[str, Any] | None = None
-    duration_ms: int | None = None
-    cost: float | None = None
 
 
 class RoomDescriptor(BaseModel):
@@ -145,19 +109,12 @@ class SendTargetedResult(BaseModel):
     target_statuses: dict[str, AgentStatus | RoomWideMentionStatus]
 
 
-class DelegateTaskResult(BaseModel):
-    task_id: str
-    target_status: AgentStatus
-
-
 class ParticipantDescriptor(BaseModel):
     id: str
     name: str
     type: Literal["agent", "user"]
     agent_type: str | None = None
     display_name: str | None = None
-    can_delegate: bool = False
-    can_accept: bool = False
     status: AgentStatus | None = None
     # The room-scoped role this agent currently (live-lease) holds, if any.
     room_role: str | None = None
@@ -171,7 +128,6 @@ class RoomDetailDescriptor(BaseModel):
     name: str
     description: str
     channel_type: str | None
-    admin_mode: bool
     instructions: str | None
     transport_room_id: str
     # Deprecated alias of `transport_room_id`, sent for the compatibility
@@ -203,16 +159,7 @@ class RoomDetailDescriptor(BaseModel):
     archived: bool = False
 
 
-EventType = Literal[
-    "message",
-    "command",
-    "room_join",
-    "task_delegate",
-    "task_accept",
-    "task_update",
-    "task_finalise",
-    "task_cancel",
-]
+EventType = Literal["message", "command", "room_join"]
 
 
 class AttachmentRef(BaseModel):
@@ -271,61 +218,12 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-class TaskDelegatePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    summary: str
-    description: str
-
-
-class TaskAcceptPayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-
-
-class TaskUpdatePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    update: str
-
-
-class TaskFinalisePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    outcome: str
-
-
-class TaskCancelPayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    reason: str
-
-
-Payload = (
-    MessagePayload
-    | CommandPayload
-    | RoomJoinPayload
-    | TaskDelegatePayload
-    | TaskAcceptPayload
-    | TaskUpdatePayload
-    | TaskFinalisePayload
-    | TaskCancelPayload
-)
+Payload = MessagePayload | CommandPayload | RoomJoinPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
-    "task_delegate": TaskDelegatePayload,
-    "task_accept": TaskAcceptPayload,
-    "task_update": TaskUpdatePayload,
-    "task_finalise": TaskFinalisePayload,
-    "task_cancel": TaskCancelPayload,
 }
 
 

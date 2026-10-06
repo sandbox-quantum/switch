@@ -315,8 +315,8 @@ async function reuseHarness(env: HarnessEnv, manifest: HarnessManifest): Promise
  * The probe is deliberately **unaddressed**: it proves Mattermost → Switch
  * delivery without putting an `@agent` mention on the wire, so it cannot spawn a
  * console session or consume a turn. It is read back through the agent's room
- * history, which carries ordinary chatter, rather than the notification stream,
- * which by design carries only addressed messages.
+ * history, which carries ordinary chatter, rather than the event stream, which
+ * by design carries only what addresses the agent.
  */
 export async function waitForBridgeReady(harness: Harness, deadlineMs = 120_000): Promise<void> {
   const probe = `switch-e2e-bridge-probe ${harness.runId}`;
@@ -417,7 +417,7 @@ export async function teardownHarness(
   }
 
   try {
-    await harness.switch.deleteAgent(harness.agent);
+    await harness.switch.deleteAgentByName(harness.agent.name);
   } catch (error) {
     log(
       `teardown: failed to delete agent ${harness.agent.name} (${harness.agent.id}) — ` +

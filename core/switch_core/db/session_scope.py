@@ -6,8 +6,8 @@ Everything in a request already gets a tenant for free: `gateway/auth.py` and
 that session opens from then on, at any depth, with no call site to remember.
 
 `tenant_session` is that, for the 157 places that open a session from the
-factory with no request behind them — the delivery loop, the collaboration and
-server-connector lifecycle services, the startup seeding in `main.py`, the
+factory with no request behind them — the delivery loop, the collaboration
+lifecycle service, the startup seeding in `main.py`, the
 periodic sweeps. It binds a tenant for the life of one session, and the tenant
 is derived from the row the work is acting on: a message delivery binds the
 room's, an inbound bridge event binds the room's or the bridge's, one row out

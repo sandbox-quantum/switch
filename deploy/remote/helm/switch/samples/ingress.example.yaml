@@ -10,7 +10,7 @@
 #   switch.example.com -> your hostname
 #   letsencrypt-prod    -> your cert-manager ClusterIssuer (or drop TLS entirely)
 #
-# Routing mirrors the managed Ingress: the agent/MCP surface goes to
+# Routing mirrors the managed Ingress: the agent surface goes to
 # switch-core; everything else (the gateway SPA, which proxies /gateway to
 # switch-core) goes to the gateway.
 apiVersion: networking.k8s.io/v1
@@ -19,7 +19,7 @@ metadata:
   name: switch-web
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
-    # Keep MCP/SSE streams alive (ingress-nginx; adjust for your controller).
+    # Keep SSE streams alive (ingress-nginx; adjust for your controller).
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -56,15 +56,6 @@ spec:
           # Agents controllers: enrollment, tokens, assignment, status and
           # their event stream (/v1/management/..., /v1/controllers/...).
           - path: /v1
-            pathType: Prefix
-            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
-          - path: /mcp
-            pathType: Prefix
-            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
-          - path: /oauth
-            pathType: Prefix
-            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
-          - path: /.well-known
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           # The distributed Slack app's OAuth callback and event URLs. Needed

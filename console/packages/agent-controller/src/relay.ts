@@ -167,8 +167,7 @@ function hashToken(token: string): string {
 export function isNotifiable(type: string, payload: Record<string, unknown>): boolean {
   if (type === 'message') return payload.addressed === true;
   if (type === 'room_join') return payload.listening === true;
-  if (type === 'command') return false;
-  return type.startsWith('task_');
+  return false;
 }
 
 const beatSchema = z.object({
@@ -191,8 +190,6 @@ const placementsSchema = z.object({
 const LOCAL_ROUTE = /^\/agents\/([^/]+)\/(events|connection\/[^/]+)$/;
 /** The prefixes forwarded to Switch. Anything else, the management routes above all, stays here. */
 const FORWARDED = /^\/(agents\/[^/]+\/.+|agent-sessions\/.+|sessions\/.+|version|health)$/;
-/** `/agents/<segment>/...` routes whose segment is not an agent. */
-const AGENTLESS_SEGMENTS = new Set(['rooms', 'feature-flags']);
 
 export class LocalRelay {
   private server: Server | null = null;
@@ -581,7 +578,7 @@ export class LocalRelay {
     const segment = /^\/agents\/([^/]+)\//.exec(url.pathname)?.[1];
     if (segment === undefined) return;
     const named = decodeURIComponent(segment);
-    if (named !== agentId && !AGENTLESS_SEGMENTS.has(named))
+    if (named !== agentId)
       throw new HttpRefusal(403, `authenticated as agent ${agentId}, not ${named}`);
   }
 

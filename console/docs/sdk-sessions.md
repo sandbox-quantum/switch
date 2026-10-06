@@ -233,7 +233,7 @@ requires an account with available usage.
 A host binds its live room connection to its SDK session through the server.
 Console refreshes this binding for existing and newly discovered sessions, including
 room detachment. Owner-issued room controls use the same durable command path as
-Console controls. Addressed messages, subscribed join notifications, and task events
+Console controls. Addressed messages and subscribed join notifications
 retain durable delivery identities. Room attachments are copied from authenticated
 server media into session-owned storage; missing media is reported alongside the
 message instead of silently dropping the text.

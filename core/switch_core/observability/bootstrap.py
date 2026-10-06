@@ -21,7 +21,6 @@ from switch_core.logging_context import LogContextFilter
 from switch_core.observability.catalogue import (
     AGENTS_CONNECTED,
     BRIDGES_RUNNING,
-    CONNECTORS_RUNNING,
     CONSUMERS_RUNNING,
     DB_POOL_IN_USE,
     DB_POOL_OVERFLOW,
@@ -31,7 +30,6 @@ from switch_core.observability.exporter import MetricsExporter
 from switch_core.observability.health import (
     HealthMonitor,
     bridges_check,
-    connectors_check,
     database_check,
     message_listener_check,
     session_activity_listener_check,
@@ -81,8 +79,6 @@ class RuntimeProbes:
     bridges_running_by_platform: Callable[[], Mapping[str, int]]
     bridges_configured: Callable[[], int]
     consumers_running: Callable[[], int]
-    connectors_running: Callable[[], int]
-    connectors_configured: Callable[[], int]
     agents_connected: Callable[[], int]
     # None when the engine's pool does not keep these — see
     # :mod:`switch_core.observability.pool`.
@@ -128,7 +124,6 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
                 float(running),
                 {"bridge": "collaboration", "platform": platform},
             )
-        yield GaugeReading(CONNECTORS_RUNNING, float(probes.connectors_running()), {})
 
         stats = probes.pool_stats()
         if stats is not None:
@@ -155,7 +150,6 @@ def start_observability(
             message_listener_check(probes.listener_connected),
             session_activity_listener_check(probes.session_activity_listener_connected),
             bridges_check(probes.bridges_running, probes.bridges_configured),
-            connectors_check(probes.connectors_running, probes.connectors_configured),
         ],
         interval_seconds=HEALTH_REFRESH_INTERVAL_SECONDS,
     )

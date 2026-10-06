@@ -15,7 +15,7 @@ export async function createProvider(location: Location): Promise<LocationProvid
     const proxy = await ensureSshConnected(transport.connectionId, transport.host);
     const ctx = new SshExecutionContext(proxy, { root: location.dir });
     const remoteFs = new SshFileSystem(proxy, location.dir);
-    const settings = new RemoteLocationSettingsProvider(location.id, location.dir, remoteFs);
+    const settings = new RemoteLocationSettingsProvider(location.id, remoteFs);
     await settings.ensure();
     return new LocationProvider(location, transport, { ctx, fs: remoteFs, settings });
   }

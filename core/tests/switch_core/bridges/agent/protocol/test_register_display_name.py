@@ -5,8 +5,8 @@ Two things are load-bearing here. First, that the Matrix client keeps the
 coming back from a platform by matching `sender_name`, so a human name on the
 client would make an agent re-import its own messages as a stranger and appear
 in the room twice. Second, that a re-registration which says nothing about the
-icon or the display name keeps both — server-side connectors re-register with
-`overwrite=True` on every startup.
+icon or the display name keeps both — a client that re-registers with
+`overwrite=True` on every startup knows nothing about either.
 """
 
 from __future__ import annotations
@@ -95,8 +95,8 @@ class TestReregistrationKeepsWhatItWasNotTold:
     async def test_omitting_both_preserves_icon_and_display_name(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # A server-side connector re-registers with overwrite=True on every
-        # startup and knows nothing about either field.
+        # A client that re-registers with overwrite=True on every startup
+        # knows nothing about either field.
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
         agent_id = await register(

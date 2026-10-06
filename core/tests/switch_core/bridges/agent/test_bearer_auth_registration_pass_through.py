@@ -2,8 +2,7 @@
 
 Both `"registration"` (personal, self-serve) and `"bootstrap"` (the
 deployment-wide AGENT_REGISTRATION_TOKEN) keys must reach the registration
-handlers on ordinary paths, and neither may reach `/mcp` — a registration
-token opens no MCP session, bootstrap included.
+handlers.
 """
 
 from __future__ import annotations
@@ -88,17 +87,6 @@ class TestRegistrationPassThrough:
 
         assert sent == []
         assert called["scope"]["api_key"].type == "bootstrap"
-
-    async def test_a_bootstrap_key_is_rejected_on_mcp(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        await _seed_key(session_factory, "tok", "bootstrap")
-        mw, called = _middleware(session_factory)
-
-        sent = await _dispatch(mw, "/mcp", "tok")
-
-        assert "scope" not in called
-        assert sent[0]["status"] == 401
 
     async def test_a_registration_key_reaches_a_registration_path(
         self, session_factory: async_sessionmaker[AsyncSession]

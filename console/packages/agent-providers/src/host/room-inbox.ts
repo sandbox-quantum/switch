@@ -13,11 +13,11 @@ export function roomInputId(event: AgentBridgeEvent): string | null {
       ? String(event.payload.message_id)
       : null;
   if (
-    event.type === 'room_join' &&
-    (!('listening' in event.payload) || event.payload.listening !== true)
+    event.type !== 'room_join' ||
+    !('listening' in event.payload) ||
+    event.payload.listening !== true
   )
     return null;
-  if (event.type !== 'room_join' && !event.type.startsWith('task_')) return null;
   const sorted = (value: unknown): unknown =>
     Array.isArray(value)
       ? value.map(sorted)

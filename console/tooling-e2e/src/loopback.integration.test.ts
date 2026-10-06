@@ -10,7 +10,7 @@ import { eventText } from './switch-client.ts';
  * 1. register an agent, create a channel, add the agent's bot to it, and confirm
  *    Switch provisions a room for that channel;
  * 2. post `@agent …` as a human and confirm the addressed message reaches the
- *    agent-facing notification stream;
+ *    agent's event stream;
  * 3. `POST /agents/{id}/message` as the agent and confirm it lands back in the
  *    Mattermost channel as the bot.
  *
@@ -52,30 +52,33 @@ describe('Switch <-> Mattermost loopback', () => {
     const h = harness!;
     const marker = `SWITCH_E2E_${h.runId.toUpperCase()}`;
 
+    // The stream starts at head: open it before posting, or the message is
+    // already behind it.
+    const watcher = await h.switch.watchAddressedEvents(h.agent);
     const sinceMs = Date.now();
-    const posted = await h.mattermost.post({
-      channelId: h.channel.id,
-      message: `@${h.agent.name} hello ${marker}`,
-    });
-    console.log(`loopback: posted ${posted.id} as ${h.human.username}`);
+    try {
+      const posted = await h.mattermost.post({
+        channelId: h.channel.id,
+        message: `@${h.agent.name} hello ${marker}`,
+      });
+      console.log(`loopback: posted ${posted.id} as ${h.human.username}`);
 
-    // ── inbound: room -> Switch -> agent ────────────────────────────────────
-    const inbound = await h.switch.waitForNotification(
-      h.agent,
-      (event) => eventText(event).includes(marker),
-      120_000
-    );
-    if (!inbound.match) {
-      throw new Error(
-        `Addressed message never reached the agent's notification stream. Saw: ${JSON.stringify(
-          inbound.seen
-        ).slice(0, 1000)}`
+      // ── inbound: room -> Switch -> agent ──────────────────────────────────
+      const inbound = await watcher.waitFor((event) => eventText(event).includes(marker), 120_000);
+      if (!inbound.match) {
+        throw new Error(
+          `Addressed message never reached the agent's event stream. Saw: ${JSON.stringify(
+            inbound.seen
+          ).slice(0, 1000)}`
+        );
+      }
+      expect(inbound.match.room_id).toBe(h.room.id);
+      console.log(
+        `loopback: agent received event type=${inbound.match.type} room=${inbound.match.room_id}`
       );
+    } finally {
+      watcher.close();
     }
-    expect(inbound.match.room_id).toBe(h.room.id);
-    console.log(
-      `loopback: agent received event type=${inbound.match.type} room=${inbound.match.room_id}`
-    );
 
     // ── outbound: agent -> Switch -> room ───────────────────────────────────
     const reply = `ack ${marker}`;

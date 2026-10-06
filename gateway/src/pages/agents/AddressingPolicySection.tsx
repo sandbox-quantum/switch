@@ -268,8 +268,8 @@ export default function AddressingPolicySection({
           Addressing policy
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          Controls who may address this agent (@mention, targeted message, or task
-          delegation). Open means any room participant can; restricted permits only
+          Controls who may address this agent (@mention or targeted message). Open
+          means any room participant can; restricted permits only
           senders matching an allow-rule.
         </Typography>
       </Box>

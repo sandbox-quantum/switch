@@ -49,9 +49,8 @@ class CallbackIngress:
     Mattermost server to a URL, so there has to be something listening.
 
     It is a port of its own rather than a route on the agent API. The agent API
-    carries the agent surface, the MCP server and the operator dashboard, and a
-    callback route on it would mean one over-broad proxy rule away from
-    publishing all three. Here the whole of what an operator exposes is
+    carries the agent surface and the operator dashboard, and a callback route
+    on it would mean one over-broad proxy rule away from publishing both. Here the whole of what an operator exposes is
     callbacks, so a mistake can only expose callbacks.
 
     It is shared rather than one per bridge, because a per-bridge listener

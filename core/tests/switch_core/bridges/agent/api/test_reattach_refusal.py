@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
-from switch_core.bridges.agent.api.handlers import poll_events
+from switch_core.bridges.agent.api.handlers import open_event_stream
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
@@ -62,7 +62,7 @@ def _attach(protocol: _Protocol) -> Any:
 
 
 async def _reopen(protocol: _Protocol, expected_generation: int | None) -> Any:
-    return await poll_events(
+    return await open_event_stream(
         AGENT_ID,
         SimpleNamespace(id=AGENT_ID, metadata_={}),  # type: ignore[arg-type]
         protocol,  # type: ignore[arg-type]

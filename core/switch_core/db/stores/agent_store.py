@@ -1,15 +1,12 @@
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
     Agent,
     Model,
-    Skill,
     Tool,
-    agent_skills,
     require_tenant_id,
     room_agents,
-    room_skills,
 )
 
 
@@ -79,14 +76,6 @@ class AgentStore:
         )
         return result.scalar_one_or_none()
 
-    async def get_by_oauth_client_id(
-        self, session: AsyncSession, oauth_client_id: str
-    ) -> Agent | None:
-        result = await session.execute(
-            select(Agent).where(Agent.oauth_client_id == oauth_client_id)
-        )
-        return result.scalar_one_or_none()
-
     async def get_by_names(
         self, session: AsyncSession, names: list[str]
     ) -> list[Agent]:
@@ -145,26 +134,6 @@ class AgentStore:
         agent = await session.get(Agent, agent_id)
         if not agent:
             return
-        owned_skills = select(Skill.id).where(
-            Skill.owner_agent_id == agent_id, Skill.visibility == "private"
-        )
-        await session.execute(
-            delete(agent_skills).where(
-                or_(
-                    agent_skills.c.agent_id == agent_id,
-                    agent_skills.c.skill_id.in_(owned_skills),
-                )
-            )
-        )
-        await session.execute(
-            delete(room_skills).where(room_skills.c.skill_id.in_(owned_skills))
-        )
-        await session.execute(delete(Skill).where(Skill.id.in_(owned_skills)))
-        await session.execute(
-            update(Skill)
-            .where(Skill.owner_agent_id == agent_id)
-            .values(owner_agent_id=None)
-        )
         await session.execute(delete(Tool).where(Tool.agent_id == agent_id))
         await session.execute(delete(Model).where(Model.agent_id == agent_id))
         await session.execute(
@@ -183,9 +152,6 @@ class AgentStore:
         result = await session.execute(select(Tool).where(Tool.agent_id == agent_id))
         return list(result.scalars().all())
 
-    async def get_tool(self, session: AsyncSession, tool_id: str) -> Tool | None:
-        return await session.get(Tool, tool_id)
-
     async def remove_tool(self, session: AsyncSession, tool_id: str) -> None:
         tool = await session.get(Tool, tool_id)
         if tool:
@@ -201,9 +167,6 @@ class AgentStore:
     async def get_models(self, session: AsyncSession, agent_id: str) -> list[Model]:
         result = await session.execute(select(Model).where(Model.agent_id == agent_id))
         return list(result.scalars().all())
-
-    async def get_model(self, session: AsyncSession, model_id: str) -> Model | None:
-        return await session.get(Model, model_id)
 
     async def remove_model(self, session: AsyncSession, model_id: str) -> None:
         model = await session.get(Model, model_id)

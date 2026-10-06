@@ -13,7 +13,7 @@ it. Cursors record progress; they do not decide what is kept.
 The buffer lives in memory: it cannot outlive the process, and persisting it
 would recreate the stale-state bug this design removes. `switch-core` is
 single-process by construction, so an in-process structure is authoritative.
-It sits behind a narrow surface (`enqueue`, `read_from`, `wait`, `confirm`)
+It sits behind a narrow surface (`enqueue`, `read_from`, `doorbell`, `confirm`)
 so it can be moved to Postgres later without touching its callers.
 
 Overflow is never silent: when the cap forces events out, the rooms that lost
@@ -88,8 +88,8 @@ class CursorExpiredError(Exception):
 def is_notifiable(event: AgentEvent) -> bool:
     """Whether an event is addressed at the agent rather than ambient context.
 
-    Addressed messages, task events, and room_join events the agent is
-    configured to listen for. Excludes unaddressed chatter and admin command
+    Addressed messages, and room_join events the agent is configured to
+    listen for. Excludes unaddressed chatter and admin command
     events. This is the `addressed` delivery filter: a supervising connection
     watching every room wants only these, while a session in a single room
     wants everything.
@@ -98,10 +98,7 @@ def is_notifiable(event: AgentEvent) -> bool:
         return getattr(event.payload, "addressed", False)
     if event.type == "room_join":
         return getattr(event.payload, "listening", False)
-    if event.type == "command":
-        return False
-    # All task_* events are enqueued only for the directly-involved agent.
-    return event.type.startswith("task_")
+    return False
 
 
 @dataclass(frozen=True)
@@ -279,20 +276,6 @@ class EventBuffer:
             if limit is not None and len(out) >= limit:
                 break
         return out
-
-    async def wait(self, agent_id: str, timeout: float) -> None:
-        """Block until an event is appended for the agent, or the timeout passes.
-
-        A wake-up is advisory: callers re-read from their cursor rather than
-        trusting this to deliver anything. The buffer is the record; this is
-        only the doorbell.
-        """
-        notify = self._notify.setdefault(agent_id, asyncio.Event())
-        notify.clear()
-        try:
-            await asyncio.wait_for(notify.wait(), timeout=timeout)
-        except TimeoutError:
-            return
 
     def doorbell(self, agent_id: str) -> asyncio.Event:
         """The wake-up signal for an agent, shared by every reader.
@@ -549,177 +532,6 @@ class EventBuffer:
             agent_id,
             room_id,
         )
-
-    # ------------------------------------------------------------------
-    # Legacy long-poll compatibility
-    #
-    # Polling clients send no cursor and have nowhere to keep one, so the
-    # server holds it for them: "everything after the last thing I gave you,
-    # and record that I gave it". Behaviour is unchanged from their point of
-    # view — they never see a duplicate — but reads are no longer destructive,
-    # so a streaming reader on the same agent is unaffected.
-    #
-    # Delivery stays at-most-once for these callers, exactly as before: the
-    # cursor advances on send, so a response lost in flight loses its events.
-    # Confirming clients get at-least-once instead.
-    # ------------------------------------------------------------------
-
-    async def poll(
-        self, agent_id: str, *, rooms: set[str], timeout: float = 30
-    ) -> list[AgentEvent]:
-        """Everything queued for this agent in the rooms it is in.
-
-        `rooms` is how the caller applies membership, and it is required: the
-        buffer is keyed by agent and knows nothing about who is in what, so an
-        event queued while the agent was a member stays queued after it is
-        removed. A default would make the leak the thing a new caller gets for
-        free.
-
-        Read once, before the wait. A room the agent is added to while this is
-        parked has its first events held back to the next poll, which the
-        caller makes immediately; asking the caller to re-read membership
-        mid-poll would buy that one round trip at the cost of a callback
-        reaching back out of the buffer, and this stays behind the narrow
-        surface described at the top of the module.
-        """
-        return await self._legacy_poll(
-            agent_id, "legacy:all", timeout=timeout, rooms=rooms
-        )
-
-    async def poll_room(
-        self, agent_id: str, room_id: str, timeout: float = 30
-    ) -> list[AgentEvent]:
-        return await self._legacy_poll(
-            agent_id,
-            f"legacy:room:{room_id}",
-            timeout=timeout,
-            rooms={room_id},
-            rooms_are_membership=False,
-        )
-
-    async def poll_notifications(
-        self, agent_id: str, *, rooms: set[str], timeout: float = 30
-    ) -> list[AgentEvent]:
-        """The notifiable half of `poll`, under the same membership rule.
-
-        This is the stream carrying messages addressed at the agent, so it is
-        the one a removal matters most on.
-        """
-        return await self._legacy_poll(
-            agent_id,
-            "legacy:notifications",
-            timeout=timeout,
-            rooms=rooms,
-            notifiable_only=True,
-        )
-
-    async def _legacy_poll(
-        self,
-        agent_id: str,
-        reader_id: str,
-        *,
-        timeout: float,
-        rooms: set[str],
-        notifiable_only: bool = False,
-        rooms_are_membership: bool = True,
-    ) -> list[AgentEvent]:
-        args = (agent_id, reader_id, rooms, notifiable_only, rooms_are_membership)
-        events = self._legacy_take(*args)
-        if events:
-            return events
-
-        await self.wait(agent_id, timeout)
-
-        return self._legacy_take(*args)
-
-    def _legacy_take(
-        self,
-        agent_id: str,
-        reader_id: str,
-        rooms: set[str],
-        notifiable_only: bool,
-        rooms_are_membership: bool,
-    ) -> list[AgentEvent]:
-        """One read, moving the cursor past what this reader can never want.
-
-        Past what it can never want, and no further. A legacy read has no
-        limit, so it always reaches the end of the buffer, and leaving the
-        cursor behind an event the filter excluded parks it below the head
-        indefinitely — until retention trims it and the next read reports a
-        gap that never happened.
-
-        Which exclusions are permanent depends on the filter.
-        `notifiable_only` tests a property of the event, which is fixed, so
-        those can be skipped for good. A room set taken from membership is not
-        fixed: an agent added to a room the buffer already holds events for
-        would find the cursor already past them, and they would never be
-        delivered. `poll_room`'s filter is the reader's own scope rather than a
-        membership snapshot, so there the exclusions are permanent too — hence
-        `rooms_are_membership`.
-        """
-        cursor = self._legacy_cursor(agent_id, reader_id)
-        events = self._legacy_read(agent_id, reader_id, cursor, rooms, notifiable_only)
-        if rooms_are_membership:
-            self.confirm(
-                agent_id, reader_id, self._last_seq_in_rooms(agent_id, cursor, rooms)
-            )
-        else:
-            self.confirm(agent_id, reader_id, self.head(agent_id))
-        return [item.event for item in events]
-
-    def _last_seq_in_rooms(self, agent_id: str, after_seq: int, rooms: set[str]) -> int:
-        """The newest retained event after `after_seq` in one of `rooms`.
-
-        `after_seq` itself when there is none, so a caller confirming this
-        never moves a cursor over an event held for a room the agent is not in
-        yet.
-        """
-        last = after_seq
-        for item in self._events.get(agent_id, ()):
-            if item.seq > after_seq and item.room_id in rooms:
-                last = item.seq
-        return last
-
-    def _legacy_cursor(self, agent_id: str, reader_id: str) -> int:
-        readers = self._cursors.setdefault(agent_id, {})
-        if reader_id not in readers:
-            # A poller seen for the first time starts before the oldest
-            # retained event, mirroring the queue it replaces: events
-            # accumulated while nobody was polling and the first poll drained
-            # them. Starting at head would silently swallow anything that
-            # arrived before the client got around to asking.
-            readers[reader_id] = max(self.oldest_retained(agent_id) - 1, 0)
-        return readers[reader_id]
-
-    def _legacy_read(
-        self,
-        agent_id: str,
-        reader_id: str,
-        cursor: int,
-        rooms: set[str],
-        notifiable_only: bool,
-    ) -> list[BufferedEvent]:
-        try:
-            return self.read_from(
-                agent_id, cursor, rooms=rooms, notifiable_only=notifiable_only
-            )
-        except CursorExpiredError as exc:
-            # A polling client cannot be told about a gap — it has no protocol
-            # for it. Log loudly and resume from what is retained rather than
-            # silently returning nothing. Migrating the client is the real fix.
-            logger.error(
-                "[EVENT-BUF] legacy poller %s for agent %s missed events "
-                "(cursor %s, oldest retained %s); resuming from oldest retained",
-                reader_id,
-                agent_id,
-                exc.requested,
-                exc.oldest,
-            )
-            resumed = max(exc.oldest - 1, 0)
-            self._cursors.setdefault(agent_id, {})[reader_id] = resumed
-            return self.read_from(
-                agent_id, resumed, rooms=rooms, notifiable_only=notifiable_only
-            )
 
     # ------------------------------------------------------------------
     # Internals

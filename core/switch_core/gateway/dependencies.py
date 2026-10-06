@@ -6,10 +6,6 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.server_connectors.lifecycle import (
-    ServerSideConnectorLifecycleService,
-)
 from switch_core.bridges.collaboration.install_service import (
     MessagingInstallService,
 )
@@ -29,7 +25,6 @@ from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -50,9 +45,6 @@ def init_dependencies(
     bridge_store: CollaborationBridgeStore,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    connector_lifecycle: ServerSideConnectorLifecycleService,
-    connector_store: ServerConnectorStore,
-    event_buffer: EventBuffer,
     session_factory: Any,
     user_store: UserStore,
     external_user_store: ExternalUserStore,
@@ -75,9 +67,6 @@ def init_dependencies(
     _state["bridge_store"] = bridge_store
     _state["client_lifecycle"] = client_lifecycle
     _state["collab_lifecycle"] = collab_lifecycle
-    _state["connector_lifecycle"] = connector_lifecycle
-    _state["connector_store"] = connector_store
-    _state["event_buffer"] = event_buffer
     _state["session_factory"] = session_factory
     _state["user_store"] = user_store
     _state["external_user_store"] = external_user_store
@@ -186,10 +175,6 @@ def get_collab_lifecycle() -> CollaborationBridgeLifecycleService:
     return _state["collab_lifecycle"]  # type: ignore[no-any-return]
 
 
-def get_event_buffer() -> EventBuffer:
-    return _state["event_buffer"]  # type: ignore[no-any-return]
-
-
 def get_user_store() -> UserStore:
     return _state["user_store"]  # type: ignore[no-any-return]
 
@@ -216,14 +201,6 @@ def get_usage_store() -> UsageStore:
 
 def get_budget_store() -> BudgetStore:
     return _state["budget_store"]  # type: ignore[no-any-return]
-
-
-def get_connector_lifecycle() -> ServerSideConnectorLifecycleService:
-    return _state["connector_lifecycle"]  # type: ignore[no-any-return]
-
-
-def get_connector_store() -> ServerConnectorStore:
-    return _state["connector_store"]  # type: ignore[no-any-return]
 
 
 def get_template_store() -> TemplateStore:

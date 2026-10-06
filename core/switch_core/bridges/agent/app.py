@@ -28,7 +28,7 @@ from switch_core.bridges.agent.auth import (
 )
 from switch_core.bridges.agent.deeplink import router as deeplink_router
 from switch_core.bridges.agent.dependencies import get_protocol, init_dependencies
-from switch_core.bridges.agent.mcp import create_mcp_app
+from switch_core.bridges.agent.operations.context import init_operations_protocol
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -44,7 +44,6 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.task_store import TaskStore
 from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
 from switch_core.request_context import RequestContextMiddleware
@@ -66,7 +65,6 @@ def create_agent_bridge_app(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     event_buffer: EventBuffer,
-    task_store: TaskStore,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
     external_user_store: ExternalUserStore,
@@ -85,9 +83,9 @@ def create_agent_bridge_app(
     if connections is None:
         connections = AgentConnectionRegistry()
 
-    # One cache for the whole process, for the same reason as `connections`:
-    # the HTTP door and the MCP door each carry their own auth middleware, and
-    # a rotated key must stop working on both the moment it is rotated.
+    # One cache for the whole process: the bearer middleware reads it and the
+    # gateway's key rotation and revocation evict from it, so a rotated key
+    # stops working the moment it is rotated.
     api_key_cache = ApiKeyCache(
         ttl_seconds=config.agent_auth_cache_ttl_seconds,
         max_entries=config.agent_auth_cache_max_entries,
@@ -102,7 +100,6 @@ def create_agent_bridge_app(
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
         connections=connections,
-        task_store=task_store,
         resource_service=resource_service,
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,
@@ -164,14 +161,7 @@ def create_agent_bridge_app(
 
     app.state.config = config
 
-    mcp_asgi, mcp_lifespan = create_mcp_app(
-        agent_store=agent_store,
-        api_key_store=api_key_store,
-        protocol=protocol,
-        config=config,
-    )
-    app.mount("/mcp", mcp_asgi)
-    app.router.lifespan_context = mcp_lifespan
+    init_operations_protocol(protocol)
 
     app.add_middleware(
         BearerAuthMiddleware,
@@ -203,7 +193,7 @@ class AgentBridgeLogContextMiddleware:
     the same context it was set in.
     """
 
-    _PREFIXES = ("/agents", "/mcp")
+    _PREFIXES = ("/agents",)
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app

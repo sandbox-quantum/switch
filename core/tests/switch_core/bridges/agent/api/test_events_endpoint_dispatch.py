@@ -1,8 +1,7 @@
-"""The /events endpoint serves both transports off one path (CHOO-1857).
+"""The /events endpoint opens a push stream, and only that (CHOO-1857).
 
-`Accept: text/event-stream` opens a connection and streams; anything else gets
-the long poll. Both read the same buffer, so the two cannot diverge while they
-coexist — but the dispatch itself is easy to break silently, hence these.
+`Accept: text/event-stream` opens a connection and streams; anything else is
+refused rather than answered with something that looks like an empty stream.
 """
 
 from __future__ import annotations
@@ -16,7 +15,10 @@ from fastapi import HTTPException
 from starlette.responses import StreamingResponse
 
 from switch_core.bridges.agent.api import session_reporter
-from switch_core.bridges.agent.api.handlers import _resolve_start_cursor, poll_events
+from switch_core.bridges.agent.api.handlers import (
+    _resolve_start_cursor,
+    open_event_stream,
+)
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
@@ -42,17 +44,12 @@ class _Protocol:
         # telemetry service reports nothing, which is what these tests want.
         self.telemetry = None
         self.sessions = SessionReporter(None)
-        self.polled = False
         self.recorded: list[tuple[str, str, ClientDeclaration]] = []
 
     async def record_client_declaration(
         self, agent_id: str, connection_id: str, declaration: ClientDeclaration
     ) -> None:
         self.recorded.append((agent_id, connection_id, declaration))
-
-    async def poll_events(self, agent_id: str, timeout: float) -> list[Any]:
-        self.polled = True
-        return []
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         return None
@@ -78,7 +75,6 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
         "agent": _agent(),
         "protocol": protocol,
         "config": None,
-        "timeout": 0,
         "accept": None,
         "connection_id": None,
         "scope": "single",
@@ -93,15 +89,16 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
         "last_event_id": None,
     }
     params.update(kw)
-    return await poll_events(**params)
+    return await open_event_stream(**params)
 
 
-async def test_without_the_sse_accept_header_it_long_polls() -> None:
+async def test_without_the_sse_accept_header_it_is_refused() -> None:
     protocol = _Protocol()
-    resp = await _call(protocol, accept="application/json")
+    with pytest.raises(HTTPException) as excinfo:
+        await _call(protocol, accept="application/json", connection_id="c1")
 
-    assert protocol.polled
-    assert resp.status_code == 204
+    assert excinfo.value.status_code == 406
+    assert protocol.connections.get("c1") is None
 
 
 async def test_with_the_sse_accept_header_it_opens_a_connection() -> None:
@@ -115,7 +112,6 @@ async def test_with_the_sse_accept_header_it_opens_a_connection() -> None:
     # Buffering proxies would defeat the point of a push channel.
     assert resp.headers["x-accel-buffering"] == "no"
     assert resp.headers["connection"] == "keep-alive"
-    assert not protocol.polled
 
     conn = protocol.connections.get("c1")
     assert conn is not None

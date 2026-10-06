@@ -24,7 +24,6 @@ describe('getEffectiveSessionSettings', () => {
   it('merges shareable location settings by leaf with location settings winning', async () => {
     const settings = await getEffectiveSessionSettings({
       locationSettings: makeLocationSettings({
-        preservePatterns: ['.env.local'],
         scripts: { run: 'pnpm dev' },
       }),
       sessionFs: makeSessionFs({
@@ -36,7 +35,6 @@ describe('getEffectiveSessionSettings', () => {
     });
 
     expect(settings).toMatchObject({
-      preservePatterns: ['.env.local'],
       shellSetup: 'source .envrc',
       scripts: {
         setup: 'pnpm install',
@@ -48,7 +46,7 @@ describe('getEffectiveSessionSettings', () => {
     expect(settings).not.toHaveProperty('baseRemote');
   });
 
-  it('falls back to defaults plus location settings when the session config is invalid', async () => {
+  it('falls back to location settings when the session config is invalid', async () => {
     const settings = await getEffectiveSessionSettings({
       locationSettings: makeLocationSettings({ shellSetup: 'nvm use' }),
       sessionFs: {
@@ -57,19 +55,17 @@ describe('getEffectiveSessionSettings', () => {
       } as unknown as FileSystemProvider,
     });
 
-    expect(settings.preservePatterns).toContain('.env');
-    expect(settings.preservePatterns).not.toContain('.switchdash.json');
-    expect(settings.shellSetup).toBe('nvm use');
+    expect(settings).toEqual({ shellSetup: 'nvm use' });
   });
 
-  it('falls back to defaults when location settings are invalid', async () => {
+  it('ignores location settings that fail to parse', async () => {
     const settings = await getEffectiveSessionSettings({
       locationSettings: makeLocationSettings({
-        preservePatterns: 'not-an-array',
+        shellSetup: 42,
       } as never),
       sessionFs: makeSessionFs(null),
     });
 
-    expect(settings.preservePatterns).toContain('.env');
+    expect(settings).toEqual({});
   });
 });

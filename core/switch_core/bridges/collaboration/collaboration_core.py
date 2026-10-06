@@ -1417,10 +1417,6 @@ class CollaborationCore:
                 )
         return resolved
 
-    async def resolve_external_user_ids(self, user_names: list[str]) -> list[str]:
-        resolved = await self.resolve_external_user_id_map(user_names)
-        return list(resolved.values())
-
     async def ensure_users_in_room(
         self,
         room_id: str,
@@ -2286,33 +2282,6 @@ class CollaborationCore:
             return
 
         await self._adapter.send_typing(channel_id, agent_name, is_typing)
-
-    # ── Protection sync ──────────────────────────────────────────────────────
-
-    # TODO: use this when protection setup is done
-    async def handle_protection_verdict(
-        self, event_id: str, new_content: str | None
-    ) -> None:
-        async with self._session_factory() as session:
-            mapping = await self._bridge_message_map_store.get_by_transport_event_id(
-                session, self._bridge_id, event_id
-            )
-        if mapping is None:
-            return
-
-        channel_id = mapping.external_channel_id
-        message_ref = mapping.external_post_id
-        if new_content is None:
-            await self._adapter.delete_message(channel_id, message_ref)
-            # The post is gone; drop the mapping so it can't resolve later.
-            async with self._session_factory() as session:
-                await self._bridge_message_map_store.delete_by_transport_event_id(
-                    session, self._bridge_id, event_id
-                )
-                await session.commit()
-        else:
-            translated = self._adapter.translate_outbound(new_content)
-            await self._adapter.update_message(channel_id, message_ref, translated)
 
     # ── Message-map helpers ───────────────────────────────────────────────────
 

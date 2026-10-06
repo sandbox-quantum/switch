@@ -14,9 +14,6 @@ export function appSettingsMetaQueryKey<K extends AppSettingsKey>(key: K) {
   return ['appSettings', key, 'meta'] as const;
 }
 
-const appSettingsGcTime = <K extends AppSettingsKey>(key: K) =>
-  key === 'interface' || key === 'browser' ? Infinity : undefined;
-
 const appSettingsAllQueryKey = ['appSettings', 'all'] as const;
 
 export function mergeAppSettingsValue<K extends AppSettingsKey>(
@@ -46,7 +43,6 @@ export function fetchAppSettingsMeta<K extends AppSettingsKey>(key: K): Promise<
     queryKey: appSettingsMetaQueryKey(key),
     queryFn: () => requestAppSettingsMeta(key),
     staleTime: APP_SETTINGS_STALE_TIME_MS,
-    gcTime: appSettingsGcTime(key),
   });
 }
 
@@ -55,7 +51,6 @@ export function prefetchAppSettingsKey<K extends AppSettingsKey>(key: K) {
     queryKey: appSettingsMetaQueryKey(key),
     queryFn: () => requestAppSettingsMeta(key),
     staleTime: APP_SETTINGS_STALE_TIME_MS,
-    gcTime: appSettingsGcTime(key),
   });
 }
 

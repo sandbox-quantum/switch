@@ -170,7 +170,7 @@
     "name": "[Switch] the API is slow",
     "type": "metric alert",
     "query": "avg(last_10m):p95:switch.http.request.duration{service:switch-core} > 2000",
-    "message": "The 95th percentile request took more than two seconds over ten minutes.\n\nThe one alert for the half of \"is it healthy\" that error rates cannot see: an endpoint answering 200 slowly is, from a user's side, an endpoint that is broken, and nothing else here fires on it.\n\np95 rather than an average, which one very slow request drags and a thousand fast ones hide. Across all routes rather than by route, because a per-route alert is thirteen alerts that each need their own threshold; break it down on the dashboard once this fires.\n\nThe agent event streams are excluded at the source \u2014 they are long polls held open for a duration the caller chose \u2014 so this is the routes where the number means something. Check the database query duration panel first: on this server a slow request is usually a slow query.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "message": "The 95th percentile request took more than two seconds over ten minutes.\n\nThe one alert for the half of \"is it healthy\" that error rates cannot see: an endpoint answering 200 slowly is, from a user's side, an endpoint that is broken, and nothing else here fires on it.\n\np95 rather than an average, which one very slow request drags and a thousand fast ones hide. Across all routes rather than by route, because a per-route alert is thirteen alerts that each need their own threshold; break it down on the dashboard once this fires.\n\nThe agent event streams are excluded at the source \u2014 they are held open for as long as the agent stays connected \u2014 so this is the routes where the number means something. Check the database query duration panel first: on this server a slow request is usually a slow query.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
       "team:switch"
@@ -257,24 +257,6 @@
       "thresholds": {
         "critical": 5,
         "warning": 1
-      },
-      "include_tags": true
-    }
-  },
-  {
-    "name": "[Switch] a server-side connector is not running",
-    "type": "metric alert",
-    "query": "min(last_10m):min:switch.health.check{service:switch-core,check:connectors} < 1",
-    "message": "A server-side connector this deployment is configured to run is not running.\n\nThe agents it hosts are unreachable \u2014 they will not answer in any room and nothing else reports it, because connectors are started fire-and-forget at boot and each failure is logged and stepped over.\n\nThe boot log names which one and why. It does not retry, so it needs restarting rather than waiting.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": [
-      "service:switch-core",
-      "team:switch"
-    ],
-    "options": {
-      "notify_no_data": false,
-      "renotify_interval": 120,
-      "thresholds": {
-        "critical": 1
       },
       "include_tags": true
     }

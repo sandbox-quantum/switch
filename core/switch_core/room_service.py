@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_CLIENT_TYPES = ("observe", "admin")
+SYSTEM_CLIENT_TYPES = ("admin",)
 
 
 class LinkedRoomSpec(BaseModel):
@@ -92,9 +92,6 @@ class RoomCreateConfig(BaseModel):
     internal_only: bool = False
     external_channel_id: str | None = None
     instructions: str | None = None
-    protection_config: dict[str, object] | None = None
-    observe_config: dict[str, object] | None = None
-    admin_mode: bool = False
     created_by: str | None = None
     # Set when an agent operation creates the room; see the `Room` columns.
     created_by_agent_id: str | None = None
@@ -581,10 +578,7 @@ class RoomService:
                 channel_type=channel_type,
                 bridge_id=bridge_id,
                 external_channel_id=external_channel_id,
-                admin_mode=config.admin_mode,
                 instructions=config.instructions,
-                protection_config=config.protection_config,
-                observe_config=config.observe_config,
                 created_by=config.created_by,
                 created_by_agent_id=config.created_by_agent_id,
                 parent_room_id=config.parent_room_id,
@@ -995,7 +989,6 @@ class RoomService:
         name: str | None = None,
         description: str | None = None,
         instructions: str | None = None,
-        admin_mode: bool | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> None:
@@ -1019,7 +1012,6 @@ class RoomService:
                 name=name,
                 description=description,
                 instructions=instructions,
-                admin_mode=admin_mode,
                 read_visibility=read_visibility,
                 write_visibility=write_visibility,
             )
@@ -1039,22 +1031,6 @@ class RoomService:
                 await self._room_store.set_receives_join_events(
                     session, room_id, agent_id, value
                 )
-            await session.commit()
-
-    async def update_protection_config(
-        self, room_id: str, config: dict[str, object]
-    ) -> None:
-        tenant_id = await self._room_tenant(room_id)
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            await self._room_store.update_protection_config(session, room_id, config)
-            await session.commit()
-
-    async def update_observe_config(
-        self, room_id: str, config: dict[str, object]
-    ) -> None:
-        tenant_id = await self._room_tenant(room_id)
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            await self._room_store.update_observe_config(session, room_id, config)
             await session.commit()
 
     async def set_room_archived(self, room_id: str, archived: bool) -> None:

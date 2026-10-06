@@ -1,6 +1,6 @@
 """How presence reaches the clients watching a room.
 
-Some events are announced and never stored: runtime state today, typing if it
+Some events are announced and never stored: runtime state once, typing if it
 ever returns. Their next value replaces them, so a row in `messages` would put
 something in the room's ordering that no reader is ever shown, and a delivery
 cursor would faithfully replay a status that stopped being true minutes ago.

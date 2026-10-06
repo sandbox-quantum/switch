@@ -180,36 +180,3 @@ def test_confirm_never_rewinds() -> None:
     buf.confirm(AGENT, "reader-a", 5)
     buf.confirm(AGENT, "reader-a", 2)
     assert buf._cursors[AGENT]["reader-a"] == 5
-
-
-async def test_legacy_pollers_no_longer_steal_from_each_other() -> None:
-    buf = EventBuffer(sequence_base=0)
-    buf.enqueue(AGENT, ROOM_A, _message("hello", addressed=True))
-
-    room = await buf.poll_room(AGENT, ROOM_A, timeout=0)
-    notif = await buf.poll_notifications(AGENT, timeout=0, rooms={ROOM_A})
-    every = await buf.poll(AGENT, timeout=0, rooms={ROOM_A})
-
-    assert [e.payload.body for e in room] == ["hello"]
-    assert [e.payload.body for e in notif] == ["hello"]
-    assert [e.payload.body for e in every] == ["hello"]
-
-
-async def test_legacy_poller_does_not_see_the_same_event_twice() -> None:
-    buf = EventBuffer(sequence_base=0)
-    buf.enqueue(AGENT, ROOM_A, _message("one"))
-
-    assert len(await buf.poll_room(AGENT, ROOM_A, timeout=0)) == 1
-    assert await buf.poll_room(AGENT, ROOM_A, timeout=0) == []
-
-    buf.enqueue(AGENT, ROOM_A, _message("two"))
-    second = await buf.poll_room(AGENT, ROOM_A, timeout=0)
-    assert [e.payload.body for e in second] == ["two"]
-
-
-async def test_legacy_poller_receives_events_queued_before_it_polled() -> None:
-    buf = EventBuffer(sequence_base=0)
-    buf.enqueue(AGENT, ROOM_A, _message("queued-while-away"))
-
-    events = await buf.poll_room(AGENT, ROOM_A, timeout=0)
-    assert [e.payload.body for e in events] == ["queued-while-away"]

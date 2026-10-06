@@ -12,8 +12,4 @@ export const locationsController = createRPCController({
     locationSettingsService.getLocationSettingsPage(locationId),
   updateLocationSettings: (locationId, settings) =>
     locationSettingsService.updateLocationSettings(locationId, settings),
-  shareLocationSettingsToConfig: (locationId, request) =>
-    locationSettingsService.shareLocationSettingsToConfig(locationId, request),
-  migrateLocationConfig: (locationId, request) =>
-    locationSettingsService.migrateLocationConfig(locationId, request),
 });

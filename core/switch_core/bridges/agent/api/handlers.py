@@ -24,56 +24,18 @@ from switch_core.bridges.agent.api.hosted_worker_routes import (
     hosted_worker_only,
 )
 from switch_core.bridges.agent.api.schemas import (
-    AcceptTaskRequest,
-    AgentInfo,
-    AgentListResponse,
     BulkRegisterResult,
-    CancelTaskRequest,
     ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionRenewRequest,
     ConnectionSubscribeRequest,
-    CreateModerationRoomRequest,
-    CreateModerationRoomResponse,
-    DelegateTaskRequest,
-    DelegateTaskResponse,
-    EventResponse,
-    FeatureFlagInfo,
-    FeatureFlagListResponse,
-    FinaliseTaskRequest,
-    HistoryMessage,
-    HistoryResponse,
-    InviteAgentRequest,
-    ListBridgesResponse,
-    ParticipantInfo,
-    ParticipantsResponse,
-    PostLlmResponseRequest,
-    PostLlmResponseResponse,
-    PostToolResultRequest,
-    PostToolResultResponse,
-    PreLlmRequestRequest,
-    PreLlmRequestResponse,
-    PreToolCallRequest,
-    PreToolCallResponse,
     RegisterAgentRequest,
     RegisterAgentResponse,
     RegisterKnownAgentBulkRequest,
     RegisterKnownAgentBulkResponse,
     RegisterKnownAgentRequest,
-    ReportEventsRequest,
-    RoomDetailResponse,
-    RoomInfo,
-    RoomListResponse,
-    RuntimeStateRequest,
     SendMessageRequest,
-    SetFeatureFlagRequest,
-    StatusRequest,
-    TaskAgentsResponse,
-    TaskInfo,
-    TaskListResponse,
     TypingRequest,
-    UpdateAgentRequest,
-    UpdateTaskRequest,
 )
 from switch_core.bridges.agent.auth import (
     get_agent_from_scope,
@@ -115,11 +77,9 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.budgets import BudgetExceeded
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Agent, HostedLaunch, Task, require_tenant_id
+from switch_core.db.models import Agent, HostedLaunch, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.db.stores.feature_flag_store import FeatureFlagStore
-from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
 from switch_core.version import switch_core_version
 
@@ -133,23 +93,6 @@ def parse_timestamp_ms(iso: str) -> int:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return int(dt.timestamp() * 1000)
-
-
-def _task_info(task: Task) -> TaskInfo:
-    return TaskInfo(
-        id=task.id,
-        room_id=task.room_id,
-        requester_agent_id=task.requester_agent_id,
-        performer_agent_id=task.performer_agent_id,
-        summary=task.summary,
-        description=task.description,
-        status=task.status,
-        updates=task.updates or [],
-        outcome=task.outcome,
-        created_at=str(task.created_at),
-        accepted_at=str(task.accepted_at) if task.accepted_at else None,
-        finalised_at=str(task.finalised_at) if task.finalised_at else None,
-    )
 
 
 async def _resolve_registration_user_id(
@@ -421,51 +364,6 @@ async def register_known_agents_bulk_endpoint(
     return RegisterKnownAgentBulkResponse(results=results)
 
 
-@router.patch("/{agent_id}")
-async def update_agent(
-    agent_id: str,
-    req: UpdateAgentRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    await protocol.update_agent(
-        agent_id,
-        description=req.description,
-        integration_profile=(
-            req.integration_profile.model_dump() if req.integration_profile else None
-        ),
-        metadata=req.metadata,
-    )
-
-    return {"ok": True}
-
-
-@router.delete("/{agent_id}")
-async def delete_agent(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-    if hosted_launch_of(agent.metadata_) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="This is a cloud agent. Remove it from Switch Console's cloud agents instead.",
-        )
-
-    try:
-        await protocol.delete_agent(agent_id=agent_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-    logger.info("Deleted agent: %s (%s)", agent.name, agent_id)
-    return {"ok": True}
-
-
 # Messages endpoints
 
 
@@ -630,8 +528,8 @@ async def renew_connection(
     """Refresh the agent's room-scoped liveness heartbeat.
 
     Called on a fast cadence by the channel process for the room it is
-    currently connected to, decoupled from the long-poll so the liveness TTL
-    can stay short (a closed session drops to "no session" within seconds).
+    currently connected to, so the liveness TTL can stay short (a closed
+    session drops to "no session" within seconds).
     """
     try:
         await protocol.touch_connection(agent.id, req.room_id)
@@ -654,60 +552,9 @@ async def watch_heartbeat(
     Pinged on a cadence by the connector (Switch Console) while it is watching this
     agent's rooms. Keeps the agent reporting DORMANT (rather than offline) in
     rooms with no live session, so addressing it yields a "Starting a session…"
-    reply while the connector spins one up. Room-agnostic; decoupled from the
-    notification long-poll.
+    reply while the connector spins one up. Room-agnostic.
     """
     await protocol.touch_watch_heartbeat(agent.id)
-    return {"ok": True}
-
-
-@router.post("/{agent_id}/status")
-async def update_status(
-    agent_id: str,
-    req: StatusRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
-    if req.detail:
-        try:
-            await protocol.update_status(agent.id, req.room_id, req.detail)
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
-        except PermissionError as e:
-            raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return {"ok": True}
-
-
-@router.post("/{agent_id}/runtime-state")
-async def set_runtime_state(
-    agent_id: str,
-    req: RuntimeStateRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
-    """Report the agent's session runtime state (working/awaiting-input/idle).
-
-    Persists the state and emits a room event the collaboration bridge surfaces
-    on the bridged channel. Reported by the Switch Console connector for sessions
-    it manages.
-    """
-    try:
-        await protocol.set_runtime_state(
-            agent.id,
-            req.room_id,
-            req.state,
-            thread_id=req.thread_id,
-            deeplink_url=req.deeplink_url,
-            detail=req.detail,
-            control_capabilities=req.control_capabilities,
-            anchor_event_id=req.anchor_event_id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
     return {"ok": True}
 
 
@@ -715,12 +562,11 @@ async def set_runtime_state(
 
 
 @router.get("/{agent_id}/events", response_model=None)
-async def poll_events(
+async def open_event_stream(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-    timeout: Annotated[float, Query()] = 10,
     accept: Annotated[str | None, Header()] = None,
     connection_id: Annotated[str | None, Query()] = None,
     scope: Annotated[str, Query()] = "single",
@@ -744,13 +590,11 @@ async def poll_events(
     worker_state_version: Annotated[
         int | None, Header(alias="x-switch-worker-state-version")
     ] = None,
-) -> EventResponse | Response:
-    """Deliver the agent's events, as a push stream or a long poll.
+) -> StreamingResponse:
+    """Deliver the agent's events as a push stream.
 
     `Accept: text/event-stream` opens a connection and streams: catch-up from
-    the client's cursor, then live delivery. Anything else falls back to the
-    long poll, which is served from the same buffer so the two cannot diverge
-    while both exist.
+    the client's cursor, then live delivery. Anything else is refused.
 
     The four declaration parameters are all optional and all default to None,
     meaning *unknown* (CHOO-1865). `protocol` previously defaulted to the
@@ -758,37 +602,35 @@ async def poll_events(
     agreed — and since no shipped client sent it, the check had never once
     fired. Absent now records as unknown, and still connects.
     """
-    if accept and "text/event-stream" in accept:
-        return await _open_event_stream(
-            agent=agent,
-            protocol=protocol,
-            config=config,
-            connection_id=connection_id,
-            scope=scope,
-            event_filter=event_filter,
-            start_from=start_from,
-            spawn_capable=spawn_capable,
-            declaration=ClientDeclaration(
-                speaks=protocol_version,
-                accepts=protocol_accepts,
-                artifact=client,
-                version=client_version,
-            ),
-            rooms=rooms,
-            last_event_id=last_event_id,
-            expected_generation=expected_generation,
-            worker_capability=worker_capability,
-            host_boot_id=host_boot_id,
-            host_instance_id=host_instance_id,
-            worker_state_version=worker_state_version,
+    if not accept or "text/event-stream" not in accept:
+        raise HTTPException(
+            status_code=406,
+            detail="The event stream is served as text/event-stream only; send "
+            "Accept: text/event-stream.",
         )
-
-    if hosted_launch_of(agent.metadata_) is not None:
-        raise hosted_worker_only()
-    events = await protocol.poll_events(agent.id, timeout=timeout)
-    if not events:
-        return Response(status_code=204)
-    return EventResponse(events=events)
+    return await _open_event_stream(
+        agent=agent,
+        protocol=protocol,
+        config=config,
+        connection_id=connection_id,
+        scope=scope,
+        event_filter=event_filter,
+        start_from=start_from,
+        spawn_capable=spawn_capable,
+        declaration=ClientDeclaration(
+            speaks=protocol_version,
+            accepts=protocol_accepts,
+            artifact=client,
+            version=client_version,
+        ),
+        rooms=rooms,
+        last_event_id=last_event_id,
+        expected_generation=expected_generation,
+        worker_capability=worker_capability,
+        host_boot_id=host_boot_id,
+        host_instance_id=host_instance_id,
+        worker_state_version=worker_state_version,
+    )
 
 
 def _resolve_start_cursor(
@@ -1262,616 +1104,3 @@ async def connection_placements(
             for lost in released
         ],
     }
-
-
-@router.get("/{agent_id}/notifications", response_model=None)
-async def poll_notifications(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    timeout: Annotated[float, Query()] = 10,
-) -> EventResponse | Response:
-    """Long-poll the agent's notification stream across all its rooms.
-
-    Returns notifiable events only (addressed messages, task events, room_join
-    events the agent listens for). Backed by a separate queue, so it never
-    drains the per-room event queues live session pollers consume. Used by the
-    auto_session watcher to decide when to spawn a session.
-    """
-    events = await protocol.poll_notifications(agent.id, timeout=timeout)
-    if not events:
-        return Response(status_code=204)
-    return EventResponse(events=events)
-
-
-@router.get("/{agent_id}/rooms/{room_id}/events", response_model=None)
-async def poll_room_events(
-    agent_id: str,
-    room_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    timeout: Annotated[float, Query()] = 10,
-) -> EventResponse | Response:
-    try:
-        events = await protocol.poll_room_events(agent.id, room_id, timeout=timeout)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    if not events:
-        return Response(status_code=204)
-    return EventResponse(events=events)
-
-
-@router.get("/{agent_id}/rooms/{room_id}/history")
-async def get_room_history(
-    agent_id: str,
-    room_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    since: Annotated[
-        str | None,
-        Query(description="ISO 8601 timestamp — return events from this point forward"),
-    ] = None,
-    before: Annotated[
-        str | None,
-        Query(description="ISO 8601 timestamp — return events before this point"),
-    ] = None,
-    limit: Annotated[int, Query()] = 50,
-) -> HistoryResponse:
-    since_ms = parse_timestamp_ms(since) if since else None
-    before_ms = parse_timestamp_ms(before) if before else None
-
-    try:
-        context = await protocol.read_context(
-            agent.id,
-            room_id,
-            limit=limit,
-            since_ms=since_ms,
-            before_ms=before_ms,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    messages: list[HistoryMessage] = []
-    for group in context["threads"]:
-        for entry in [group["root"], *group["replies"]]:
-            body = entry.get("body")
-            if not body:
-                continue
-            sender = entry.get("sender")
-            messages.append(
-                HistoryMessage(
-                    sender=sender,
-                    sender_name=entry.get("sender_name") or sender,
-                    body=body,
-                    timestamp=entry.get("timestamp"),
-                )
-            )
-    messages.sort(key=lambda m: m.timestamp or 0)
-
-    return HistoryResponse(events=messages, has_more=context["truncated"])
-
-
-# Participants endpoint
-
-
-@router.get("/rooms/{room_id}/participants")
-async def list_participants(
-    room_id: str,
-    _agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> ParticipantsResponse:
-    try:
-        participants_desc = await protocol.list_participants(room_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-    participants = [
-        ParticipantInfo(
-            type=p.type,
-            agent_id=p.id if p.type == "agent" else None,
-            name=p.name,
-            status=p.status,
-        )
-        for p in participants_desc
-    ]
-
-    return ParticipantsResponse(participants=participants)
-
-
-# Tasks endpoints
-
-
-@router.post("/{agent_id}/tasks/delegate")
-async def delegate_task(
-    agent_id: str,
-    req: DelegateTaskRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> DelegateTaskResponse:
-    # TODO: do we still need this ?
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.delegate_task(
-            requester_id=agent.id,
-            room_id=req.room_id,
-            performer_id=req.performer_agent_id,
-            summary=req.summary,
-            description=req.description,
-        )
-        task = await protocol.get_task(agent.id, result.task_id)
-    except BudgetExceeded as e:
-        raise HTTPException(status_code=429, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return DelegateTaskResponse(
-        task=_task_info(task), target_status=result.target_status
-    )
-
-
-@router.post("/{agent_id}/tasks/accept")
-async def accept_task(
-    agent_id: str,
-    req: AcceptTaskRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> TaskInfo:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.accept_task(agent.id, req.task_id)
-        task = await protocol.get_task(agent.id, req.task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return _task_info(task)
-
-
-@router.post("/{agent_id}/tasks/cancel")
-async def cancel_task(
-    agent_id: str,
-    req: CancelTaskRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> TaskInfo:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.cancel_task(agent.id, req.task_id, req.reason)
-        task = await protocol.get_task(agent.id, req.task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return _task_info(task)
-
-
-@router.get("/{agent_id}/tasks")
-async def list_tasks(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    room_id: Annotated[str | None, Query()] = None,
-    role: Annotated[str | None, Query(description="'delegated' or 'assigned'")] = None,
-    status: Annotated[str | None, Query()] = None,
-) -> TaskListResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    tasks = await protocol.list_tasks(
-        agent.id, room_id=room_id, role=role, status=status
-    )
-    return TaskListResponse(tasks=[_task_info(t) for t in tasks])
-
-
-@router.get("/{agent_id}/tasks/{task_id}")
-async def get_task(
-    agent_id: str,
-    task_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> TaskInfo:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        task = await protocol.get_task(agent.id, task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return _task_info(task)
-
-
-@router.get("/{agent_id}/tasks/agents")
-async def list_task_agents(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    room_id: Annotated[str, Query()],
-) -> TaskAgentsResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        performers = await protocol.list_delegatable_agents(agent.id, room_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    agents = [
-        AgentInfo(id=p.id, name=p.name, description="", display_name=p.display_name)
-        for p in performers
-    ]
-
-    return TaskAgentsResponse(agents=agents)
-
-
-@router.post("/{agent_id}/tasks/update")
-async def update_task(
-    agent_id: str,
-    req: UpdateTaskRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> TaskInfo:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.update_task(agent.id, req.task_id, req.update)
-        task = await protocol.get_task(agent.id, req.task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return _task_info(task)
-
-
-@router.post("/{agent_id}/tasks/finalise")
-async def finalise_task(
-    agent_id: str,
-    req: FinaliseTaskRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> TaskInfo:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.finalise_task(agent.id, req.task_id, req.outcome)
-        task = await protocol.get_task(agent.id, req.task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return _task_info(task)
-
-
-# Reporting endpoint
-
-
-@router.post("/{agent_id}/events/report")
-async def report_events(
-    agent_id: str,
-    req: ReportEventsRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> Response:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.report_events(agent.id, req.room_id, req.events)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return Response(status_code=202)
-
-
-# Mediation endpoints
-
-
-@router.post("/{agent_id}/mediation/pre-tool-call")
-async def pre_tool_call(
-    agent_id: str,
-    req: PreToolCallRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PreToolCallResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.pre_tool_call(
-            agent.id,
-            req.room_id,
-            req.tool_name,
-            req.arguments,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PreToolCallResponse(verdict=result["verdict"], reason=result["reason"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/pre-llm-request")
-async def pre_llm_request(
-    agent_id: str,
-    req: PreLlmRequestRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PreLlmRequestResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.pre_llm_request(
-            agent.id,
-            req.room_id,
-            req.model,
-            req.messages,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PreLlmRequestResponse(verdict=result["verdict"], reason=result["reason"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/post-tool-result")
-async def post_tool_result(
-    agent_id: str,
-    req: PostToolResultRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PostToolResultResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.post_tool_result(
-            agent.id,
-            req.room_id,
-            req.tool_name,
-            req.result,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PostToolResultResponse(verdict=result["verdict"])  # type: ignore[arg-type]
-
-
-@router.post("/{agent_id}/mediation/post-llm-response")
-async def post_llm_response(
-    agent_id: str,
-    req: PostLlmResponseRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> PostLlmResponseResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.post_llm_response(
-            agent.id,
-            req.room_id,
-            req.model,
-            req.response,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return PostLlmResponseResponse(verdict=result["verdict"])  # type: ignore[arg-type]
-
-
-# Moderation endpoints
-
-
-@router.post("/{agent_id}/moderation/rooms")
-async def create_room(
-    agent_id: str,
-    req: CreateModerationRoomRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> CreateModerationRoomResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.create_moderation_room(
-            agent_id=agent.id,
-            name=req.name,
-            description=req.description,
-            agent_names=req.agent_names,
-            include_subagents_for=req.include_subagents_for,
-            user_names=req.user_names,
-            channel_type=req.channel_type,
-            bridge_id=req.bridge_id,
-            internal_only=req.internal_only,
-            admin_mode=req.admin_mode,
-            security_config=req.security_config,
-            instructions=req.instructions,
-            reference_ids=req.reference_ids,
-            package_ids=req.package_ids,
-            linked_rooms=(
-                [lr.model_dump() for lr in req.linked_rooms]
-                if req.linked_rooms
-                else None
-            ),
-        )
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-
-    return CreateModerationRoomResponse(
-        id=result.room.id,
-        name=result.room.name,
-        transport_room_id=result.room.transport_room_id,
-        matrix_room_id=result.room.transport_room_id,
-        failed_attachments=result.failed_attachments,
-    )
-
-
-@router.post("/{agent_id}/moderation/rooms/{room_id}/invite")
-async def invite_agent(
-    agent_id: str,
-    room_id: str,
-    req: InviteAgentRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.invite_agent_to_room(
-            agent.id, room_id, req.agent_name, include_subagents=req.include_subagents
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    return {"ok": True}
-
-
-@router.get("/{agent_id}/moderation/rooms")
-async def list_rooms(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> RoomListResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    rooms = await protocol.list_all_rooms(agent.id)
-    return RoomListResponse(
-        rooms=[RoomInfo(id=r.id, name=r.name, description=r.description) for r in rooms]
-    )
-
-
-@router.get("/{agent_id}/moderation/rooms/{room_id}")
-async def get_room(
-    agent_id: str,
-    room_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> RoomDetailResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        room_detail = await protocol.get_room_detail(agent.id, room_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-    return RoomDetailResponse(
-        id=room_detail.id,
-        name=room_detail.name,
-        description=room_detail.description,
-        channel_type=room_detail.channel_type,
-        admin_mode=room_detail.admin_mode,
-        agent_names=room_detail.agent_names,
-    )
-
-
-@router.get("/{agent_id}/moderation/agents")
-async def list_agents(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> AgentListResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    agents = await protocol.list_all_agents(agent.id)
-    return AgentListResponse(
-        agents=[
-            AgentInfo(
-                id=a.id,
-                name=a.name,
-                description=a.description,
-                display_name=a.display_name,
-            )
-            for a in agents
-        ]
-    )
-
-
-@router.get("/{agent_id}/moderation/bridges")
-async def list_bridges(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> ListBridgesResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    bridges = await protocol.list_bridges()
-    return ListBridgesResponse(bridges=bridges)
-
-
-# Feature flag endpoints
-
-
-@router.get("/feature-flags")
-async def list_feature_flags(
-    _agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> FeatureFlagListResponse:
-    """List every server-global feature flag and its current state.
-
-    Any authenticated agent may read the flags.
-    """
-    flags = await FeatureFlagStore().get_all(session)
-    return FeatureFlagListResponse(
-        flags=[FeatureFlagInfo(key=k, enabled=v) for k, v in sorted(flags.items())]
-    )
-
-
-@router.put("/feature-flags/{key}")
-async def set_feature_flag(
-    key: str,
-    req: SetFeatureFlagRequest,
-    _agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> FeatureFlagInfo:
-    """Flip a server-global feature flag on or off.
-
-    Gated by any valid agent API token. Only keys in the known-flag registry
-    are accepted so the endpoint cannot write arbitrary rows.
-    """
-    if not is_known_flag(key):
-        raise HTTPException(status_code=400, detail=f"Unknown feature flag: {key}")
-
-    store = FeatureFlagStore()
-    await store.set(session, key, req.enabled)
-    await session.commit()
-    return FeatureFlagInfo(key=key, enabled=req.enabled)

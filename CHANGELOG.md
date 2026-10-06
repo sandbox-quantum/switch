@@ -57,6 +57,107 @@ version of their own to them without also giving them a release of their own.
   itself. A test now fails when the agent bridge serves a path the chart does
   not route.
 
+#### Removed
+- **The gateway's Register Agent dialog**, and the two endpoints only it and a
+  retired Console flow used: `POST /gateway/agents/register-other` and
+  `POST /gateway/agents/register-known-bulk`. Agents are created from Switch
+  Console (or the Machines page); `POST /gateway/agents/register`, which
+  Console calls, is unchanged.
+- **Server-side connectors.** Switch no longer dials out to agent hosts (the
+  OpenCode connector): every agent session is started by Switch Console or its
+  sidecar and connects in. `/gateway/connectors` is gone, along with the
+  `switch.connectors.running` metric, the `connectors` health check and the
+  `server_connector_*` telemetry events. Migration `7c26ad1a2d81` drops the
+  `server_connectors` table and its tenant lookup, and retires the
+  registration key each connector held. Agents a connector registered stay
+  registered; delete them from the gateway if you no longer want them.
+- **The task protocol.** `delegate_task`, `accept_task`, `update_task`,
+  `finalise_task`, `cancel_task` and `list_tasks` are gone from the MCP and
+  HTTP tool surface, with the `/agents/{id}/tasks/*` routes and the `task_*`
+  event kinds; none of it was ready for use. The never-enforced
+  `can_delegate` / `can_accept` capabilities go with it: integration profiles
+  no longer carry `task_protocol` (one sent at registration is ignored),
+  participants no longer report them, and the gateway's agent page no longer
+  shows them. Migration `7c26ad1a2d81` drops the `tasks` table and strips
+  `task_protocol` from stored profiles.
+- **Switch's own MCP server at `/mcp`.** No current client uses it: every
+  session gets the Switch tools from a runtime on its own host, which calls
+  `/agents/{id}/ops`. The tool surface is unchanged. The `fastmcp` dependency
+  goes with it, as does the chart's `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION`
+  variable. Remove `/mcp` from your own Ingress if you route it.
+- **OIDC sign-in for agents.** It was accepted on `/mcp` only. `OAUTH_ISSUER_URL`,
+  `OAUTH_AUDIENCE` and `OAUTH_VERIFY_ISSUER` are no longer read, `/oauth` and
+  `/.well-known` are no longer public on the agent bridge or in
+  `ingress.agentApiPaths`, and agents no longer carry an OAuth client id (the
+  gateway's agent page, `get_agent_detail` and `list_agents` stop showing it).
+  The gateway's own OIDC sign-in (`GATEWAY_OIDC_*`) is unaffected. Migration
+  `4dcf1747443d` drops `agents.oauth_client_id` and its tenant lookup.
+- **The room binding an MCP transport session kept.** Migration `4dcf1747443d`
+  drops `agent_sessions.transport_session_id` and the `explicit` rows that
+  existed only to hold it; a connection carries its own rooms.
+- **Agent HTTP routes no client calls.** The long poll is gone:
+  `GET /agents/{id}/events` without `Accept: text/event-stream` now answers
+  `406` instead of polling, and `GET /agents/{id}/notifications` and
+  `GET /agents/{id}/rooms/{room}/events` are removed. So are
+  `GET /agents/{id}/rooms/{room}/history`, `GET /agents/rooms/{room}/participants`,
+  `POST /agents/{id}/status`, `PATCH /agents/{id}`, `DELETE /agents/{id}` and
+  the `/agents/{id}/moderation/*` routes; the agent tools (`read_context`,
+  `list_participants`, `create_room`, `invite_agent_to_room`, `list_all_rooms`,
+  `get_room_detail`, `list_agents`, `list_bridges`) cover what an agent did
+  with them, and agents are deleted from the gateway.
+- **Feature flags.** The only one, `ecosystem.show_owners`, was stored
+  deployment-wide and could be flipped with any agent's key through
+  `GET`/`PUT /agents/feature-flags`. The routes, the store and the
+  `feature_flags` table are gone, and the ecosystem graph keeps the flag's
+  default: it never carries owner names, and the gateway's ecosystem page no
+  longer shows its inert "Show owners" toggle. Migration `4dcf1747443d` drops
+  the table.
+- **Room protection and observe settings.** `PUT /gateway/rooms/{id}/protection`
+  and `PUT /gateway/rooms/{id}/observe` are gone, room details no longer carry
+  `protection_config` / `observe_config`, and `create_room` no longer takes
+  `security_config`. They were stored for protection checks and an observe
+  pipeline that were never built, and nothing read them. Migration
+  `871623ec1ebf` drops both columns.
+- **Room admin mode.** Rooms no longer carry `admin_mode`: `create_room`,
+  `update_room`, room details and the gateway room API drop it. Its only
+  effect was a line in the agent's room instructions promising elevated
+  capabilities that nothing granted. Migration `871623ec1ebf` drops the
+  column.
+- **Runtime-state reports.** `POST /agents/{id}/runtime-state`, the
+  `com.switch.agent.runtime_state` event and the sweep that reset stale
+  states are gone; no client has reported a state since sessions moved to the
+  session-activity contract. `!agents-status` now shows each agent's presence
+  and type without the working / awaiting-input label or the Switch Console
+  link, which came from those reports. Migration `871623ec1ebf` drops the
+  `agent_runtime_states` table.
+- **Tool and LLM call reports.** `POST /agents/{id}/events/report` and the
+  `com.switch.report.*` events it wrote are gone; nothing consumed them. The
+  deprecated Claude Code plugin's hook still posts there and ignores the
+  failure.
+- **Mediation.** The four `POST /agents/{id}/mediation/*` routes are gone.
+  Only the deprecated Claude Code plugin's hook called them; it lets a tool
+  call proceed when the check fails, so its tool calls now go through Claude
+  Code's own permission prompts instead of being allowed or denied by
+  Switch. The tools and models an agent registers are still recorded and
+  shown on the gateway's agent pages.
+- **Integration profile fields nothing read.** `message_exchange`,
+  `pre_invocation_mediation`, `post_invocation_mediation` and
+  `event_reporting` are no longer part of an integration profile (ones sent at
+  registration are ignored), and the gateway's agent page drops its
+  Capabilities section. Migration `871623ec1ebf` strips them from stored
+  profiles.
+- **Unused tables.** Migration `871623ec1ebf` drops `delivery_cursors`,
+  which no code read or wrote, and `skills`, `agent_skills` and
+  `room_skills`, which nothing ever filled.
+- **`POST /gateway/rooms/bulk-delete`**, which nothing called, and five
+  operator-dashboard client functions with no caller.
+- **The general room-onboarding text.** `connect_to_room` now returns only
+  the room's own instructions: the interaction modes, agent statuses and room
+  setup it could prepend are covered by the Switch skill every session loads,
+  and every host already asked for them to be left out.
+  `include_general_instructions` is still accepted, and ignored, so callers
+  that pass it keep working.
+
 ### [0.29.0] - 2026-09-29
 
 #### Added
@@ -1369,6 +1470,18 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Removed
+- **The Switch skill no longer mentions the task protocol**, which
+  switch-core has removed.
+- **Task events are no longer handled.** switch-core stopped sending them:
+  sessions, the agents controller's relay and its agent hub no longer treat a
+  `task_*` event as one that wakes the agent, and the addressing settings no
+  longer describe a delegated task as a way to talk to an agent.
+- **The agents controller's relay forwards `/agents/…` routes for the
+  authenticated agent only.** The two that named no agent,
+  `/agents/rooms/{room}/participants` and `/agents/feature-flags`, are gone
+  from switch-core.
 
 #### Fixed
 - **A Claude Code session is no longer parked while its background subagents
@@ -3033,6 +3146,13 @@ The Switch protocol client and MCP runtime
 (`console/packages/switch-agent-runtime/`). Version lives in its `package.json`.
 
 ### [Unreleased]
+
+#### Removed
+- A cloud agent's session instructions no longer describe the task protocol,
+  which switch-core has removed.
+- The `TaskPayload` type and the unused `AgentBridgeEventResponse` type:
+  switch-core sends no task events and has no long poll to answer with an
+  event list.
 
 ### [0.8.0] - 2026-09-25
 

@@ -19,46 +19,30 @@ def _agent(
     agent_type: str,
     *,
     display_name: str | None = None,
-    can_delegate: bool = False,
-    can_accept: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=agent_id,
         name=name,
         display_name=display_name,
         agent_type=agent_type,
-        integration_profile={
-            "task_protocol": {
-                "can_delegate": can_delegate,
-                "can_accept": can_accept,
-            }
-        },
     )
 
 
 class TestFormatStatusLines:
-    def test_renders_emoji_type_and_capabilities_sorted_by_name(self) -> None:
+    def test_renders_emoji_and_type_sorted_by_name(self) -> None:
         agents = [
-            _agent(
-                "w",
-                "worker",
-                "session_addressable",
-                can_delegate=True,
-                can_accept=True,
-            ),
+            _agent("w", "worker", "session_addressable"),
             _agent("m", "moderator", "always_on"),
         ]
         statuses = {"w": AgentStatus.NO_SESSION, "m": AgentStatus.LIVE}
 
-        out = _format_status_lines(agents, statuses, {}, {})
+        out = _format_status_lines(agents, statuses)
         lines = out.splitlines()
 
         assert lines[0] == "**Agent status in this room:**"
         # Sorted by name: moderator before worker.
         assert lines[1] == "- 🟢 **moderator** — live · always_on"
-        assert lines[2] == (
-            "- ⚪ **worker** — no session · session_addressable · delegate+accept"
-        )
+        assert lines[2] == "- ⚪ **worker** — no session · session_addressable"
 
     def test_each_status_maps_to_its_emoji(self) -> None:
         agents = [
@@ -74,7 +58,7 @@ class TestFormatStatusLines:
             "d": AgentStatus.AWAITING_MANUAL_POLL,
         }
 
-        out = _format_status_lines(agents, statuses, {}, {})
+        out = _format_status_lines(agents, statuses)
 
         assert "🟢 **a** — live" in out
         assert "🔴 **b** — disconnected" in out
@@ -83,76 +67,26 @@ class TestFormatStatusLines:
 
     def test_no_capabilities_omits_the_segment(self) -> None:
         agents = [_agent("a", "a", "always_on")]
-        out = _format_status_lines(agents, {"a": AgentStatus.LIVE}, {}, {})
+        out = _format_status_lines(agents, {"a": AgentStatus.LIVE})
         # No trailing " · " capability segment when the agent has neither cap.
         assert out.endswith("🟢 **a** — live · always_on")
-
-    def test_runtime_state_appended_after_presence(self) -> None:
-        agents = [_agent("a", "alice", "session_addressable")]
-        out = _format_status_lines(
-            agents, {"a": AgentStatus.LIVE}, {"a": "working"}, {}
-        )
-        assert out.endswith("🟢 **alice** — live · ⚙️ working · session_addressable")
-
-    def test_awaiting_input_runtime_state_rendered(self) -> None:
-        agents = [_agent("a", "alice", "session_addressable")]
-        out = _format_status_lines(
-            agents, {"a": AgentStatus.LIVE}, {"a": "awaiting-input"}, {}
-        )
-        assert "✋ awaiting input" in out
-
-    def test_idle_runtime_state_is_omitted(self) -> None:
-        # idle carries no extra signal over the presence status.
-        agents = [_agent("a", "alice", "session_addressable")]
-        out = _format_status_lines(agents, {"a": AgentStatus.LIVE}, {"a": "idle"}, {})
-        assert out.endswith("🟢 **alice** — live · session_addressable")
-
-    def test_switchdash_deeplink_appended_when_present(self) -> None:
-        agents = [_agent("a", "alice", "session_addressable")]
-        out = _format_status_lines(
-            agents,
-            {"a": AgentStatus.LIVE},
-            {},
-            {"a": "switchdash://session?server=s&agent=a&room=r"},
-        )
-        assert out.endswith(
-            "· [Open in Switch Console](switchdash://session?server=s&agent=a&room=r)"
-        )
-
-    def test_no_deeplink_segment_when_absent(self) -> None:
-        agents = [_agent("a", "alice", "session_addressable")]
-        out = _format_status_lines(agents, {"a": AgentStatus.LIVE}, {}, {})
-        assert "Switch Console" not in out
-
-    def test_deeplink_hidden_when_session_not_live_here(self) -> None:
-        # A stored link survives a room switch; don't surface it where the
-        # agent's session is no longer live (it would point at a session that
-        # has moved on).
-        agents = [_agent("a", "alice", "session_addressable")]
-        out = _format_status_lines(
-            agents,
-            {"a": AgentStatus.NO_SESSION},
-            {},
-            {"a": "switchdash://session?server=s&agent=a&room=r"},
-        )
-        assert "Switch Console" not in out
 
 
 class TestFormatStatusLinesDisplayNames:
     def test_display_name_precedes_the_identifier_in_backticks(self) -> None:
         agents = [_agent("a", "switchdev", "always_on", display_name="Switch Dev")]
-        out = _format_status_lines(agents, {"a": AgentStatus.LIVE}, {}, {})
+        out = _format_status_lines(agents, {"a": AgentStatus.LIVE})
         assert "**Switch Dev (`switchdev`)** — live" in out
 
     def test_no_display_name_renders_the_identifier_once(self) -> None:
         agents = [_agent("a", "switchdev", "always_on")]
-        out = _format_status_lines(agents, {"a": AgentStatus.LIVE}, {}, {})
+        out = _format_status_lines(agents, {"a": AgentStatus.LIVE})
         assert "**switchdev** — live" in out
         assert "(`switchdev`)" not in out
 
     def test_a_display_name_cannot_ping_the_channel(self) -> None:
         agents = [_agent("a", "switchdev", "always_on", display_name="@everyone")]
-        out = _format_status_lines(agents, {"a": AgentStatus.LIVE}, {}, {})
+        out = _format_status_lines(agents, {"a": AgentStatus.LIVE})
         assert _MENTION.search(out) is None
         assert "switchdev" in out
 
@@ -165,7 +99,7 @@ class TestFormatStatusLinesDisplayNames:
                 display_name="[click here](https://example.invalid)",
             )
         ]
-        out = _format_status_lines(agents, {"a": AgentStatus.LIVE}, {}, {})
+        out = _format_status_lines(agents, {"a": AgentStatus.LIVE})
         assert "](https://example.invalid)" not in out
 
     def test_order_follows_the_displayed_label(self) -> None:
@@ -176,7 +110,7 @@ class TestFormatStatusLinesDisplayNames:
             _agent("a", "alpha", "always_on", display_name="Zeta Bot"),
         ]
         statuses = {"z": AgentStatus.LIVE, "a": AgentStatus.LIVE}
-        lines = _format_status_lines(agents, statuses, {}, {}).splitlines()
+        lines = _format_status_lines(agents, statuses).splitlines()
         assert "Alpha Bot" in lines[1]
         assert "Zeta Bot" in lines[2]
 
@@ -186,7 +120,7 @@ class TestFormatStatusLinesDisplayNames:
             _agent("b", "zeta", "always_on", display_name="Bravo Bot"),
         ]
         statuses = {"w": AgentStatus.LIVE, "b": AgentStatus.LIVE}
-        lines = _format_status_lines(agents, statuses, {}, {}).splitlines()
+        lines = _format_status_lines(agents, statuses).splitlines()
         assert "Bravo Bot" in lines[1]
         assert "worker" in lines[2]
 

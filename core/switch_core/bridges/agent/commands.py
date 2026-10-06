@@ -23,7 +23,6 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
 from switch_core.db.models import CollaborationBridge, HostedLaunch, HostedMachine, Room
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.db.stores.hosted_machine_store import idle_sleeping
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
@@ -470,11 +469,11 @@ async def _dispatch_control_command(
 ) -> None:
     """Shared logic for the session-control commands (reset/compact/interrupt).
 
-    Resolves the agent's declared capability level for `command` from its
-    integration profile, then — for `session_dependent` — checks that a live
-    session actually reports it can execute the command (via its runtime-state
-    control capabilities). When actionable, acknowledges in the room and queues
-    a `command` event for the agent's controller (e.g. Switch Console) to execute.
+    A session placed in the room, or an agent with a bound controller, gets
+    the command relayed to its controller. Otherwise the agent's declared
+    capability level for `command` decides: `always` acknowledges in the room
+    and queues a `command` event; `session_dependent` needs a session Switch
+    can reach, which this agent does not have here.
 
     Two distinct "can't act" cases are reported separately: no live session in
     the room at all (`no_live_session_msg`) vs. a live session that can't be
@@ -543,8 +542,6 @@ async def _dispatch_control_command(
     if meta is None:
         return
 
-    deeplink: str | None = None
-    role: str | None = None
     if level == "session_dependent":
         async with client.session_factory() as session:
             statuses = await compute_agent_statuses(
@@ -554,38 +551,15 @@ async def _dispatch_control_command(
                 client._agent_session_store,
                 client._connections,
             )
-            runtime = await AgentRuntimeStateStore().get(
-                session, agent.id, meta.room_id
-            )
-            # `reset`/`compact` drop or condense the session's context, so the
-            # controller reconnects it to this room and re-assumes the role it
-            # held. Resolve that role now (the lease survives) and pass it as the
-            # command args so the controller can fold it into the reconnect
-            # prompt.
-            role = await client._room_role_store.agent_room_role(
-                session,
-                meta.room_id,
-                agent.id,
-                client._connections.live_connection_ids(),
-            )
-        live = statuses.get(agent.id) == AgentStatus.LIVE
-        caps = (runtime.control_capabilities or {}) if runtime else {}
-        if not live:
-            await _reply(client, room, event, no_live_session_msg)
-            return
-        if not caps.get(command):
+        if statuses.get(agent.id) == AgentStatus.LIVE:
             await _reply(client, room, event, no_session_msg)
-            return
-        deeplink = runtime.deeplink_url if runtime else None
+        else:
+            await _reply(client, room, event, no_live_session_msg)
+        return
 
-    args = event.args
-    if command in ("reset", "compact"):
-        args = role or ""
+    args = "" if command in ("reset", "compact") else event.args
 
-    # Mirror the runtime "working" surface: link back to the session in
-    # Switch Console when we know its deeplink.
-    body = f"{ack} ([Open in Switch Console]({deeplink}))" if deeplink else ack
-    await _reply(client, room, event, body)
+    await _reply(client, room, event, ack)
     client._event_buffer.enqueue(
         client.agent.id,
         meta.room_id,
@@ -918,52 +892,19 @@ _STATUS_DISPLAY: dict[AgentStatus, tuple[str, str]] = {
     AgentStatus.AWAITING_MANUAL_POLL: ("🟡", "awaiting manual poll"),
 }
 
-# Runtime-state label appended to the presence line when a live session is
-# reporting what it is doing. "idle" is omitted — it carries no extra signal
-# over the presence status.
-_RUNTIME_STATE_DISPLAY: dict[str, str] = {
-    "working": "⚙️ working",
-    "awaiting-input": "✋ awaiting input",
-}
-
 
 def _format_status_lines(
     agents: list[Agent],
     statuses: dict[str, AgentStatus],
-    runtime_states: dict[str, str],
-    deeplinks: dict[str, str],
 ) -> str:
     """Render the !status summary: one line per agent (sorted by the name it is
-    shown under) with its presence emoji + label, runtime state (if any),
-    agent_type, task capabilities, and a Switch Console deeplink to its session
-    when one is known.
-
-    The deeplink is shown only for an agent whose session is LIVE in this room:
-    the stored link is per (agent, room) and survives a room switch, so once the
-    session moves away it would point at a session no longer here. Gating on
-    LIVE keeps the link from going stale when an agent hops rooms."""
+    shown under) with its presence emoji + label and agent_type."""
     lines = ["**Agent status in this room:**"]
     for agent in sorted(agents, key=lambda a: (a.display_name or a.name).lower()):
         status = statuses.get(agent.id, AgentStatus.NO_SESSION)
         emoji, label = _STATUS_DISPLAY.get(status, ("", status.value))
-        runtime = _RUNTIME_STATE_DISPLAY.get(runtime_states.get(agent.id, ""))
         name = agent_label_with_identifier(agent.display_name, agent.name)
-        head = f"{emoji} **{name}** — {label}"
-        if runtime is not None:
-            head += f" · {runtime}"
-        parts = [head, agent.agent_type]
-        task_protocol = (agent.integration_profile or {}).get("task_protocol", {})
-        caps = []
-        if task_protocol.get("can_delegate"):
-            caps.append("delegate")
-        if task_protocol.get("can_accept"):
-            caps.append("accept")
-        if caps:
-            parts.append("+".join(caps))
-        deeplink = deeplinks.get(agent.id)
-        if deeplink and status == AgentStatus.LIVE:
-            parts.append(f"[Open in Switch Console]({deeplink})")
-        lines.append("- " + " · ".join(parts))
+        lines.append(f"- {emoji} **{name}** — {label} · {agent.agent_type}")
     return "\n".join(lines)
 
 
@@ -995,18 +936,8 @@ async def _cmd_status(
             client._agent_session_store,
             client._connections,
         )
-        runtime_rows = await AgentRuntimeStateStore().get_by_room(session, meta.room_id)
-        runtime_states = {row.agent_id: row.state for row in runtime_rows}
-        deeplinks = {
-            row.agent_id: row.deeplink_url for row in runtime_rows if row.deeplink_url
-        }
 
-    await _reply(
-        client,
-        room,
-        event,
-        _format_status_lines(agents, statuses, runtime_states, deeplinks),
-    )
+    await _reply(client, room, event, _format_status_lines(agents, statuses))
 
 
 async def _cmd_roles(

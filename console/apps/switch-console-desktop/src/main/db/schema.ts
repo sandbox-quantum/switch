@@ -17,8 +17,7 @@ import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 //     └─ agents    — a Switch agent identity (one provider each; many per
 //          │         location; belongs to one workspace)
 //          └─ sessions  — an instantiation/run of an agent (was "conversation";
-//          │              one session == one terminal, folded in)
-//               └─ messages
+//                         one session == one terminal, folded in)
 //
 // Dropped from upstream: the worktree-era `sessions` grouping, the `terminals`
 // table (folded 1:1 into a session), and the location/workspace split (a
@@ -186,7 +185,7 @@ export const workspaces = sqliteTable(
     // ever repair the first one it found.
     serverPlaceholderIdx: uniqueIndex('idx_workspaces_server_placeholder')
       .on(table.serverId)
-      .where(sql`tenant_id IS NULL`),
+      .where(sql`\`tenant_id\` IS NULL`),
   })
 );
 
@@ -383,26 +382,6 @@ export const sessionRoomConnections = sqliteTable('session_room_connections', {
     .default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const messages = sqliteTable(
-  'messages',
-  {
-    id: text('id').primaryKey(),
-    sessionId: text('session_id')
-      .notNull()
-      .references(() => sessions.id, { onDelete: 'cascade' }),
-    content: text('content').notNull(),
-    sender: text('sender').notNull(),
-    timestamp: text('timestamp')
-      .notNull()
-      .default(sql`CURRENT_TIMESTAMP`),
-    metadata: text('metadata'),
-  },
-  (table) => ({
-    sessionIdIdx: index('idx_messages_session_id').on(table.sessionId),
-    timestampIdx: index('idx_messages_timestamp').on(table.timestamp),
-  })
-);
-
 export const kv = sqliteTable(
   'kv',
   {
@@ -436,7 +415,6 @@ export type AgentRow = typeof agents.$inferSelect;
 export type AgentInsert = typeof agents.$inferInsert;
 export type SessionRow = typeof sessions.$inferSelect;
 export type SessionInsert = typeof sessions.$inferInsert;
-export type MessageRow = typeof messages.$inferSelect;
 export type KvRow = typeof kv.$inferSelect;
 export type KvInsert = typeof kv.$inferInsert;
 export type AppSecretRow = typeof appSecrets.$inferSelect;

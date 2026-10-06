@@ -1,4 +1,3 @@
-import type { Result } from '@switch-console/shared';
 import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import {
@@ -10,7 +9,6 @@ import {
   type ShareableLocationSettings,
 } from '@shared/core/location-settings/location-settings';
 import { mergeShareableLocationSettings } from '@shared/core/location-settings/location-settings-fields';
-import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import {
   hasLegacyShareableConfigMigrated,
   serializeShareableLocationSettings,
@@ -24,9 +22,6 @@ export type LegacyLocationSettingsMigrationArgs = {
   configReader: Pick<FileSystemProvider, 'exists' | 'read'> | undefined;
   storage: LocationSettingsStorage;
   git?: LocationSettingsGitInspector;
-  normalizeStoredWorktreeDirectory: (
-    worktreeDirectory: string
-  ) => Promise<Result<string, UpdateLocationSettingsError>>;
 };
 
 export type LocationSettingsGitInspector = {
@@ -58,7 +53,6 @@ export async function migrateLegacyLocationSettingsIfNeeded({
   configReader,
   storage,
   git,
-  normalizeStoredWorktreeDirectory,
 }: LegacyLocationSettingsMigrationArgs): Promise<void> {
   if (!row) return;
 
@@ -79,16 +73,6 @@ export async function migrateLegacyLocationSettingsIfNeeded({
   const legacy = await readLegacyLocationConfig(configReader);
   const next: BaseLocationSettings = baseLocationSettingsSchema.parse(current);
   let nextShareable: ShareableLocationSettings | undefined;
-
-  if (legacy && !baseAlreadyMigrated) {
-    if (legacy.worktreeDirectory !== undefined) {
-      const normalized = await normalizeStoredWorktreeDirectory(legacy.worktreeDirectory);
-      if (normalized.success) next.worktreeDirectory = normalized.data;
-    }
-    if (legacy.locationProvider !== undefined) {
-      next.locationProvider = legacy.locationProvider;
-    }
-  }
 
   if (legacy && !shareableAlreadyMigrated) {
     if ((await git?.isFileCleanlyTracked('.switchdash.json')) === false) {

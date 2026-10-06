@@ -1,8 +1,7 @@
 """A JSONB column whose whole value is encrypted at rest.
 
-For connection settings — a collaboration bridge's or a server connector's —
-which carry platform credentials (bot tokens, app passwords, a server
-password) next to ordinary settings. Encrypting the whole value rather than
+For a collaboration bridge's connection settings, which carry platform
+credentials (bot tokens, app passwords) next to ordinary settings. Encrypting the whole value rather than
 named fields means a credential field an adapter adds later is covered without
 anyone remembering to list it.
 

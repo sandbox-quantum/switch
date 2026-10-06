@@ -1,10 +1,9 @@
 """`register_agent_with_token` puts the new agent in the *token's* tenant.
 
-This is the registration path with nothing in front of it: a server-side
-connector registers its discovered agents from a startup task
-(`server_connectors/core.py`), where there is no request and so no bound
-tenant. The HTTP path has `BearerAuthMiddleware` binding one; this one has to
-bind it itself, from the same source of truth — `api_keys.tenant_id`.
+This is the registration path with nothing in front of it: an in-process
+caller has no request and so no bound tenant. The HTTP path has
+`BearerAuthMiddleware` binding one; this one has to bind it itself, from the
+same source of truth — `api_keys.tenant_id`.
 
 Getting it wrong is not a transient mistake. The rows written here are what a
 later bearer request is authenticated against, and that request reads

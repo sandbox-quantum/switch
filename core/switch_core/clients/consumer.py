@@ -13,18 +13,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from switch_core.events import (
-    AgentRuntimeStateEvent,
-    CommandEvent,
-    LlmCallReport,
-    SwitchEvent,
-    TaskAccept,
-    TaskCancel,
-    TaskDelegate,
-    TaskFinalise,
-    TaskUpdate,
-    ToolCallReport,
-)
+from switch_core.events import CommandEvent, SwitchEvent
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -253,17 +242,6 @@ class Consumer[ActorT: Actor[Any]]:
 
     _EVENT_DISPATCH: dict[str, tuple[type[SwitchEvent], str]] = {
         "com.switch.command": (CommandEvent, "on_command"),
-        "com.switch.report.tool_call": (ToolCallReport, "on_tool_call_report"),
-        "com.switch.report.llm_call": (LlmCallReport, "on_llm_call_report"),
-        "com.switch.task.delegate": (TaskDelegate, "on_task_delegate"),
-        "com.switch.task.accept": (TaskAccept, "on_task_accept"),
-        "com.switch.task.update": (TaskUpdate, "on_task_update"),
-        "com.switch.task.finalise": (TaskFinalise, "on_task_finalise"),
-        "com.switch.task.cancel": (TaskCancel, "on_task_cancel"),
-        "com.switch.agent.runtime_state": (
-            AgentRuntimeStateEvent,
-            "on_agent_runtime_state",
-        ),
     }
 
     async def _handle_custom_event(
@@ -274,18 +252,11 @@ class Consumer[ActorT: Actor[Any]]:
 
         entry = self._EVENT_DISPATCH.get(event.event_type)
         if entry is None:
-            if event.event_type.startswith("com.switch.observe."):
-                logger.warning(
-                    "Observe event %s not yet supported in %s",
-                    event.event_type,
-                    room.room_id,
-                )
-            else:
-                logger.error(
-                    "Unhandled custom event type %s in %s",
-                    event.event_type,
-                    room.room_id,
-                )
+            logger.error(
+                "Unhandled custom event type %s in %s",
+                event.event_type,
+                room.room_id,
+            )
             return
 
         event_class, method_name = entry
@@ -364,30 +335,4 @@ class Consumer[ActorT: Actor[Any]]:
         """
 
     async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
-        pass
-
-    async def on_tool_call_report(self, room: RoomRef, event: ToolCallReport) -> None:
-        pass
-
-    async def on_llm_call_report(self, room: RoomRef, event: LlmCallReport) -> None:
-        pass
-
-    async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
-        pass
-
-    async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
-        pass
-
-    async def on_task_update(self, room: RoomRef, event: TaskUpdate) -> None:
-        pass
-
-    async def on_task_finalise(self, room: RoomRef, event: TaskFinalise) -> None:
-        pass
-
-    async def on_task_cancel(self, room: RoomRef, event: TaskCancel) -> None:
-        pass
-
-    async def on_agent_runtime_state(
-        self, room: RoomRef, event: AgentRuntimeStateEvent
-    ) -> None:
         pass

@@ -105,7 +105,7 @@ python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$CODEX_HOME/hooks.js
 cat > "$CODEX_HOME/config.toml" <<EOF
 [mcp_servers.switch]
 command = "uv"
-args = ["run", "--project", "$REPO_ROOT/core", "python", "$REPO_ROOT/scripts/codex-hook-probe/mcp_probe.py"]
+args = ["run", "--no-project", "--with", "fastmcp>=3.2.0,<4", "python", "$REPO_ROOT/scripts/codex-hook-probe/mcp_probe.py"]
 EOF
 
 echo "Probe home: $CODEX_HOME"

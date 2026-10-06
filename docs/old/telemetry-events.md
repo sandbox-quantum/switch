@@ -794,7 +794,6 @@ reason.
   as it connecting. `is_preconfigured` separates the setup step's own
   connector from one a person added. Many of these and few `bridge_connected` is a deployment
   whose setup is failing, and only the pair shows it.
-- `server_connector_registered` / `server_connector_removed`.
 
 **Deliberately not reported**, so the boundary is stated rather than
 discovered: edits that change a setting rather than create or remove

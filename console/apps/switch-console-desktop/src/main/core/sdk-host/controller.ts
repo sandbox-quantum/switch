@@ -1,6 +1,5 @@
 import type { ClientCommand } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
@@ -37,11 +36,6 @@ export const sdkHostController = createRPCController({
   agentLogs: sharedAgentLogs,
   manageSidecar: async (agentId: string, action: 'update' | 'restart' | 'stop' | 'start') =>
     manageAgentSidecar(agentId, z.enum(['update', 'restart', 'stop', 'start']).parse(action)),
-  workspaceForAgent: async (agentId: string) => {
-    const agent = await getAgentById(agentId);
-    if (!agent?.workspaceId) throw new Error('This agent has no Switch workspace.');
-    return agent.workspaceId;
-  },
   transcriptSource,
   transcriptOpen: (agentId: string, sessionId: string) => openTranscript(agentId, sessionId),
   transcriptClose: (sessionId: string) => closeTranscript(sessionId),

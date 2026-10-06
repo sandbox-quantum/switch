@@ -33,11 +33,6 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
     MessagePayload,
     RoomJoinPayload,
-    TaskAcceptPayload,
-    TaskCancelPayload,
-    TaskDelegatePayload,
-    TaskFinalisePayload,
-    TaskUpdatePayload,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.actor import AgentActor
@@ -90,11 +85,6 @@ from switch_core.delivery.addressing import (
 )
 from switch_core.events import (
     CommandEvent,
-    TaskAccept,
-    TaskCancel,
-    TaskDelegate,
-    TaskFinalise,
-    TaskUpdate,
 )
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import (
@@ -497,9 +487,8 @@ class AgentConsumer(Consumer[AgentActor]):
 
         Dropping the subscription only stops what has not been read yet. What
         has is in the event buffer for the whole retention window, and is
-        served from there to a long poll, to the notification stream, and to an
-        SSE reader resuming from an old cursor — the last of which has no
-        membership of its own to apply.
+        served from there to an SSE reader resuming from an old cursor, which
+        has no membership of its own to apply.
         """
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
@@ -1246,20 +1235,12 @@ class AgentConsumer(Consumer[AgentActor]):
             if self.agent.id in watching:
                 return _STARTING_SESSION_MESSAGE
 
-        occupied = rooms_occupied(self.agent.id, self._connections)
-        room_ids = await self._agent_session_store.live_connected_rooms(
-            session, self.agent.id
-        )
         # Where the agent actually is, which is not what its connections cover:
         # a shared one covers every room the agent belongs to, and offering the
         # user "it is busy in these rooms" from that names rooms nothing is in.
-        room_ids = sorted(set(room_ids) | occupied)
-        bound_here = (
-            await self._agent_session_store.has_room_binding(
-                session, self.agent.id, meta.room_id
-            )
-            or meta.room_id in occupied
-        )
+        occupied = rooms_occupied(self.agent.id, self._connections)
+        room_ids = sorted(occupied)
+        bound_here = meta.room_id in occupied
         names: list[str] = []
         holds_role_here = False
         other_room_ids = [rid for rid in room_ids if rid != meta.room_id]
@@ -1432,7 +1413,7 @@ class AgentConsumer(Consumer[AgentActor]):
             return self._connections.controllers.is_live(self.agent.id)
         # Union of the presence sources while every kind of client exists
         # (CHOO-1857 stage B): a client on the push transport keeps only a
-        # connection, one still polling keeps only the heartbeat row, and a
+        # connection, one still beating keeps only the heartbeat row, and a
         # session Switch has a record of is answered from that record.
         if connection_model == "always_on":
             if self._connections.is_live(self.agent.id):
@@ -1454,140 +1435,6 @@ class AgentConsumer(Consumer[AgentActor]):
     async def _is_direct_room(self, transport_room_id: str) -> bool:
         meta = await self._resolve_room_meta(transport_room_id)
         return meta is not None and meta.channel_type == "direct"
-
-    # ── Task event forwarding ────────────────────────────────────────────────
-
-    async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
-        if event.performer_agent_id != self.agent.id:
-            return
-        async with tenant_session(self.session_factory, self.tenant_id) as session:
-            agent = await self._fresh_agent(session)
-        meta = await self._resolve_room_meta(room.room_id)
-        agent_event = (
-            None
-            if meta is None
-            else AgentEvent(
-                type="task_delegate",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskDelegatePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    summary=event.summary,
-                    description=event.description,
-                ),
-            )
-        )
-        hosted = await self._note_hosted_addressed(agent, agent_event)
-        launch = None if hosted is None else hosted.launch
-        machine = None if hosted is None else hosted.machine
-        if hosted is not None and hosted.refusal is not None:
-            reply = hosted.refusal
-        elif launch is not None and is_waking(launch, machine):
-            reply = _WAKING_MESSAGE
-        else:
-            reply = "Working on it."
-        await self.actor.send_message(
-            room.room_id, reply, format="markdown", metered=False
-        )
-        if meta is None or agent_event is None:
-            return
-        if hosted is not None and not hosted.deliver:
-            return
-        self._event_buffer.enqueue(self.agent.id, meta.room_id, agent_event)
-
-    async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_accept",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskAcceptPayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                ),
-            ),
-        )
-
-    async def on_task_update(self, room: RoomRef, event: TaskUpdate) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_update",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskUpdatePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    update=event.update,
-                ),
-            ),
-        )
-
-    async def on_task_finalise(self, room: RoomRef, event: TaskFinalise) -> None:
-        if event.requester_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_finalise",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskFinalisePayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    outcome=event.outcome,
-                ),
-            ),
-        )
-
-    async def on_task_cancel(self, room: RoomRef, event: TaskCancel) -> None:
-        if event.performer_agent_id != self.agent.id:
-            return
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-        self._event_buffer.enqueue(
-            self.agent.id,
-            meta.room_id,
-            AgentEvent(
-                type="task_cancel",
-                room_id=meta.room_id,
-                bridge_id=meta.bridge_id,
-                channel_type=meta.channel_type,
-                payload=TaskCancelPayload(
-                    task_id=event.task_id,
-                    requester_agent_id=event.requester_agent_id,
-                    performer_agent_id=event.performer_agent_id,
-                    reason=event.reason,
-                ),
-            ),
-        )
 
     # ── Mention detection ─────────────────────────────────────────────────────
 

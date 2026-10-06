@@ -23,10 +23,6 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
-from switch_core.bridges.agent.protocol.types import (
-    IntegrationProfile,
-    TaskProtocolConfig,
-)
 from switch_core.db.models import Agent, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
@@ -44,13 +40,9 @@ from switch_core.gateway.known_agents import KNOWN_AGENTS
 from switch_core.gateway.schemas import (
     AgentDetail,
     AgentSummary,
-    BulkRegisterResult,
     KnownAgentType,
     RegisterAgentResponse,
     RegisterKnownAgentRequest,
-    RegisterKnownSubagentsRequest,
-    RegisterKnownSubagentsResponse,
-    RegisterOtherAgentRequest,
     UpdateAddressingPolicyRequest,
     UpdateAgentCanManageAgentsRequest,
     UpdateAgentDescriptionRequest,
@@ -58,7 +50,6 @@ from switch_core.gateway.schemas import (
     UpdateAgentIconRequest,
     UpdateAgentOptionsRequest,
 )
-from switch_core.gateway.subagent_registration import derive_subagent_registrations
 
 logger = logging.getLogger(__name__)
 
@@ -224,119 +215,7 @@ async def register_known_agent(
     return RegisterAgentResponse(
         id=result.agent_id,
         api_key=result.api_key,
-        oauth_client_id=result.oauth_client_id,
     )
-
-
-@router.post("/register-known-bulk")
-async def register_known_subagents(
-    req: RegisterKnownSubagentsRequest,
-    user: Annotated[User, Depends(get_current_user)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> RegisterKnownSubagentsResponse:
-    """Register many Claude Code subagents under one parent agent (session-authed).
-
-    The owner-scoped counterpart of the agent-bridge `register-known-bulk`
-    endpoint: the signed-in user must own the parent. Each child's Switch name
-    is derived as ``<parent-name>.<subagent_name>``; a name clash fails the whole
-    batch up front rather than leaving a partial set registered. Subagents
-    inherit the parent's `channels_enabled` / `repo_dir` unless overridden in
-    `options`.
-    """
-    spec = KNOWN_AGENTS.get(req.agent_type)
-    if spec is None:
-        raise HTTPException(
-            status_code=400, detail=f"Unknown agent type: {req.agent_type}"
-        )
-    if not req.subagents:
-        raise HTTPException(status_code=400, detail="No subagents provided")
-
-    parent = await agent_store.get(session, req.parent_agent_id)
-    if parent is None:
-        raise HTTPException(
-            status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
-        )
-    try:
-        require_manage(
-            Principal(user.id, is_admin),
-            parent.owner_id,
-        )
-    except PermissionError as exc:
-        raise HTTPException(
-            status_code=403,
-            detail="Only the parent agent's owner or an admin can register its subagents.",
-        ) from exc
-
-    # Derive names + per-subagent options (inheriting parent settings); reject
-    # in-batch duplicates before touching the DB.
-    try:
-        derived = derive_subagent_registrations(
-            parent_name=parent.name,
-            parent_metadata=parent.metadata_,
-            base_options=req.options,
-            subagents=[(s.subagent_name, s.description) for s in req.subagents],
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # Pre-check existence so a clash fails the batch before any registration.
-    if not req.overwrite:
-        clashes = [
-            d.name
-            for d in derived
-            if await agent_store.get_by_name(session, d.name) is not None
-        ]
-        if clashes:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Subagents already exist: "
-                    + ", ".join(clashes)
-                    + ". Pass overwrite=true to re-register."
-                ),
-            )
-
-    results: list[BulkRegisterResult] = []
-    for d in derived:
-        try:
-            options = spec.parse_options(d.options)
-        except ValidationError as exc:
-            raise HTTPException(status_code=400, detail=exc.errors()) from exc
-        integration_profile = spec.build_profile(options)
-        metadata = {
-            "known_agent_type": req.agent_type,
-            "known_agent_options": options.model_dump(),
-        }
-        try:
-            result = await protocol.register_agent(
-                name=d.name,
-                description=d.description,
-                connector_type=spec.connector_type,
-                integration_profile=integration_profile,
-                tools=spec.tools,
-                models=spec.models,
-                metadata=metadata,
-                owner_id=user.id,
-                parent_agent_id=parent.id,
-                overwrite=req.overwrite,
-            )
-        except AgentExistsError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        results.append(
-            BulkRegisterResult(
-                subagent_name=d.subagent_name,
-                name=d.name,
-                id=result.agent_id,
-                api_key=result.api_key,
-            )
-        )
-
-    return RegisterKnownSubagentsResponse(results=results)
 
 
 @router.patch("/{agent_id}/options")
@@ -357,8 +236,8 @@ async def update_agent_options(
     the two in sync the same way `/agents/register` does.
 
     Only the agent's owner (or an admin) can update its options. Agents that
-    were not registered via a known-agent type (e.g. `register-other`) have
-    no editable options and return 400.
+    were not registered via a known-agent type have no editable options and
+    return 400.
     """
     agent = await agent_store.get(session, agent_id)
     if agent is None:
@@ -544,48 +423,6 @@ async def update_agent_description(
 
     owner_name = user.name if agent.owner_id == user.id else None
     return await build_agent_summary(session, agent_store, agent, owner_name)
-
-
-@router.post("/register-other")
-async def register_other_agent(
-    req: RegisterOtherAgentRequest,
-    user: Annotated[User, Depends(get_current_user)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> RegisterAgentResponse:
-    # External agent registered without a known profile — give it a conservative
-    # default profile (session_passive, no task capabilities).
-    default_profile = IntegrationProfile(
-        connection_model="session_passive",
-        message_exchange=True,
-        pre_invocation_mediation=[],
-        post_invocation_mediation=[],
-        event_reporting=[],
-        task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
-    )
-
-    try:
-        result = await protocol.register_agent(
-            registration_path="gateway",
-            name=req.name,
-            description=req.description,
-            icon_url=req.icon_url,
-            display_name=req.display_name,
-            connector_type="external",
-            integration_profile=default_profile,
-            owner_id=user.id,
-            overwrite=req.overwrite,
-        )
-    except AgentExistsError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        # Covers InvalidIconUrl, which subclasses ValueError.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    return RegisterAgentResponse(
-        id=result.agent_id,
-        api_key=result.api_key,
-        oauth_client_id=result.oauth_client_id,
-    )
 
 
 @router.put("/{agent_id}/addressing-policy")

@@ -1,18 +1,15 @@
-import { createReadStream, promises as fs, statSync, type Stats } from 'node:fs';
+import { createReadStream, promises as fs, type Stats } from 'node:fs';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import parcelWatcher from '@parcel/watcher';
 import { glob } from 'glob';
 import ignore from 'ignore';
 import { log } from '@main/lib/logger';
-import type { FileWatchEvent } from '@shared/core/fs/fs';
 import {
   FileSystemError,
   FileSystemErrorCodes,
   type FileEntry,
   type FileListResult,
   type FileSystemProvider,
-  type FileWatcher,
   type ListOptions,
   type ReadResult,
   type SearchMatch,
@@ -82,39 +79,6 @@ const SEARCH_IGNORES = new Set([
   '.cache',
   '.parcel-cache',
 ]);
-
-const WATCH_IGNORED_NAMES = [
-  '.svn',
-  '.hg',
-  '.git',
-  'node_modules',
-  'dist',
-  'build',
-  '.next',
-  '.nuxt',
-  'coverage',
-  '__pycache__',
-  '.pytest_cache',
-  'venv',
-  '.venv',
-  'target',
-  '.terraform',
-  '.serverless',
-  'worktrees',
-  '.switchdash',
-  '.conductor',
-  '.cursor',
-  '.claude',
-  '.amp',
-  '.codex',
-  '.aider',
-  '.continue',
-  '.cody',
-  '.windsurf',
-];
-
-// Glob patterns for parcel/watcher ignore option, derived from WATCH_IGNORED_NAMES.
-const WATCH_IGNORE_GLOBS = WATCH_IGNORED_NAMES.map((n) => `**/${n}/**`);
 
 // Allowed image extensions for readImage
 const ALLOWED_IMAGE_EXTENSIONS = new Set([
@@ -731,77 +695,5 @@ export class LocalFileSystem implements FileSystemProvider {
 
   async copyLocalFile(localAbsPath: string, destRelPath: string): Promise<void> {
     await fs.copyFile(localAbsPath, this.resolvePath(destRelPath));
-  }
-
-  watch(
-    callback: (events: FileWatchEvent[]) => void,
-    options: { debounceMs?: number } = {}
-  ): FileWatcher {
-    const stabilityMs = options.debounceMs ?? 200;
-    let pending: FileWatchEvent[] = [];
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    // Set when the async subscribe resolves; used by close() if it resolves after close() is called.
-    let resolvedSub: parcelWatcher.AsyncSubscription | null = null;
-    let closed = false;
-
-    const flush = () => {
-      if (pending.length) {
-        callback(pending);
-        pending = [];
-      }
-    };
-
-    const enqueue = (evt: FileWatchEvent) => {
-      pending.push(evt);
-      if (flushTimer) clearTimeout(flushTimer);
-      flushTimer = setTimeout(flush, stabilityMs);
-    };
-
-    const toRel = (absPath: string) => relative(this.rootPath, absPath).replace(/\\/g, '/');
-
-    void parcelWatcher
-      .subscribe(
-        this.rootPath,
-        (err, events) => {
-          if (err) return;
-          for (const e of events) {
-            const rel = toRel(e.path);
-            // Skip paths outside the location root (shouldn't happen, but guard anyway).
-            if (rel.startsWith('..')) continue;
-
-            let entryType: 'file' | 'directory' = 'file';
-            if (e.type !== 'delete') {
-              try {
-                entryType = statSync(e.path).isDirectory() ? 'directory' : 'file';
-              } catch {
-                // File removed between the event and the stat — treat as file.
-              }
-            }
-            const type = e.type === 'update' ? ('modify' as const) : e.type;
-            enqueue({ type, entryType, path: rel });
-          }
-        },
-        { ignore: WATCH_IGNORE_GLOBS }
-      )
-      .then((sub) => {
-        if (closed) {
-          void sub.unsubscribe();
-        } else {
-          resolvedSub = sub;
-        }
-      })
-      .catch(() => {
-        // Subscription failed (e.g. location path removed before watch started).
-      });
-
-    return {
-      // No-op: the recursive subscription already covers the entire worktree.
-      update(_paths: string[]) {},
-      close() {
-        closed = true;
-        if (flushTimer) clearTimeout(flushTimer);
-        if (resolvedSub) void resolvedSub.unsubscribe();
-      },
-    };
   }
 }

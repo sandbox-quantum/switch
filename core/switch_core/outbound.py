@@ -1,14 +1,13 @@
 """Outbound requests to URLs a tenant or an agent chose.
 
-A Mattermost server URL, an OpenCode server URL or an agent's icon is fetched
+A Mattermost server URL or an agent's icon is fetched
 by Switch from inside the network it runs in. Unchecked, such a URL can name a
 service on that network or the cloud instance-metadata endpoint, and the
 request carries whatever credentials go with it.
 
 `OutboundPolicy` decides which addresses may be reached: any public address,
 plus the private hosts and networks an operator lists in
-`OUTBOUND_ALLOWED_PRIVATE_HOSTS` (a bundled Mattermost, a tailnet server, a
-local OpenCode in development). Link-local addresses, which include the
+`OUTBOUND_ALLOWED_PRIVATE_HOSTS` (a bundled Mattermost, a tailnet server). Link-local addresses, which include the
 metadata endpoints, are refused even when listed.
 
 The check is made on the resolved addresses, not on the hostname, so a public
@@ -54,8 +53,7 @@ _HOSTNAME_RE = re.compile(
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 # httpx's own defaults, which its pool gets and a bare httpcore pool does not:
-# httpcore's are 10 connections with idle ones kept forever, and an OpenCode
-# session holds a connection for minutes at a time.
+# httpcore's are 10 connections with idle ones kept forever.
 _POOL_LIMITS = httpx.Limits(
     max_connections=100, max_keepalive_connections=20, keepalive_expiry=5.0
 )

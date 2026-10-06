@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -11,11 +10,7 @@ import { resolveRemoteHome } from '@main/core/ssh/lifecycle/remote-shell-profile
 import { getGitExecutable } from '@main/core/utils/exec';
 import { buildExternalToolEnv } from '@main/utils/childProcessEnv';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import {
-  cloneDirectory,
-  firstFreeDirectory,
-  type ParsedAgentTemplate,
-} from './agent-template-format';
+import { cloneDirectory, type ParsedAgentTemplate } from './agent-template-format';
 import {
   composeTemplateDocument,
   type FormOptions,
@@ -159,41 +154,6 @@ export const agentTemplatesController = createRPCController({
     }
     const { defaultLocationsDirectory } = await appSettingsService.get('localLocation');
     return defaultLocationsDirectory;
-  },
-
-  /** The default working directory for an agent of this name: a folder named
-   * after it under the Console's locations directory, or under the host's
-   * home when `sshHost` is given. */
-  suggestDirectory: async (params: {
-    agentName: string;
-    sshHost?: string | null;
-  }): Promise<string> => {
-    if (params.sshHost) {
-      const ctx = await remoteContext(params.sshHost);
-      try {
-        const home = await resolveRemoteHome(ctx);
-        const base = `${home.replace(/\/+$/, '')}/${REMOTE_LOCATIONS_DIR}/${params.agentName}`;
-        // `return await`, not `return`: with a bare `return` the `finally`
-        // below would dispose the SSH context before the probes finished.
-        return await firstFreeDirectory(base, async (dir) => {
-          // Both outcomes exit 0. The runner treats a non-zero exit as a
-          // failed command, and "free" is an answer, not a failure.
-          const probe = await ctx.exec('sh', [
-            '-c',
-            'test -e "$1/.switch" && echo taken || echo free',
-            'sh',
-            dir,
-          ]);
-          return probe.stdout.trim() === 'taken';
-        });
-      } finally {
-        ctx.dispose();
-      }
-    }
-    const { defaultLocationsDirectory } = await appSettingsService.get('localLocation');
-    return firstFreeDirectory(join(defaultLocationsDirectory, params.agentName), (dir) =>
-      isDirectory(join(dir, '.switch'))
-    );
   },
 
   /**

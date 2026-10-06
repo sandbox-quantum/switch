@@ -29,12 +29,13 @@ async function render(node: ReactNode): Promise<void> {
   await act(async () => root.render(node));
 }
 
-// `unsavedChangesModal` stands in for any registry modal: the assertions are on
+// `confirmActionModal` stands in for any registry modal: the assertions are on
 // the chrome ModalRenderer wraps around the content, not on the content itself,
 // and this one renders from its props alone — no query client or store to stub.
 async function renderRegistryModal(): Promise<void> {
-  modalStore.setModal('unsavedChangesModal', {
-    fileName: 'test.txt',
+  modalStore.setModal('confirmActionModal', {
+    title: 'Test',
+    description: 'Test',
     onSuccess: () => {},
     onClose: () => {},
   });

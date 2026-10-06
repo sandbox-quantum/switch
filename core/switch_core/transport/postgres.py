@@ -16,7 +16,7 @@ Three consequences worth stating up front:
   that fails is a message that was not sent, and the caller must hear about
   it.
 - **Every durable event gets a row, not only the conversation.** Commands and
-  task events travel the same way, and they have to reach their handlers.
+  run reports travel the same way, and they have to reach their handlers.
   `recorded_types` therefore means "what a reader is shown", not "what is
   written": a projection applied on the way out. The one
   category with no row is the genuinely ephemeral: presence-like state whose

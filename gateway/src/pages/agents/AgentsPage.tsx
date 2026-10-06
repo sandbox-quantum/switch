@@ -1,4 +1,3 @@
-import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import SearchIcon from "@mui/icons-material/Search";
 import {
@@ -27,7 +26,6 @@ import { type AgentSummary, deleteAgent } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useAgents } from "../../data/hooks";
 import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
-import RegisterAgentDialog from "./RegisterAgentDialog";
 
 // Connector type is a category, not a status. Colour here would compete with
 // the status hues for the reader's attention and mean nothing, so the tag is
@@ -39,7 +37,6 @@ export default function AgentsPage() {
   const { data: agents, loading, refetch } = useAgents();
   const [deleteTarget, setDeleteTarget] = useState<AgentSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [registerOpen, setRegisterOpen] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState<string>("");
   const [search, setSearch] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("");
@@ -210,13 +207,6 @@ export default function AgentsPage() {
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
         <Typography variant="h5">Agents</Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddCircleOutline />}
-          onClick={() => setRegisterOpen(true)}
-        >
-          Register Agent
-        </Button>
       </Stack>
 
       <Stack
@@ -322,12 +312,6 @@ export default function AgentsPage() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      <RegisterAgentDialog
-        open={registerOpen}
-        onClose={() => setRegisterOpen(false)}
-        onRegistered={refetch}
-      />
     </Box>
   );
 }

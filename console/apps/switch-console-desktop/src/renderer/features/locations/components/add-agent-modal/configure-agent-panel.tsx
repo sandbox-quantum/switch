@@ -180,7 +180,7 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
                   Who can talk to your agent
                   <InfoTooltip
                     label="More info about addressing"
-                    content="Talking to an agent means an @mention, a targeted message, or a delegated task. A new agent answers only you; grant other agents to let them delegate to it. You can change this later from the agent's settings."
+                    content="Talking to an agent means an @mention or a targeted message. A new agent answers only you; grant others to let them address it. You can change this later from the agent's settings."
                   />
                 </span>
               </FieldTitle>

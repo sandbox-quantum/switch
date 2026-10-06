@@ -204,10 +204,7 @@ export function createBenchAdapter(): ProviderAdapter {
       turnId,
       item: tool(turnId, 'connect_to_room', 'in_progress', roomId),
     });
-    const result = await callTool(server, 'connect_to_room', {
-      room_id: roomId,
-      include_general_instructions: false,
-    });
+    const result = await callTool(server, 'connect_to_room', { room_id: roomId });
     const warning = result.structuredContent?.warning;
     traceRecord(ROOM_CONNECTED, marker, {
       sessionId,

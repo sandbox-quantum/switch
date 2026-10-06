@@ -55,7 +55,6 @@ class RoomSummary(BaseModel):
     name: str
     description: str
     channel_type: str | None
-    admin_mode: bool
     agent_count: int
     connected_user_count: int
     connected_user_names: list[str]
@@ -90,8 +89,6 @@ class RoomDetail(RoomSummary):
     matrix_room_id: str
     external_channel_id: str | None
     instructions: str | None
-    protection_config: dict[str, Any] | None
-    observe_config: dict[str, Any] | None
     agent_ids: list[str]
     agent_statuses: dict[str, str]
     roles: list[RoomRoleDetail] = []
@@ -129,7 +126,6 @@ class RoomUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     instructions: str | None = None
-    admin_mode: bool | None = None
     read_visibility: str | None = None
     write_visibility: str | None = None
 
@@ -155,22 +151,6 @@ class RoomAgentUpdateRequest(BaseModel):
 
 class RoomUsersRequest(BaseModel):
     user_names: list[str]
-
-
-class RoomProtectionRequest(BaseModel):
-    protection_config: dict[str, Any]
-
-
-class RoomObserveRequest(BaseModel):
-    observe_config: dict[str, Any]
-
-
-class BulkDeleteRequest(BaseModel):
-    room_ids: list[str]
-
-
-class BulkDeleteResponse(BaseModel):
-    deleted: int
 
 
 class BulkArchiveRequest(BaseModel):
@@ -246,7 +226,6 @@ class AgentSummary(BaseModel):
     model_count: int
     owner_id: str | None = None
     owner_name: str | None
-    oauth_client_id: str | None
     created_at: str
     # Set when this agent is a child of another (e.g. a Claude Code subagent
     # under the user's main agent). The UI nests children under their parent.
@@ -398,46 +377,6 @@ class RegisterKnownAgentRequest(BaseModel):
     overwrite: bool = False
 
 
-class BulkSubagentSpec(BaseModel):
-    """One Claude Code subagent to register under a parent agent.
-
-    `subagent_name` is the bare Claude Code subagent identifier (the `name`
-    frontmatter field, used for the `--agent <name>` launch flag); the Switch
-    agent name is derived server-side as `<parent-name>.<subagent_name>`.
-    """
-
-    subagent_name: str
-    description: str
-
-
-class RegisterKnownSubagentsRequest(BaseModel):
-    """Register many Claude Code subagents under one parent agent.
-
-    Session-authed counterpart of the agent-bridge `register-known-bulk`
-    endpoint: the caller must own the parent. `options` is the shared base
-    applied to every subagent (the per-subagent `subagent_name` is merged on
-    top); when omitted, each subagent inherits the parent's `channels_enabled`
-    and `repo_dir`.
-    """
-
-    agent_type: str
-    parent_agent_id: str
-    options: dict[str, Any] = {}
-    subagents: list[BulkSubagentSpec]
-    overwrite: bool = False
-
-
-class BulkRegisterResult(BaseModel):
-    subagent_name: str
-    name: str
-    id: str
-    api_key: str
-
-
-class RegisterKnownSubagentsResponse(BaseModel):
-    results: list[BulkRegisterResult]
-
-
 class UpdateAgentOptionsRequest(BaseModel):
     """Full-replacement update of a known-agent's options.
 
@@ -450,18 +389,9 @@ class UpdateAgentOptionsRequest(BaseModel):
     options: dict[str, Any]
 
 
-class RegisterOtherAgentRequest(BaseModel):
-    name: str
-    description: str
-    icon_url: str | None = None
-    display_name: str | None = None
-    overwrite: bool = False
-
-
 class RegisterAgentResponse(BaseModel):
     id: str
     api_key: str
-    oauth_client_id: str | None = None
 
 
 # ── API Keys ────────────────────────────────────────────────────────────────
@@ -654,29 +584,6 @@ class LinkedIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
-
-
-# ── Server-Side Connectors ──────────────────────────────────────────────────
-
-
-class ConnectorTypeInfo(BaseModel):
-    key: str
-    config_schema: dict[str, Any]
-
-
-class CreateConnectorRequest(BaseModel):
-    type: str
-    display_name: str
-    connection_config: dict[str, object]
-
-
-class ConnectorDetail(BaseModel):
-    connector_id: str
-    connector_type: str
-    display_name: str
-    status: str
-    agent_names: list[str]
-    created_at: str
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
@@ -1193,10 +1100,6 @@ class EcosystemNode(BaseModel):
     kind: str  # "switch" | "agent_type" | "agent" | "bridge"
     label: str
     sublabel: str = ""
-    # Set on agent nodes only when the `ecosystem.show_owners` feature flag is
-    # ON; otherwise omitted so the frontend "Show owners" toggle has nothing to
-    # reveal.
-    owner_name: str | None = None
 
 
 class EcosystemEdge(BaseModel):
@@ -1207,9 +1110,6 @@ class EcosystemEdge(BaseModel):
 class EcosystemGraphResponse(BaseModel):
     nodes: list[EcosystemNode]
     edges: list[EcosystemEdge]
-    # Reflects the `ecosystem.show_owners` server flag. False → owner data is
-    # withheld and the frontend toggle is inert.
-    show_owners: bool = False
 
 
 # ── Documents ──────────────────────────────────────────────────────────────

@@ -15,8 +15,9 @@ Paths below are relative to the repository root. The backend package lives under
 Switch is an AI-agent orchestration and governance platform. It lets third-party
 AI agents and humans collaborate in shared **rooms**, using a Matrix homeserver
 ([Tuwunel](https://github.com/matrix-construct/tuwunel), a conduwuit fork) as the
-internal message bus. Agents connect through an **Agent Bridge** (an HTTP API and
-an MCP server); humans participate from the chat tools they already use
+internal message bus. Agents connect through an **Agent Bridge** (an HTTP API,
+whose operations each session's own runtime serves its agent as MCP tools);
+humans participate from the chat tools they already use
 (Slack, Mattermost, Discord, Teams, Telegram) through **collaboration bridges** that relay
 messages both ways. Operators manage the platform through a **gateway** API and
 its dashboard.
@@ -24,7 +25,7 @@ its dashboard.
 Everything that happens in a room is a Matrix event. Each participant — every
 agent, every bridged human, and a few system actors — is represented by a Matrix
 client connected to the homeserver. Switch's job is to translate between those
-Matrix events and the agent-facing API/MCP surface, to provision and govern the
+Matrix events and the agent-facing API, to provision and govern the
 rooms, and to bridge them out to external platforms.
 
 ---
@@ -33,11 +34,10 @@ rooms, and to bridge them out to external platforms.
 
 The backend is a single FastAPI service, assembled in
 [`core/switch_core/main.py`](../core/switch_core/main.py). The Agent Bridge app is
-the root ASGI app; the MCP server, health check, and gateway are mounted onto it:
+the root ASGI app; the health check and gateway are mounted onto it:
 
 - `POST/GET /agents/...` — Agent Bridge HTTP API, including the
   `/agents/{id}/ops` operation-dispatch surface
-- `/mcp` — MCP server (agent tool surface)
 - `/health` — health check
 - `/version` — build and contract version
 - `/deeplink/session` — public redirect into the desktop app's URL scheme
@@ -61,7 +61,7 @@ flowchart LR
   end
 
   subgraph svc["Switch service (FastAPI — switch_core.main)"]
-    AB[Agent Bridge<br/>/agents + /mcp]
+    AB[Agent Bridge<br/>/agents]
     CB[Collaboration Bridge<br/>adapters + puppets]
     GW[Gateway API<br/>/gateway]
     CORE[Room service + Matrix clients]
@@ -88,7 +88,7 @@ flowchart LR
 
 | Component | Where | Responsibility |
 |-----------|-------|----------------|
-| Agent Bridge | `bridges/agent/` | Server-side entry point for agents: HTTP API + MCP server, event delivery, task protocol, mediation, moderation. |
+| Agent Bridge | `bridges/agent/` | Server-side entry point for agents: HTTP API, event delivery, task protocol, mediation, moderation. |
 | Server-side connectors | `bridges/agent/server_connectors/` | Switch-hosted connectors that drive an external agent host (e.g. OpenCode) from the server, rather than the agent connecting in. Registered by type at startup and managed via `/gateway/connectors`. |
 | Collaboration bridges | `bridges/collaboration/` | Two-way relay between external chat platforms and Matrix rooms, via per-platform adapters and puppet clients. |
 | Resource bridge | `bridges/resource/` | Handles resource + mediation requests (tool/model access, room-document load/CRUD) via the resource-manager client. |
@@ -105,7 +105,7 @@ flowchart LR
 Switch — which rooms an agent belongs to, its config, and session scheduling
 (e.g. auto-starting a session when a Slack user addresses an agent that has no
 live session). It is a convenience tool for running local agents, not a required
-path — agents connect to the Agent Bridge directly over MCP or HTTP. It has its
+path — agents connect to the Agent Bridge directly over HTTP. It has its
 own architecture docs under `console/agents/`.
 
 ---
@@ -276,13 +276,9 @@ agent's name/icon, preserving threads and attachments.
   `addressed`), its heartbeat, and its room slots — at most one connection per
   agent may act in a given room. `docs/old/api/AGENT_PROTOCOL.md` is the
   authoritative spec.
-- **The long poll survives as a compatibility path.** `GET /agents/{id}/events`
-  without the SSE `Accept` header, `GET /agents/{id}/rooms/{room_id}/events`,
-  and `GET /agents/{id}/notifications` (addressed messages, task events,
-  opted-in room-joins) all return `204` on timeout and are served **from the
-  same buffer** — each is a filtered view with a server-held cursor, so no path
-  can diverge from another or destroy what another has yet to read. They are
-  scheduled for removal once the remaining clients are on the stream.
+- **The long poll is gone.** `GET /agents/{id}/events` without the SSE
+  `Accept` header is refused with `406`; the per-room and notification polls
+  were removed once every client was on the stream.
 - **Mediation is synchronous.** The bridge exposes
   `POST /agents/.../mediation/{pre-tool-call,pre-llm-request,post-tool-result,post-llm-response}`.
   `RequestTracker`
@@ -337,7 +333,6 @@ Everything ingress-facing, and where to find it:
 | Agent Bridge API | `/agents/*` (HTTP) | Bearer (agent API key / registration token) | `bridges/agent/api/`, `auth.py` |
 | Agent operations | `/agents/{id}/ops`, `/agents/{id}/ops/{operation}` | Bearer | `bridges/agent/api/operations.py`, `bridges/agent/operations/` |
 | Agent event stream | `/agents/{id}/events` (SSE) | Bearer | `bridges/agent/protocol/stream.py`, `protocol/connections.py` |
-| MCP server | `/mcp` (HTTP, FastMCP) | Bearer (agent API key, or an OIDC token when configured) | `bridges/agent/mcp/server.py` |
 | Health | `/health` | public | `main.py` |
 | Version | `/version` | public | `bridges/agent/api/version_routes.py` |
 | Session deeplink | `/deeplink/session` | public | `bridges/agent/deeplink.py` |
@@ -346,9 +341,8 @@ Everything ingress-facing, and where to find it:
 | Platform ingress | adapter transports (Slack/MM/Discord WebSocket; Telegram long polling; Teams HTTP :3978) | platform token / Teams JWT+HMAC | `bridges/collaboration/*/adapter.py` |
 
 Auth-bypass path prefixes for the Bearer middleware are enumerated in
-`bridges/agent/auth.py` (`PUBLIC_PATH_PREFIXES`): `/health`, `/.well-known`,
-`/oauth`, `/gateway` (the gateway uses its own cookie-based auth), and
-`/deeplink`.
+`bridges/agent/auth.py` (`PUBLIC_PATH_PREFIXES`): `/health`, `/gateway` (the
+gateway uses its own cookie-based auth), and `/deeplink`.
 
 ---
 
@@ -358,10 +352,7 @@ Auth-bypass path prefixes for the Bearer middleware are enumerated in
   ([`bridges/agent/auth.py`](../core/switch_core/bridges/agent/auth.py)) accepts
   two credential kinds: an agent API key (SHA-256 hashed, looked up in
   `ApiKeyStore`) and a registration token (used only for the registration
-  endpoint). On `/mcp` only, and only when `OAUTH_ISSUER_URL` is configured, a
-  third kind is accepted: an OIDC access token, resolved to an agent by the
-  `oauth_client_id` matching its `azp`/`client_id` claim. That path is what the
-  `/oauth` auth-bypass prefix serves.
+  endpoint).
 - **Gateway authentication** — cookie-based JWT
   ([`gateway/auth.py`](../core/switch_core/gateway/auth.py)): passwords hashed
   with bcrypt, a `switch_auth` HS256 cookie (`httponly`, `samesite=lax`),
@@ -412,7 +403,7 @@ A quick index for navigation:
 | Authorization policy | `core/switch_core/authz.py` |
 | Scoped addressing policy | `core/switch_core/addressing.py` |
 | Token encryption | `core/switch_core/crypto.py` |
-| Agent Bridge (API, MCP, protocol, auth, commands) | `core/switch_core/bridges/agent/` |
+| Agent Bridge (API, protocol, auth, commands) | `core/switch_core/bridges/agent/` |
 | Agent operation registry | `core/switch_core/bridges/agent/operations/` |
 | Server-side connectors | `core/switch_core/bridges/agent/server_connectors/` |
 | Collaboration bridges (adapters, core, lifecycle) | `core/switch_core/bridges/collaboration/` |

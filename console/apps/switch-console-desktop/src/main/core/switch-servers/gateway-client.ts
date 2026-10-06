@@ -1564,58 +1564,6 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
   }));
 }
 
-/** A subagent registered via the bulk endpoint. `apiKey` is a secret — keep it
- * in the main process (write it to the subagent's settings file); never pass it
- * to the renderer. */
-export type BulkRegisteredSubagent = {
-  agentName: string;
-  name: string;
-  id: string;
-  apiKey: string;
-};
-
-/**
- * Register Claude Code subagents under a parent agent on `server`
- * (session-authed `POST /gateway/agents/register-known-bulk`). The signed-in
- * user must own the parent. A 409 (one or more names already exist) surfaces as
- * a `GatewayError` with status 409 so the caller can offer to overwrite.
- */
-export async function registerSubagentsBulk(
-  server: SwitchServer,
-  params: {
-    parentAgentId: string;
-    subagents: { agentName: string; description: string }[];
-    /** Register every subagent with the `auto_session` connection model, so a
-     * watcher auto-spawns a session when the subagent is addressed. */
-    autoSession: boolean;
-    overwrite?: boolean;
-  }
-): Promise<BulkRegisteredSubagent[]> {
-  const res = await gatewayFetch(server, '/agents/register-known-bulk', {
-    authenticated: true,
-    method: 'POST',
-    body: {
-      agent_type: 'claude-code',
-      parent_agent_id: params.parentAgentId,
-      options: params.autoSession ? { auto_session: true } : {},
-      subagents: params.subagents.map((s) => ({
-        subagent_name: s.agentName,
-        description: s.description,
-      })),
-      overwrite: params.overwrite ?? false,
-    },
-  });
-  const json = (await res.json()) as {
-    results: Array<{ subagent_name: string; name: string; id: string; api_key: string }>;
-  };
-  return json.results.map((r) => ({
-    agentName: r.subagent_name,
-    name: r.name,
-    id: r.id,
-    apiKey: r.api_key,
-  }));
-}
-
 /**
  * Delete an agent on `server` (session-authed `DELETE /agents/{agentId}`). Used
  * to deregister a subagent's child identity when it is removed from Switch Console.

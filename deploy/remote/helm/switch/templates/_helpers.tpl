@@ -775,12 +775,6 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
   value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
 {{- end }}
-# switch-core sits behind the cluster/ALB and enforces its own
-# BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
-# Host/Origin guard (default-on since mcp 1.28) only rejects the
-# in-cluster Host (e.g. switch-switch-core:8000) with a 421.
-- name: FASTMCP_HTTP_HOST_ORIGIN_PROTECTION
-  value: "false"
 {{- if .Values.switchCore.frontendBaseUrl }}
 - name: FRONTEND_BASE_URL
   value: {{ .Values.switchCore.frontendBaseUrl | quote }}

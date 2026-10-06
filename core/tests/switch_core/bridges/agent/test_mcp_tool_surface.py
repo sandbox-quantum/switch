@@ -1,19 +1,21 @@
 """The MCP tool surface agents are told about must be the surface that exists.
 
-The Switch skill Console pushes into every session and
-`protocol/instructions.py` name specific tools and tell agents to call them, and neither is checked against the server's actual
-registrations at build time. These tests pin the tool names so a rename, a
+Every session's MCP tools are the operations Switch serves at
+`/agents/{id}/ops`, relayed by the session's own runtime. The Switch skill
+Console pushes into every session and `protocol/instructions.py` name specific
+tools and tell agents to call them, and neither is checked against the
+operation registry at build time. These tests pin the tool names so a rename, a
 removal, or a name that only ever existed in the documentation fails here
 rather than surfacing as an agent calling into nothing.
 """
 
 import re
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from switch_core.bridges.agent.mcp.server import mcp
+from switch_core.bridges.agent.api.operations import list_operations
 from switch_core.bridges.agent.operations import all_operations
 from switch_core.bridges.agent.operations.agent_management import (
     AGENT_MANAGEMENT_OPERATIONS,
@@ -22,16 +24,6 @@ from switch_core.bridges.agent.operations.registry import (
     disable_operation_group,
     enable_operation_group,
 )
-
-TASK_PROTOCOL_TOOLS = {
-    "delegate_task",
-    "accept_task",
-    "update_task",
-    "finalise_task",
-    "cancel_task",
-    "list_tasks",
-}
-
 
 # Tools that exist only on a server running agent management. The skill
 # documents them for those servers (and says they are absent elsewhere), so the
@@ -45,37 +37,26 @@ AGENT_MANAGEMENT_TOOLS = {
 
 
 @pytest.fixture
-async def tool_names() -> AsyncIterator[set[str]]:
+def tool_names() -> Iterator[set[str]]:
     enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     try:
-        yield {tool.name for tool in await mcp.list_tools()}
+        yield set(list_operations())
     finally:
         disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
 
 
-async def test_agent_management_tools_exist_only_with_their_group_enabled() -> None:
-    names = {tool.name for tool in await mcp.list_tools()}
+def test_agent_management_tools_exist_only_with_their_group_enabled() -> None:
+    names = set(list_operations())
     assert not AGENT_MANAGEMENT_TOOLS & names
     enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     try:
-        names = {tool.name for tool in await mcp.list_tools()}
+        names = set(list_operations())
     finally:
         disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     assert AGENT_MANAGEMENT_TOOLS <= names
 
 
-async def test_task_protocol_is_fully_exposed(tool_names: set[str]) -> None:
-    """Every stage of the task lifecycle is still callable over MCP.
-
-    The skills no longer document the protocol — it is not ready for use — but
-    the tools remain registered, and a half-present lifecycle is worse than
-    either a whole one or none. `cancel_task` in particular is the requester's
-    abort path: without it an opened task has no exit.
-    """
-    assert TASK_PROTOCOL_TOOLS <= tool_names
-
-
-async def test_documented_tools_exist(tool_names: set[str]) -> None:
+def test_documented_tools_exist(tool_names: set[str]) -> None:
     """Every tool the Switch skill advertises is registered.
 
     Mirrors the tool names used in `console/packages/plugins/src/switch-skill/SKILL.md`,
@@ -131,12 +112,12 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
     )
 
 
-async def test_tool_descriptions_preserve_the_full_operation_contract() -> None:
-    tools = {tool.name: tool for tool in await mcp.list_tools()}
+def test_tool_descriptions_preserve_the_full_operation_contract() -> None:
+    listed = list_operations()
     operation = all_operations()["list_agents"]
 
-    assert tools[operation.name].description == operation.description
-    assert "Returns:" in tools[operation.name].description
+    assert listed[operation.name]["description"] == operation.description
+    assert "Returns:" in listed[operation.name]["description"]
 
 
 SKILL = (
@@ -150,19 +131,12 @@ SKILL = (
 )
 
 
-# Tools the agent runtime serves itself, so absent from the bridge's surface.
-# The skill indexes them alongside the bridge tools because an agent calls them
-# the same way, but they are registered by
+# Tools the agent runtime serves itself, so absent from the operation registry.
+# The skill indexes them alongside the operations because an agent calls them
+# the same way, but they are implemented by
 # `console/packages/switch-agent-runtime/`, not here — checking them against
-# this server's registrations would fail on tools that are working correctly.
+# this server's operations would fail on tools that are working correctly.
 RUNTIME_TOOLS = {"send_attachment", "download_attachment"}
-
-# Registered, and deliberately kept out of the skill. The task protocol is not
-# ready to be used, so the skill carries a section telling agents not to call
-# these rather than a workflow that exercises them. The tools stay on the server
-# — nothing here removes them — and this set is what keeps that gap deliberate:
-# empty it when the protocol is either documented again or taken off the server.
-UNDOCUMENTED_TOOLS = TASK_PROTOCOL_TOOLS
 
 
 def _indexed_tools(skill: Path) -> list[str]:
@@ -194,38 +168,20 @@ def _indexed_tools(skill: Path) -> list[str]:
     return names
 
 
-async def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
-    """The index names every tool the bridge serves — no silent omissions.
+def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
+    """The index names every operation the bridge serves — no silent omissions.
 
     The frontmatter list this replaced was one mechanical line; a prose bullet
     list is easy to shorten by accident. Without this, deleting a bullet passes
     every other check in the file: the registration test only ever objects to
     *extra* names.
-
-    `UNDOCUMENTED_TOOLS` is the one sanctioned way past this: a tool leaves the
-    index by being named there, not by a bullet quietly going missing.
     """
     indexed = set(_indexed_tools(SKILL))
-    missing = tool_names - indexed - UNDOCUMENTED_TOOLS
+    missing = tool_names - indexed
     assert not missing, f"{SKILL} does not index registered tools: {sorted(missing)}"
 
 
-async def test_undocumented_tools_are_disclaimed() -> None:
-    """A tool kept out of the index is named as off-limits, not just omitted.
-
-    Silence would read as the tool not existing, and an agent that meets one in
-    an event or an error message has nothing to go on. The skill has to spell
-    out that these are registered and must not be called.
-    """
-    body = SKILL.read_text()
-    unmentioned = {tool for tool in UNDOCUMENTED_TOOLS if f"`{tool}`" not in body}
-    assert not unmentioned, (
-        f"{SKILL} drops registered tools without saying they are off-limits: "
-        f"{sorted(unmentioned)}"
-    )
-
-
-async def test_skill_indexed_tools_are_registered(tool_names: set[str]) -> None:
+def test_skill_indexed_tools_are_registered(tool_names: set[str]) -> None:
     """Every tool the skill's index advertises actually exists.
 
     Derived from the files rather than restated here, so this half cannot go

@@ -143,7 +143,7 @@ class TestUnavailableReplyRouting:
         assert "Open Switch Console" not in msg
 
     async def test_auto_session_without_a_known_agent_still_answers(self) -> None:
-        # Registered via `register-other`: no connect command exists, but the
+        # Registered without a known-agent type: no connect command exists, but the
         # owner still has to open the app.
         msg = await _reply(_client("ownerhandle"), _agent("auto_session", {}))
         assert "Open Switch Console" in msg

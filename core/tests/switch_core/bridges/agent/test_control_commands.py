@@ -89,11 +89,6 @@ def _client(
     async def _session_factory() -> Any:
         yield SimpleNamespace()
 
-    async def _agent_room_role(
-        _s: Any, _r: str, _a: str, _live_conns: Any = ()
-    ) -> None:
-        return None
-
     return SimpleNamespace(
         agent=agent,
         _fresh_agent=_fresh_agent,
@@ -102,12 +97,10 @@ def _client(
         tenant_id="tenant-1",
         _note_hosted_addressed=_note_hosted_addressed,
         _agent_session_store=SimpleNamespace(),
-        _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
         # Presence unions the heartbeat rows with the live connections
         # (CHOO-1857); nothing is connected in these tests.
         _connections=SimpleNamespace(
             controllers=SimpleNamespace(is_bound=lambda _agent: False),
-            live_connection_ids=lambda: set(),
             session_in_room=lambda _agent, _room: placed,
             relay_session_command=_relay,
         ),
@@ -115,25 +108,11 @@ def _client(
     )
 
 
-def _patch_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    status: AgentStatus,
-    control_capabilities: dict[str, bool] | None,
-) -> None:
+def _patch_status(monkeypatch: pytest.MonkeyPatch, status: AgentStatus) -> None:
     async def _compute_statuses(*_a: Any, **_k: Any) -> dict[str, AgentStatus]:
         return {"agent-1": status}
 
-    class _RuntimeStore:
-        async def get(self, *_a: Any, **_k: Any) -> Any:
-            if control_capabilities is None:
-                return None
-            return SimpleNamespace(
-                control_capabilities=control_capabilities, deeplink_url=None
-            )
-
     monkeypatch.setattr(commands, "compute_agent_statuses", _compute_statuses)
-    monkeypatch.setattr(commands, "AgentRuntimeStateStore", _RuntimeStore)
 
 
 @pytest.mark.asyncio
@@ -143,9 +122,7 @@ async def test_no_live_session_reports_nothing_to_reset(
     reply = _Reply()
     enqueue: list[Any] = []
     monkeypatch.setattr(commands, "_reply", reply)
-    _patch_runtime(
-        monkeypatch, status=AgentStatus.NO_SESSION, control_capabilities=None
-    )
+    _patch_status(monkeypatch, AgentStatus.NO_SESSION)
 
     await _cmd_reset(
         _client(reply, command_level="session_dependent", enqueue=enqueue),
@@ -162,16 +139,14 @@ async def test_no_live_session_reports_nothing_to_reset(
 
 
 @pytest.mark.asyncio
-async def test_live_session_without_capability_reports_switchdash(
+async def test_live_session_switch_cannot_reach_reports_switchdash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reply = _Reply()
     enqueue: list[Any] = []
     monkeypatch.setattr(commands, "_reply", reply)
-    # Live session, but it does not report the reset control capability.
-    _patch_runtime(
-        monkeypatch, status=AgentStatus.LIVE, control_capabilities={"reset": False}
-    )
+    # Live, but neither placed in the room nor behind a controller.
+    _patch_status(monkeypatch, AgentStatus.LIVE)
 
     await _cmd_reset(
         _client(reply, command_level="session_dependent", enqueue=enqueue),
@@ -186,18 +161,15 @@ async def test_live_session_without_capability_reports_switchdash(
 
 
 @pytest.mark.asyncio
-async def test_live_capable_session_acks_and_enqueues(
+async def test_an_agent_that_can_always_reset_acks_and_enqueues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reply = _Reply()
     enqueue: list[Any] = []
     monkeypatch.setattr(commands, "_reply", reply)
-    _patch_runtime(
-        monkeypatch, status=AgentStatus.LIVE, control_capabilities={"reset": True}
-    )
 
     await _cmd_reset(
-        _client(reply, command_level="session_dependent", enqueue=enqueue),
+        _client(reply, command_level="always", enqueue=enqueue),
         SimpleNamespace(room_id="!m:server"),
         _event(),
         False,

@@ -9,7 +9,6 @@ from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     MessagePayload,
     RoomJoinPayload,
-    TaskDelegatePayload,
 )
 from switch_core.db.models import (
     HostedLaunch,
@@ -128,19 +127,6 @@ async def ack(store, factory, *acks):
 
 def test_room_input_id_matches_the_watcher():
     """Vectors computed with `roomInputId` in `host/room-inbox.ts`."""
-    task = AgentEvent(
-        type="task_delegate",
-        room_id="room-1",
-        bridge_id=None,
-        channel_type=None,
-        payload=TaskDelegatePayload(
-            task_id="task-1",
-            requester_agent_id="agent-a",
-            performer_agent_id="agent-b",
-            summary="Résumé — «ship it»",
-            description="line one\nline two",
-        ),
-    )
     join = AgentEvent(
         type="room_join",
         room_id="room-1",
@@ -152,9 +138,6 @@ def test_room_input_id_matches_the_watcher():
             timestamp=1700000000000,
             listening=True,
         ),
-    )
-    assert room_input_id(task) == (
-        "task_delegate:b35d00e95c27b151af1d551878a35b85c72caf0abab076f7c19f2774cc8b50f0"
     )
     assert room_input_id(join) == (
         "room_join:250b6dd87c453eda5e85209a4de2719caf3838021effb5e0304a0d029abf8768"

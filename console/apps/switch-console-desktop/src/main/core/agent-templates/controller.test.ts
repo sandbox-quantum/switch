@@ -1,6 +1,6 @@
 import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
-import { cloneDirectory, firstFreeDirectory, stripFrontMatter } from './agent-template-format';
+import { cloneDirectory, stripFrontMatter } from './agent-template-format';
 import { composeTemplateDocument, parseAgentTemplate, serverDocument } from './template-document';
 
 const SWITCH_EXPERT = `
@@ -155,13 +155,5 @@ describe('cloneDirectory', () => {
     expect(cloneDirectory('/w', 'https://github.com/jqlang/jq.git')).toBe('/w/jq');
     expect(cloneDirectory('/w', 'git@github.com:jqlang/jq.git')).toBe('/w/jq');
     expect(cloneDirectory('/w', 'https://example.com/repo/')).toBe('/w/repo');
-  });
-});
-
-describe('firstFreeDirectory', () => {
-  it('keeps the base when nothing lives there, and steps past folders that hold an agent', async () => {
-    expect(await firstFreeDirectory('/w/a', async () => false)).toBe('/w/a');
-    const taken = new Set(['/w/a', '/w/a-2']);
-    expect(await firstFreeDirectory('/w/a', async (d) => taken.has(d))).toBe('/w/a-3');
   });
 });

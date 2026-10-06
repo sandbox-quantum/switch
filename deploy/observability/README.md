@@ -88,7 +88,7 @@ quiet night and a heartbeat that can legitimately be absent is not a heartbeat.
 
 ## What is deliberately not alerted on
 
-**Latency.** Switch holds long-poll connections open on purpose, so a slow
+**Latency.** Switch holds agent event streams open on purpose, so a slow
 request is its normal mode and a duration threshold would page on healthy
 traffic. The dashboard shows it; nothing wakes anyone for it.
 

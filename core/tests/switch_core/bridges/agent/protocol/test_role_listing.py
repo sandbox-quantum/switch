@@ -3,7 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import (
+    PROTOCOL_VERSION,
+    AgentConnectionRegistry,
+    ClientDeclaration,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 
@@ -55,18 +59,6 @@ class _FakeAgentStore:
         return self._agents.get(agent_id)
 
 
-class _FakeAgentSessionStore:
-    """Where a transport session is, by its binding."""
-
-    def __init__(self, bindings: dict[str, tuple[str, str]]) -> None:
-        self._bindings = bindings
-
-    async def get_connected_room(
-        self, _session: Any, transport_session_id: str
-    ) -> tuple[str, str] | None:
-        return self._bindings.get(transport_session_id)
-
-
 class _FakeRoomStore:
     def __init__(self, rooms: dict[str, Any]) -> None:
         self._rooms = rooms
@@ -102,7 +94,7 @@ def _build_service(
     roles: list[Any],
     leases: dict[str, list[Any]],
     agents: dict[str, Any],
-    bindings: dict[str, tuple[str, str]],
+    connected: dict[str, tuple[str, str]],
     sdk_rooms: dict[str, str],
     rooms: dict[str, Any],
     my_lease: Any | None = None,
@@ -123,7 +115,19 @@ def _build_service(
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = _FakeRoomRoleStore(roles, leases, my_lease)  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]
-    svc.agent_session_store = _FakeAgentSessionStore(bindings)  # type: ignore[assignment]
+    # Where each connection is, as `connect_to_room` claimed it.
+    for connection_id, (agent_id, room_id) in connected.items():
+        conn = svc.connections.open(
+            agent_id=agent_id,
+            connection_id=connection_id,
+            scope="single",
+            delivery_filter="all",
+            spawn_capable=False,
+            cursor=0,
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+            expected_generation=None,
+        )
+        svc.connections.claim_room(conn, room_id)
     svc.room_store = _FakeRoomStore(rooms)  # type: ignore[assignment]
     return svc
 
@@ -151,7 +155,7 @@ class TestListRoomRoles:
                 "a-here": SimpleNamespace(name="alice"),
                 "a-elsewhere": SimpleNamespace(name="bob"),
             },
-            bindings={"conn-shared": ("a-here", "room-1")},
+            connected={},
             sdk_rooms={"sdk-here": "room-1", "sdk-elsewhere": "room-2"},
             rooms={
                 "room-1": SimpleNamespace(name="This Room"),
@@ -188,7 +192,7 @@ class TestListRoomRoles:
                 "a-elsewhere": SimpleNamespace(name="bob"),
                 "a-unbound": SimpleNamespace(name="carol"),
             },
-            bindings={
+            connected={
                 "tx-here": ("a-here", "room-1"),
                 "tx-elsewhere": ("a-elsewhere", "room-2"),
             },
@@ -228,7 +232,7 @@ class TestListRoomRoles:
             roles=[role],
             leases={},
             agents={},
-            bindings={},
+            connected={},
             sdk_rooms={},
             rooms={"room-1": SimpleNamespace(name="This Room")},
         )
@@ -245,7 +249,7 @@ class TestListRoomRoles:
             roles=[role],
             leases=leases,
             agents={"holder": SimpleNamespace(name="dan")},
-            bindings={"tx-h": ("holder", "room-1")},
+            connected={"tx-h": ("holder", "room-1")},
             sdk_rooms={},
             rooms={"room-1": SimpleNamespace(name="This Room")},
         )

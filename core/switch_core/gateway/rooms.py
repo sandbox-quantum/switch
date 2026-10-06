@@ -36,14 +36,10 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.schemas import (
     BulkArchiveRequest,
     BulkArchiveResponse,
-    BulkDeleteRequest,
-    BulkDeleteResponse,
     RoomAgentsRequest,
     RoomAgentUpdateRequest,
     RoomCreateRequest,
     RoomDetail,
-    RoomObserveRequest,
-    RoomProtectionRequest,
     RoomRoleCreateRequest,
     RoomRoleDetail,
     RoomRoleUpdateRequest,
@@ -155,7 +151,6 @@ async def _build_room_detail(
         name=name,
         description=room.description,
         channel_type=room.channel_type,
-        admin_mode=room.admin_mode,
         agent_count=len(agent_ids),
         connected_user_count=len(connected_names),
         connected_user_names=connected_names,
@@ -173,8 +168,6 @@ async def _build_room_detail(
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
         instructions=room.instructions,
-        protection_config=room.protection_config,
-        observe_config=room.observe_config,
         agent_ids=agent_ids,
         agent_statuses={
             aid: statuses[aid].value for aid in agent_ids if aid in statuses
@@ -308,7 +301,6 @@ async def list_rooms(
                 name=name,
                 description=room.description,
                 channel_type=room.channel_type,
-                admin_mode=room.admin_mode,
                 agent_count=len(agent_ids),
                 connected_user_count=len(connected_names),
                 connected_user_names=connected_names,
@@ -536,7 +528,6 @@ async def patch_room(
             name=req.name,
             description=req.description,
             instructions=req.instructions,
-            admin_mode=req.admin_mode,
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
         )
@@ -655,60 +646,6 @@ async def put_room_group(
         detail = str(e)
         status = 404 if "Room not found" in detail else 400
         raise HTTPException(status_code=status, detail=detail) from e
-    await session.commit()
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
-    )
-
-
-@router.put("/{room_id}/protection")
-async def put_protection(
-    room_id: str,
-    req: RoomProtectionRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    room_service: Annotated[RoomService, Depends(get_room_service)],
-    room_store: Annotated[RoomStore, Depends(get_room_store)],
-    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
-    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
-    try:
-        await room_service.update_protection_config(room_id, req.protection_config)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Room not found")
-    await session.commit()
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
-    )
-
-
-@router.put("/{room_id}/observe")
-async def put_observe(
-    room_id: str,
-    req: RoomObserveRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    room_service: Annotated[RoomService, Depends(get_room_service)],
-    room_store: Annotated[RoomStore, Depends(get_room_store)],
-    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
-    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
-    try:
-        await room_service.update_observe_config(room_id, req.observe_config)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Room not found")
     await session.commit()
     room = await room_store.get(session, room_id)
     if room is None:
@@ -928,32 +865,6 @@ async def delete_room(
     except ValueError:
         raise HTTPException(status_code=404, detail="Room not found")
     return {"ok": True}
-
-
-@router.post("/bulk-delete")
-async def bulk_delete_rooms(
-    req: BulkDeleteRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    room_service: Annotated[RoomService, Depends(get_room_service)],
-    room_store: Annotated[RoomStore, Depends(get_room_store)],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> BulkDeleteResponse:
-    principal = Principal(user.id, is_admin)
-    deleted = 0
-    for room_id in req.room_ids:
-        room = await room_store.get(session, room_id)
-        if room is None:
-            logger.warning("Skipping unknown room %s during bulk delete", room_id)
-            continue
-        if not can(principal, "delete", room):
-            logger.warning(
-                "Skipping room %s during bulk delete: not authorized", room_id
-            )
-            continue
-        await room_service.delete_room(room_id)
-        deleted += 1
-    return BulkDeleteResponse(deleted=deleted)
 
 
 @router.post("/bulk-archive")

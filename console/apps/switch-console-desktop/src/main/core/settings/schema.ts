@@ -1,5 +1,4 @@
 import z from 'zod';
-import { BROWSER_ISOLATED_PROFILE_ID } from '@shared/browser';
 import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
 import type { AppSettingsKeyName } from '@shared/core/settings/setting-keys';
 import { openInAppIdSchema } from '@shared/openInApps';
@@ -7,8 +6,6 @@ import { DEFAULT_AGENT_ID } from './settings-registry';
 
 export const localLocationSettingsSchema = z.object({
   defaultLocationsDirectory: z.string(),
-  defaultWorktreeDirectory: z.string(),
-  writeAgentConfigToGitIgnore: z.boolean(),
 });
 
 export const notificationSettingsSchema = z.object({
@@ -44,47 +41,6 @@ export const providerCustomConfigEntrySchema = z.object({
 });
 
 export const providerConfigDefaults: Record<string, unknown> = {};
-
-export const interfaceSettingsSchema = z.object({
-  sessionHoverAction: z.enum(['delete', 'archive']),
-  autoRightSidebarBehavior: z.boolean(),
-});
-
-export const changesViewModeSchema = z.object({
-  unstaged: z.enum(['flat', 'tree']),
-  staged: z.enum(['flat', 'tree']),
-  pr: z.enum(['flat', 'tree']),
-});
-
-export const browserPreviewSettingsSchema = z.object({ enabled: z.boolean() });
-
-export const browserProfileIdSchema = z
-  .string()
-  .regex(/^[a-z0-9][a-z0-9-]{0,63}$/)
-  .refine((value) => value !== BROWSER_ISOLATED_PROFILE_ID);
-
-export const browserSettingsSchema = z
-  .object({
-    defaultProfileId: z.union([browserProfileIdSchema, z.literal(BROWSER_ISOLATED_PROFILE_ID)]),
-    relaxCorsForLocalhost: z.boolean(),
-    profiles: z
-      .array(
-        z.object({
-          id: browserProfileIdSchema,
-          name: z.string().trim().min(1).max(40),
-        })
-      )
-      .min(1),
-  })
-  .refine(
-    (settings) =>
-      new Set(settings.profiles.map((profile) => profile.id)).size === settings.profiles.length
-  )
-  .refine(
-    (settings) =>
-      settings.defaultProfileId === BROWSER_ISOLATED_PROFILE_ID ||
-      settings.profiles.some((profile) => profile.id === settings.defaultProfileId)
-  );
 
 /**
  * Whether the user lets the app send anonymous usage data, and when they were
@@ -126,10 +82,6 @@ export const APP_SETTINGS_SCHEMA_MAP = {
   notifications: notificationSettingsSchema,
   theme: themeSchema,
   openIn: openInSettingsSchema,
-  interface: interfaceSettingsSchema,
-  browserPreview: browserPreviewSettingsSchema,
-  browser: browserSettingsSchema,
-  changesViewMode: changesViewModeSchema,
   onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 } as const;
@@ -157,10 +109,6 @@ export const appSettingsSchema = z.object({
   notifications: notificationSettingsSchema,
   theme: themeSchema,
   openIn: openInSettingsSchema,
-  interface: interfaceSettingsSchema,
-  browserPreview: browserPreviewSettingsSchema,
-  browser: browserSettingsSchema,
-  changesViewMode: changesViewModeSchema,
   onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 });

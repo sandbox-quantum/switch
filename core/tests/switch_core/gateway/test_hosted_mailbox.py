@@ -20,7 +20,6 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     MessagePayload,
-    TaskDelegatePayload,
 )
 from switch_core.clients.agent_consumer import (
     _HOSTED_ERROR_MESSAGE,
@@ -47,7 +46,6 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_mailbox_store import MAILBOX_LIMIT, HostedMailboxStore
-from switch_core.events import TaskDelegate
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 from tests.switch_core.gateway.test_hosted_workers import (  # noqa: F401
     _agent,
@@ -361,27 +359,6 @@ async def test_redelivered_event_is_not_delivered_twice(mailbox_app):
     room = app.rooms[0]
     assert (await address(app, addressed(room, "$m1"))).deliver is True
     assert (await address(app, addressed(room, "$m1"))).deliver is False
-
-
-async def test_task_delegate_is_written_under_its_hash(mailbox_app):
-    app = mailbox_app
-    room = app.rooms[0]
-    event = AgentEvent(
-        type="task_delegate",
-        room_id=room,
-        bridge_id=None,
-        channel_type=None,
-        payload=TaskDelegatePayload(
-            task_id="task-1",
-            requester_agent_id="agent-a",
-            performer_agent_id=app.agent_id,
-            summary="Do it",
-            description="",
-        ),
-    )
-    await address(app, event)
-    ((key, state),) = (await rows(app)).items()
-    assert key[1].startswith("task_delegate:") and state == "pending"
 
 
 async def test_commands_are_never_written(mailbox_app):
@@ -892,27 +869,6 @@ async def test_media_to_an_errored_running_machine_is_refused_not_queued(
     await AgentConsumer.on_media(client, RoomRef(room_id="!room:example.com"), media)  # type: ignore[arg-type]
     assert await rows(app) == {}
     assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
-    assert client.enqueued == []
-
-
-async def test_task_delegate_to_an_errored_running_machine_is_refused(mailbox_app):
-    app = mailbox_app
-    await error_the_running_machine(app)
-    client = await agent_client(app)
-    delegate = TaskDelegate(
-        task_id="task-1",
-        requester_agent_id="agent-a",
-        performer_agent_id=app.agent_id,
-        summary="Do it",
-        description="",
-    )
-    await AgentConsumer.on_task_delegate(
-        client,  # type: ignore[arg-type]
-        RoomRef(room_id="!room:example.com"),
-        delegate,
-    )
-    assert await rows(app) == {}
-    assert client.posted == [_HOSTED_MACHINE_ERROR_MESSAGE]
     assert client.enqueued == []
 
 

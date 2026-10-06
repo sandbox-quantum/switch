@@ -1,14 +1,14 @@
-"""The call context shared by both agent-facing front doors (CHOO-1857/490).
+"""The call context an agent operation runs in (CHOO-1857/490).
 
 An operation needs two things about its caller: which agent is making it, and
-which session or connection it belongs to. Over MCP both come from the FastMCP
-transport; over HTTP they come from the bearer token and the `connection_id` on
-the request. Everything above this indirection is written once and served by
-both doors, which is what keeps them from drifting apart.
+which session or connection it belongs to. Both come from the request at
+`/agents/{id}/ops`: the bearer token and the connection or session selector it
+sent. Operations read them from here and from nothing else, so their
+signatures carry no transport types.
 
-`session_key` is deliberately vague about what it identifies: an MCP transport
-session today, a connection id over HTTP. Both are "the thing that owns the
-room binding", and operations only ever compare them for equality.
+`session_key` is deliberately vague about what it identifies: a connection id,
+or a controller's holder id for an agent it runs. Both are "the thing that
+owns the room binding", and operations only ever compare them for equality.
 
 `session` is the narrower fact, and is set only when the caller named an SDK
 session rather than a bare connection. It is what a room-scoped operation
@@ -75,8 +75,8 @@ def set_call_context(context: CallContext) -> _CallContextToken:
     """Bind the caller for the duration of one operation. Returns a reset token.
 
     The calling agent is bound for logging at the same time — this is the one
-    place both front doors already name their caller, so it is the cheapest
-    place to make every line an operation emits attributable.
+    place the caller is already named, so it is the cheapest place to make
+    every line an operation emits attributable.
     """
     return _CallContextToken(
         call=_current.set(context),
@@ -98,7 +98,7 @@ def call_context(context: CallContext) -> Iterator[None]:
     """Bind `context` for the block and restore both tokens on the way out.
 
     The one caller-facing way to use `set_call_context`/`reset_call_context`:
-    a front door binds the caller for an operation call that it does not
+    the caller is bound for an operation call that the binder does not
     control the internals of, so the call may suspend and never resume — the
     caller's coroutine dropped and finalised by the garbage collector rather
     than completed. `restore_unless_finalising` skips the reset pair in that

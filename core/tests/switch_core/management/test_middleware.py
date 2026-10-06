@@ -288,9 +288,6 @@ class TestTheFlagOff:
             agent_auth_cache_ttl_seconds = 1
             agent_auth_cache_max_entries = 16
             keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
-            oauth_issuer_url = None
-            oauth_audience = None
-            oauth_verify_issuer = True
             id_server_name = "test"
 
         app, _ = create_agent_bridge_app(
@@ -301,7 +298,6 @@ class TestTheFlagOff:
             client_lifecycle=object(),  # type: ignore[arg-type]
             collab_lifecycle=object(),  # type: ignore[arg-type]
             event_buffer=EventBuffer(sequence_base=0),
-            task_store=object(),  # type: ignore[arg-type]
             resource_service=object(),  # type: ignore[arg-type]
             api_key_store=object(),  # type: ignore[arg-type]
             external_user_store=object(),  # type: ignore[arg-type]

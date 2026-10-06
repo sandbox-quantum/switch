@@ -1,9 +1,8 @@
 """The agent operation registry — the single definition of what an agent can do.
 
-Both agent-facing front doors are built from this: the HTTP operations endpoint
-dispatches into it, and the MCP server registers its tools from it. Neither
-owns the operations, so neither can drift from the other, and removing a door
-is removing a door rather than a refactor of everything underneath.
+The HTTP operations endpoint dispatches into it and lists it at
+`GET /agents/{id}/ops`, which is where each session's runtime reads the tools
+it serves its agent.
 
 An operation is a plain async function. It takes its arguments and nothing
 else — who is calling and which connection they belong to come from the call
@@ -108,12 +107,12 @@ def _gated_group(group: str) -> dict[str, Operation]:
 
 
 def enable_operation_group(group: str) -> None:
-    """Put every operation declared in `group` on the front doors."""
+    """Put every operation declared in `group` on the agent surface."""
     _REGISTRY.update(_gated_group(group))
 
 
 def disable_operation_group(group: str) -> None:
-    """Take every operation declared in `group` off the front doors again."""
+    """Take every operation declared in `group` off the agent surface again."""
     for name in _gated_group(group):
         _REGISTRY.pop(name, None)
 

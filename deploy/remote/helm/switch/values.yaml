@@ -17,7 +17,7 @@ global:
 #
 #   mode: existing  -> render nothing; wire up the services with your own
 #                      manifest. See samples/ingress.example.yaml.
-#   mode: managed   -> render one path-routed Ingress: the agent/MCP surface and
+#   mode: managed   -> render one path-routed Ingress: the agent surface and
 #                      bridge webhooks (agentApiPaths) go to switch-core, and /
 #                      goes to the gateway SPA. Supply className/host, and tls
 #                      for HTTPS (e.g. with a cert-manager annotation).
@@ -29,7 +29,7 @@ ingress:
   # For cert-manager TLS, add e.g.:
   #   cert-manager.io/cluster-issuer: letsencrypt-prod
   annotations: {}
-  # Emit ingress-nginx annotations that keep MCP/SSE streams alive (long read
+  # Emit ingress-nginx annotations that keep SSE streams alive (long read
   # timeouts, buffering off). Harmless on other controllers but ignored by them
   # — set false and add your controller's equivalents via annotations.
   #
@@ -51,7 +51,7 @@ ingress:
     # above, or reference a pre-created TLS Secret.
     secretName: ""
   # Path prefixes on the primary host routed to switch-core instead of the
-  # gateway: the Bearer-auth agent bridge + MCP, and public OAuth/MCP discovery.
+  # gateway: the Bearer-auth agent bridge, messaging-app installs and health.
   agentApiPaths:
     - /agents
     - /hosted
@@ -63,9 +63,6 @@ ingress:
     # Agents controllers: enrollment, tokens, assignment, status and their
     # event stream (/v1/management/..., /v1/controllers/...).
     - /v1
-    - /mcp
-    - /oauth
-    - /.well-known
     - /messaging
     - /health
   # Path prefixes served by the Teams bridge listener rather than the FastAPI
@@ -284,7 +281,7 @@ switchCore:
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
-  # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
+  # a Mattermost server, an agent icon. Hostnames or CIDRs.
   # Anything else that is not a public address is refused, and link-local and
   # cloud metadata addresses are refused even when listed. The bundled
   # Mattermost (mattermost.enabled) is added automatically.
@@ -415,7 +412,7 @@ switchCore:
       # annotation set there (a WAF association, cost tags, a policy webhook)
       # does not reach this Ingress and must be repeated here. That separation
       # is deliberate — the main Ingress's streaming annotations suit long-lived
-      # MCP/SSE connections and Teams callbacks are short request/response —
+      # SSE connections and Teams callbacks are short request/response —
       # but it does mean this list is not additive.
       # For cert-manager, add e.g.:
       #   cert-manager.io/cluster-issuer: letsencrypt-prod

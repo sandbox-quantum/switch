@@ -245,20 +245,6 @@ class PackageStore:
         )
         return list(result.scalars().all())
 
-    async def list_reference_ids_for_room(
-        self, session: AsyncSession, room_id: str
-    ) -> list[str]:
-        """All reference ids reachable via packages attached to this room."""
-        result = await session.execute(
-            select(package_references.c.reference_id)
-            .join(
-                room_packages,
-                room_packages.c.package_id == package_references.c.package_id,
-            )
-            .where(room_packages.c.room_id == room_id)
-        )
-        return list(result.scalars().all())
-
     async def list_document_ids_for_room(
         self, session: AsyncSession, room_id: str
     ) -> list[str]:

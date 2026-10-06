@@ -225,9 +225,8 @@ exist only while management runs: they are declared in their own operation group
 (`registry.gated_operation`), and `Management.install` enables it by handing Core
 management's implementation of `AgentManagementPort`
 (`bridges/agent/protocol/agent_management.py`, implemented by
-`management/agent_operations.py`). With the flag off they are on neither door: not in
-`GET /ops`, `404` on `POST /ops/{name}`, and not listed or callable over MCP (the MCP server
-registers every declared operation and filters by the registry per request).
+`management/agent_operations.py`). With the flag off they are absent: not in
+`GET /ops` and `404` on `POST /ops/{name}`.
 
 - `list_machines()`: the owner's controllers that are not revoked, each `{id, name,
   description, kind, state, last_seen_at, providers: [{provider, installed, version, auth}],
@@ -442,14 +441,14 @@ stream. The flag and everything else above stay as they are.
   lease (live while the agent is). Moving the agent changes it, so a lease does
   not survive a move.
 - **Act-as routes.** Every `/agents/{agent_id}/...` and `/agent-sessions/...`
-  route; on `/agents/rooms/...`, `/agents/feature-flags` and `/agent-sessions/...`
-  the agent comes from `X-Switch-Agent-Id` alone. Refused for a controller
+  route; on `/agent-sessions/...` the agent comes from `X-Switch-Agent-Id`
+  alone. Refused for a controller
   token: registration (`403 forbidden`), any non-agent route (`403
   forbidden`), and the per-agent connection surface the controller holds for the agent — `events`,
-  `notifications`, `rooms/{id}/events`, `connection/*`, `watch/heartbeat` —
+  `connection/*`, `watch/heartbeat` —
   with `409 managed_by_controller`. `X-Switch-Connection-Id` and the session
   selector headers are ignored for a controller principal.
-- **Own key.** A controller-backed agent's own API key (or OIDC token) is
+- **Own key.** A controller-backed agent's own API key is
   refused on every route with `409 managed_by_controller`, in the contract
   envelope. Binding an agent closes any connection it still held.
 - **Open/beat bodies.** `POST /connection` returns `agents: string[]` (the

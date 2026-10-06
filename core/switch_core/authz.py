@@ -124,8 +124,8 @@ def can(principal: Principal, action: Action, resource: Authorizable) -> bool:
 def require(principal: Principal, action: Action, resource: Authorizable) -> None:
     """Raise ``PermissionError`` unless `principal` may `action` `resource`.
 
-    ``PermissionError`` is mapped to HTTP 403 by the gateway and surfaced as an
-    error by the MCP server.
+    ``PermissionError`` is mapped to HTTP 403 by the gateway and by the agent
+    operations endpoint.
     """
     if not can(principal, action, resource):
         raise PermissionError(f"Not authorized to {action} this resource")

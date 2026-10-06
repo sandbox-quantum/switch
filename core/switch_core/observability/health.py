@@ -191,34 +191,6 @@ def bridges_check(
     return HealthCheck(name="bridges", gates_readiness=False, probe=probe)
 
 
-def connectors_check(
-    running: Callable[[], int], configured: Callable[[], int]
-) -> HealthCheck:
-    """Whether every server-side connector this process meant to run is running.
-
-    Started fire-and-forget, with each failure logged and stepped over, so one
-    that never came up is a dead agent host with no other trace. Reported,
-    never gating.
-    """
-
-    async def probe() -> CheckOutcome:
-        live = running()
-        expected = configured()
-        if live >= expected:
-            return CheckOutcome(name="connectors", healthy=True, detail="")
-        return CheckOutcome(
-            name="connectors",
-            healthy=False,
-            detail=(
-                f"{expected - live} of {expected} server-side connector(s) are "
-                "not running. The agents they host are unreachable; the boot "
-                "log names which failed and why."
-            ),
-        )
-
-    return HealthCheck(name="connectors", gates_readiness=False, probe=probe)
-
-
 class HealthMonitor:
     """Runs the checks on an interval and holds the latest answer."""
 

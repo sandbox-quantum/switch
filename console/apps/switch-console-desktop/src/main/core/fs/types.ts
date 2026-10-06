@@ -3,17 +3,6 @@
  * Provides unified interface for local and remote (SSH/SFTP) filesystem operations
  */
 
-import type { FileWatchEvent } from '@shared/core/fs/fs';
-
-/**
- * Handle returned by FileSystemProvider.watch().
- * Call update() to change the set of watched paths, close() to stop.
- */
-export interface FileWatcher {
-  update(paths: string[]): void;
-  close(): void;
-}
-
 /**
  * File entry metadata returned by filesystem operations
  */
@@ -262,20 +251,6 @@ export interface FileSystemProvider {
    * @param destRelPath  - Destination path relative to this filesystem's root
    */
   copyLocalFile?(localAbsPath: string, destRelPath: string): Promise<void>;
-
-  /**
-   * Watch the worktree for filesystem changes. Returns a FileWatcher handle;
-   * call update() to hint which paths matter (SSH uses this for polling),
-   * call close() to stop. Batches events and delivers them via callback.
-   * Optional — not all implementations support watching.
-   *
-   * Local: uses @parcel/watcher for a single recursive native-OS subscription.
-   * SSH:   polls directories passed to update() at a fixed interval.
-   */
-  watch?(
-    callback: (events: FileWatchEvent[]) => void,
-    options?: { debounceMs?: number }
-  ): FileWatcher;
 }
 
 /**

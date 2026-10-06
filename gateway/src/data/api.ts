@@ -21,7 +21,6 @@ export interface RoomSummary {
   name: string;
   description: string;
   channel_type: string | null;
-  admin_mode: boolean;
   agent_count: number;
   connected_user_count: number;
   connected_user_names: string[];
@@ -47,7 +46,6 @@ export interface AgentSummary {
   model_count: number;
   owner_id: string | null;
   owner_name: string | null;
-  oauth_client_id: string | null;
   created_at: string;
   parent_agent_id: string | null;
   known_agent_type: string | null;
@@ -180,8 +178,6 @@ export interface RoomDetail extends RoomSummary {
   matrix_room_id: string;
   external_channel_id: string | null;
   instructions: string | null;
-  protection_config: Record<string, unknown> | null;
-  observe_config: Record<string, unknown> | null;
   agent_ids: string[];
   agent_statuses: Record<string, string>;
   roles: RoomRoleDetail[];
@@ -215,7 +211,6 @@ export interface UpdateRoomInput {
   name?: string;
   description?: string;
   instructions?: string | null;
-  admin_mode?: boolean;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
 }
@@ -364,12 +359,6 @@ export async function updateRoom(
   return jsonRequest<RoomDetail>(`/rooms/${roomId}`, "PATCH", input);
 }
 
-export async function fetchRoomRoles(
-  roomId: string,
-): Promise<RoomRoleDetail[] | null> {
-  return fetchJson<RoomRoleDetail[]>(`/rooms/${roomId}/roles`);
-}
-
 export async function createRoomRole(
   roomId: string,
   input: RoomRoleSpec,
@@ -405,24 +394,6 @@ export async function archiveRoom(roomId: string): Promise<RoomDetail> {
 
 export async function unarchiveRoom(roomId: string): Promise<RoomDetail> {
   return jsonRequest<RoomDetail>(`/rooms/${roomId}/unarchive`, "POST");
-}
-
-export async function updateRoomProtection(
-  roomId: string,
-  config: Record<string, unknown>,
-): Promise<RoomDetail> {
-  return jsonRequest<RoomDetail>(`/rooms/${roomId}/protection`, "PUT", {
-    protection_config: config,
-  });
-}
-
-export async function updateRoomObserve(
-  roomId: string,
-  config: Record<string, unknown>,
-): Promise<RoomDetail> {
-  return jsonRequest<RoomDetail>(`/rooms/${roomId}/observe`, "PUT", {
-    observe_config: config,
-  });
 }
 
 export async function addRoomAgents(
@@ -470,16 +441,6 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
     method: "DELETE",
   });
   return res?.ok ?? false;
-}
-
-export async function bulkDeleteRooms(
-  roomIds: string[],
-): Promise<{ deleted: number } | null> {
-  return fetchJson<{ deleted: number }>("/rooms/bulk-delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds }),
-  });
 }
 
 export async function bulkArchiveRooms(
@@ -578,13 +539,6 @@ export interface KnownAgentType {
   options_schema: Record<string, unknown>;
 }
 
-export interface RegisterResult {
-  id: string;
-  api_key: string;
-  oauth_client_id: string | null;
-  oauth_client_secret: string | null;
-}
-
 export async function fetchAgents(): Promise<AgentSummary[] | null> {
   return fetchJson<AgentSummary[]>("/agents");
 }
@@ -626,26 +580,6 @@ export async function fetchKnownAgentTypes(): Promise<KnownAgentType[] | null> {
   return fetchJson<KnownAgentType[]>("/agents/known-types");
 }
 
-export async function registerKnownAgent(
-  agentType: string,
-  name: string,
-  description: string,
-  options: Record<string, unknown> = {},
-): Promise<RegisterResult> {
-  const res = await fetch(`${BASE}/agents/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ agent_type: agentType, name, description, options }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
-  return (await res.json()) as RegisterResult;
-}
-
 export async function updateAgentOptions(
   agentId: string,
   options: Record<string, unknown>,
@@ -662,82 +596,6 @@ export async function updateAgentOptions(
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return (await res.json()) as AgentSummary;
-}
-
-export async function registerOtherAgent(
-  name: string,
-  description: string,
-): Promise<RegisterResult> {
-  const res = await fetch(`${BASE}/agents/register-other`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ name, description }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
-  return (await res.json()) as RegisterResult;
-}
-
-// ── Connectors ──────────────────────────────────────────────────────────────
-
-export interface ConnectorTypeConfigSchema {
-  type: string;
-  properties: Record<
-    string,
-    {
-      type?: string;
-      title?: string;
-      description?: string;
-      default?: unknown;
-      format?: string;
-    }
-  >;
-  required?: string[];
-}
-
-export interface ConnectorTypeInfo {
-  key: string;
-  config_schema: ConnectorTypeConfigSchema;
-}
-
-export interface ConnectorResult {
-  connector_id: string;
-  connector_type: string;
-  display_name: string;
-  status: string;
-  agent_names: string[];
-  created_at: string;
-}
-
-export async function fetchConnectorTypes(): Promise<ConnectorTypeInfo[] | null> {
-  return fetchJson<ConnectorTypeInfo[]>("/connectors/types");
-}
-
-export async function createConnector(
-  type: string,
-  displayName: string,
-  connectionConfig: Record<string, unknown>,
-): Promise<ConnectorResult> {
-  const res = await fetch(`${BASE}/connectors`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      type,
-      display_name: displayName,
-      connection_config: connectionConfig,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
-  return (await res.json()) as ConnectorResult;
 }
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
@@ -795,6 +653,21 @@ export async function deleteApiKey(keyId: string): Promise<boolean> {
 }
 
 // ── Collaborations ───────────────────────────────────────────────────────────
+
+export interface ConnectorTypeConfigSchema {
+  type: string;
+  properties: Record<
+    string,
+    {
+      type?: string;
+      title?: string;
+      description?: string;
+      default?: unknown;
+      format?: string;
+    }
+  >;
+  required?: string[];
+}
 
 export interface BridgeTypeInfo {
   key: string;
@@ -962,10 +835,6 @@ export async function logout(): Promise<void> {
     method: "POST",
     credentials: "include",
   });
-}
-
-export async function fetchMe(): Promise<UserInfo | null> {
-  return fetchJson<UserInfo>("/auth/me");
 }
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";
@@ -1467,9 +1336,6 @@ export interface EcosystemNode {
   kind: EcosystemNodeKind;
   label: string;
   sublabel: string;
-  // Present on agent nodes only when the `ecosystem.show_owners` server flag
-  // is ON; otherwise omitted so the "Show owners" toggle has nothing to show.
-  owner_name?: string | null;
 }
 
 export interface EcosystemEdge {
@@ -1480,8 +1346,6 @@ export interface EcosystemEdge {
 export interface EcosystemGraphData {
   nodes: EcosystemNode[];
   edges: EcosystemEdge[];
-  // Reflects the server flag. When false, owner data is withheld.
-  show_owners: boolean;
 }
 
 export async function fetchEcosystemGraph(): Promise<EcosystemGraphData | null> {

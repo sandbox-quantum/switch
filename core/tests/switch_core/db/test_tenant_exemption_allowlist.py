@@ -28,9 +28,10 @@ module, never directly through a store any endpoint could declare for itself.
 **A raw `session_factory()` call** is the other surface. It inherits whatever
 is ambient, which in background code is nothing at all, since the long-lived
 tasks deliberately unbind (see `tenant_context.no_tenant`). Such a session can
-now only read the tables that carry no policy — `users`, `oidc_identities`,
-`feature_flags` — so it is no longer a way to cross a tenant boundary, but it
-is still a session whose call site did not say what it was for.
+now only read the tables that carry no policy — `users`, `oidc_identities` and
+the installation's telemetry records — so it is no longer a way to cross a
+tenant boundary, but it is still a session whose call site did not say what it
+was for.
 
 A module failing either check is not a bug in the test. It means someone
 reached for the exemption, or opened a session with nothing bound, without
@@ -59,11 +60,10 @@ _ALLOWED_MODULES = {
     "switch_core.room_service",
     # Session-activity upkeep expires overdue approval requests and prunes
     # old activity lines in every tenant: enumerate, then bind each tenant and
-    # work under its own policy, the same shape as the runtime-state sweep.
+    # work under its own policy, the same shape as the boot fan-outs.
     "switch_core.session_activity.maintenance",
-    # The runtime-state sweep reads every tenant's stale rows, one tenant at a
-    # time; `register_agent_with_token` resolves a registration credential by
-    # its globally unique hash, which is the read that produces a tenant.
+    # `register_agent_with_token` resolves a registration credential by its
+    # globally unique hash, which is the read that produces a tenant.
     "switch_core.bridges.agent.protocol.agent_core",
     # Bearer and OIDC authentication: the credential's tenant, before its row.
     "switch_core.bridges.agent.auth",
@@ -84,11 +84,10 @@ _ALLOWED_MODULES = {
     # is reachable by any endpoint that declares it, which would make this
     # list name one module while the exemption was open to every route.
     "switch_core.gateway.auth",
-    # Enumerating tenants at boot, and starting one bridge or one connector by
-    # id from a context bound to somebody else's tenant.
+    # Enumerating tenants at boot, and starting one bridge by id from a
+    # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
     "switch_core.bridges.collaboration.lifecycle_service",
-    "switch_core.bridges.agent.server_connectors.lifecycle",
     # `_room_tenant`'s fallback: which tenant is this room in, asked when the
     # answer is not already cached alongside the channel mapping.
     "switch_core.bridges.collaboration.collaboration_core",
@@ -125,10 +124,8 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.gateway.auth",
     "switch_core.gateway.dependencies",
     "switch_core.bridges.agent.dependencies",
-    "switch_core.bridges.agent.operations.context",
     "switch_core.bridges.agent.operations.definitions",
     "switch_core.bridges.agent.operations.agent_management",
-    "switch_core.bridges.agent.mediation",
     # Reached only from the gateway's rooms endpoints, so the same holds.
     "switch_core.rooms_yaml",
     # Runs: reached from the gateway's run endpoints and from an agent's room
@@ -141,7 +138,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.commands",
     "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
-    "switch_core.bridges.agent.server_connectors.lifecycle",
     "switch_core.clients.agent_consumer",
     "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",

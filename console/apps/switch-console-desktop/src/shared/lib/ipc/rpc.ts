@@ -76,7 +76,7 @@ export function registerRPCRouter(
 
 // Recursively maps every leaf function to its async client equivalent.
 // Non-function values recurse, so both 2-level (rpc.agents.getAgentById) and
-// 3-level (rpc.fs.watch.watchSetPaths) shapes are handled by a single type.
+// 3-level (rpc.namespace.controller.method) shapes are handled by a single type.
 type IpcClient<R> = {
   [K in keyof R]: R[K] extends (...args: infer A) => infer Ret
     ? (...args: A) => Promise<Awaited<Ret>>

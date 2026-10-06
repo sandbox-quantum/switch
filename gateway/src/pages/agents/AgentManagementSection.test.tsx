@@ -13,7 +13,6 @@ const agent: AgentDetail = {
   model_count: 0,
   owner_id: "u1",
   owner_name: "ada",
-  oauth_client_id: null,
   created_at: "2026-10-01T00:00:00Z",
   parent_agent_id: null,
   known_agent_type: null,

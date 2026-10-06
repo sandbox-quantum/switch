@@ -30,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -51,11 +50,6 @@ TENANT_B = "tenant-b"
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
-    message_exchange=True,
-    pre_invocation_mediation=[],
-    post_invocation_mediation=[],
-    event_reporting=[],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
 
 

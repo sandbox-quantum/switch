@@ -117,9 +117,8 @@ count of what it missed no longer depends on that: it is derived from the
 buffer per room, so a connection under `addressed` is counted the same way and
 its filtered-out traffic is not lost to the tally. A daemon uses `all` +
 `addressed` — it is watching for a reason to start a session, not following
-conversations. This is what makes the separate `/notifications` endpoint and
-the second notification builder (CHOO-1810) removable — neither has actually
-been removed yet.
+conversations. This is what made the separate `/notifications` endpoint
+removable, and it has been removed.
 
 ### 2.4 Room slots
 
@@ -597,18 +596,15 @@ one registry**:
 between the two is `POST /ops/${toolName}` and nothing more — no mapping table
 to maintain, and no second vocabulary to keep in step.
 
-Parity is **structural, not maintained**: operations live in a registry that
-neither door owns. The HTTP endpoint dispatches into it; the MCP server
-registers its tools from it. An operation is therefore reachable through both
-doors the moment it exists, and **retiring a door is deleting a file** rather
-than refactoring everything underneath. This is what makes a local runtime
-possible at all (§9.1) and closes the overlap with CHOO-490.
+Operations live in a registry. The HTTP endpoint dispatches into it and lists
+it, and a local runtime (§9.1) builds its tool surface from that list, so an
+operation reaches every session the moment it exists. Switch's own `/mcp`
+endpoint, which registered its tools from the same registry, has been removed.
 
 An operation is a plain async function taking its arguments and nothing else.
 Who is calling, and which connection or session they are bound to, comes from
-a **call context** each front door establishes before dispatching — so no
-transport type appears in an operation's signature, and the operations layer
-imports nothing from either door.
+a **call context** the endpoint establishes before dispatching — so no
+transport type appears in an operation's signature.
 
 `GET /agents/{agent_id}/ops` lists every operation and its JSON-schema
 parameters, read straight off the registry.
@@ -740,14 +736,12 @@ MCP remains the tool surface. Two ways to reach it, converging on **one
 connection object** — the stream registers it, calls validate against it, the
 heartbeat maintains it, its death releases everything.
 
-**Only the stream can create a connection.** Calls through either door attach
-to one; they never conjure one "to be helpful", which would reintroduce two
+**Only the stream can create a connection.** Operation calls attach to one; they never conjure one "to be helpful", which would reintroduce two
 things that can disagree.
 
-**Switch hosting an MCP server is the legacy path.** It remains supported, but
-the direction of travel is a local runtime (§9.1): MCP the *protocol* is how an
-agent calls tools and is not going anywhere; Switch being the one to *host* it
-is what recedes.
+**Switch does not host an MCP server.** MCP the *protocol* is how an agent
+calls tools; a local runtime (§9.1) serves it next to the agent and translates
+each call onto its own connection.
 
 ### 9.1 Local MCP (recommended)
 
@@ -1044,11 +1038,10 @@ versions must be updated when the agent-facing contract changes.
 ## 14. Related work
 
 - **CHOO-490** — HTTP protocol parity. Delivered: the operation surface has an
-  HTTP front door (`GET /agents/{id}/ops`, `POST /agents/{id}/ops/{operation}`)
-  serving the same registry as MCP.
-- **CHOO-1810** — two notification builders. §2.3 shipped, but this is **not**
-  closed: both builders still exist, and `GET /agents/{id}/notifications` is
-  still a live route.
+  HTTP front door (`GET /agents/{id}/ops`, `POST /agents/{id}/ops/{operation}`),
+  now the only one.
+- **CHOO-1810** — two notification builders. §2.3 shipped, and
+  `GET /agents/{id}/notifications` has since been removed.
 - **CHOO-1685** — AG-UI. Being worked separately rather than here; the event
   envelope is versioned and additive so it stays landable.
 - **CHOO-1101 / CHOO-1366 / CHOO-1811** — bugs caused by the polling model.

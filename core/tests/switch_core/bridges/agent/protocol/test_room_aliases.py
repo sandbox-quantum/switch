@@ -103,7 +103,6 @@ def _room(**overrides: Any) -> SimpleNamespace:
         "description": "desc",
         "transport_room_id": "!abc:switch.local",
         "channel_type": "channel_private",
-        "admin_mode": False,
         "instructions": "",
         "created_at": "2026-05-29T00:00:00+00:00",
         "bridge_id": None,

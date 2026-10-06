@@ -26,7 +26,6 @@ import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-works
 import { InvitePeopleModal } from '@renderer/features/workspaces/invite-people-modal';
 import { ConfirmActionDialog } from '@renderer/lib/components/confirm-action-dialog';
 import { ExternalLinkChoiceDialog } from '@renderer/lib/components/external-link-choice-dialog';
-import { UnsavedChangesDialog } from '@renderer/lib/components/unsaved-changes-dialog';
 import { type ModalComponent } from '@renderer/lib/modal/modal-provider';
 
 export type ModalSize = 'xs' | 'sm' | 'md' | 'lg';
@@ -62,7 +61,6 @@ export const modalRegistry = {
   removeAgentConfigModal: createModal(RemoveAgentConfigModal, { size: 'sm' }),
   resetAgentModal: createModal(ResetAgentModal, { size: 'sm' }),
   confirmExternalLinkModal: createModal(ExternalLinkChoiceDialog, { size: 'sm' }),
-  unsavedChangesModal: createModal(UnsavedChangesDialog, { size: 'xs' }),
   renameSessionModal: createModal(RenameSessionModal, {
     size: 'xs',
     dismissOnOutsideClick: false,

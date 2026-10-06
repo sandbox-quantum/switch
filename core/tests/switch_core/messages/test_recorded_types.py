@@ -9,7 +9,6 @@ from switch_core.clients.consumer import Consumer
 from switch_core.messages.recorded_types import (
     EPHEMERAL,
     NOT_RECORDED,
-    PERSISTED_ELSEWHERE,
     RETIRED,
     TELEMETRY,
     should_record,
@@ -47,10 +46,11 @@ def test_a_retired_type_is_still_classified():
     """History outlives the code that wrote it: an event of a deleted type is
     still on the bus, and a walk over that history has to know what it was."""
     assert not should_record("com.switch.mediation.tool_result")
+    assert not should_record("com.switch.task.delegate")
 
 
 def test_the_buckets_do_not_overlap():
-    buckets = [EPHEMERAL, PERSISTED_ELSEWHERE, TELEMETRY, RETIRED]
+    buckets = [EPHEMERAL, TELEMETRY, RETIRED]
     total = sum(len(bucket) for bucket in buckets)
     assert total == len(NOT_RECORDED)
 
@@ -62,12 +62,7 @@ def test_conversation_is_recorded():
 
 def test_bus_traffic_is_not_recorded():
     assert not should_record("com.switch.agent.runtime_state")
-    assert not should_record("com.switch.task.delegate")
     assert not should_record("com.switch.report.llm_call")
-
-
-def test_the_unimplemented_observe_prefix_is_not_recorded():
-    assert not should_record("com.switch.observe.anything")
 
 
 def test_an_unknown_type_is_recorded_rather_than_dropped():

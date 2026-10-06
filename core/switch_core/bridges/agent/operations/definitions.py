@@ -1,9 +1,9 @@
 """Agent operations — what an agent can do, defined once (CHOO-1857 / CHOO-490).
 
-These functions are the operations themselves. The MCP server registers them as
-tools and the HTTP endpoint dispatches into them; neither owns them. Adding one
-here makes it available through both doors at once, which is what keeps the two
-from drifting apart.
+These functions are the operations themselves. The HTTP endpoint at
+`/agents/{id}/ops` dispatches into them, and each session's runtime serves
+them to its agent as MCP tools under the same names. Adding one here makes it
+available to every session at once.
 
 Each takes its arguments and nothing else — the caller's identity, connection
 and room come from `operations.context`.
@@ -50,8 +50,7 @@ from switch_core.bridges.agent.protocol.hosted_workers import (
     hosted_launch_of,
 )
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.bridges.agent.protocol.types import IntegrationProfile
-from switch_core.db.models import CollaborationBridge, User
+from switch_core.db.models import User
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
@@ -95,9 +94,8 @@ def claim_room_on_caller_connection(
     """
     connection = protocol.connections.get(connection_id)
     if connection is None or connection.agent_id != agent_id:
-        # No connection behind this caller: an MCP transport session, or a
-        # runtime borrowing an id whose connection has since expired. The
-        # binding row still stands and room-scoped calls resolve through it.
+        # The connection expired after the request named it; there is nothing
+        # left to route the room's events to.
         return None
     try:
         evicted = protocol.connections.claim_room(connection, room_id, takeover=True)
@@ -154,48 +152,6 @@ def release_room_on_caller_connection(
     protocol.connections.release_room(connection, room_id)
 
 
-async def bind_room_for_connectionless_caller(
-    protocol: AgentCore,
-    *,
-    agent_id: str,
-    connection_id: str,
-    room_id: str,
-    connection_model: str,
-) -> bool:
-    """Record the room binding row, for callers that have no connection.
-
-    The row is how an MCP transport session resolves its room, and the only
-    way it can. A connection carries its own rooms, so writing the row for one
-    records a binding nothing reads — and the row has no liveness check and no
-    expiry, so it outlives the connection it was written for and keeps
-    answering room-scoped calls afterwards. A connection that reopens without
-    re-claiming its room then reads as connected on the send path while
-    delivery, which consults the connection, has nothing: the agent posts into
-    a room it is no longer receiving from, invisibly from either side.
-
-    Returns whether a row was written.
-    """
-    if protocol.connections.get(connection_id) is not None:
-        return False
-
-    # session_passive agents have no poll loop, so the row exists only to bind
-    # the MCP transport to a room — lifecycle="explicit". always_on and
-    # session_addressable agents also receive heartbeat upserts; we mark the row
-    # "heartbeat" so the poll path's on-conflict update doesn't need to
-    # special-case it.
-    lifecycle = "explicit" if connection_model == "session_passive" else "heartbeat"
-    async with protocol.session_factory() as db:
-        await protocol.agent_session_store.set_connected_room(
-            db,
-            agent_id=agent_id,
-            room_id=room_id,
-            transport_session_id=connection_id,
-            lifecycle=lifecycle,
-        )
-        await db.commit()
-    return True
-
-
 @operation
 async def list_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
     """List rooms this agent is assigned to.
@@ -231,7 +187,7 @@ async def list_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
 @operation
 async def connect_to_room(
     room_id: str,
-    include_general_instructions: bool = True,
+    include_general_instructions: bool = False,
 ) -> dict[str, Any]:
     """Connect this session to a room. The agent must be assigned to the room.
 
@@ -239,14 +195,9 @@ async def connect_to_room(
         room_id: The Switch room id (UUID string) to connect to. Get valid
             ids from list_rooms. This is the Switch room id, not the
             transport room id. Calling again switches the active room for this session.
-        include_general_instructions: When true (default) the `instructions`
-            field carries the full room-onboarding text (interaction modes,
-            task protocol, agent statuses, room setup) followed by any
-            room-specific instructions. Set false if your host already
-            injects the general Switch usage instructions out-of-band (e.g.
-            via a Claude Code skill); the general sections are then omitted
-            but room-specific instructions configured at room creation are
-            still returned.
+        include_general_instructions: Ignored, and accepted so that callers
+            which still pass it keep working. `instructions` carries only the
+            room-specific instructions configured at room creation.
 
     Returns:
         {agent_id, room_id, name, description, participants, instructions,
@@ -289,9 +240,6 @@ async def connect_to_room(
         room_model = await protocol.room_store.get(session, room.id)
         if agent is None or room_model is None:
             raise ValueError("Agent or room not found")
-        bridge: CollaborationBridge | None = None
-        if room_model.bridge_id:
-            bridge = await session.get(CollaborationBridge, room_model.bridge_id)
 
     if hosted_launch_of(agent.metadata_) is not None:
         key = session_key()
@@ -299,15 +247,7 @@ async def connect_to_room(
         if caller_connection is None or caller_connection.worker is None:
             raise CodedPermissionError("hosted_worker_only", HOSTED_WORKER_ONLY_MESSAGE)
 
-    profile = IntegrationProfile(**agent.integration_profile)
-    instructions = build_room_instructions(
-        agent,
-        room_model,
-        profile,
-        participants,
-        bridge,
-        include_general=include_general_instructions,
-    )
+    instructions = build_room_instructions(room_model)
     resources = await protocol.list_room_resources(room.id)
     linked_rooms = await _decorate_linked_rooms(
         protocol, agent_id, resources["linked_rooms"]
@@ -316,7 +256,10 @@ async def connect_to_room(
 
     key = session_key()
     if not key:
-        raise ValueError("MCP session has no session id; cannot connect to room")
+        raise ValueError(
+            "This call names no connection; send X-Switch-Connection-Id to "
+            "connect to a room"
+        )
 
     # A controller-backed agent's sessions are placed by its controller, which
     # tracks the room locally and names it on later calls: connecting checks
@@ -361,14 +304,6 @@ async def connect_to_room(
             if reader is not None:
                 protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
 
-            await bind_room_for_connectionless_caller(
-                protocol,
-                agent_id=agent_id,
-                connection_id=key,
-                room_id=room.id,
-                connection_model=profile.connection_model,
-            )
-
     return {
         "agent_id": agent_id,
         "room_id": room.id,
@@ -380,8 +315,6 @@ async def connect_to_room(
                 "name": p.name,
                 "type": p.type,
                 "agent_type": p.agent_type,
-                "can_delegate": p.can_delegate,
-                "can_accept": p.can_accept,
                 "status": p.status.value if p.status is not None else None,
                 "room_role": p.room_role,
                 "alias": p.alias,
@@ -786,9 +719,8 @@ async def send_targeted_message(
 
     Prepends `@name` for each name target and `@role` for each role target so
     they receive it as an addressed event. Other participants still see the
-    message as room context. Use when you need specific participants to act,
-    but the work is informal (a question, nudge, or handoff that doesn't need
-    task tracking).
+    message as room context. Use when you need specific participants to act
+    (a question, a nudge, or a handoff).
 
     Args:
         body: The message text. Plain string — do not pre-add `@` prefixes;
@@ -855,215 +787,6 @@ async def send_targeted_message(
     }
 
 
-# ── Task Protocol ───────────────────────────────────────────────────────────
-
-
-@operation
-async def delegate_task(
-    performer_agent_id: str, summary: str, description: str
-) -> dict[str, str]:
-    """Delegate a task to a performer agent. Requires can_delegate capability.
-
-    Args:
-        performer_agent_id: The id of the agent to assign the task to. Must
-            be a participant in the connected room. Use list_participants to
-            find ids (the `id` field, not `name`).
-        summary: Short one-line title for the task (shown in lists/headers).
-        description: Full instructions: what to do, inputs, expected output,
-            constraints. The performer reads this when accepting.
-
-    Returns:
-        {"task_id": "<id>", "status": "pending", "target_status": "<status>"}.
-        `target_status` reports the performer's reachability at delegation
-        time; for `no_session`/`disconnected` the performer won't see the
-        task until they reconnect.
-    """
-    agent_id = get_agent_id()
-    room_id = await require_connected_room()
-
-    protocol = get_protocol()
-    result = await protocol.delegate_task(
-        agent_id, room_id, performer_agent_id, summary, description
-    )
-    return {
-        "task_id": result.task_id,
-        "status": "pending",
-        "target_status": result.target_status.value,
-    }
-
-
-@operation
-async def accept_task(task_id: str) -> dict[str, Any]:
-    """Accept a delegated task. Requires can_accept capability.
-
-    Args:
-        task_id: The id of the task to accept (from the task_delegate event
-            or list_tasks). Caller must be the assigned performer.
-
-    Returns:
-        {"status": "ongoing", "accepted_at": "<iso timestamp>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.accept_task(agent_id, task_id)
-    task = await protocol.get_task(agent_id, task_id)
-    accepted_at = None
-    if task.accepted_at:
-        accepted_at = (
-            task.accepted_at.isoformat()
-            if hasattr(task.accepted_at, "isoformat")
-            else str(task.accepted_at)
-        )
-    return {
-        "status": task.status,
-        "accepted_at": accepted_at,
-    }
-
-
-@operation
-async def update_task(task_id: str, update: str) -> dict[str, Any]:
-    """Post a progress update on an assigned task. Requires can_accept capability.
-
-    Args:
-        task_id: The id of an ongoing task you have accepted.
-        update: One-string progress note (what you've done, what's next, any
-            blockers). Appended to the task's update log; does not finalise.
-
-    Returns:
-        {"status": "updated", "updates_count": <int>} with the new total.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.update_task(agent_id, task_id, update)
-    task = await protocol.get_task(agent_id, task_id)
-    return {"status": "updated", "updates_count": len(task.updates)}
-
-
-@operation
-async def finalise_task(task_id: str, outcome: str) -> dict[str, Any]:
-    """Complete a task with final outcome. Requires can_accept capability.
-
-    Args:
-        task_id: The id of an ongoing task you have accepted.
-        outcome: One-string final result — describe success or failure and
-            any output/links the requester needs. After this call the task
-            moves to `finalised` and cannot be updated further.
-
-    Returns:
-        {"status": "finalised", "finalised_at": "<iso timestamp>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.finalise_task(agent_id, task_id, outcome)
-    task = await protocol.get_task(agent_id, task_id)
-    finalised_at = None
-    if task.finalised_at:
-        finalised_at = (
-            task.finalised_at.isoformat()
-            if hasattr(task.finalised_at, "isoformat")
-            else str(task.finalised_at)
-        )
-    return {
-        "status": task.status,
-        "finalised_at": finalised_at,
-    }
-
-
-@operation
-async def cancel_task(task_id: str, reason: str) -> dict[str, str]:
-    """Abandon a task you delegated. Only the requester can cancel.
-
-    Args:
-        task_id: The id of a task this agent delegated.
-        reason: Why the task is no longer needed. Recorded on the task and
-            posted to the room so the performer learns it has been dropped.
-
-    Returns:
-        {"status": "cancelled", "reason": "<reason>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.cancel_task(agent_id, task_id, reason)
-    return {"status": "cancelled", "reason": reason}
-
-
-@operation
-async def list_tasks(
-    role: str | None = None, status: str | None = None
-) -> list[dict[str, Any]]:
-    """List tasks for the connected agent in the connected room.
-
-    Args:
-        role: Perspective filter.
-            - "delegated": tasks this agent created as requester
-            - "assigned": tasks assigned to this agent as performer
-            - None: both
-        status: Lifecycle filter. One of "pending", "ongoing", "finalised",
-            "cancelled", or None for all.
-
-    Returns:
-        List of task dicts {id, summary, description, status,
-        requester_agent_id, performer_agent_id, updates, outcome,
-        created_at, accepted_at, finalised_at}. Timestamps are ISO-8601
-        strings or null.
-    """
-    agent_id = get_agent_id()
-    room_id = await require_connected_room()  # type: ignore[arg-type]
-
-    protocol = get_protocol()
-    tasks = await protocol.list_tasks(
-        agent_id, room_id=room_id, role=role, status=status
-    )
-
-    result = []
-    for t in tasks:
-        created_at = None
-        if t.created_at:
-            created_at = (
-                t.created_at.isoformat()
-                if hasattr(t.created_at, "isoformat")
-                else str(t.created_at)
-            )
-        accepted_at = None
-        if t.accepted_at:
-            accepted_at = (
-                t.accepted_at.isoformat()
-                if hasattr(t.accepted_at, "isoformat")
-                else str(t.accepted_at)
-            )
-        finalised_at = None
-        if t.finalised_at:
-            finalised_at = (
-                t.finalised_at.isoformat()
-                if hasattr(t.finalised_at, "isoformat")
-                else str(t.finalised_at)
-            )
-        result.append(
-            {
-                "id": t.id,
-                "summary": t.summary,
-                "description": t.description,
-                "status": t.status,
-                "requester_agent_id": t.requester_agent_id,
-                "performer_agent_id": t.performer_agent_id,
-                "updates": t.updates,
-                "outcome": t.outcome,
-                "created_at": created_at,
-                "accepted_at": accepted_at,
-                "finalised_at": finalised_at,
-            }
-        )
-    return result
-
-
 # ── Moderation ───────────────────────────────────────────────────────────────
 
 
@@ -1076,8 +799,6 @@ async def create_room(
     channel_type: str | None = None,
     bridge_id: str | None = None,
     internal_only: bool = False,
-    admin_mode: bool = False,
-    security_config: dict[str, Any] | None = None,
     instructions: str | None = None,
     reference_ids: list[str] | None = None,
     package_ids: list[str] | None = None,
@@ -1120,8 +841,6 @@ async def create_room(
             Omit to use the instance's default bridge.
         internal_only: Create a room with no external channel, opting out of
             the default bridge. Ignored when `bridge_id` is set.
-        admin_mode: When true, the room is created in administrative mode.
-        security_config: Optional dict overriding default protection checks.
         instructions: Room-specific system prompt / guidance shown to agents
             when they connect.
         reference_ids: References to attach at creation. Authorization is
@@ -1179,8 +898,6 @@ async def create_room(
             channel_type=channel_type,
             bridge_id=bridge_id,
             internal_only=internal_only,
-            admin_mode=admin_mode,
-            security_config=security_config,
             instructions=instructions,
             reference_ids=reference_ids,
             package_ids=package_ids,
@@ -2102,8 +1819,7 @@ async def list_agents(
         A list of agent summaries (sorted by name), each
         {id, name, description, icon_url, display_name, connector_type,
         connection_model, tool_count, model_count, owner_id, owner_name,
-        oauth_client_id, created_at, parent_agent_id, known_agent_type,
-        known_agent_options}.
+        created_at, parent_agent_id, known_agent_type, known_agent_options}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`: `display_name` is a human label that routes
@@ -2131,8 +1847,8 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
     Returns:
         {id, name, description, icon_url, display_name, connector_type,
         connection_model, tool_count, model_count, owner_id, owner_name,
-        oauth_client_id, created_at, parent_agent_id, known_agent_type,
-        known_agent_options, agent_type, can_manage_agents,
+        created_at, parent_agent_id, known_agent_type, known_agent_options,
+        agent_type, can_manage_agents,
         integration_profile, tools, models, rooms, sessions, children}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
@@ -2260,10 +1976,10 @@ async def get_room_detail(room_id: str) -> dict[str, Any]:
         room_id: The Switch room id (UUID string).
 
     Returns:
-        {id, name, description, channel_type, admin_mode, instructions,
-        matrix_room_id, created_at, bridge_id, bridge_display_name,
-        external_channel_id, group_id, group_name, group_path (the group's
-        root-first ancestry, e.g. "Parent / Child"; null when standalone),
+        {id, name, description, channel_type, instructions, matrix_room_id,
+        created_at, bridge_id, bridge_display_name, external_channel_id,
+        group_id, group_name, group_path (the group's root-first ancestry,
+        e.g. "Parent / Child"; null when standalone),
         agent_names, agent_statuses (keyed by agent name), connected_user_names,
         aliases (per-room agent aliases, keyed by agent name → alias),
         roles (the room's assumable roles, mirroring list_roles: each entry has
@@ -2282,7 +1998,6 @@ async def update_room(
     name: str | None = None,
     description: str | None = None,
     instructions: str | None = None,
-    admin_mode: bool | None = None,
     join_event_listeners: dict[str, bool] | None = None,
     bridge_id: str | None = None,
     channel_type: str | None = None,
@@ -2301,7 +2016,6 @@ async def update_room(
         description: New room description, or None to leave unchanged.
         instructions: New room-specific instructions, or None to leave
             unchanged.
-        admin_mode: New admin-mode flag, or None to leave unchanged.
         join_event_listeners: Partial map of agent name → whether that agent
             should receive `room_join` events in this room. Only the named
             agents change; omit to leave all memberships unchanged. Each named
@@ -2347,7 +2061,6 @@ async def update_room(
         name=name,
         description=description,
         instructions=instructions,
-        admin_mode=admin_mode,
         join_event_listeners=join_event_listeners,
         bridge_id=bridge_id,
         channel_type=channel_type,

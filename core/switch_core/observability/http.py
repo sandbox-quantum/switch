@@ -29,24 +29,10 @@ UNMATCHED_ROUTE = "unmatched"
 # the app raised before sending anything.
 NO_STATUS = "none"
 
-# The MCP surface is a mounted Starlette app, and only FastAPI sets
-# `scope["route"]`, so without naming it here every MCP call is indistinguishable
-# from a 404. One label for the mount: the tool is in the request body, and a
-# label read from a body is a label the caller chooses.
-MCP_ROUTE = "/mcp"
-
-# Counted but not timed. These are held open until something happens or the
-# caller's own timeout expires, so their duration is a client's parameter rather
-# than this server's speed — and on a shared axis it flattens every other route.
-# `test_every_long_poll_is_untimed` derives this set from the router.
-UNTIMED_ROUTES = frozenset(
-    {
-        "/agents/{agent_id}/events",
-        "/agents/{agent_id}/rooms/{room_id}/events",
-        "/agents/{agent_id}/notifications",
-        MCP_ROUTE,
-    }
-)
+# Counted but not timed. The event stream is held open for the life of the
+# agent's connection, so its duration is how long the client stayed rather than
+# this server's speed — and on a shared axis it flattens every other route.
+UNTIMED_ROUTES = frozenset({"/agents/{agent_id}/events"})
 
 
 def route_label(scope: Scope) -> str:
@@ -61,9 +47,6 @@ def route_label(scope: Scope) -> str:
     route = scope.get("route")
     path = getattr(route, "path", None)
     if not isinstance(path, str) or not path:
-        raw = scope.get("path", "")
-        if raw == MCP_ROUTE or raw.startswith(f"{MCP_ROUTE}/"):
-            return MCP_ROUTE
         return UNMATCHED_ROUTE
 
     return f"{scope.get('root_path') or ''}{path}"

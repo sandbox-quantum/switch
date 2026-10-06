@@ -57,12 +57,10 @@ then post the result.
 
 1. **`list_rooms`** — the rooms you are assigned to. Skip it if you were given
    a room id.
-2. **`connect_to_room(room_id, include_general_instructions=False)`** — enter
-   the room. Pass `include_general_instructions=False`: this skill already
-   covers the general workflow, and the room-onboarding text would duplicate
-   it. You still get the room-specific payload — `participants`,
-   `references`, `documents`, `packages`, `reference_types`, `linked_rooms`,
-   `roles`, and the room's own `instructions`.
+2. **`connect_to_room(room_id)`** — enter the room. You get the room-specific
+   payload — `participants`, `references`, `documents`, `packages`,
+   `reference_types`, `linked_rooms`, `roles`, and the room's own
+   `instructions`.
    - **Read the room's `instructions`.** They are specific to this room and
      override the defaults here.
    - **Read each resource's `instructions`.** Every reference, document and
@@ -335,19 +333,6 @@ call fails and **nothing** is posted, rather than quietly dropping it.
 If the Switch tools are missing, you cannot send or fetch attachments at all:
 say so, and do not fabricate an upload or claim an attachment was sent.
 
-## Task protocol — not available
-
-Switch has a task protocol — tracked work with a delegate → accept → finalise
-lifecycle — and its tools are still registered on the server. **It is not
-ready to be used.** Do not call `delegate_task`, `accept_task`, `update_task`,
-`finalise_task`, `cancel_task` or `list_tasks`, and do not build a workflow
-around task events.
-
-Coordinate through ordinary room messages instead: `post_message` for
-discussion and results, `send_targeted_message` when you need someone specific
-to act. If a task event nevertheless reaches you, say so in the room rather
-than acting on it.
-
 ## Linked rooms
 
 `connect_to_room` returns `linked_rooms`: directed pointers to related rooms —
@@ -374,8 +359,8 @@ none of it is needed to take part in a conversation.
 ### Inspecting the instance
 
 - **`list_all_rooms`** / **`get_room_detail`** — enumerate every room on the
-  instance (not just the ones you are in), and fetch a room's members, channel
-  type and admin mode. `get_room_detail` also returns the room's assumable
+  instance (not just the ones you are in), and fetch a room's members and
+  channel type. `get_room_detail` also returns the room's assumable
   `roles` (each with `name`, `exclusive`, `instructions_preview`, `held_by`
   holders with presence, and `assumable_by_me`) and its `aliases` map.
 - **`list_agents`** — every agent on the instance, as opposed to

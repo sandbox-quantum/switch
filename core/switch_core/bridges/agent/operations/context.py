@@ -2,8 +2,7 @@
 
 Operations take their arguments and nothing else. Everything about the caller —
 which agent, which connection or session, and therefore which room — is
-resolved here, so an operation's signature carries no transport types and the
-same function serves both front doors.
+resolved here, so an operation's signature carries no transport types.
 """
 
 from __future__ import annotations
@@ -53,10 +52,10 @@ def get_agent_id() -> str:
 def session_key() -> str | None:
     """The thing that owns this caller's room binding.
 
-    A connection id, or an MCP transport session — operations only ever compare
-    it for equality, so which one it is does not matter above this line. None
-    when the caller is bound to nothing, which the operations that need a room
-    report as "not connected".
+    A connection id, or a controller's holder id for an agent it runs —
+    operations only ever compare it for equality, so which one it is does not
+    matter above this line. None when the caller is bound to nothing, which the
+    operations that need a room report as "not connected".
     """
     bound = current_call_context()
     return bound.session_key if bound is not None else None
@@ -65,8 +64,8 @@ def session_key() -> str | None:
 def caller_session() -> CallerSession | None:
     """The SDK session this call was made by, when the caller named one.
 
-    None for a caller that identified itself with a bare connection or an MCP
-    transport session — which is most of them, and stays supported.
+    None for a caller that identified itself with a bare connection, which
+    stays supported.
     """
     bound = current_call_context()
     return bound.session if bound is not None else None
@@ -78,9 +77,9 @@ def counting_reader() -> Reader | None:
     The session when the caller named one. A controller connection carries
     every session of an agent, so asking which of them read a room would get
     the same answer for all of them, and one session's reading would clear a
-    count another was owed. Otherwise the connection or transport session,
-    which for a caller with no session of its own is the only identity there
-    is — and the one thing in the room.
+    count another was owed. Otherwise the connection, which for a caller with
+    no session of its own is the only identity there is — and the one thing in
+    the room.
     """
     caller = caller_session()
     if caller is not None:
@@ -98,10 +97,7 @@ async def bound_rooms() -> set[str]:
     so asking the connection would hand this caller its siblings' rooms and
     turn a perfectly well-specified call into "several rooms, pick one".
 
-    Otherwise the live connection is asked, then the table. A connection that
-    has claimed a room is in it whether or not anything was ever written down;
-    the table is consulted only for callers that predate connections (an MCP
-    transport session), and goes away with them.
+    Otherwise the live connection is asked.
     """
     caller = caller_session()
     if caller is not None:
@@ -111,17 +107,10 @@ async def bound_rooms() -> set[str]:
     if not key:
         return set()
 
-    protocol = get_protocol()
-    connection = protocol.connections.get(key)
-    if connection is not None and connection.rooms:
-        return set(connection.rooms)
-
-    async with protocol.session_factory() as db:
-        result = await protocol.agent_session_store.get_connected_room(db, key)
-    if result is None:
+    connection = get_protocol().connections.get(key)
+    if connection is None:
         return set()
-    _, room_id = result
-    return {room_id}
+    return set(connection.rooms)
 
 
 async def require_connected_room() -> str:

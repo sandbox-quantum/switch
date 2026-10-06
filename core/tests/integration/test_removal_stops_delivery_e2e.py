@@ -11,11 +11,10 @@ are joined: severing the one line in `Actor.setup` that wires the removal
 handler to the transport left the whole unit suite green while a kick reached
 nothing.
 
-Two readers rather than one, because they fail differently. `poll_events`
-applies membership from the database on every poll, so it is right even if the
-signal never arrives. The notification stream and the SSE reader have only the
-eviction — an SSE stream holds no session to re-derive membership with — so
-they are the ones that show whether the removal was really acted on.
+The SSE reader has only the eviction — a stream holds no session to re-derive
+membership with — so what the buffer still serves, to a session and to a
+watcher reading what notifies the agent, shows whether the removal was really
+acted on.
 """
 
 from __future__ import annotations
@@ -67,6 +66,13 @@ async def _wait_buffered(
 
 def _rooms_in_buffer(harness: Harness, agent_id: str) -> set[str]:
     return {item.room_id for item in harness.event_buffer.read_from(agent_id, 0)}
+
+
+def _notifying(harness: Harness, agent_id: str) -> list:
+    return [
+        item.event
+        for item in harness.event_buffer.read_from(agent_id, 0, notifiable_only=True)
+    ]
 
 
 async def test_removal_stops_every_reader_serving_the_room(harness: Harness) -> None:
@@ -121,15 +127,9 @@ async def test_removal_stops_every_reader_serving_the_room(harness: Harness) -> 
         "reader resuming from an older cursor would be handed them"
     )
 
-    notifications = await harness.protocol.poll_notifications(
-        watcher.agent_id, timeout=0
-    )
+    notifications = _notifying(harness, watcher.agent_id)
     assert [e.room_id for e in notifications] == [rooms["kept"].id]
     assert [getattr(e.payload, "body", None) for e in notifications] == [bodies["kept"]]
-
-    events = await harness.protocol.poll_events(watcher.agent_id, timeout=0)
-    assert rooms["left"].id not in {e.room_id for e in events}
-    assert rooms["kept"].id in {e.room_id for e in events}
 
 
 async def test_a_room_the_agent_is_still_in_is_untouched(harness: Harness) -> None:
@@ -173,9 +173,7 @@ async def test_a_room_the_agent_is_still_in_is_untouched(harness: Harness) -> No
 
     await harness.room_service.remove_agents_from_room(left.room.id, [watcher.agent_id])
 
-    notifications = await harness.protocol.poll_notifications(
-        watcher.agent_id, timeout=0
-    )
+    notifications = _notifying(harness, watcher.agent_id)
     assert [getattr(e.payload, "body", None) for e in notifications] == [body], (
         "being removed from one room took the agent's other room with it"
     )

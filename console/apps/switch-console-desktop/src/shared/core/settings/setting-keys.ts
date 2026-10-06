@@ -17,10 +17,6 @@ export const APP_SETTINGS_KEYS = [
   'notifications',
   'theme',
   'openIn',
-  'interface',
-  'browserPreview',
-  'browser',
-  'changesViewMode',
   'onboarding',
   'telemetry',
 ] as const;

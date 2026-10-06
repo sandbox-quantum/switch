@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 /**
  * Thin client for the two Switch HTTP surfaces the harness talks to, both served
  * by the same origin (`SWITCH_API_URL`):
@@ -38,14 +40,15 @@ export interface AgentSummary {
 }
 
 /**
- * One event off the agent-facing notification stream.
+ * One room event off the agent's event stream (`GET /agents/{id}/events` as
+ * server-sent events).
  *
  * The message text is **`payload.body`**, not a top-level `content` — an event
  * looks like:
  *
  * ```json
  * { "type": "message", "room_id": "…", "bridge_id": "…",
- *   "channel_type": "channel_public",
+ *   "channel_type": "channel_public", "sequence": 42,
  *   "payload": { "addressed": true, "sender": "@switch-mattermost-…:localhost",
  *                "sender_name": "user", "message_id": "$…",
  *                "body": "@agent hello", "timestamp": 1788…, "thread_id": null,
@@ -55,6 +58,7 @@ export interface AgentSummary {
 export interface AgentEvent {
   type: string;
   room_id?: string;
+  sequence?: number;
   bridge_id?: string;
   channel_type?: string;
   payload?: {
@@ -257,9 +261,9 @@ export class SwitchClient {
   }
 
   /**
-   * `DELETE /gateway/agents/by-name/{name}` — admin-authenticated teardown that,
-   * unlike `DELETE /agents/{id}`, does not need the agent's own API key. Used by
-   * the cleanup script for agents left behind by an interrupted run.
+   * `DELETE /gateway/agents/by-name/{name}` — admin-authenticated teardown that
+   * does not need the agent's own API key, so it also serves the cleanup script
+   * for agents left behind by an interrupted run.
    */
   async deleteAgentByName(name: string): Promise<void> {
     await this.gateway('DELETE', `/agents/by-name/${encodeURIComponent(name)}`);
@@ -369,89 +373,71 @@ export class SwitchClient {
     return { id: body.id, name: params.name, apiKey: body.api_key };
   }
 
-  /**
-   * `DELETE /agents/{id}` authenticated as the agent itself — the registration
-   * token is not accepted here, the handler compares the token's agent against
-   * the path id.
-   */
-  async deleteAgent(agent: RegisteredAgent): Promise<void> {
-    await this.request('DELETE', `/agents/${agent.id}`, { token: agent.apiKey });
-  }
-
   // ── agent bridge: acting as an agent ──────────────────────────────────────
 
   /**
-   * Long-poll `GET /agents/{id}/notifications?timeout=` as the agent. Returns
-   * only *notifiable* events (addressed messages, task events, listened-for
-   * joins) and never drains the per-room queues a live session polls, so the
-   * harness can watch the same stream Switch Console's auto-session watcher
-   * watches without stealing a running session's events.
+   * Open the agent's event stream and hold its connection alive: `GET
+   * /agents/{id}/events` with `Accept: text/event-stream`, `scope=all` and
+   * `filter=addressed`, so it carries what wakes the agent — addressed messages
+   * and listened-for joins — across every room no live session has claimed.
    *
-   * Returns `[]` on the server's 204 (nothing within the timeout).
+   * The stream starts at head, so only events after this resolves are seen:
+   * open it before posting the message a test waits for. Resolves once the
+   * server's `connection_state` frame has arrived. Close it when done, or the
+   * connection lingers until its heartbeat lapses.
    */
-  async pollNotifications(agent: RegisteredAgent, timeoutSeconds = 10): Promise<AgentEvent[]> {
-    const body = await this.request<{ events?: AgentEvent[] } | undefined>(
-      'GET',
-      `/agents/${agent.id}/notifications?timeout=${timeoutSeconds}`,
-      { token: agent.apiKey, timeoutMs: (timeoutSeconds + 15) * 1000 }
-    );
-    return body?.events ?? [];
-  }
-
-  /** As {@link pollNotifications}, but for one room's live event queue. */
-  async pollRoomEvents(
-    agent: RegisteredAgent,
-    roomId: string,
-    timeoutSeconds = 10
-  ): Promise<AgentEvent[]> {
-    const body = await this.request<{ events?: AgentEvent[] } | undefined>(
-      'GET',
-      `/agents/${agent.id}/rooms/${roomId}/events?timeout=${timeoutSeconds}`,
-      { token: agent.apiKey, timeoutMs: (timeoutSeconds + 15) * 1000 }
-    );
-    return body?.events ?? [];
-  }
-
-  /**
-   * Wait for a notification satisfying `predicate`, collecting everything seen
-   * along the way. Returns `{ match: null, seen }` on timeout rather than
-   * throwing, so a caller can report the stream it did see.
-   */
-  async waitForNotification(
-    agent: RegisteredAgent,
-    predicate: (event: AgentEvent) => boolean,
-    deadlineMs: number
-  ): Promise<{ match: AgentEvent | null; seen: AgentEvent[] }> {
-    const until = Date.now() + deadlineMs;
-    const seen: AgentEvent[] = [];
-    while (Date.now() < until) {
-      const remaining = Math.max(1, Math.min(10, Math.ceil((until - Date.now()) / 1000)));
-      const events = await this.pollNotifications(agent, remaining);
-      for (const event of events) {
-        seen.push(event);
-        if (predicate(event)) return { match: event, seen };
-      }
+  async watchAddressedEvents(agent: RegisteredAgent): Promise<EventWatcher> {
+    const connectionId = randomUUID();
+    const path =
+      `/agents/${agent.id}/events?connection_id=${connectionId}` +
+      '&scope=all&filter=addressed&start_from=head';
+    const controller = new AbortController();
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      headers: { Accept: 'text/event-stream', Authorization: `Bearer ${agent.apiKey}` },
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    if (!response.ok || !response.body) {
+      controller.abort();
+      throw new SwitchHttpError('GET', path, response.status, await response.text());
     }
-    return { match: null, seen };
+    const watcher = new EventWatcher(response.body, controller, (cursor, generation) =>
+      this.request('POST', `/agents/${agent.id}/connection/beat`, {
+        token: agent.apiKey,
+        body: { connection_id: connectionId, cursor, generation },
+      })
+    );
+    await watcher.opened(30_000);
+    return watcher;
   }
 
   /**
-   * `GET /agents/{id}/rooms/{room_id}/history?limit=` as the agent — the room's
-   * recent messages, addressed or not. Unlike the notification stream this shows
-   * ordinary channel chatter, which is what makes it usable as a bridge-liveness
-   * probe that does not wake the agent.
+   * The room's recent messages, addressed or not, oldest first — read through
+   * the `read_context` operation (`POST /agents/{id}/ops/read_context`) as the
+   * agent. Unlike the event stream this shows ordinary channel chatter, which
+   * is what makes it usable as a bridge-liveness probe that does not wake the
+   * agent. Entries without a body are left out.
    */
   async roomHistory(
     agent: RegisteredAgent,
     roomId: string,
-    limit = 20
-  ): Promise<{ sender: string; sender_name: string; body: string; timestamp: number | null }[]> {
-    const body = await this.request<{
-      events: { sender: string; sender_name: string; body: string; timestamp: number | null }[];
-    }>('GET', `/agents/${agent.id}/rooms/${roomId}/history?limit=${limit}`, {
-      token: agent.apiKey,
-    });
-    return body.events;
+    limit: number
+  ): Promise<RoomHistoryEntry[]> {
+    const { result } = await this.request<{ result: ReadContextResult }>(
+      'POST',
+      `/agents/${agent.id}/ops/read_context`,
+      { token: agent.apiKey, body: { room_id: roomId, limit } }
+    );
+    return result.threads
+      .flatMap((thread) => [thread.root, ...thread.replies])
+      .filter((entry) => typeof entry.body === 'string' && entry.body !== '')
+      .map((entry) => ({
+        sender: entry.sender,
+        sender_name: entry.sender_name,
+        body: entry.body as string,
+        timestamp: entry.timestamp ?? null,
+      }))
+      .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
   }
 
   /**
@@ -502,6 +488,198 @@ function toRoomSummary(row: RawRoom): RoomSummary {
     bridgeType: row.bridge_type ?? null,
     archived: row.archived ?? false,
   };
+}
+
+export interface RoomHistoryEntry {
+  sender: string;
+  sender_name: string;
+  body: string;
+  timestamp: number | null;
+}
+
+interface ReadContextEntry {
+  id: string;
+  kind: string;
+  sender: string;
+  sender_name: string;
+  body?: string | null;
+  timestamp?: number | null;
+}
+
+interface ReadContextResult {
+  threads: { root: ReadContextEntry; replies: ReadContextEntry[] }[];
+}
+
+export interface SseFrame {
+  id: string | null;
+  event: string;
+  data: string;
+}
+
+/**
+ * One server-sent-events frame, from the text between two blank lines. `null`
+ * for a frame with no data, which is what a `: keepalive` comment is.
+ */
+export function parseSseFrame(block: string): SseFrame | null {
+  let id: string | null = null;
+  let event = 'message';
+  const data: string[] = [];
+  for (const line of block.split('\n')) {
+    if (line === '' || line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
+    if (field === 'id') id = value;
+    else if (field === 'event') event = value;
+    else if (field === 'data') data.push(value);
+  }
+  return data.length === 0 ? null : { id, event, data: data.join('\n') };
+}
+
+type Beat = (cursor: number, generation: number | null) => Promise<unknown>;
+
+/**
+ * A live agent event stream, collecting its room events.
+ *
+ * Room events are the frames that carry a sequence (`id:`); the control frames
+ * beside them carry none and are ignored, except `connection_state`, which
+ * starts the heartbeat, and `evicted`, which ends the stream. The heartbeat
+ * (`POST /agents/{id}/connection/beat`) reports the last sequence seen and the
+ * stream's generation; without it the server closes the stream within seconds.
+ *
+ * The stream ending for any reason other than {@link close} is a failure, and
+ * {@link waitFor} throws it rather than reporting a quiet stream.
+ */
+export class EventWatcher {
+  private readonly controller: AbortController;
+  private readonly beat: Beat;
+  private readonly events: AgentEvent[] = [];
+  private readonly listeners = new Set<() => void>();
+  private cursor = 0;
+  private generation: number | null = null;
+  private beatTimer: ReturnType<typeof setTimeout> | null = null;
+  private connected = false;
+  private ended: Error | null = null;
+
+  constructor(body: ReadableStream<Uint8Array>, controller: AbortController, beat: Beat) {
+    this.controller = controller;
+    this.beat = beat;
+    void this.pump(body);
+  }
+
+  /** Resolve once the server has sent `connection_state`; throw if the stream ends first. */
+  async opened(deadlineMs: number): Promise<void> {
+    const until = Date.now() + deadlineMs;
+    while (!this.connected) {
+      if (this.ended) throw this.ended;
+      const remaining = until - Date.now();
+      if (remaining <= 0) {
+        this.end(new Error(`no connection_state frame within ${deadlineMs}ms`));
+        throw this.ended;
+      }
+      await this.changed(remaining);
+    }
+  }
+
+  /**
+   * Wait for a room event satisfying `predicate` among everything the stream
+   * has carried since it opened. Returns `{ match: null, seen }` on timeout
+   * rather than throwing, so a caller can report the stream it did see.
+   */
+  async waitFor(
+    predicate: (event: AgentEvent) => boolean,
+    deadlineMs: number
+  ): Promise<{ match: AgentEvent | null; seen: AgentEvent[] }> {
+    const until = Date.now() + deadlineMs;
+    for (;;) {
+      const match = this.events.find(predicate) ?? null;
+      if (match) return { match, seen: [...this.events] };
+      if (this.ended) throw this.ended;
+      const remaining = until - Date.now();
+      if (remaining <= 0) return { match: null, seen: [...this.events] };
+      await this.changed(remaining);
+    }
+  }
+
+  close(): void {
+    this.end(new Error('event watcher closed'));
+  }
+
+  private async pump(body: ReadableStream<Uint8Array>): Promise<void> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        let boundary: number;
+        while ((boundary = buffered.indexOf('\n\n')) !== -1) {
+          const frame = parseSseFrame(buffered.slice(0, boundary));
+          buffered = buffered.slice(boundary + 2);
+          if (frame) this.onFrame(frame);
+        }
+      }
+      this.end(new Error('the server closed the event stream'));
+    } catch (error) {
+      this.end(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  private onFrame(frame: SseFrame): void {
+    const data = JSON.parse(frame.data) as Record<string, unknown>;
+    if (frame.event === 'connection_state') {
+      this.generation = typeof data.generation === 'number' ? data.generation : null;
+      if (typeof data.cursor === 'number') this.cursor = data.cursor;
+      const seconds =
+        typeof data.heartbeat_interval_seconds === 'number' ? data.heartbeat_interval_seconds : 2;
+      this.connected = true;
+      this.scheduleBeat(seconds * 1000);
+    } else if (frame.event === 'evicted') {
+      this.end(new Error(`evicted from the event stream: ${frame.data}`));
+      return;
+    } else if (frame.id !== null) {
+      this.cursor = Number(frame.id);
+      this.events.push(data as AgentEvent);
+    }
+    this.notify();
+  }
+
+  private scheduleBeat(intervalMs: number): void {
+    this.beatTimer = setTimeout(() => {
+      this.beat(this.cursor, this.generation).then(
+        () => {
+          if (!this.ended) this.scheduleBeat(intervalMs);
+        },
+        (error: unknown) => this.end(new Error(`connection heartbeat refused: ${String(error)}`))
+      );
+    }, intervalMs);
+  }
+
+  private end(reason: Error): void {
+    if (this.ended) return;
+    this.ended = reason;
+    if (this.beatTimer) clearTimeout(this.beatTimer);
+    this.controller.abort();
+    this.notify();
+  }
+
+  private notify(): void {
+    for (const listener of [...this.listeners]) listener();
+  }
+
+  private changed(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.listeners.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      this.listeners.add(done);
+    });
+  }
 }
 
 /**

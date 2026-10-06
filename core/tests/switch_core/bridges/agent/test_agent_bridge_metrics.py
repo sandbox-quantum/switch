@@ -93,7 +93,6 @@ async def test_a_failing_operation_is_counted_and_still_raises(
     ("path", "bridge"),
     [
         ("/agents/agent-1/events", "agent"),
-        ("/mcp/", "agent"),
         ("/gateway/rooms", None),
         ("/health", None),
     ],

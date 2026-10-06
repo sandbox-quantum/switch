@@ -68,7 +68,6 @@ class _FakeRoomStore:
         name: str | None = None,
         description: str | None = None,
         instructions: str | None = None,
-        admin_mode: bool | None = None,
     ) -> None:
         self.update_calls.append(
             {
@@ -76,7 +75,6 @@ class _FakeRoomStore:
                 "name": name,
                 "description": description,
                 "instructions": instructions,
-                "admin_mode": admin_mode,
             }
         )
         room = self._rooms[room_id]
@@ -86,8 +84,6 @@ class _FakeRoomStore:
             room.description = description
         if instructions is not None:
             room.instructions = instructions
-        if admin_mode is not None:
-            room.admin_mode = admin_mode
 
     async def set_archived(self, session: Any, room_id: str, archived: bool) -> None:
         room = self._rooms[room_id]
@@ -125,7 +121,6 @@ def _room(**overrides: Any) -> SimpleNamespace:
         "description": "Work on the feature",
         "transport_room_id": "!abc:switch.local",
         "channel_type": "channel_private",
-        "admin_mode": False,
         "instructions": "Be excellent",
         "created_at": "2026-05-29T00:00:00+00:00",
         "bridge_id": None,
@@ -209,7 +204,6 @@ class TestGetRoomDetail:
         assert detail.name == "Feature room"
         assert detail.description == "Work on the feature"
         assert detail.channel_type == "channel_private"
-        assert detail.admin_mode is False
         assert detail.instructions == "Be excellent"
         assert detail.transport_room_id == "!abc:switch.local"
         assert detail.created_at == "2026-05-29T00:00:00+00:00"
@@ -326,7 +320,6 @@ class TestUpdateRoom:
                 "name": "Renamed room",
                 "description": "New description",
                 "instructions": None,
-                "admin_mode": None,
             }
         ]
         # Returns the refreshed full detail reflecting the change.
@@ -334,7 +327,6 @@ class TestUpdateRoom:
         assert detail.description == "New description"
         # Untouched fields are preserved.
         assert detail.instructions == "Be excellent"
-        assert detail.admin_mode is False
 
     async def test_raises_permission_error_for_non_member(self) -> None:
         room = _room()

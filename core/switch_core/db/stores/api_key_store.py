@@ -42,14 +42,6 @@ class ApiKeyStore:
         result = await session.execute(select(ApiKey).where(ApiKey.user_id == user_id))
         return list(result.scalars().all())
 
-    async def get_by_user_and_type(
-        self, session: AsyncSession, user_id: str, key_type: str
-    ) -> list[ApiKey]:
-        result = await session.execute(
-            select(ApiKey).where(ApiKey.user_id == user_id, ApiKey.type == key_type)
-        )
-        return list(result.scalars().all())
-
     async def get_by_type(self, session: AsyncSession, key_type: str) -> list[ApiKey]:
         """Every key of a given type, regardless of which user owns it.
 

@@ -25,7 +25,10 @@ async def _session_factory():  # type: ignore[no-untyped-def]
 
 
 def _no_connections(
-    *, connected: bool = False, spawns: bool = False
+    *,
+    connected: bool = False,
+    spawns: bool = False,
+    placed: frozenset[str] = frozenset(),
 ) -> SimpleNamespace:
     """A connection registry with nothing live, unless told otherwise.
 
@@ -33,7 +36,8 @@ def _no_connections(
     (CHOO-1857); most of these tests drive the DB arm, so the connection arm
     contributes nothing by default. `connected` is a connection that claims no
     room — a worker elsewhere, or a controller — and `spawns` is one that
-    declared it will start a session for this room.
+    declared it will start a session for this room. `placed` are the rooms
+    the agent's sessions are in.
     """
     return SimpleNamespace(
         controllers=SimpleNamespace(is_bound=lambda _agent_id: False),
@@ -43,7 +47,7 @@ def _no_connections(
         claimant_of=lambda _agent_id, _room_id: None,
         can_spawn_for=lambda _agent_id, _room_id: spawns,
         for_agent=lambda _agent_id: [],
-        placed_rooms=lambda _agent_id: set(),
+        placed_rooms=lambda _agent_id: set(placed),
         session_in_room=lambda _agent_id, _room_id: None,
     )
 
@@ -382,24 +386,17 @@ def _unavailable_client(
 ) -> SimpleNamespace:
     """Fake client for _reply_when_unavailable_here.
 
-    `live_rooms`: room ids where the agent currently has a live, room-bound
-    session (live_connected_rooms). `role_here`: whether the agent holds a live
-    role in the room it was addressed from (agent_room_role). `connection_model`
-    drives the dev-channels-warning branch; `bound_here` is what
-    has_room_binding returns for the addressed room. `watching` is the
-    room-agnostic heartbeat an un-migrated connector keeps up, and `connected`
-    / `spawns` are the connection arm (see `_no_connections`).
-    `_unavailable_reply` returns the sentinel "OFFLINE".
+    `live_rooms`: room ids where one of the agent's sessions is placed.
+    `role_here`: whether the agent holds a live role in the room it was
+    addressed from (agent_room_role). `connection_model` drives the
+    dev-channels-warning branch; `bound_here` places a session in the addressed
+    room too. `watching` is the room-agnostic heartbeat an un-migrated
+    connector keeps up, and `connected` / `spawns` are the connection arm (see
+    `_no_connections`). `_unavailable_reply` returns the sentinel "OFFLINE".
     """
-
-    async def _live_connected_rooms(_session, _agent_id):  # type: ignore[no-untyped-def]
-        return list(live_rooms)
 
     async def _agent_room_role(_session, _room_id, _agent_id, _live_conns=()):  # type: ignore[no-untyped-def]
         return "worker" if role_here else None
-
-    async def _has_room_binding(_session, _agent_id, _room_id):  # type: ignore[no-untyped-def]
-        return bound_here
 
     async def _get_live_agent_ids(_session, agent_ids, _room_id):  # type: ignore[no-untyped-def]
         return set(agent_ids) if watching else set()
@@ -429,13 +426,13 @@ def _unavailable_client(
     return SimpleNamespace(
         agent=agent,
         session_factory=_session_factory,
-        _connections=_no_connections(connected=connected, spawns=spawns),
-        _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
-        _agent_session_store=SimpleNamespace(
-            live_connected_rooms=_live_connected_rooms,
-            has_room_binding=_has_room_binding,
-            get_live_agent_ids=_get_live_agent_ids,
+        _connections=_no_connections(
+            connected=connected,
+            spawns=spawns,
+            placed=frozenset(live_rooms) | ({"room-A"} if bound_here else set()),
         ),
+        _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
+        _agent_session_store=SimpleNamespace(get_live_agent_ids=_get_live_agent_ids),
         _room_store=SimpleNamespace(get=_get_room),
         _unavailable_reply=_unavailable_reply,
     )
@@ -482,18 +479,6 @@ class TestUnavailableHereReply:
             client, db, client.agent, _here(), "asker"
         )
         assert msg == "ELSEWHERE: Room room-B, Room room-C"
-
-    async def test_only_session_is_here_falls_back_to_offline(
-        self, db: AsyncSession
-    ) -> None:
-        # The only live session is the addressed room itself → nothing elsewhere.
-        client = _unavailable_client(live_rooms=["room-A"], role_here=False)
-        assert (
-            await AgentConsumer._reply_when_unavailable_here(
-                client, db, client.agent, _here(), "asker"
-            )
-            == "OFFLINE"
-        )
 
     async def test_no_live_sessions_is_offline(self, db: AsyncSession) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False)

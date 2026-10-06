@@ -224,16 +224,3 @@ class TestBearerAuthBindsARegistrationTokensTenant:
         assert current_tenant_id() is None
         await _dispatch(mw, "reg-tok")
         assert current_tenant_id() is None
-
-    @pytest.mark.no_ambient_tenant
-    async def test_mcp_still_refuses_a_registration_token_and_binds_nothing(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        await _seed_registration_key(session_factory, "reg-tok", TENANT_B)
-        mw, captured = _middleware(session_factory)
-
-        sent = await _dispatch(mw, "reg-tok", path="/mcp/messages")
-
-        assert sent[0]["status"] == 401
-        assert captured == {}
-        assert current_tenant_id() is None

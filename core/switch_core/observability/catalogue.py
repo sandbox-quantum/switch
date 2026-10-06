@@ -80,9 +80,9 @@ HTTP_REQUEST_DURATION = _spec(
     "switch.http.request.duration",
     "histogram",
     "ms",
-    "Wall time to serve an HTTP request. The agent event streams and the MCP "
-    "mount are counted but not timed: they are held open for a wait the caller "
-    "chooses. See `observability.http.UNTIMED_ROUTES`.",
+    "Wall time to serve an HTTP request. The agent event stream is counted but "
+    "not timed: it is held open for as long as the agent stays connected. See "
+    "`observability.http.UNTIMED_ROUTES`.",
     "route",
     "method",
 )
@@ -287,14 +287,6 @@ CONSUMERS_RUNNING = _spec(
     "another platform) run no loop and are not counted. A collaboration "
     "bridge's workspace consumer counts under switch.bridges.running.",
 )
-CONNECTORS_RUNNING = _spec(
-    "switch.connectors.running",
-    "gauge",
-    "{connector}",
-    "Server-side connectors running. Started fire-and-forget with each failure "
-    "logged and stepped over, so one short of the configured count is a dead "
-    "agent host nothing else reports.",
-)
 
 # ── Process and runtime ──────────────────────────────────────────────────────
 # What an infrastructure agent would report, and there is none deployed. Still
@@ -368,7 +360,6 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_CONNECTIONS_EXPIRED,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
-        CONNECTORS_RUNNING,
         RUNTIME_MEMORY_RSS,
         RUNTIME_CPU_SECONDS,
         RUNTIME_OPEN_FDS,

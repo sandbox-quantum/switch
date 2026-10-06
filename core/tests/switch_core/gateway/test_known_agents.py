@@ -291,18 +291,6 @@ class TestCodexKnownAgent:
         profile = CodexKnownAgent.build_profile(CodexOptions(auto_session=True))
         assert profile.connection_model == "auto_session"
 
-    def test_no_tool_call_mediation_or_reporting(self) -> None:
-        # Codex runs auto-approved and reports lifecycle hooks only (not per-tool
-        # events), unlike Claude Code.
-        profile = CodexKnownAgent.build_profile(CodexOptions())
-        assert profile.pre_invocation_mediation == []
-        assert profile.event_reporting == []
-
-    def test_can_delegate_and_accept_tasks(self) -> None:
-        profile = CodexKnownAgent.build_profile(CodexOptions())
-        assert profile.task_protocol.can_delegate is True
-        assert profile.task_protocol.can_accept is True
-
     def test_commands_are_session_dependent(self) -> None:
         # Codex is a TUI driven by Switch Console keystroke injection, same as Claude
         # Code — so reset/compact/interrupt depend on a live managed session.
@@ -447,20 +435,6 @@ class TestOpenCodeKnownAgent:
     def test_auto_session_sets_auto_session_model(self) -> None:
         profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions(auto_session=True))
         assert profile.connection_model == "auto_session"
-
-    def test_no_tool_call_mediation_or_reporting(self) -> None:
-        # OpenCode's connector reports activity to Switch Console over the local
-        # hook port to drive session status; none of it reaches Switch as
-        # reported events, and nothing gates a tool call before it runs.
-        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
-        assert profile.pre_invocation_mediation == []
-        assert profile.post_invocation_mediation == []
-        assert profile.event_reporting == []
-
-    def test_can_delegate_and_accept_tasks(self) -> None:
-        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
-        assert profile.task_protocol.can_delegate is True
-        assert profile.task_protocol.can_accept is True
 
     def test_commands_are_session_dependent(self) -> None:
         # Must stay in step with `BY_PROVIDER.opencode` in Switch Console's
@@ -655,9 +629,7 @@ class TestAntigravityKnownAgent:
                 AntigravityOptions(auto_session=auto_session)
             )
             assert profile.connection_model == expected
-            assert profile.message_exchange
             assert profile.command_capabilities.interrupt == "session_dependent"
-            assert profile.pre_invocation_mediation == []
 
     def test_onboarding_requires_console_runtime(self) -> None:
         options = AntigravityKnownAgent.parse_options({"repo_dir": " "})
@@ -686,9 +658,7 @@ class TestCursorKnownAgent:
                 CursorOptions(auto_session=auto_session)
             )
             assert profile.connection_model == expected
-            assert profile.message_exchange
             assert profile.command_capabilities.interrupt == "session_dependent"
-            assert profile.pre_invocation_mediation == []
 
     def test_onboarding_requires_console_acp(self) -> None:
         options = CursorKnownAgent.parse_options({"repo_dir": " "})

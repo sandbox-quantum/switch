@@ -422,9 +422,6 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "reference_detached_from_room": {"reference_type": REFERENCE_TYPE},
     "document_detached_from_room": {},
     "package_detached_from_room": {},
-    # Switch reaching out to an agent host, rather than one connecting in.
-    "server_connector_registered": {"connector_kind": one_of("opencode", "other")},
-    "server_connector_removed": {"connector_kind": one_of("opencode", "other")},
     # Configured, not connected. Many of these and few `bridge_connected` is a
     # deployment whose setup is failing.
     "connector_configured": {

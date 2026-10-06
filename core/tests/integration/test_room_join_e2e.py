@@ -36,16 +36,13 @@ async def _wait_joined(
 async def _drain_room_join(
     harness: Harness, agent_id: str, room_id: str, timeout: float = 30
 ):
-    """Poll the watcher's queue until a room_join arrives or time runs out."""
+    """Read the watcher's buffer until a room_join arrives or time runs out."""
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        remaining = deadline - asyncio.get_event_loop().time()
-        events = await harness.event_buffer.poll_room(
-            agent_id, room_id, timeout=min(5, max(0.1, remaining))
-        )
-        for ev in events:
-            if ev.type == "room_join":
-                return ev
+        for item in harness.event_buffer.read_from(agent_id, 0, rooms={room_id}):
+            if item.event.type == "room_join":
+                return item.event
+        await asyncio.sleep(0.25)
     return None
 
 

@@ -21,7 +21,6 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import owner_only_policy
-from switch_core.bridges.agent.mcp.server import mcp
 from switch_core.bridges.agent.operations import all_operations
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.operations.agent_management import (
@@ -185,13 +184,11 @@ class TestTheOperationsExistOnlyWithManagement:
         )
 
         listed = await client.get(f"/agents/{agent_id}/ops", headers=bearer(key))
-        tools = {tool.name for tool in await mcp.list_tools()}
 
         assert listed.status_code == 200
         assert MANAGEMENT_OPERATIONS <= set(listed.json()["operations"])
-        assert MANAGEMENT_OPERATIONS <= tools
 
-    async def test_absent_from_both_doors_without_it(
+    async def test_absent_without_it(
         self, harness: Harness, client: httpx.AsyncClient
     ) -> None:
         disable_agent_management()
@@ -202,11 +199,9 @@ class TestTheOperationsExistOnlyWithManagement:
 
         listed = await client.get(f"/agents/{agent_id}/ops", headers=bearer(key))
         called = await _call(client, agent_id, "list_machines", bearer(key))
-        tools = {tool.name for tool in await mcp.list_tools()}
 
         assert not MANAGEMENT_OPERATIONS & set(listed.json()["operations"])
         assert called.status_code == 404
-        assert not MANAGEMENT_OPERATIONS & tools
         assert not MANAGEMENT_OPERATIONS & set(all_operations())
 
 

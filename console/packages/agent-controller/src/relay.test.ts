@@ -568,6 +568,12 @@ describe('what the relay refuses', () => {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(other.status).toBe(403);
+    for (const path of ['/agents/rooms/room-1/participants', '/agents/feature-flags/x']) {
+      const response = await fetch(`${relay.endpoint}${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status, path).toBe(403);
+    }
     for (const path of [
       `/v1/management/controllers/${core.controllerId}/credential/rotate`,
       `/v1/controllers/${core.controllerId}/connection`,

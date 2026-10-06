@@ -49,8 +49,6 @@ export type OpenLocationError =
 export type UpdateLocationSettingsError =
   | { type: 'location-not-found' }
   | { type: 'invalid-settings' }
-  | { type: 'invalid-worktree-directory' }
-  | { type: 'write-config-failed'; message: string }
   | { type: 'error' };
 
 export type LocationRemoteState = {

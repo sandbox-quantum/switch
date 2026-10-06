@@ -99,7 +99,8 @@ class ResourceService:
 
     Used by:
       - Gateway endpoints (user-facing CRUD + attach/detach)
-      - MCP server (assembling the on-connect payload, listing room resources)
+      - Agent operations (assembling the on-connect payload, listing room
+        resources)
       - ResourceManagerClient (resolving load_request events from the DB)
     """
 
@@ -1013,7 +1014,7 @@ class ResourceService:
         )
         created = await self._documents.create(session, doc)
         # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the MCP handler's to call.
+        # and the commit is the operation's caller's to call.
         emit_safely(
             self._telemetry,
             "document_created",

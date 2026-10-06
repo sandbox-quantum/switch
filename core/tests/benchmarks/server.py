@@ -38,7 +38,6 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor
@@ -58,7 +57,6 @@ from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.main import (
     _connection_sweep_loop,
-    _runtime_state_sweep_loop,
     _seed_agent_registration_bootstrap_key,
 )
 from switch_core.messages.notify import MessageListener
@@ -93,11 +91,6 @@ from tests.integration.conftest import (
 # delivery the whole measurement is built on.
 BENCH_PROFILE = IntegrationProfile(
     connection_model="always_on",
-    message_exchange=True,
-    pre_invocation_mediation=[],
-    post_invocation_mediation=[],
-    event_reporting=[],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
 
 
@@ -534,7 +527,6 @@ async def _serve(
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
         event_buffer=event_buffer,
-        task_store=session_env.task_store,
         resource_service=resource_service,
         api_key_store=session_env.api_key_store,
         external_user_store=session_env.external_user_store,
@@ -584,7 +576,6 @@ async def _serve(
     # harness defect instead of the topology.
     sweeps = [
         asyncio.create_task(_connection_sweep_loop(protocol, EventLoopLag())),
-        asyncio.create_task(_runtime_state_sweep_loop(protocol)),
     ]
 
     bench = BenchServer(

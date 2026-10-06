@@ -1,12 +1,4 @@
-import {
-  Alert,
-  Box,
-  CircularProgress,
-  FormControlLabel,
-  Stack,
-  Switch,
-  Typography,
-} from "@mui/material";
+import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { useNavigate } from "react-router";
@@ -18,8 +10,7 @@ interface GraphNode {
   id: string;
   label: string;
   sublabel: string;
-  // "owner" is a synthetic node kind injected when "Show owners" is on.
-  kind: EcosystemNodeKind | "owner";
+  kind: EcosystemNodeKind;
   fx?: number;
   fy?: number;
   x?: number;
@@ -36,7 +27,6 @@ const COLORS: Record<GraphNode["kind"], string> = {
   agent_type: "#B69EE6",
   agent: "#7EB6FF",
   bridge: "#7FD1A4",
-  owner: "#E6B95C",
 };
 
 const RADII: Record<GraphNode["kind"], number> = {
@@ -44,7 +34,6 @@ const RADII: Record<GraphNode["kind"], number> = {
   agent_type: 10,
   agent: 7,
   bridge: 10,
-  owner: 8,
 };
 
 // Make raw connector_type keys (e.g. "claude_code") presentable.
@@ -55,12 +44,6 @@ function prettyType(key: string): string {
 export default function EcosystemGraphPage() {
   const { data, loading, error } = useEcosystemGraph();
   const navigate = useNavigate();
-
-  // "Show owners" inserts an owner node between each agent-type and its agents
-  // (type -> owner -> agent). Owner names come from the ecosystem payload,
-  // which only carries them when the server `ecosystem.show_owners` flag is ON —
-  // so with the flag off this toggle reveals nothing.
-  const [showOwners, setShowOwners] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -101,40 +84,10 @@ export default function EcosystemGraphPage() {
       ...(n.kind === "switch" ? { fx: 0, fy: 0 } : {}),
     }));
 
-    // agent node id -> owner display name (only populated when the server flag
-    // is on, so the toggle is inert otherwise).
-    const ownerByAgentId = new Map<string, string>();
-    for (const n of data.nodes) {
-      if (n.kind === "agent" && n.owner_name) {
-        ownerByAgentId.set(n.id, n.owner_name);
-      }
-    }
-
-    // Build links. When "Show owners" is on, re-route each agent-type -> agent
-    // edge through an owner node: type -> owner -> agent. Owner nodes are
-    // deduped per (type, owner) so agents sharing an owner under a type collapse
-    // onto one owner node.
-    const links: GraphLink[] = [];
-    const ownerNodeIds = new Set<string>();
-    for (const e of data.edges) {
-      const owner = showOwners ? ownerByAgentId.get(e.target) : undefined;
-      if (owner) {
-        const ownerNodeId = `owner:${e.source}:${owner}`;
-        if (!ownerNodeIds.has(ownerNodeId)) {
-          ownerNodeIds.add(ownerNodeId);
-          nodes.push({
-            id: ownerNodeId,
-            label: owner,
-            sublabel: "owner",
-            kind: "owner",
-          });
-          links.push({ source: e.source, target: ownerNodeId });
-        }
-        links.push({ source: ownerNodeId, target: e.target });
-      } else {
-        links.push({ source: e.source, target: e.target });
-      }
-    }
+    const links: GraphLink[] = data.edges.map((e) => ({
+      source: e.source,
+      target: e.target,
+    }));
 
     const counts = {
       agents: data.nodes.filter((n) => n.kind === "agent").length,
@@ -142,7 +95,7 @@ export default function EcosystemGraphPage() {
       bridges: data.nodes.filter((n) => n.kind === "bridge").length,
     };
     return { nodes, links, counts };
-  }, [data, showOwners]);
+  }, [data]);
 
   useEffect(() => {
     if (!fgRef.current) return;
@@ -218,17 +171,6 @@ export default function EcosystemGraphPage() {
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Ecosystem
         </Typography>
-        <FormControlLabel
-          control={
-            <Switch
-              size="small"
-              checked={showOwners}
-              onChange={(e) => setShowOwners(e.target.checked)}
-            />
-          }
-          label="Show owners"
-          sx={{ mr: 1 }}
-        />
         <Typography variant="caption" color="text.secondary">
           {data
             ? `${counts.agents} agents · ${counts.types} types · ${counts.bridges} apps`

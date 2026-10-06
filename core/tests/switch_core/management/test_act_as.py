@@ -280,17 +280,10 @@ class TestTheAuthorizationMatrix:
         )
         agent = captured["agent"]
         unnamed = await _dispatch(mw, path, controller.access_token)
-        participants = await _dispatch(
-            mw,
-            "/agents/rooms/some-room/participants",
-            controller.access_token,
-            {"X-Switch-Agent-Id": agent_id},
-        )
 
         assert named == (200, None)
         assert agent.id == agent_id
         assert _code(unnamed) == (400, "validation_error")
-        assert participants == (200, None)
 
     async def test_the_connection_surface_is_the_controller_streams(
         self, harness: Harness
@@ -303,8 +296,6 @@ class TestTheAuthorizationMatrix:
 
         for suffix in (
             "events",
-            "notifications",
-            "rooms/r/events",
             "connection/beat",
             "connection/placements",
             "connection/renew",
@@ -314,7 +305,7 @@ class TestTheAuthorizationMatrix:
                 mw, f"/agents/{agent_id}/{suffix}", controller.access_token
             )
             assert _code(result) == (409, "managed_by_controller"), suffix
-        for suffix in ("message", "rooms/r/media", "rooms/r/history", "leases/renew"):
+        for suffix in ("message", "rooms/r/media", "typing", "leases/renew"):
             assert await _dispatch(
                 mw, f"/agents/{agent_id}/{suffix}", controller.access_token
             ) == (200, None), suffix
@@ -327,7 +318,7 @@ class TestTheAuthorizationMatrix:
             controller = await enroll_console(harness, client, owner)
         mw, _ = _middleware(harness)
 
-        for path in ("/agents", "/agents/register-known", "/mcp/", "/version"):
+        for path in ("/agents", "/agents/register-known", "/version"):
             result = await _dispatch(mw, path, controller.access_token)
             assert _code(result) == (403, "forbidden"), path
 
@@ -346,7 +337,7 @@ class TestTheAgentsOwnCredential:
 
         events = await _dispatch(mw, f"/agents/{agent_id}/events", key)
         message = await _dispatch(mw, f"/agents/{agent_id}/message", key)
-        mcp = await _dispatch(mw, "/mcp/", key)
+        version = await _dispatch(mw, "/version", key)
         async with harness.client() as client:
             removed = await client.delete(
                 f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
@@ -356,7 +347,7 @@ class TestTheAgentsOwnCredential:
         assert before == (200, None)
         assert _code(events) == (409, "managed_by_controller")
         assert _code(message) == (409, "managed_by_controller")
-        assert _code(mcp) == (409, "managed_by_controller")
+        assert _code(version) == (409, "managed_by_controller")
         assert removed.status_code == 200, removed.text
         assert after == (200, None)
         assert captured["agent"].id == agent_id

@@ -259,10 +259,10 @@ def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
       the moment they are asked: a busy room whose agents were removed before
       it was archived would read as never used. An agent's messages outlive
       its membership, so they answer for the room's history.
-    - **`seq` must be positive.** `MessageStore.create_historical` backfills
-      imported history with a negative `seq`, and a backfill is not someone
-      using the product today. Nothing calls it yet, so this half is a latent
-      guard rather than a live one — but it costs nothing to apply everywhere
+    - **`seq` must be positive.** Reconstructed history is numbered with a
+      negative `seq`, and a backfill is not someone using the product today.
+      Nothing writes one at present, so this half is a latent guard rather
+      than a live one — but it costs nothing to apply everywhere
       a message is read as activity, and every count in this module that
       already reads live traffic (`collect_tenant_counts`'s message and turn
       counts) applies the identical filter, so leaving it off here would be

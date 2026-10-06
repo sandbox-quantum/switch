@@ -81,7 +81,6 @@ ROOM_GROUPS = 20
 CLIENT_ROOMS = 5000  # ~7 memberships per room, rounded
 ROOM_AGENTS = 2000  # ~3 agents per room, rounded
 AGENT_SESSIONS = 700
-AGENT_RUNTIME_STATES = 900
 MESSAGES = 63000
 # event_type mix measured across all messages, rounded to the nearest
 # percentage point
@@ -103,7 +102,6 @@ ATTACHMENT_SIZE_MEDIAN = 100_000
 ATTACHMENT_SIZE_MEAN = 400_000
 ATTACHMENT_SIZE_MAX = 20_000_000
 DOCUMENTS = 60
-TASKS = 80
 ROOM_ROLES = 50
 ROLE_LEASES = 20
 ROOM_LINKS = 700
@@ -116,13 +114,11 @@ PACKAGE_DOCUMENTS = 20
 # Tables that were empty (or a single bootstrap row) in the measured
 # production shape. Kept at that order of magnitude rather than invented,
 # and held fixed regardless of --scale-factor: a bigger deployment does not
-# have more feature-flag rows or more "the one active package" rows, these
+# have more "the one active package" rows, these
 # are singleton config tables rather than volume tables.
 PACKAGES = 1
 ROOM_PACKAGES = 1
 ROOM_DOCUMENTS = 1
-SERVER_CONNECTORS = 1
-FEATURE_FLAGS = 1
 
 _WORDS = [
     "lorem",
@@ -304,13 +300,11 @@ async def generate(dsn: str, scale: float) -> None:
         client_rooms_n = _scaled(CLIENT_ROOMS, scale)
         room_agents_n = _scaled(ROOM_AGENTS, scale)
         agent_sessions_n = _scaled(AGENT_SESSIONS, scale)
-        agent_runtime_states_n = _scaled(AGENT_RUNTIME_STATES, scale)
         messages_n = _scaled(MESSAGES, scale)
         bridge_message_map_n = _scaled(BRIDGE_MESSAGE_MAP, scale)
         media_blobs_n = _scaled(MEDIA_BLOBS, scale)
         message_attachments_n = _scaled(MESSAGE_ATTACHMENTS, scale)
         documents_n = _scaled(DOCUMENTS, scale)
-        tasks_n = _scaled(TASKS, scale)
         room_roles_n = _scaled(ROOM_ROLES, scale)
         role_leases_n = _scaled(ROLE_LEASES, scale)
         room_links_n = _scaled(ROOM_LINKS, scale)
@@ -324,8 +318,6 @@ async def generate(dsn: str, scale: float) -> None:
         packages_n = PACKAGES
         room_packages_n = ROOM_PACKAGES
         room_documents_n = ROOM_DOCUMENTS
-        server_connectors_n = SERVER_CONNECTORS
-        feature_flags_n = FEATURE_FLAGS
 
         pool = IdPool()
         t0 = time.monotonic()
@@ -516,7 +508,6 @@ async def generate(dsn: str, scale: float) -> None:
                 "name",
                 "description",
                 "bridge_id",
-                "admin_mode",
                 "read_visibility",
                 "write_visibility",
                 "group_id",
@@ -528,7 +519,6 @@ async def generate(dsn: str, scale: float) -> None:
                     f"synthetic-room-{i}",
                     _lorem_text(116),
                     bridge_ids[i % collaboration_bridges_n] if i % 3 == 0 else None,
-                    False,
                     "public",
                     "public",
                     group_ids[i % room_groups_n] if i % 10 == 0 else None,
@@ -586,22 +576,6 @@ async def generate(dsn: str, scale: float) -> None:
             "agent_sessions",
             ["id", "agent_id", "room_id", "lifecycle"],
             session_rows,
-        )
-
-        # ── agent_runtime_states ─────────────────────────────────────────
-        seen_ars: set[tuple[str, str]] = set()
-        ars_rows: list[tuple[str, str, str, str]] = []
-        while len(ars_rows) < agent_runtime_states_n:
-            pair = (random.choice(agent_ids), random.choice(room_ids))
-            if pair in seen_ars:
-                continue
-            seen_ars.add(pair)
-            ars_rows.append((_rand_id("ars", len(ars_rows)), *pair, "connected"))
-        await _copy(
-            conn,
-            "agent_runtime_states",
-            ["id", "agent_id", "room_id", "state"],
-            ars_rows,
         )
 
         # ── messages ─────────────────────────────────────────────────────
@@ -792,33 +766,6 @@ async def generate(dsn: str, scale: float) -> None:
                     "public",
                 )
                 for i, did in enumerate(document_ids)
-            ],
-        )
-
-        # ── tasks ────────────────────────────────────────────────────────
-        await _copy(
-            conn,
-            "tasks",
-            [
-                "id",
-                "room_id",
-                "requester_agent_id",
-                "performer_agent_id",
-                "description",
-                "status",
-                "summary",
-            ],
-            [
-                (
-                    _rand_id("task", i),
-                    random.choice(room_ids),
-                    random.choice(agent_ids),
-                    random.choice(agent_ids),
-                    _lorem_text(200),
-                    random.choice(["open", "accepted", "finalised"]),
-                    _lorem_text(100),
-                )
-                for i in range(tasks_n)
             ],
         )
 
@@ -1024,29 +971,6 @@ async def generate(dsn: str, scale: float) -> None:
                 ["room_id", "document_id"],
                 [(room_ids[0], document_ids[0])] if room_documents_n else [],
             )
-
-        # ── server_connectors / feature_flags ────────────────────────────
-        await _copy(
-            conn,
-            "server_connectors",
-            ["id", "type", "display_name", "api_key_id", "status"],
-            [
-                (
-                    _rand_id("connector", i),
-                    "resource",
-                    f"Synthetic Connector {i}",
-                    api_key_ids[0],
-                    "active",
-                )
-                for i in range(server_connectors_n)
-            ],
-        )
-        await _copy(
-            conn,
-            "feature_flags",
-            ["key", "enabled"],
-            [("synthetic-flag", True)] if feature_flags_n else [],
-        )
 
         elapsed = time.monotonic() - t0
         print(f"Generated synthetic database in {elapsed:.1f}s.")

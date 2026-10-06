@@ -63,5 +63,4 @@ export type {
   MessagePayload,
   RoomJoinPayload,
   SwitchCredentials,
-  TaskPayload,
 } from './types';

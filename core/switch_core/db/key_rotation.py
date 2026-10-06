@@ -28,7 +28,6 @@ from switch_core.db.models import (
     MessagingInstall,
     ProviderConnection,
     ProviderVerification,
-    ServerConnector,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.keys import Keyring
@@ -37,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 _ENCRYPTED_JSON_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (CollaborationBridge, "connection_config"),
-    (ServerConnector, "connection_config"),
 )
 _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ApiKey, "encrypted_key"),

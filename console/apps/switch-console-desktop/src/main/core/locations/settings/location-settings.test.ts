@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_PRESERVE_PATTERNS } from '@shared/core/location-settings/location-settings';
 import type { LocationSettingsStorage } from './location-settings-storage';
 import { LocalLocationSettingsProvider } from './providers/local-location-settings-provider';
 
@@ -16,16 +15,6 @@ function makeTrackingGit(isFileCleanlyTracked: boolean) {
     isFileCleanlyTracked: vi.fn().mockResolvedValue(isFileCleanlyTracked),
   };
 }
-
-vi.mock('@main/core/settings/settings-service', () => ({
-  appSettingsService: {
-    get: vi.fn().mockImplementation((_key: string) => {
-      return Promise.resolve({
-        defaultWorktreeDirectory: '/tmp/switch-console/worktrees',
-      });
-    }),
-  },
-}));
 
 vi.mock('@main/db/client', () => ({
   db: {},
@@ -46,7 +35,7 @@ vi.mock('electron', () => ({
   },
 }));
 
-describe('LocationSettingsProvider worktreeDirectory validation', () => {
+describe('LocationSettingsProvider', () => {
   const tempDirs: string[] = [];
   const createStorage = (): LocationSettingsStorage => {
     const rows = new Map<
@@ -81,52 +70,12 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     }
   });
 
-  it('seeds default preserve patterns when the repo has no shared config', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-
-    await expect(provider.get()).resolves.toMatchObject({
-      preservePatterns: [...DEFAULT_PRESERVE_PATTERNS],
-    });
-  });
-
-  it('seeds default preserve patterns when shared config omits preservePatterns', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-    fs.writeFileSync(
-      path.join(rootPath, '.switchdash.json'),
-      JSON.stringify({ shellSetup: 'nvm use' })
-    );
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-
-    await expect(provider.get()).resolves.toMatchObject({
-      preservePatterns: [...DEFAULT_PRESERVE_PATTERNS],
-    });
-  });
-
-  it('does not seed default preserve patterns when shared config defines preservePatterns', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-    fs.writeFileSync(
-      path.join(rootPath, '.switchdash.json'),
-      JSON.stringify({ preservePatterns: ['.env.shared'] })
-    );
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-
-    await expect(provider.get()).resolves.not.toHaveProperty('preservePatterns');
-  });
-
   it('migrates shareable settings from a local-only root config', async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
     tempDirs.push(rootPath);
     fs.writeFileSync(
       path.join(rootPath, '.switchdash.json'),
       JSON.stringify({
-        preservePatterns: ['.env.local'],
         shellSetup: 'nvm use',
         scripts: {
           setup: 'pnpm install',
@@ -141,7 +90,6 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     });
 
     await expect(provider.get()).resolves.toMatchObject({
-      preservePatterns: ['.env.local'],
       shellSetup: 'nvm use',
       scripts: {
         setup: 'pnpm install',
@@ -189,7 +137,7 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
       },
     });
 
-    const result = await provider.update({ preservePatterns: [] });
+    const result = await provider.update({});
     expect(result.success).toBe(true);
     await expect(provider.get()).resolves.not.toHaveProperty('shellSetup');
     await expect(provider.get()).resolves.not.toHaveProperty('scripts');
@@ -213,107 +161,8 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
       git: makeTrackingGit(true),
     });
 
-    await expect(provider.get()).resolves.toMatchObject({
-      preservePatterns: [...DEFAULT_PRESERVE_PATTERNS],
-    });
     await expect(provider.get()).resolves.not.toHaveProperty('shellSetup');
     await expect(provider.get()).resolves.not.toHaveProperty('scripts');
-  });
-
-  it('does not seed computed worktreeDirectory into location settings', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-
-    await expect(provider.get()).resolves.not.toHaveProperty('worktreeDirectory');
-    await expect(provider.getDefaultWorktreeDirectory()).resolves.toBe(
-      '/tmp/switch-console/worktrees'
-    );
-    await expect(provider.getWorktreeDirectory()).resolves.toBe('/tmp/switch-console/worktrees');
-  });
-
-  it('keeps computed worktreeDirectory default separate from configured overrides', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-    const expectedOverridePath = path.resolve(rootPath, 'worktrees');
-    const result = await provider.update({
-      preservePatterns: [],
-      worktreeDirectory: expectedOverridePath,
-    });
-    expect(result.success).toBe(true);
-
-    const expectedOverride = fs.realpathSync(expectedOverridePath);
-    await expect(provider.get()).resolves.toMatchObject({ worktreeDirectory: expectedOverride });
-    await expect(provider.getDefaultWorktreeDirectory()).resolves.toBe(
-      '/tmp/switch-console/worktrees'
-    );
-    await expect(provider.getWorktreeDirectory()).resolves.toBe(expectedOverride);
-  });
-
-  it('stores the selected GitHub account as base location settings', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-
-    const result = await provider.update({
-      preservePatterns: [],
-      githubAccountId: 'github.com:42',
-    });
-
-    expect(result.success).toBe(true);
-    await expect(provider.get()).resolves.toMatchObject({ githubAccountId: 'github.com:42' });
-  });
-
-  it('stores null GitHub account selection as an explicit location override', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-
-    const result = await provider.update({
-      preservePatterns: [],
-      githubAccountId: null,
-    });
-
-    expect(result.success).toBe(true);
-    await expect(provider.get()).resolves.toMatchObject({ githubAccountId: null });
-  });
-
-  it('patches the selected GitHub account without replacing other base settings', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-    const row = {
-      baseSettingsJson: JSON.stringify({
-        autoRunSetupScriptOnSessionCreation: true,
-      }),
-      shareableSettingsJson: JSON.stringify({
-        preservePatterns: ['.env.local'],
-      }),
-      legacyConfigMigratedAt: new Date().toISOString(),
-    };
-    const settingsStorage: LocationSettingsStorage = {
-      get: async () => row,
-      insertIfMissing: vi.fn(),
-      update: async (_locationId, settings) => {
-        Object.assign(row, settings);
-      },
-    };
-    storageMockState.storage = settingsStorage;
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-
-    const result = await provider.patch({ githubAccountId: 'github.com:42' });
-
-    expect(result.success).toBe(true);
-    expect(JSON.parse(row.baseSettingsJson)).toEqual({
-      githubAccountId: 'github.com:42',
-      autoRunSetupScriptOnSessionCreation: true,
-    });
-    await expect(provider.get()).resolves.toMatchObject({
-      githubAccountId: 'github.com:42',
-      preservePatterns: ['.env.local'],
-      autoRunSetupScriptOnSessionCreation: true,
-    });
   });
 
   it('retries legacy config migration after a failed attempt', async () => {
@@ -344,21 +193,29 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     expect(updateAttempts).toBe(2);
   });
 
-  it('clears shareable fields without validating base settings', async () => {
+  it('loads stored settings and config files that still carry retired fields', async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
     tempDirs.push(rootPath);
+    fs.writeFileSync(
+      path.join(rootPath, '.switchdash.json'),
+      JSON.stringify({
+        preservePatterns: ['.env.local'],
+        worktreeDirectory: '/tmp/worktrees',
+        shellSetup: 'nvm use',
+      })
+    );
     const row = {
       baseSettingsJson: JSON.stringify({
-        worktreeDirectory: path.join(rootPath, 'not-yet-created'),
+        worktreeDirectory: path.join(rootPath, 'worktrees'),
+        githubAccountId: 'github.com:42',
+        locationProvider: { type: 'script', provisionCommand: 'up', terminateCommand: 'down' },
+        autoRunSetupScriptOnSessionCreation: true,
       }),
       shareableSettingsJson: JSON.stringify({
         preservePatterns: ['.env'],
-        scripts: {
-          setup: 'pnpm install',
-          run: 'pnpm dev',
-        },
+        scripts: { setup: 'pnpm install' },
       }),
-      legacyConfigMigratedAt: new Date().toISOString(),
+      legacyConfigMigratedAt: null,
     };
     const settingsStorage: LocationSettingsStorage = {
       get: async () => row,
@@ -368,87 +225,14 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
       },
     };
     storageMockState.storage = settingsStorage;
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-
-    const result = await provider.patch({
-      clearShareableFields: ['preservePatterns', 'scripts.run'],
+    const provider = new LocalLocationSettingsProvider(locationId(), rootPath, {
+      git: makeTrackingGit(false),
     });
 
-    expect(result.success).toBe(true);
-    expect(JSON.parse(row.shareableSettingsJson)).toEqual({
-      scripts: {
-        setup: 'pnpm install',
-      },
+    await expect(provider.get()).resolves.toEqual({
+      autoRunSetupScriptOnSessionCreation: true,
+      shellSetup: 'nvm use',
+      scripts: { setup: 'pnpm install' },
     });
-  });
-
-  it('normalizes and canonicalizes local absolute worktreeDirectory on update', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-    const expectedPath = path.resolve(rootPath, 'worktrees');
-    const result = await provider.update({ preservePatterns: [], worktreeDirectory: expectedPath });
-    expect(result.success).toBe(true);
-
-    expect(fs.existsSync(expectedPath)).toBe(true);
-
-    await expect(provider.get()).resolves.toMatchObject({
-      worktreeDirectory: fs.realpathSync(expectedPath),
-    });
-  });
-
-  it('rejects local relative worktreeDirectory values', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-    const result = await provider.update({ preservePatterns: [], worktreeDirectory: 'worktrees' });
-
-    expect(result).toEqual({
-      success: false,
-      error: { type: 'invalid-worktree-directory' },
-    });
-  });
-
-  it('rejects foreign absolute worktreeDirectory values for local locations', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-    const foreignPath = process.platform === 'win32' ? '/tmp/worktrees' : 'C:\\worktrees';
-    const result = await provider.update({ preservePatterns: [], worktreeDirectory: foreignPath });
-
-    expect(result).toEqual({
-      success: false,
-      error: { type: 'invalid-worktree-directory' },
-    });
-  });
-
-  it('surfaces local worktreeDirectory validation errors', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-    fs.writeFileSync(path.join(rootPath, 'not-a-directory'), 'file');
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-    const result = await provider.update({
-      preservePatterns: [],
-      worktreeDirectory: path.join(rootPath, 'not-a-directory', 'worktrees'),
-    });
-    expect(result).toEqual({
-      success: false,
-      error: { type: 'invalid-worktree-directory' },
-    });
-  });
-
-  it('clears blank local worktreeDirectory values', async () => {
-    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switch-console-settings-local-'));
-    tempDirs.push(rootPath);
-
-    const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
-    const result = await provider.update({ preservePatterns: [], worktreeDirectory: '   ' });
-    expect(result.success).toBe(true);
-
-    await expect(provider.get()).resolves.not.toHaveProperty('worktreeDirectory');
   });
 });

@@ -1,8 +1,9 @@
 """HTTP operations front door (CHOO-1857 / CHOO-490).
 
-The property under test is parity: every operation is reachable through both
-doors under the same name, because both are built from one registry. If someone
-adds an operation and these fail, that is the point.
+Every operation in the registry is reachable at `/agents/{id}/ops/{name}`
+under its tool name, so a session's runtime serves the registry's surface as
+its MCP tools with nothing to translate. If someone adds an operation and these
+fail, that is the point.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from switch_core.bridges.agent.api.operations import (
     call_operation,
     list_operations,
 )
-from switch_core.bridges.agent.mcp import server as mcp_server
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.operations import get_operation, registry
 from switch_core.bridges.agent.operations.agent_management import (
@@ -36,32 +36,20 @@ from switch_core.logging_context import current_log_context
 AGENT = "agent-1"
 
 
-async def _tool_names() -> set[str]:
-    """The tools an MCP client is offered, the server's middleware included."""
-    return {tool.name for tool in await mcp_server.mcp.list_tools()}
-
-
-async def test_every_operation_is_registered_as_an_mcp_tool() -> None:
-    # The MCP door registers whatever the registry holds, so this is the
-    # parity guarantee: neither door can be missing an operation the other has.
-    assert set(list_operations()) == await _tool_names()
-
-
-async def test_parity_holds_with_an_operation_group_enabled() -> None:
+def test_an_operation_group_is_listed_exactly_while_it_is_enabled() -> None:
     registry.enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     try:
         assert {"list_machines", "create_agent"} <= set(list_operations())
-        assert set(list_operations()) == await _tool_names()
     finally:
         registry.disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
-    assert set(list_operations()) == await _tool_names()
+    assert not {"list_machines", "create_agent"} & set(list_operations())
 
 
 async def test_operation_names_are_the_tool_names_verbatim() -> None:
     # One vocabulary: a translating runtime is POST /ops/${toolName}, nothing
     # more. Renaming or namespacing here would reintroduce a mapping table.
     ops = list_operations()
-    for expected in ("connect_to_room", "post_message", "assume_role", "list_tasks"):
+    for expected in ("connect_to_room", "post_message", "assume_role", "list_rooms"):
         assert expected in ops
 
 
@@ -73,7 +61,7 @@ def test_operations_advertise_a_json_schema_for_their_arguments() -> None:
     assert schema["type"] == "object"
     assert schema["properties"]["room_id"]["type"] == "string"
     assert schema["required"] == ["room_id"]
-    assert schema["properties"]["include_general_instructions"]["default"] is True
+    assert schema["properties"]["include_general_instructions"]["default"] is False
     # Transport details are not arguments an agent supplies.
     assert "ctx" not in schema["properties"]
     # The full docstring is the tool description an agent reads.
@@ -149,8 +137,8 @@ async def test_the_call_context_carries_agent_and_connection() -> None:
 
     assert result == "ok"
     assert seen["agent_id"] == AGENT
-    # The connection is the caller's session key: this is what lets an
-    # operation resolve the room binding without an MCP transport session.
+    # The connection is the caller's session key: this is what an operation
+    # resolves the caller's room binding from.
     assert seen["session_key"] == "conn-9"
 
 
@@ -187,8 +175,8 @@ def test_session_key_prefers_the_bound_context() -> None:
 
 
 def test_session_key_is_none_when_bound_to_nothing() -> None:
-    # Neither an HTTP call context nor an MCP session: operations that need a
-    # room report "not connected" rather than guessing one.
+    # No call context: operations that need a room report "not connected"
+    # rather than guessing one.
     assert op_context.session_key() is None
 
 

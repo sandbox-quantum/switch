@@ -15,7 +15,6 @@ import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migra
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
 import { appService } from './core/app/service';
-import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
 import { embeddedControllerService } from './core/embedded-controller/embedded-controllers';
 import { locationManager } from './core/locations/location-manager';
@@ -154,10 +153,6 @@ void app.whenReady().then(async () => {
   });
   setAgentStorageMigrationReady(migrationReady);
 
-  controlService.initialize().catch((e) => {
-    log.error('Failed to start control API service:', e);
-  });
-
   const rendererURL = new URL(
     import.meta.env.DEV ? process.env.ELECTRON_RENDERER_URL! : APP_ORIGIN
   );
@@ -281,7 +276,6 @@ void app.whenReady().then(async () => {
 app.on('before-quit', (event) => {
   event.preventDefault();
   logAppExit('before-quit');
-  controlService.dispose();
   stopResourceSampler();
   localServerService.dispose();
   remoteServerService.dispose();

@@ -116,8 +116,6 @@ export default function AgentDetailPage() {
 
       <Stack spacing={4}>
         <InfoSection agent={agent} />
-        <Divider />
-        <CapabilitiesSection agent={agent} />
         {agent.known_agent_type && (
           <>
             <Divider />
@@ -210,30 +208,7 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
         label="Connection type"
         value={agent.connection_model ? titleCase(agent.connection_model) : null}
       />
-      <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
-    </Stack>
-  );
-}
-
-function boolLabel(value: unknown): string {
-  return value ? "Yes" : "No";
-}
-
-function CapabilitiesSection({ agent }: { agent: AgentDetail }) {
-  const profile = agent.integration_profile;
-  const task = (profile.task_protocol ?? {}) as Record<string, unknown>;
-  return (
-    <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-        Capabilities
-      </Typography>
-      <InfoLine
-        label="Message exchange"
-        value={boolLabel(profile.message_exchange)}
-      />
-      <InfoLine label="Can delegate" value={boolLabel(task.can_delegate)} />
-      <InfoLine label="Can accept tasks" value={boolLabel(task.can_accept)} />
     </Stack>
   );
 }

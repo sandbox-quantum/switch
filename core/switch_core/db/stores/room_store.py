@@ -495,24 +495,6 @@ class RoomStore:
         room.external_channel_id = external_channel_id
         await session.flush()
 
-    async def update_protection_config(
-        self, session: AsyncSession, room_id: str, config: dict[str, object]
-    ) -> None:
-        room = await session.get(Room, room_id)
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
-        room.protection_config = config  # type: ignore[assignment]
-        await session.flush()
-
-    async def update_observe_config(
-        self, session: AsyncSession, room_id: str, config: dict[str, object]
-    ) -> None:
-        room = await session.get(Room, room_id)
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
-        room.observe_config = config  # type: ignore[assignment]
-        await session.flush()
-
     async def set_archived(
         self, session: AsyncSession, room_id: str, archived: bool
     ) -> None:
@@ -538,7 +520,6 @@ class RoomStore:
         name: str | None = None,
         description: str | None = None,
         instructions: str | None = None,
-        admin_mode: bool | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> None:
@@ -551,8 +532,6 @@ class RoomStore:
             room.description = description
         if instructions is not None:
             room.instructions = instructions
-        if admin_mode is not None:
-            room.admin_mode = admin_mode
         if read_visibility is not None:
             room.read_visibility = read_visibility
         if write_visibility is not None:

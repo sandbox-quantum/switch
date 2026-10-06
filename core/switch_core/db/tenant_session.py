@@ -272,7 +272,7 @@ def _refuse_a_row_from_another_tenant(instance: object) -> None:
     """
     tenant_id = _tenant_of(instance)
     if tenant_id is None:
-        # A global table (`users`, `oidc_identities`, `feature_flags`) carries
+        # A global table (`users`, `oidc_identities`) carries
         # no tenant, so there is nothing to compare and nothing to refuse.
         return
     bound = current_tenant_id()

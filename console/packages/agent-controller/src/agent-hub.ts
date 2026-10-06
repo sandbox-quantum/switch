@@ -84,8 +84,7 @@ type AgentState = {
 export function isNotifiable(type: string, payload: Record<string, unknown>): boolean {
   if (type === 'message') return payload.addressed === true;
   if (type === 'room_join') return payload.listening === true;
-  if (type === 'command') return false;
-  return type.startsWith('task_');
+  return false;
 }
 
 function approvalOutcome(data: Record<string, unknown>): ApprovalOutcome | null {

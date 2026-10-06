@@ -67,19 +67,3 @@ export function cloneDirectory(dir: string, repoUrl: string): string {
   const name = basename(repoUrl.replace(/\/+$/, '')).replace(/\.git$/, '');
   return join(dir, name || 'repo');
 }
-
-/**
- * `base`, or the first of `base-2`, `base-3`, … that does not already hold
- * an agent (a `.switch/` directory). A directory left behind by a removed
- * agent still holds that agent's credentials, and creating an agent refuses
- * to overwrite them, so the suggestion moves to a free directory instead of
- * failing at creation time.
- */
-export async function firstFreeDirectory(
-  base: string,
-  isTaken: (dir: string) => Promise<boolean>
-): Promise<string> {
-  let candidate = base;
-  for (let i = 2; await isTaken(candidate); i++) candidate = `${base}-${i}`;
-  return candidate;
-}

@@ -219,40 +219,6 @@ class TestInvitationStoreRoundTrip:
                 await _STORE.revoke(session, "nope")
 
 
-class TestAskingWhetherAnInvitationIsUsable:
-    """`get_by_token_hash` finds the row; it says nothing about the token.
-
-    Revoked, expired and spent are three independent gates, and the reason
-    they are expressed once in the store rather than at each call site is that
-    a caller checking two of the three looks exactly like a caller checking
-    all three until the day it doesn't.
-    """
-
-    @pytest.mark.parametrize("kwargs", _UNUSABLE, ids=_UNUSABLE_IDS)
-    async def test_an_unusable_invitation_is_found_but_not_valid(
-        self,
-        session_factory: async_sessionmaker[AsyncSession],
-        kwargs: dict[str, object],
-    ) -> None:
-        _id, token_hash = await _make_invitation(session_factory, **kwargs)  # type: ignore[arg-type]
-        async with session_factory() as session:
-            assert await _STORE.get_by_token_hash(session, token_hash) is not None, (
-                "an unusable invitation is still an ordinary row"
-            )
-            assert await _STORE.get_valid_by_token_hash(session, token_hash) is None, (
-                "an unusable invitation must not read back as usable"
-            )
-
-    async def test_a_usable_invitation_reads_back_from_both(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        invitation_id, token_hash = await _make_invitation(session_factory)
-        async with session_factory() as session:
-            valid = await _STORE.get_valid_by_token_hash(session, token_hash)
-            assert valid is not None
-            assert valid.id == invitation_id
-
-
 class TestConsume:
     async def test_consuming_spends_one_use(
         self, session_factory: async_sessionmaker[AsyncSession]

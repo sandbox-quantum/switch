@@ -2,7 +2,7 @@
 and the agent-profile changes an agent may make to an agent its owner owns.
 
 This lives in the protocol layer so both the gateway routes (`gateway/agents.py`)
-and the MCP-facing protocol methods can build the exact same `AgentSummary` /
+and the agent operations can build the exact same `AgentSummary` /
 `AgentDetail` shapes and run the same validation, rather than each re-deriving
 it. It imports `gateway.schemas` (pure pydantic leaf) and
 `gateway.known_agents` (which only depends on `protocol.types`) — neither pulls
@@ -45,7 +45,7 @@ from switch_core.gateway.schemas import (
 
 class AgentOptionsNotEditable(Exception):
     """Raised when an agent has no known-agent type, so its options are not
-    editable (the `register-other` case)."""
+    editable."""
 
 
 async def build_agent_summary(
@@ -77,7 +77,6 @@ async def build_agent_summary(
         model_count=len(models),
         owner_id=agent.owner_id,
         owner_name=owner_name,
-        oauth_client_id=agent.oauth_client_id,
         created_at=str(agent.created_at),
         parent_agent_id=agent.parent_agent_id,
         known_agent_type=known_agent_type

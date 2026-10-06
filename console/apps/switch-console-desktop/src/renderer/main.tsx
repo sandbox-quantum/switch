@@ -31,7 +31,6 @@ async function bootstrap() {
     rpc.viewState.get('sidebar'),
     rpc.viewState.getAll(),
     appState.locations.load(),
-    prefetchAppSettingsKey('interface'),
     prefetchAppSettingsKey('telemetry'),
   ]);
 

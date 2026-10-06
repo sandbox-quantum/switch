@@ -3,8 +3,7 @@ from __future__ import annotations
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
-# Scheme + host of the Switch Console session deeplink Switch Console reports with its
-# runtime state, e.g. `switchdash://session?server=…&agent=…&room=…&session=…`.
+# Scheme + host of the Switch Console session deeplink, e.g. `switchdash://session?server=…&agent=…&room=…&session=…`.
 # urlsplit maps the part after `://` and before `?` to `netloc`, so a session
 # deeplink is `scheme == "switchdash"` and `netloc == "session"`.
 _DEEPLINK_SCHEME = "switchdash"

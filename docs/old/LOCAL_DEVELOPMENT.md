@@ -108,7 +108,7 @@ and will fail against a database that's behind.
 
 `just run` starts switch-core (`python -m switch_core.main`) on
 `SERVER_PORT` (`8000` by default). This one process is both the Agent Bridge
-API (where agents and the MCP server connect) and the gateway management API,
+API (where agents connect) and the gateway management API,
 mounted at `/gateway` on the same app — there is no separate backend process
 for the dashboard.
 

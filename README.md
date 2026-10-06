@@ -208,7 +208,7 @@ flowchart LR
   subgraph core["Switch Core"]
     collab["Collaboration Bridge"]
     rooms[("Rooms in PostgreSQL<br/>messages · media · LISTEN/NOTIFY")]
-    agentbridge["Agent Bridge<br/>HTTP + SSE · MCP"]
+    agentbridge["Agent Bridge<br/>HTTP + SSE"]
     gateway["Gateway API"]
   end
 

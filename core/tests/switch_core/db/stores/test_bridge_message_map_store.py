@@ -68,34 +68,6 @@ class TestBridgeMessageMapStore:
                 await store.get_by_external_post_id(session, bridge_id, "nope") is None
             )
 
-    async def test_delete_by_transport_event_id(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        store = BridgeMessageMapStore()
-        async with session_factory() as session:
-            bridge_id = await _make_bridge(session)
-            await store.create(
-                session,
-                BridgeMessageMap(
-                    bridge_id=bridge_id,
-                    external_channel_id="chan-1",
-                    transport_event_id="$evt1",
-                    external_post_id="post1",
-                ),
-            )
-            await session.commit()
-
-            await store.delete_by_transport_event_id(session, bridge_id, "$evt1")
-            await session.commit()
-
-            assert (
-                await store.get_by_transport_event_id(session, bridge_id, "$evt1")
-                is None
-            )
-            assert (
-                await store.get_by_external_post_id(session, bridge_id, "post1") is None
-            )
-
     async def test_scoped_by_bridge(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
