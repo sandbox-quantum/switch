@@ -3,7 +3,8 @@
 Expiry is what unblocks a session nobody answers, so it runs often; each
 expired request is announced like any other change and pushed to the agent.
 Activity lines exist for platforms to show what is happening now, so they are
-kept for a bounded window and pruned rarely.
+kept for a bounded window and pruned rarely. Data retention
+(`retention/service.py`) rides the same hourly prune.
 
 Tenants are worked through one at a time, each bound before it is touched,
 like every other background task that spans them.
@@ -14,12 +15,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.ownership import Fence, OwnedKind, Ownership
+from switch_core.retention.service import RetentionService
 from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.tenant_context import no_tenant, tenant_scope
 
@@ -34,10 +36,18 @@ ACTIVITY_RETENTION = timedelta(days=7)
 async def maintain_once(
     session_factory: async_sessionmaker[AsyncSession], *, prune: bool
 ) -> None:
-    """One pass over every tenant: expire overdue requests, and prune if asked."""
+    """One pass over every tenant: expire overdue requests, and if asked, prune
+    activity and apply data retention."""
     service = AgentSessionActivityService(session_factory)
+    retention = RetentionService(session_factory)
     for tenant_id in await all_tenant_ids(session_factory):
         with tenant_scope(tenant_id):
+            if prune:
+                try:
+                    await retention.apply(datetime.now(UTC))
+                except Exception:
+                    # Retention failing must not stop this tenant's requests expiring.
+                    logger.exception("Data retention failed for tenant %s", tenant_id)
             try:
                 expired = await service.expire_due()
                 if expired:

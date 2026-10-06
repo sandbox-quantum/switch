@@ -4,15 +4,17 @@ from datetime import datetime
 from sqlalchemy import (
     ColumnElement,
     bindparam,
+    delete,
     func,
     or_,
     select,
     text,
+    update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.id_lists import any_of
-from switch_core.db.models import Message, MessageAttachment
+from switch_core.db.models import Message, MessageAttachment, Room, require_tenant_id
 from switch_core.db.notify_ddl import SET_WRITER_ANNOUNCES
 from switch_core.db.raw import RawStatement
 
@@ -195,13 +197,58 @@ class MessageStore:
         so an empty live log answers 0 whatever has been backfilled into it.
         With `types`, the position of the last row of those types.
         """
-        query = select(func.coalesce(func.max(Message.seq), 0)).where(
-            Message.room_id == room_id
-        )
         if types is not None:
-            query = query.where(Message.event_type.in_(list(types)))
-        result = await session.execute(query)
-        return max(int(result.scalar_one()), 0)
+            result = await session.execute(
+                select(func.coalesce(func.max(Message.seq), 0)).where(
+                    Message.room_id == room_id,
+                    Message.event_type.in_(list(types)),
+                )
+            )
+            return max(int(result.scalar_one()), 0)
+        head = await _ROOM_HEAD.all(session, {"room_id": room_id})
+        return max(int(head[0].head), 0)
+
+    async def delete_sent_before(
+        self, session: AsyncSession, cutoff: datetime, *, limit: int
+    ) -> list[str]:
+        """Delete up to `limit` of the bound tenant's oldest messages sent before
+        `cutoff`, with their attachments. Returns their transport event ids.
+
+        Each room's `seq_floor` is raised to the highest live position deleted
+        from it, in the same transaction, so `_next_seq` never reissues one.
+        The bytes behind the attachments are not touched: a blob may be quoted
+        by a message that is kept, so `MediaStore.delete_unreferenced` finds
+        the ones nothing points at any more.
+        """
+        rows = (
+            await session.execute(
+                select(
+                    Message.id, Message.room_id, Message.seq, Message.transport_event_id
+                )
+                .where(
+                    Message.tenant_id == require_tenant_id(),
+                    Message.sent_at < cutoff,
+                )
+                .order_by(Message.sent_at)
+                .limit(limit)
+            )
+        ).all()
+        if not rows:
+            return []
+        floors: dict[str, int] = {}
+        for row in rows:
+            floors[row.room_id] = max(floors.get(row.room_id, 0), row.seq)
+        for room_id, seq in floors.items():
+            if seq > 0:
+                await session.execute(
+                    update(Room)
+                    .where(Room.id == room_id)
+                    .values(seq_floor=func.greatest(Room.seq_floor, seq))
+                )
+        await session.execute(
+            delete(Message).where(Message.id.in_([r.id for r in rows]))
+        )
+        return [row.transport_event_id for row in rows]
 
     async def head_seqs(
         self,
@@ -225,6 +272,14 @@ class MessageStore:
             query = query.where(Message.event_type.in_(list(types)))
         result = await session.execute(query.group_by(Message.room_id))
         heads = {room_id: max(int(seq or 0), 0) for room_id, seq in result.all()}
+        if types is None:
+            floors = await session.execute(
+                select(Room.id, Room.seq_floor).where(
+                    any_of(Room.id, room_ids), Room.seq_floor > 0
+                )
+            )
+            for room_id, floor in floors.all():
+                heads[room_id] = max(heads.get(room_id, 0), int(floor))
         return {room_id: heads.get(room_id, 0) for room_id in room_ids}
 
     async def rooms_past(
@@ -440,9 +495,21 @@ _LOCK_ROOM = RawStatement(text("SELECT pg_advisory_xact_lock(hashtext(:room_id))
 _LOCK_ROOM_ANNOUNCED_BY_WRITER = RawStatement(
     text(f"SELECT pg_advisory_xact_lock(hashtext(:room_id)), {SET_WRITER_ANNOUNCES}")
 )
+# The highest position the room has ever used: usually its newest row, but
+# retention may have deleted that row while a cursor that read it is still
+# past it. `rooms.seq_floor` remembers the highest live position retention
+# removed; both are read in one statement, so a deletion committing between
+# them cannot be half-seen.
 _ROOM_HEAD = RawStatement(
-    select(func.coalesce(func.max(Message.seq), 0).label("head")).where(
-        Message.room_id == bindparam("room_id")
+    select(
+        func.greatest(
+            select(func.coalesce(func.max(Message.seq), 0))
+            .where(Message.room_id == bindparam("room_id"))
+            .scalar_subquery(),
+            select(func.coalesce(func.max(Room.seq_floor), 0))
+            .where(Room.id == bindparam("room_id"))
+            .scalar_subquery(),
+        ).label("head")
     )
 )
 

@@ -1214,6 +1214,12 @@ class Room(TenantScoped, Base):
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The highest live `seq` retention has deleted from this room. Numbering
+    # continues above it, so a room emptied by retention never hands out a
+    # position a cursor has already passed. See `MessageStore._next_seq`.
+    seq_floor: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
 
 
 # ── Room Groups ─────────────────────────────────────────────────────────────────
@@ -4050,6 +4056,45 @@ class UsageBudget(TenantScoped, Base):
     period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ── Data retention ────────────────────────────────────────────────────────────
+
+#: The longest message-retention window a workspace may set, ten years.
+MAX_MESSAGE_RETENTION_DAYS = 3650
+
+
+class TenantRetentionPolicy(TenantScoped, Base):
+    """How long a workspace keeps its room messages.
+
+    At most one row per tenant. No row means messages are kept forever, which
+    is every workspace's starting point: deletion is something an owner or
+    admin turns on, never something a deployment does to them by default.
+
+    With a row, messages older than `message_retention_days` are deleted from
+    every room in the workspace, archived rooms included, along with their
+    attachments (`retention/service.py`).
+    """
+
+    __tablename__ = "tenant_retention_policies"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id"),
+        CheckConstraint(
+            f"message_retention_days >= 1 AND message_retention_days <= {MAX_MESSAGE_RETENTION_DAYS}",
+            name="ck_tenant_retention_policies_days",
+        ),
+    )
+
+    message_retention_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 
