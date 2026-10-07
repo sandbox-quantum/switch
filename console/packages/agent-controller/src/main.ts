@@ -1,7 +1,7 @@
 import { hostname } from 'node:os';
 import { parseArgs } from 'node:util';
 import packageJson from '../package.json' with { type: 'json' };
-import { ControllerApiError, enroll, normalizeServerUrl } from './api';
+import { ControllerApiError, enroll, normalizeServerUrl, nodeWebSocket } from './api';
 import { DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
 import { ConfigurationError, UsageError } from './errors';
@@ -212,6 +212,7 @@ async function runCommand(args: string[]): Promise<number> {
           ),
         locator: new PathProviderLocator(process.env.PATH),
         fetch,
+        openWebSocket: nodeWebSocket,
         log,
         dataDir,
         workspacesFor: serverWorkspacesDir,

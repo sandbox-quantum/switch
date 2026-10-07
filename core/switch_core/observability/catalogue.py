@@ -242,6 +242,59 @@ DELIVERY_LAG = _spec(
     "actor",
 )
 
+# ── Shared room reads ────────────────────────────────────────────────────────
+# The per-room cache of recent rows (`transport/room_cache.py`). Every value
+# below comes from a fixed set in that module.
+DELIVERY_CACHE_READS = _spec(
+    "switch.delivery_cache.reads",
+    "sum",
+    "{read}",
+    "A transport asking the room cache for the rows after its cursor. "
+    "`outcome` is hit (served from memory), filled (served after waiting for "
+    "the room's one read), or why it fell back to its own database read: "
+    "behind (cursor below what is held), evicted (dropped while it waited, "
+    "and the read it waited for could not answer it), "
+    "unwatched, or gave_up.",
+    "outcome",
+)
+DELIVERY_CACHE_FILLS = _spec(
+    "switch.delivery_cache.fills",
+    "sum",
+    "{fill}",
+    "Database reads made by the room cache on behalf of every member of a "
+    "room. `outcome` is ok, failed, or discarded (the room was dropped while "
+    "it read).",
+    "outcome",
+)
+DELIVERY_CACHE_ROWS_READ = _spec(
+    "switch.delivery_cache.rows_read",
+    "sum",
+    "{row}",
+    "Rows the room cache read from the database. Against "
+    "switch.messages.delivered, the number of deliveries each read served.",
+)
+DELIVERY_CACHE_EVICTIONS = _spec(
+    "switch.delivery_cache.evictions",
+    "sum",
+    "{eviction}",
+    "Rows or rooms the room cache let go of, by reason: bytes or rooms (the "
+    "process-wide limits), rows or age (one room's), unwatched (its last "
+    "member left), invalidated.",
+    "reason",
+)
+DELIVERY_CACHE_BYTES = _spec(
+    "switch.delivery_cache.bytes",
+    "gauge",
+    "By",
+    "Estimated memory the room cache holds, against room_delivery_cache_max_bytes.",
+)
+DELIVERY_CACHE_ROOMS = _spec(
+    "switch.delivery_cache.rooms",
+    "gauge",
+    "{room}",
+    "Rooms the room cache holds rows for.",
+)
+
 # ── Bridges ──────────────────────────────────────────────────────────────────
 # Both bridges report the same metrics. `bridge` is "collaboration" or
 # "agent". For a collaboration bridge `platform` is one of the registered
@@ -485,6 +538,12 @@ CATALOGUE: dict[str, MetricSpec] = {
         SEND_FAILURES,
         DELIVERY_FAILURES,
         DELIVERY_LAG,
+        DELIVERY_CACHE_READS,
+        DELIVERY_CACHE_FILLS,
+        DELIVERY_CACHE_ROWS_READ,
+        DELIVERY_CACHE_EVICTIONS,
+        DELIVERY_CACHE_BYTES,
+        DELIVERY_CACHE_ROOMS,
         BRIDGE_EVENTS_IN,
         BRIDGE_EVENTS_OUT,
         BRIDGE_ERRORS,

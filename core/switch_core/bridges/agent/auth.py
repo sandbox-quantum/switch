@@ -80,7 +80,7 @@ _NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
 # Registration: a controller registers nothing, so its token is refused here.
 _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # The connection surface a controller serves its agents itself, from its own
-# stream (`GET /v1/controllers/{id}/events`). A controller-backed agent has no
+# connection (`/v1/controllers/{id}/connection/ws`). A controller-backed agent has no
 # connection of its own, and the legacy heartbeats would make it look live from
 # a second source.
 _SERVED_ON_THE_CONTROLLER_STREAM = re.compile(
@@ -432,7 +432,7 @@ class BearerAuthMiddleware:
             await _controller_refusal(
                 MANAGED_BY_CONTROLLER,
                 "A controller receives its agents' events on its own stream, "
-                "GET /v1/controllers/{id}/events; this agent route is not "
+                "/v1/controllers/{id}/connection/ws; this agent route is not "
                 "served to it.",
                 409,
             )(scope, receive, send)

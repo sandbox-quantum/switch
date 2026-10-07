@@ -1,6 +1,12 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { z } from 'zod';
-import { ControllerApiError, type ControllerClient, isRevoked, isTakenOver } from './api';
+import {
+  ControllerApiError,
+  type ControllerClient,
+  isRevoked,
+  isTakenOver,
+  type OpenedSocket,
+} from './api';
 import { errorMessage, type Logger } from './log';
 import {
   type AgentApprovalOutcomeFrame,
@@ -29,60 +35,7 @@ import {
   operationPendingSchema,
 } from './schemas';
 
-export type SseItem =
-  | { kind: 'comment'; text: string }
-  | { kind: 'event'; event: string; data: string; id: string | null };
-
-/**
- * Splits an SSE byte stream into events and comments. Comments are surfaced
- * rather than skipped because the server's `: keepalive` is how a silent but
- * healthy stream is told apart from a dead one.
- */
-export async function* parseSse(body: ReadableStream<Uint8Array>): AsyncGenerator<SseItem> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffered = '';
-  let event = '';
-  let id: string | null = null;
-  let data: string[] = [];
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      buffered += decoder.decode(value, { stream: true });
-      let newline: number;
-      while ((newline = buffered.search(/\r\n|\r|\n/)) !== -1) {
-        const line = buffered.slice(0, newline);
-        const width = buffered.startsWith('\r\n', newline) ? 2 : 1;
-        // A lone CR at the end of the buffer may be the first half of a CRLF.
-        if (width === 1 && buffered[newline] === '\r' && newline === buffered.length - 1) break;
-        buffered = buffered.slice(newline + width);
-        if (line === '') {
-          if (data.length)
-            yield { kind: 'event', event: event || 'message', data: data.join('\n'), id };
-          event = '';
-          data = [];
-          continue;
-        }
-        if (line.startsWith(':')) {
-          yield { kind: 'comment', text: line.slice(1).trimStart() };
-          continue;
-        }
-        const colon = line.indexOf(':');
-        const field = colon === -1 ? line : line.slice(0, colon);
-        let value = colon === -1 ? '' : line.slice(colon + 1);
-        if (value.startsWith(' ')) value = value.slice(1);
-        if (field === 'event') event = value;
-        else if (field === 'data') data.push(value);
-        else if (field === 'id') id = value;
-      }
-    }
-  } finally {
-    void reader.cancel().catch(() => {});
-  }
-}
-
-/** The schema for each SSE event type the controller stream carries, by `event:` name. */
+/** The schema for each frame the controller's socket carries, by its `event`. */
 export const STREAM_FRAME_SCHEMAS = {
   connection_state: connectionStateSchema,
   evicted: evictedSchema,
@@ -116,10 +69,10 @@ export type ControllerFrame =
 export type StreamEnding = 'stopped' | 'revoked' | 'taken_over';
 
 export type ControllerStreamOptions = {
-  client: Pick<ControllerClient, 'openConnection' | 'beat' | 'openEvents'>;
+  client: Pick<ControllerClient, 'openConnection' | 'openSocket'>;
   /** Where each agent resumes when a connection is opened. */
   cursors: () => Record<string, AgentCursor>;
-  /** How far each agent's watcher has confirmed reading, sent on every beat. */
+  /** How far each agent's watcher has confirmed reading, sent with every pong. */
   confirmed: () => Record<string, number>;
   /** A connection was opened: Core attached these agents to it. */
   onOpened: (connection: ControllerConnection) => Promise<void> | void;
@@ -131,7 +84,7 @@ export type ControllerStreamOptions = {
   onFrame: (frame: ControllerFrame) => Promise<void>;
   signal: AbortSignal;
   log: Logger;
-  /** No byte for this long, keepalives included, and the stream is presumed dead. */
+  /** Nothing on the socket for this long, pings included, and it is presumed dead. */
   idleTimeoutMs: number;
   /** The first reconnect wait, and where the wait returns to once a stream attaches. */
   initialBackoffMs: number;
@@ -141,9 +94,18 @@ export type ControllerStreamOptions = {
   random: () => number;
 };
 
+/**
+ * The close code a server sends as it begins shutting down (uvicorn sends it
+ * to every socket). The server is about to be back, so the reconnect waits
+ * are short and do not grow.
+ */
+const SERVICE_RESTART = 1012;
+const RESTART_RETRY_MS = 250;
+const RESTART_RETRY_JITTER_MS = 500;
+
 class IdleTimeout extends Error {
   constructor(ms: number) {
-    super(`No data on the event stream for ${Math.round(ms / 1000)} s.`);
+    super(`Nothing on the controller socket for ${Math.round(ms / 1000)} s.`);
   }
 }
 
@@ -153,35 +115,40 @@ function connectionGone(error: unknown): boolean {
     error instanceof ControllerApiError &&
     (error.status === 404 ||
       error.code === 'unknown_connection' ||
-      error.code === 'stale_generation')
+      error.code === 'stale_generation' ||
+      error.code === 'no_stream')
   );
 }
 
-type Held = { connectionId: string; generation: number; heartbeatMs: number };
+type Held = { connectionId: string; generation: number };
 
-/** One attempt at attaching the stream: its socket, and what it learned. */
+/** One attempt at attaching the socket, and what it learned. */
 type Attempt = {
-  socket: AbortController;
+  abort: AbortController;
   /** Set when the stream stopped for good. */
   ending: StreamEnding | null;
   /** When the stream attached, or 0 if it never did. */
   attachedAt: number;
-  beating: Promise<void> | null;
+  /** The server closed the socket because it is restarting. */
+  restarting: boolean;
 };
 
+type Message = { event: string; data: unknown };
+
 /**
- * The controller stream, held open for as long as `signal` lives.
+ * The controller's connection to Switch, held open for as long as `signal`
+ * lives.
  *
  * A connection is opened once (`POST .../connection`, with every agent's
- * cursor) and the stream attached to it (`GET .../events`). A dropped socket
- * reattaches to the same connection and generation, so Core resumes where it
- * was; a connection Core no longer knows (its 6 s heartbeat lapsed, or it was
- * superseded) is opened afresh, from the cursors as they stand. While the
- * stream is attached the connection is beaten every `heartbeat_interval_s`
- * with each agent's confirmed cursor and the rooms its sessions work in, so a
- * placement made locally reaches Switch on the next beat.
+ * cursor) and a WebSocket attached to it (`.../connection/ws`). The socket
+ * carries the stream's frames down, and the server's `ping` every heartbeat
+ * interval, which is answered with a `pong` naming each agent's confirmed
+ * cursor: that pong is the controller's beat. A dropped socket reattaches to
+ * the same connection and generation, so Core resumes where it was; a
+ * connection Core no longer knows (its heartbeat lapsed, or it was
+ * superseded) is opened afresh, from the cursors as they stand.
  *
- * Ends with `'revoked'` on `credential.revoked` or a request refused as
+ * Ends with `'revoked'` on `credential.revoked` or a refusal saying
  * `controller_revoked`, with `'taken_over'` when another instance of this
  * controller took the connection over (an `evicted` frame or a refusal saying
  * so: reopening would take it straight back, so this one stops), and with
@@ -203,12 +170,12 @@ class ControllerStream {
     const { signal, log } = this.options;
     while (!signal.aborted) {
       const attempt: Attempt = {
-        socket: new AbortController(),
+        abort: new AbortController(),
         ending: null,
         attachedAt: 0,
-        beating: null,
+        restarting: false,
       };
-      const stop = () => attempt.socket.abort();
+      const stop = () => attempt.abort.abort();
       signal.addEventListener('abort', stop, { once: true });
       let failure: string | null = null;
       try {
@@ -218,31 +185,32 @@ class ControllerStream {
           if (isRevoked(error)) attempt.ending = 'revoked';
           else if (isTakenOver(error)) attempt.ending = 'taken_over';
           else {
-            const reason = attempt.socket.signal.reason;
+            const reason = attempt.abort.signal.reason;
             failure = errorMessage(reason instanceof IdleTimeout ? reason : error);
           }
         }
       } finally {
         signal.removeEventListener('abort', stop);
-        attempt.socket.abort();
-        await attempt.beating;
+        attempt.abort.abort();
       }
       if (attempt.ending) return attempt.ending;
       if (signal.aborted) break;
       if (attempt.attachedAt > 0) {
-        this.options.onDisconnected(failure ?? 'the stream ended');
-        // Every agent on this controller is offline until the stream is back,
-        // so a stream that attached at all starts the waits over.
+        this.options.onDisconnected(failure ?? 'the socket closed');
+        // Every agent on this controller is offline until the socket is back,
+        // so a socket that attached at all starts the waits over.
         this.backoff = this.options.initialBackoffMs;
       }
-      const wait = Math.round(this.backoff * (0.5 + this.options.random() * 0.5));
+      const wait = attempt.restarting
+        ? RESTART_RETRY_MS + Math.round(this.options.random() * RESTART_RETRY_JITTER_MS)
+        : Math.round(this.backoff * (0.5 + this.options.random() * 0.5));
       if (failure !== null)
-        log.warn('The controller stream is down; reconnecting.', {
+        log.warn('The controller socket is down; reconnecting.', {
           error: failure,
           retryInMs: wait,
         });
       await delay(wait, undefined, { signal }).catch(() => {});
-      this.backoff = Math.min(this.backoff * 2, this.options.maxBackoffMs);
+      if (!attempt.restarting) this.backoff = Math.min(this.backoff * 2, this.options.maxBackoffMs);
     }
     return 'stopped';
   }
@@ -250,13 +218,9 @@ class ControllerStream {
   private async attach(attempt: Attempt): Promise<void> {
     const { client, log } = this.options;
     if (!this.held) {
-      const opened = await client.openConnection(this.options.cursors(), attempt.socket.signal);
-      this.held = {
-        connectionId: opened.connection_id,
-        generation: opened.generation,
-        heartbeatMs: opened.heartbeat_interval_s * 1000,
-      };
-      log.info('Opened the controller stream connection', {
+      const opened = await client.openConnection(this.options.cursors(), attempt.abort.signal);
+      this.held = { connectionId: opened.connection_id, generation: opened.generation };
+      log.info('Opened the controller connection', {
         connectionId: opened.connection_id,
         generation: opened.generation,
         agents: opened.agents.length,
@@ -264,135 +228,160 @@ class ControllerStream {
       await this.options.onOpened(opened);
     }
     const current = this.held;
-    let response: Response;
     try {
-      response = await client.openEvents(current, attempt.socket.signal);
+      await this.read(await client.openSocket(current), attempt);
     } catch (error) {
       if (!connectionGone(error)) throw error;
-      log.warn('Switch no longer knows the stream connection; opening a new one.', {
+      log.warn('Switch no longer knows the controller connection; opening a new one.', {
         error: errorMessage(error),
       });
-      this.held = null;
-      return;
+      if (this.held === current) this.held = null;
     }
-    attempt.attachedAt = Date.now();
-    this.options.onConnected();
-    attempt.beating = this.beat(current, attempt);
-    await this.read(response.body!, attempt);
   }
 
-  private async read(body: ReadableStream<Uint8Array>, attempt: Attempt): Promise<void> {
-    const { socket } = attempt;
+  /**
+   * Reads the socket until it closes: answers each ping with the confirmed
+   * cursors and hands every other frame on, in order. A refusal is thrown as
+   * the error an HTTP request would have raised.
+   */
+  private async read(opened: OpenedSocket, attempt: Attempt): Promise<void> {
+    const { socket } = opened;
+    const abort = attempt.abort;
+    const pending: Message[] = [];
+    let refused: { status: number; code: string; message: string } | null = null;
+    let closedWith: number | null = null;
+    let wake: (() => void) | null = null;
+    const notify = () => {
+      const resolve = wake;
+      wake = null;
+      resolve?.();
+    };
     let idle: ReturnType<typeof setTimeout> | null = null;
     const touch = () => {
       if (idle) clearTimeout(idle);
       idle = setTimeout(
-        () => socket.abort(new IdleTimeout(this.options.idleTimeoutMs)),
+        () => abort.abort(new IdleTimeout(this.options.idleTimeoutMs)),
         this.options.idleTimeoutMs
       );
     };
-    const aborted = new Promise<never>((_resolve, reject) => {
-      const fail = () => reject(socket.signal.reason ?? new Error('aborted'));
-      if (socket.signal.aborted) fail();
-      socket.signal.addEventListener('abort', fail, { once: true });
-    });
-    aborted.catch(() => {});
+    const onMessage = (message: MessageEvent) => {
+      touch();
+      let parsed: { event?: unknown; data?: unknown };
+      try {
+        parsed = JSON.parse(String(message.data)) as typeof parsed;
+      } catch {
+        this.options.log.error('Dropped a controller socket message that is not JSON');
+        return;
+      }
+      if (parsed.event === 'ping') {
+        socket.send(JSON.stringify({ type: 'pong', cursors: this.options.confirmed() }));
+        return;
+      }
+      if (parsed.event === 'refused') {
+        refused = refusalOf(parsed.data);
+        return;
+      }
+      if (typeof parsed.event !== 'string') return;
+      pending.push({ event: parsed.event, data: parsed.data });
+      notify();
+    };
+    const onClose = (event: CloseEvent) => {
+      closedWith = event.code;
+      if (event.code === SERVICE_RESTART) attempt.restarting = true;
+      notify();
+    };
+    const onAbort = () => notify();
+    socket.addEventListener('message', onMessage);
+    socket.addEventListener('close', onClose);
+    socket.addEventListener('error', notify);
+    abort.signal.addEventListener('abort', onAbort, { once: true });
     try {
       touch();
-      const items = parseSse(body);
       for (;;) {
-        const next = await Promise.race([items.next(), aborted]);
-        if (next.done) break;
-        touch();
-        const item = next.value;
-        if (item.kind === 'comment') continue;
-        const frame = parseFrame(item, this.options.log);
-        if (!frame) continue;
-        await this.options.onFrame(frame);
-        if (frame.type === 'credential.revoked') {
-          attempt.ending = 'revoked';
-          return;
-        }
-        if (frame.type === 'evicted') {
-          if (frame.data.code === 'taken_over') {
-            this.options.log.error(
-              'Another instance of this controller took its stream over; this one stops. Run one controller per data directory.'
-            );
-            attempt.ending = 'taken_over';
-            return;
+        while (pending.length > 0) {
+          const message = pending.shift() as Message;
+          if (attempt.attachedAt === 0) {
+            attempt.attachedAt = Date.now();
+            this.options.onConnected();
           }
-          this.options.log.warn('Switch ended the controller stream; opening a new connection.', {
-            code: frame.data.code,
-            reason: frame.data.reason,
-          });
-          this.held = null;
-          return;
+          const frame = parseFrame(message, this.options.log);
+          if (!frame) continue;
+          await this.options.onFrame(frame);
+          if (this.ended(frame, attempt)) return;
         }
+        if (closedWith !== null || abort.signal.aborted) break;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
       }
+      const refusal = refused as { status: number; code: string; message: string } | null;
+      if (refusal !== null) {
+        if (refusal.status === 401 && refusal.code !== 'controller_revoked') opened.tokenRefused();
+        throw new ControllerApiError(refusal.status, refusal.code, refusal.message, false, null);
+      }
+      if (abort.signal.aborted && abort.signal.reason instanceof IdleTimeout)
+        throw abort.signal.reason;
+      if (!this.options.signal.aborted && attempt.attachedAt === 0)
+        throw new Error(`The controller socket closed before it attached (code ${closedWith}).`);
       if (!this.options.signal.aborted)
-        this.options.log.warn('The controller stream ended; reconnecting.');
+        this.options.log.warn('The controller socket closed; reconnecting.', { code: closedWith });
     } finally {
       if (idle) clearTimeout(idle);
+      socket.removeEventListener('message', onMessage);
+      socket.removeEventListener('close', onClose);
+      socket.removeEventListener('error', notify);
+      abort.signal.removeEventListener('abort', onAbort);
+      if (socket.readyState === 0 || socket.readyState === 1) socket.close(1000);
     }
   }
 
-  /** Beats the connection while this attempt's stream is attached. */
-  private async beat(connection: Held, attempt: Attempt): Promise<void> {
-    const { client, log } = this.options;
-    const signal = attempt.socket.signal;
-    let failures = 0;
-    while (!signal.aborted) {
-      await delay(connection.heartbeatMs, undefined, { signal }).catch(() => {});
-      if (signal.aborted) return;
-      try {
-        await client.beat(connection, this.options.confirmed(), signal);
-        if (failures > 0)
-          log.info('The controller stream heartbeat recovered', { afterFailures: failures });
-        failures = 0;
-      } catch (error) {
-        if (signal.aborted) return;
-        if (isRevoked(error) || isTakenOver(error)) {
-          if (isTakenOver(error))
-            log.error(
-              'Another instance of this controller took its stream connection over; this one stops. Run one controller per data directory.'
-            );
-          attempt.ending = isRevoked(error) ? 'revoked' : 'taken_over';
-          attempt.socket.abort();
-          return;
-        }
-        if (connectionGone(error)) {
-          log.warn('Switch refused the heartbeat for a connection it no longer holds; reopening.', {
-            error: errorMessage(error),
-          });
-          if (this.held === connection) this.held = null;
-          attempt.socket.abort();
-          return;
-        }
-        failures++;
-        // The first failure, then powers of two: an outage costs a few lines.
-        if ((failures & (failures - 1)) === 0)
-          log.warn('The controller stream heartbeat failed', {
-            failures,
-            error: errorMessage(error),
-          });
-      }
+  /** Whether this frame ends the attempt: a revocation, or an eviction. */
+  private ended(frame: ControllerFrame, attempt: Attempt): boolean {
+    if (frame.type === 'credential.revoked') {
+      attempt.ending = 'revoked';
+      return true;
     }
+    if (frame.type !== 'evicted') return false;
+    if (frame.data.code === 'taken_over') {
+      this.options.log.error(
+        'Another instance of this controller took its connection over; this one stops. Run one controller per data directory.'
+      );
+      attempt.ending = 'taken_over';
+      return true;
+    }
+    this.options.log.warn('Switch ended the controller connection; opening a new one.', {
+      code: frame.data.code,
+      reason: frame.data.reason,
+    });
+    this.held = null;
+    return true;
   }
 }
 
-function parseFrame(item: SseItem & { kind: 'event' }, log: Logger): ControllerFrame | null {
-  const schema = (STREAM_FRAME_SCHEMAS as Record<string, z.ZodType>)[item.event];
+function refusalOf(data: unknown): { status: number; code: string; message: string } {
+  const body = (data ?? {}) as { status?: unknown; detail?: unknown };
+  const detail = (body.detail ?? {}) as { code?: unknown; message?: unknown };
+  return {
+    status: typeof body.status === 'number' ? body.status : 0,
+    code: typeof detail.code === 'string' ? detail.code : 'refused',
+    message:
+      typeof detail.message === 'string' ? detail.message : 'Switch refused the controller socket.',
+  };
+}
+
+function parseFrame(message: Message, log: Logger): ControllerFrame | null {
+  const schema = (STREAM_FRAME_SCHEMAS as Record<string, z.ZodType>)[message.event];
   if (!schema) {
-    log.debug('Ignoring an event type this controller does not know', { event: item.event });
+    log.debug('Ignoring a frame this controller does not know', { event: message.event });
     return null;
   }
-  try {
-    return { type: item.event, data: schema.parse(JSON.parse(item.data)) } as ControllerFrame;
-  } catch (error) {
-    log.error('Dropped a controller stream frame that does not match the protocol', {
-      event: item.event,
-      error: errorMessage(error),
+  const result = schema.safeParse(message.data);
+  if (!result.success) {
+    log.error('Dropped a controller frame that does not match the protocol', {
+      event: message.event,
+      error: result.error.message,
     });
     return null;
   }
+  return { type: message.event, data: result.data } as ControllerFrame;
 }

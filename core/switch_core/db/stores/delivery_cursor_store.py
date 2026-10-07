@@ -19,9 +19,10 @@ class DeliveryCursorStore:
     async def position(self, session: AsyncSession, agent_id: str, room_id: str) -> int:
         """How far this agent has been delivered, 0 if it never has.
 
-        Zero rather than None because `seq` starts at 1: an agent with no
-        cursor is behind the room's first message, which is the same statement
-        the number already makes.
+        Zero rather than None because live messages are numbered from 1: an
+        agent with no cursor is behind the room's first live message, which is
+        the same statement the number already makes. Reconstructed history sits
+        below zero and is not delivered.
         """
         result = await session.execute(
             select(DeliveryCursor.last_seq).where(

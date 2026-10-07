@@ -9,11 +9,7 @@ import {
 } from './api';
 import { ConfigurationError } from './errors';
 import { silentLogger } from './log';
-import {
-  type Assignment,
-  controllerBeatRequestSchema,
-  controllerConnectionRequestSchema,
-} from './schemas';
+import { type Assignment, controllerConnectionRequestSchema } from './schemas';
 import { FakeCore } from './testing/fake-core';
 
 let core: FakeCore;
@@ -46,6 +42,7 @@ function client(credential = core.credential) {
       controllerId: core.controllerId,
       version: '0.1.0',
       tokens,
+      openWebSocket: core.openWebSocket,
     }),
   };
 }
@@ -131,7 +128,7 @@ describe('enroll', () => {
     });
     expect(result).toEqual({ controller_id: core.controllerId, credential: core.credential });
     const request = core.requests.at(-1)!;
-    expect(request.headers[PROTOCOL_HEADER.toLowerCase()]).toBe('1');
+    expect(request.headers[PROTOCOL_HEADER.toLowerCase()]).toBe('2');
     expect(request.headers['idempotency-key']).toBeTruthy();
   });
 
@@ -279,8 +276,8 @@ describe('errors', () => {
   });
 });
 
-describe('the controller stream routes', () => {
-  it('opens a connection declaring itself and its cursors, beats it, and attaches the stream', async () => {
+describe('the controller connection', () => {
+  it('opens a connection declaring itself and its cursors, then attaches its socket', async () => {
     core.setAssignment(assignment);
     const { client: api } = client();
     const signal = new AbortController().signal;
@@ -292,43 +289,36 @@ describe('the controller stream routes', () => {
       client_version: '0.1.0',
       cursors: { 'agent-1': 41, 'agent-2': 'head' },
     });
-    const connection = { connectionId: opened.connection_id, generation: opened.generation };
-    const stream = new AbortController();
-    const response = await api.openEvents(connection, stream.signal);
-    expect(response.headers.get('content-type')).toContain('text/event-stream');
-    await api.beat(connection, { 'agent-1': 42 }, signal);
-    expect(controllerBeatRequestSchema.parse(core.requests.at(-1)!.body)).toEqual({
-      connection_id: opened.connection_id,
+    const { socket } = await api.openSocket({
+      connectionId: opened.connection_id,
       generation: opened.generation,
-      cursors: { 'agent-1': 42 },
     });
-    stream.abort();
-  });
-
-  it('reads the refusals that decide between reopening and stopping', async () => {
-    const { client: api } = client();
-    const signal = new AbortController().signal;
-    await expect(
-      api.beat({ connectionId: 'nobody', generation: 1 }, {}, signal)
-    ).rejects.toMatchObject({ status: 404, code: 'unknown_connection' });
-    const first = await api.openConnection({}, signal);
-    await api.openConnection({}, signal);
-    await expect(
-      api.beat({ connectionId: first.connection_id, generation: first.generation }, {}, signal)
-    ).rejects.toMatchObject({ status: 409, code: 'taken_over' });
+    await new Promise((resolve) => socket.addEventListener('message', resolve, { once: true }));
+    const attach = core.requests.at(-1)!;
+    socket.close(1000);
+    expect(attach.method).toBe('WS');
+    expect(attach.path).toBe(`/v1/controllers/${core.controllerId}/connection/ws`);
+    expect(Object.fromEntries(new URLSearchParams(attach.search))).toEqual({
+      connection_id: opened.connection_id,
+      generation: String(opened.generation),
+    });
+    expect(attach.headers.authorization).toBe('Bearer access-token-1');
+    expect(attach.headers['switch-controller-protocol']).toBe('2');
   });
 
   it('reads a refusal in the agent bridge’s own envelope', async () => {
     const { client: api } = client();
     core.scripted.push({
       method: 'POST',
-      path: `/v1/controllers/${core.controllerId}/connection/beat`,
+      path: `/v1/controllers/${core.controllerId}/connection`,
       status: 409,
-      body: { detail: { code: 'no_stream', message: 'open the stream' } },
+      body: { detail: { code: 'taken_over', message: 'someone else' } },
     });
-    await expect(
-      api.beat({ connectionId: 'c', generation: 1 }, {}, new AbortController().signal)
-    ).rejects.toMatchObject({ status: 409, code: 'no_stream', message: 'open the stream' });
+    await expect(api.openConnection({}, new AbortController().signal)).rejects.toMatchObject({
+      status: 409,
+      code: 'taken_over',
+      message: 'someone else',
+    });
   });
 });
 
@@ -360,7 +350,7 @@ function statusReport() {
   return {
     seq: 1,
     observed_at: new Date().toISOString(),
-    controller: { version: '0.1.0', protocol: 1 as const, assignment_revision: 0 },
+    controller: { version: '0.1.0', protocol: 2 as const, assignment_revision: 0 },
     machine: {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1' },
       disk_free_bytes: 1,

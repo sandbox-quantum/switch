@@ -39,6 +39,8 @@ from tests.switch_core.management.harness import (
     Harness,
     add_member,
     add_room,
+    attach,
+    beat,
     build_harness,
     cookies_for,
     enroll_console,
@@ -415,50 +417,36 @@ class TestTheConnection:
             evicted = await take(old_stream, 1)
             with pytest.raises(StopAsyncIteration):
                 await anext(old_stream)
-            beat_path = f"/v1/controllers/{controller.controller_id}/connection/beat"
-            stale = await client.post(
-                beat_path,
-                json={
-                    "connection_id": old["connection_id"],
-                    "generation": old["generation"],
-                    "cursors": {},
-                },
-                headers=controller.headers,
+            stale = beat(
+                harness,
+                controller,
+                connection_id=old["connection_id"],
+                generation=old["generation"],
+                cursors={},
             )
-            wrong_generation = await client.post(
-                beat_path,
-                json={
-                    "connection_id": new["connection_id"],
-                    "generation": new["generation"] + 1,
-                    "cursors": {},
-                },
-                headers=controller.headers,
+            wrong_generation = beat(
+                harness,
+                controller,
+                connection_id=new["connection_id"],
+                generation=new["generation"] + 1,
+                cursors={},
             )
-            unknown = await client.post(
-                beat_path,
-                json={
-                    "connection_id": "nope",
-                    "generation": 1,
-                    "cursors": {},
-                },
-                headers=controller.headers,
+            unknown = beat(
+                harness,
+                controller,
+                connection_id="nope",
+                generation=1,
+                cursors={},
             )
-            no_stream = await client.post(
-                beat_path,
-                json={
-                    "connection_id": new["connection_id"],
-                    "generation": new["generation"],
-                    "cursors": {},
-                },
-                headers=controller.headers,
+            no_stream = beat(
+                harness,
+                controller,
+                connection_id=new["connection_id"],
+                generation=new["generation"],
+                cursors={},
             )
-            old_events = await client.get(
-                f"/v1/controllers/{controller.controller_id}/events",
-                params={
-                    "connection_id": old["connection_id"],
-                    "generation": old["generation"],
-                },
-                headers=controller.headers,
+            old_events = await attach(
+                harness, controller, old["connection_id"], old["generation"]
             )
 
         assert new["generation"] != old["generation"]
@@ -500,20 +488,18 @@ class TestTheConnection:
             assert not presence.is_live(agent_id)
             stream = await open_stream(harness, controller, opened)
             await take(stream, 2)
-            beat = await client.post(
-                f"/v1/controllers/{controller.controller_id}/connection/beat",
-                json={
-                    "connection_id": opened["connection_id"],
-                    "generation": opened["generation"],
-                    "cursors": {agent_id: 99, "not-mine": 3},
-                },
-                headers=controller.headers,
+            beaten = beat(
+                harness,
+                controller,
+                connection_id=opened["connection_id"],
+                generation=opened["generation"],
+                cursors={agent_id: 99, "not-mine": 3},
             )
         live = presence.is_live(agent_id)
         await stream.aclose()
 
-        assert beat.status_code == 200, beat.text
-        assert beat.json() == {"agents": [agent_id]}
+        assert beaten.status_code == 200, beaten.text
+        assert beaten.json() == {"agents": [agent_id]}
         assert live
         binding = presence.binding(agent_id)
         assert binding is not None
@@ -541,16 +527,14 @@ class TestTheConnection:
             first = await open_stream(harness, controller, opened)
             # state, two attaches, three events for `confirmed`
             await take(first, 6)
-            beat = await client.post(
-                f"/v1/controllers/{controller.controller_id}/connection/beat",
-                json={
-                    "connection_id": opened["connection_id"],
-                    "generation": opened["generation"],
-                    "cursors": {confirmed: 2},
-                },
-                headers=controller.headers,
+            beaten = beat(
+                harness,
+                controller,
+                connection_id=opened["connection_id"],
+                generation=opened["generation"],
+                cursors={confirmed: 2},
             )
-            assert beat.status_code == 200, beat.text
+            assert beaten.status_code == 200, beaten.text
             # The socket drops; events keep arriving; the same connection is
             # streamed again.
             buffer.enqueue(
@@ -649,7 +633,7 @@ class TestTheConnection:
     async def test_a_lapsed_beat_ends_the_stream_and_its_agents_are_not_live(
         self, harness: Harness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(controller_routes, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
+        monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 0.05)
         owner = await add_member(harness.session_factory, "ada")
         presence = harness.protocol.connections.controllers
         async with harness.client() as client:
@@ -663,14 +647,12 @@ class TestTheConnection:
             conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
             assert not presence.is_live(agent_id)
             evicted = await take(stream, 1)
-            beat = await client.post(
-                f"/v1/controllers/{controller.controller_id}/connection/beat",
-                json={
-                    "connection_id": opened["connection_id"],
-                    "generation": opened["generation"],
-                    "cursors": {},
-                },
-                headers=controller.headers,
+            beaten = beat(
+                harness,
+                controller,
+                connection_id=opened["connection_id"],
+                generation=opened["generation"],
+                cursors={},
             )
 
         assert evicted == [
@@ -683,7 +665,7 @@ class TestTheConnection:
                 },
             )
         ]
-        assert (beat.status_code, beat.json()["error"]["code"]) == (
+        assert (beaten.status_code, beaten.json()["error"]["code"]) == (
             404,
             "unknown_connection",
         )
@@ -734,4 +716,4 @@ async def test_a_waiting_stream_wakes_promptly_for_an_event(harness: Harness) ->
     )
     raw = await asyncio.wait_for(pending, timeout=2)
     await stream.aclose()
-    assert b"agent.event" in raw
+    assert raw["event"] == "agent.event"

@@ -23,6 +23,7 @@ import threading
 from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -344,6 +345,7 @@ def _room_service(
         collab_bridge_store=CollaborationBridgeStore(),
         resource_service=None,  # type: ignore[arg-type]
         session_factory=session_factory,
+        room_cache=MagicMock(),
     )
 
 
