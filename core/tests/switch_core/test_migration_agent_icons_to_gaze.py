@@ -17,7 +17,7 @@ from switch_core.agent_icon import generated_icon_url
 from tests.switch_core.test_migration_definitions_advanced_config import _migrate_to
 
 _DB = "migration_agent_icons_to_gaze"
-_PRE_MIGRATION_REVISION = "eb24eafa59a0"
+_PRE_MIGRATION_REVISION = "fabf9b9bff78"
 _MIGRATION_UNDER_TEST = "2f6919dcdead"
 
 _ROBOT = "https://api.dicebear.com/9.x/bottts/png"

@@ -1,7 +1,7 @@
 """move generated agent icons from DiceBear bottts to gaze
 
 Revision ID: 2f6919dcdead
-Revises: eb24eafa59a0
+Revises: fabf9b9bff78
 
 Generated agent icons used to be DiceBear's 9.x "bottts" robot and are now its
 10.x "gaze" style. An agent's icon is stored as a URL, so the agents that were
@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "2f6919dcdead"
-down_revision: str | Sequence[str] | None = "eb24eafa59a0"
+down_revision: str | Sequence[str] | None = "fabf9b9bff78"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
