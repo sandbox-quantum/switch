@@ -4,7 +4,15 @@ import type {
   SessionCommand,
   SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
-import type { AgentEventStream } from '@switch-console/agent-providers';
+import {
+  type AgentEventStream,
+  type ControlContext,
+  ControlError,
+  type ControlMessage,
+  ControlPeer,
+  type ControlPush,
+  handleControlMessage,
+} from '@switch-console/agent-providers';
 import { errorMessage, type Logger } from './log';
 import type {
   AgentApprovalOutcomeFrame,
@@ -34,6 +42,18 @@ export type AgentHubDeps = {
   onChange: () => void;
   /** The most events held per agent while its agent host is not taking them; past it the oldest go, and it is told. */
   bufferLimit: number;
+  /** A live view (subscription or health watch) of an agent whose host runs here pushed this. */
+  onControlPush: (agentId: string, push: ControlPush) => void;
+  /** An agent's host in this process began or stopped answering control messages. */
+  onControlChange: (agentId: string) => void;
+};
+
+/**
+ * How an agent host running in this process registers to answer relayed
+ * control messages; the returned function withdraws it.
+ */
+export type ControlRegistry = {
+  attachControl: (agentId: string, context: ControlContext) => () => void;
 };
 
 type Buffered =
@@ -116,11 +136,55 @@ function firstAfter(buffer: Buffered[], cursor: number): number {
   return low;
 }
 
-export class AgentHub {
+export class AgentHub implements ControlRegistry {
   private readonly agents = new Map<string, AgentState>();
+  private readonly controls = new Map<string, { context: ControlContext; peer: ControlPeer }>();
   private upstream = false;
 
   constructor(private readonly deps: AgentHubDeps) {}
+
+  // -- Relayed control messages -----------------------------------------------
+
+  attachControl(agentId: string, context: ControlContext): () => void {
+    this.controls.get(agentId)?.peer.close();
+    const entry = {
+      context,
+      peer: new ControlPeer((push) => this.deps.onControlPush(agentId, push)),
+    };
+    this.controls.set(agentId, entry);
+    this.deps.onControlChange(agentId);
+    return () => {
+      if (this.controls.get(agentId) !== entry) return;
+      this.dropControl(agentId);
+    };
+  }
+
+  /** The agent's host runs here and answers control messages. */
+  controlAttached(agentId: string): boolean {
+    return this.controls.has(agentId);
+  }
+
+  /**
+   * Answers one control message as the agent's host would on its control
+   * port; its live views push through `onControlPush`. `dispatching` is
+   * called just before a session request goes to its session host.
+   */
+  control(agentId: string, message: ControlMessage, dispatching: () => void): Promise<unknown> {
+    const entry = this.controls.get(agentId);
+    if (!entry)
+      return Promise.reject(
+        new ControlError('agent_not_running', `The host of agent ${agentId} is not running here.`)
+      );
+    return handleControlMessage(entry.context, entry.peer, message, dispatching);
+  }
+
+  private dropControl(agentId: string): void {
+    const entry = this.controls.get(agentId);
+    if (!entry) return;
+    entry.peer.close();
+    this.controls.delete(agentId);
+    this.deps.onControlChange(agentId);
+  }
 
   // -- What the controller tells Switch ---------------------------------------
 
@@ -161,6 +225,7 @@ export class AgentHub {
 
   /** Forgets the agent: it is no longer assigned here. Its host has been stopped. */
   forget(agentId: string): void {
+    this.dropControl(agentId);
     const agent = this.agents.get(agentId);
     if (!agent) return;
     if (agent.host) agent.host.closed = true;
@@ -416,8 +481,6 @@ export class AgentHub {
         agent.placements = new Map(Object.entries(placements));
         this.deps.onChange();
       },
-      workerCall: () =>
-        Promise.reject(new Error('An agent run by an agents controller is not a hosted worker.')),
     };
   }
 

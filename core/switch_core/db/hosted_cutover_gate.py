@@ -207,8 +207,7 @@ def cutover_gate_problems(connection: Connection) -> list[str]:
     ]
     if not _present(connection, "hosted_cutover_volumes"):
         return problems + [
-            f"launch {row.launch_id} has hosted state the cutover has not "
-            "captured; run `just hosted-cutover-upgrade prepare`"
+            f"launch {row.launch_id} has hosted state the cutover has not captured"
             for row in connection.execute(text(_HOSTED_AGENTS))
         ]
     gate = _VOLUMES + (_OLD_TABLES if _present(connection, "sdk_sessions") else [])
@@ -225,6 +224,6 @@ def refuse_incomplete_cutover(connection: Connection) -> None:
             "Refusing to drop the old session tables before the hosted cutover is "
             "complete: "
             + "; ".join(problems)
-            + ". Run `just hosted-cutover-upgrade status` and follow the cutover "
-            "steps in docs/hosted-activity-contracts.md."
+            + ". This database predates the controller runtime: upgrade it first "
+            "with a Switch release that still has the cutover tool."
         )

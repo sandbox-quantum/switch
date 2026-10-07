@@ -91,7 +91,7 @@ local-cloud:
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in
 # its own data directory so other dev builds' databases are left alone
 local-cloud-console:
-    cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
+    cd console && SWITCH_CLOUD_ENABLED=true SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
 
 # Made by the gateway admin from .env, so it joins the admin's workspace, as
 # every admin-made account does. Use the admin's domain (switch.local by
@@ -152,15 +152,6 @@ teams-app-package *args:
 # ── Run alembic migrations ─────────────────────────────────────────────────────
 migrate:
     uv run --project core alembic -c core/alembic.ini upgrade head
-
-
-# ── Upgrade a database that ran hosted agents on the old session tables ─────────
-# Steps: prepare, record <launch-id> <check.json>, status, upgrade (default).
-# Refuses the drop of the old session tables until every retained volume's
-# preflight check is recorded; see the cutover steps in
-# docs/hosted-activity-contracts.md.
-hosted-cutover-upgrade *args:
-    uv run --project core python -m switch_core.hosted_cutover_upgrade {{args}}
 
 
 # ── Generate a new alembic migration ──────────────────────────────────────────

@@ -7,6 +7,9 @@ locals {
   issuer       = trimprefix(var.oidc_issuer_url, "https://")
   ec2_arn_base = "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}"
   tags         = { "switch:installation-id" = var.installation_id }
+  # A slot's login grant is constrained to exactly the identity of the machine
+  # it serves; switch:provider is left free so one grant covers every provider.
+  login_grant_context_keys = ["switch:tenant", "switch:owner_id", "switch:controller_id"]
 }
 
 resource "aws_security_group" "worker" {
@@ -65,7 +68,7 @@ resource "aws_iam_policy" "controller_assignments" {
   lifecycle {
     postcondition {
       condition     = length(self.policy) <= 6144
-      error_message = "Assignment permissions exceed the managed IAM policy limit; reduce the number of machine slots."
+      error_message = "Assignment and login-grant permissions exceed the managed IAM policy limit; reduce the number of machine slots."
     }
   }
   name = "${local.prefix}-assignments"
@@ -77,7 +80,16 @@ resource "aws_iam_policy" "controller_assignments" {
         "kms:ViaService"                  = "secretsmanager.${data.aws_region.current.name}.${data.aws_partition.current.dns_suffix}"
         "kms:EncryptionContext:SecretARN" = [for slot in values(var.machine_slots) : slot.secret_arn]
       } }
-    }
+    },
+    { Sid = "GrantSlotLoginDecrypt", Effect = "Allow", Action = ["kms:CreateGrant"], Resource = var.login_kms_key_arn,
+      Condition = {
+        "ForAllValues:StringEquals" = { "kms:GrantOperations" = ["Decrypt"], "kms:EncryptionContextKeys" = local.login_grant_context_keys }
+        StringEquals                = { "kms:GranteePrincipal" = [for role in aws_iam_role.worker : role.arn], "kms:GrantConstraintType" = "EncryptionContextSubset" }
+        StringEqualsIfExists        = { "kms:RetiringPrincipal" = aws_iam_role.controller.arn }
+        Null                        = { for key in local.login_grant_context_keys : "kms:EncryptionContext:${key}" => "false" }
+      }
+    },
+    { Sid = "ManageSlotLoginGrants", Effect = "Allow", Action = ["kms:ListGrants", "kms:RevokeGrant"], Resource = var.login_kms_key_arn }
   ] })
 }
 resource "aws_iam_role_policy_attachment" "controller_assignments" {
@@ -95,27 +107,10 @@ resource "aws_iam_role_policy" "controller" {
   role = aws_iam_role.controller.id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Sid = "Observe", Effect = "Allow", Action = ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeImages", "ec2:DescribeSubnets", "ec2:DescribeInstanceTypes"], Resource = "*" },
-    { Sid = "ApprovedLaunchInputs", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = [
-      "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}::image/${var.worker_image_id}",
-      "${local.ec2_arn_base}:subnet/${aws_subnet.worker.id}",
-      "${local.ec2_arn_base}:security-group/${aws_security_group.worker.id}"
-    ] },
-    { Sid       = "CreateVerificationInstances", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = ["${local.ec2_arn_base}:instance/*", "${local.ec2_arn_base}:network-interface/*"],
-      Condition = { StringEquals = { "aws:RequestTag/switch:installation-id" = var.installation_id, "aws:RequestTag/switch:managed-by" = "switch-provider-verification" } }
-    },
-    { Sid = "CreateVerificationRoot", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = "${local.ec2_arn_base}:volume/*",
-      Condition = {
-        StringEquals  = { "aws:RequestTag/switch:installation-id" = var.installation_id, "aws:RequestTag/switch:managed-by" = "switch-provider-verification", "ec2:VolumeType" = "gp3" }
-        Bool          = { "ec2:Encrypted" = "true" }
-        NumericEquals = { "ec2:VolumeSize" = var.root_volume_gib }
-      }
-    },
-    { Sid       = "TagVerificationResources", Effect = "Allow", Action = ["ec2:CreateTags"], Resource = ["${local.ec2_arn_base}:instance/*", "${local.ec2_arn_base}:volume/*", "${local.ec2_arn_base}:network-interface/*"],
-      Condition = { StringEquals = { "ec2:CreateAction" = "RunInstances", "aws:RequestTag/switch:installation-id" = var.installation_id, "aws:RequestTag/switch:managed-by" = "switch-provider-verification" } }
-    },
-    { Sid       = "TerminateVerificationInstances", Effect = "Allow", Action = ["ec2:TerminateInstances"], Resource = "${local.ec2_arn_base}:instance/*",
-      Condition = { StringEquals = { "ec2:ResourceTag/switch:installation-id" = var.installation_id, "ec2:ResourceTag/switch:managed-by" = "switch-provider-verification" } }
-    },
+    { Sid = "ApprovedLaunchInputs", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = concat(
+      ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}::image/${var.controller_image_id}"],
+      ["${local.ec2_arn_base}:subnet/${aws_subnet.worker.id}", "${local.ec2_arn_base}:security-group/${aws_security_group.worker.id}"]
+    ) },
     { Sid       = "CreateManagedLaunchResources", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = ["${local.ec2_arn_base}:instance/*", "${local.ec2_arn_base}:network-interface/*"],
       Condition = { StringEquals = { "aws:RequestTag/switch:installation-id" = var.installation_id, "aws:RequestTag/switch:managed-by" = "switch-hosted-controller" }, StringLike = { "aws:RequestTag/switch:slot-id" = keys(var.machine_slots) }, Null = { "aws:RequestTag/switch:generation" = "false" } }
     },

@@ -7,7 +7,8 @@ Two shapes, matching the two kinds of route:
   middleware hands it here (`ManagementAuthenticator.authenticate`). The
   token is signed, so its tenant claim is trusted and bound directly; the
   controller row is then read under that tenant, and a revoked controller is
-  refused even while its token is unexpired. A controller that authenticated
+  refused even while its token is unexpired, as is a token exchanged for a
+  credential that has since been replaced. A controller that authenticated
   is remembered for a few seconds (`ControllerAuthCache`), and forgotten the
   moment it is revoked.
 - **Secret in the body**, on enrollment (an `swce_…` code) and token exchange
@@ -88,9 +89,12 @@ class ManagementAuthenticator:
                 "The access token is not a valid controller token.",
             ) from exc
 
-        cached = self._auth_cache.controller(claims.tenant_id, claims.controller_id)
-        if cached is not None and cached.owner_id == claims.owner_id:
-            return cached
+        if claims.credential_id is not None:
+            cached = self._auth_cache.controller(
+                claims.tenant_id, claims.controller_id, claims.credential_id
+            )
+            if cached is not None and cached.owner_id == claims.owner_id:
+                return cached
 
         generation = self._auth_cache.generation
         async with tenant_session(self._session_factory, claims.tenant_id) as session:
@@ -106,12 +110,18 @@ class ManagementAuthenticator:
             raise ControllerAuthError(
                 reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )
+        if controller.api_key_id != claims.credential_id:
+            raise ControllerAuthError(
+                reason_codes.TOKEN_EXPIRED,
+                "The access token was not exchanged for the controller's current "
+                "credential; exchange the current credential.",
+            )
         principal = ControllerPrincipal(
             controller_id=controller.id,
             owner_id=controller.owner_id,
             tenant_id=claims.tenant_id,
         )
-        self._auth_cache.put_controller(principal, generation)
+        self._auth_cache.put_controller(principal, controller.api_key_id, generation)
         return principal
 
     async def tenant_of_secret(self, secret: str) -> str | None:

@@ -1,9 +1,8 @@
-"""The wake mailbox: every addressed event for a hosted agent until its worker admits it.
+"""The wake mailbox: every addressed event for a cloud agent until its controller admits it.
 
-Every transition is a conditional update that only moves a row forward, so a
-retried ack, a reclaim racing an ack or a Stop racing an offer can never
-regress a row. Rows are keyed by `(agent, room, roomInputId)`, the same key
-the watcher dedupes by.
+Every transition is a conditional update that only moves a row forward.
+Rows are keyed by `(agent, room, roomInputId)`, the same key the watcher
+dedupes by.
 """
 
 from __future__ import annotations
@@ -13,9 +12,9 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select, tuple_, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,15 +23,12 @@ from switch_core.db.models import HostedWakeMailbox, require_tenant_id
 
 #: Rows `pending` or `offered` one agent may hold before an insert is refused.
 MAILBOX_LIMIT = 500
-OFFER_LEASE = timedelta(seconds=60)
 MAILBOX_EXPIRY = timedelta(hours=24)
 MAILBOX_RETENTION = timedelta(days=7)
-WAKE_ENTRIES_PER_FRAME = 50
-ACKS_PER_CALL = 200
 #: Owed room notices the upkeep retries in one pass over a tenant.
 NOTICE_RETRIES_PER_PASS = 100
 
-#: Rows the worker has still to settle; these keep the VM awake.
+#: Rows still to be settled; these keep the VM awake.
 BUSY_STATES = ("pending", "offered", "accepted")
 TERMINAL_STATES = (
     "admitted",
@@ -43,30 +39,9 @@ TERMINAL_STATES = (
     "expired_uncertain",
 )
 
-MailboxOutcome = Literal[
-    "journaled", "admitted", "duplicate", "refused", "held", "cancelled"
-]
-
-#: Outcome -> (states it moves a row from, state it moves the row to).
-TRANSITIONS: dict[str, tuple[tuple[str, ...], str]] = {
-    "journaled": (("pending", "offered"), "accepted"),
-    "duplicate": (("pending", "offered"), "accepted"),
-    "admitted": (
-        ("pending", "offered", "accepted", "held", "cancel_requested"),
-        "admitted",
-    ),
-    "refused": (("pending", "offered", "accepted"), "refused"),
-    "held": (("pending", "offered", "accepted"), "held"),
-    "cancelled": (("cancel_requested",), "cancelled"),
-}
-
-
-#: The notice for a tombstone the watcher answers `admitted`, by cancel reason.
-STARTED_BEFORE = {"stopped": "started_before_stop", "expired": "started_before_expiry"}
-
 
 class MailboxFull(Exception):
-    """The agent already has `MAILBOX_LIMIT` rows waiting for its worker."""
+    """The agent already has `MAILBOX_LIMIT` rows waiting."""
 
 
 def room_input_id(event: AgentEvent) -> str | None:
@@ -90,13 +65,12 @@ def room_input_id(event: AgentEvent) -> str | None:
 
 @dataclass(frozen=True)
 class MailboxEntry:
-    """One addressed event as the mailbox holds it and a `wake` frame carries it."""
+    """One addressed event as the mailbox holds it."""
 
     room_id: str
     message_id: str
     thread_id: str | None
     event: dict[str, Any]
-    origin: Literal["live", "cutover"]
 
     @classmethod
     def of(cls, event: AgentEvent) -> MailboxEntry | None:
@@ -110,27 +84,7 @@ class MailboxEntry:
             message_id=message_id,
             thread_id=thread_id if isinstance(thread_id, str) else None,
             event={"type": event.type, "payload": payload, "missed": None},
-            origin="live",
         )
-
-    @classmethod
-    def of_row(cls, row: HostedWakeMailbox) -> MailboxEntry:
-        return cls(
-            room_id=row.room_id,
-            message_id=row.message_id,
-            thread_id=row.thread_id,
-            event=row.event,
-            origin="cutover" if row.origin == "cutover" else "live",
-        )
-
-    def wire(self) -> dict[str, Any]:
-        return {
-            "room_id": self.room_id,
-            "message_id": self.message_id,
-            "thread_id": self.thread_id,
-            "event": self.event,
-            "origin": self.origin,
-        }
 
 
 @dataclass(frozen=True)
@@ -142,14 +96,6 @@ class MailboxNotice:
     message_id: str
     thread_id: str | None
     reason: str
-
-
-@dataclass(frozen=True)
-class StopSplit:
-    """What an explicit Stop did to the mailbox."""
-
-    cancelled: list[MailboxNotice]
-    cancel_requested: list[tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -171,11 +117,6 @@ def by_room(
         messages.append(notice.message_id)
         groups[key] = (notice, messages)
     return list(groups.values())
-
-
-def one_per_room(notices: Sequence[MailboxNotice]) -> list[MailboxNotice]:
-    """The latest row's notice per (agent, room, reason): one notice per room, in its thread."""
-    return [notice for notice, _ in by_room(notices)]
 
 
 def _notice(row: HostedWakeMailbox, reason: str) -> MailboxNotice:
@@ -204,14 +145,12 @@ class HostedMailboxStore:
         session: AsyncSession,
         *,
         agent_id: str,
-        launch_id: str,
         entry: MailboxEntry,
-        offered_to: str | None,
     ) -> bool:
-        """Insert the row, already offered when a worker is there to take it.
+        """Insert the row as `pending`.
 
         False when the row exists (a redelivered event). Raises `MailboxFull`
-        at the limit. Serialised per launch by the launch lock the caller holds.
+        at the limit. Serialised by the machine lock the caller holds.
         """
         tenant_id = require_tenant_id()
         exists = await session.scalar(
@@ -236,7 +175,6 @@ class HostedMailboxStore:
                 f"agent {agent_id} already has {waiting} mailbox rows waiting"
             )
         now = datetime.now(UTC)
-        offered = offered_to is not None
         result = await session.execute(
             insert(HostedWakeMailbox)
             .values(
@@ -244,14 +182,11 @@ class HostedMailboxStore:
                 agent_id=agent_id,
                 room_id=entry.room_id,
                 message_id=entry.message_id,
-                launch_id=launch_id,
                 thread_id=entry.thread_id,
                 event=entry.event,
-                state="offered" if offered else "pending",
-                ever_offered=offered,
-                offered_to=offered_to,
-                offered_until=now + OFFER_LEASE if offered else None,
-                origin=entry.origin,
+                state="pending",
+                ever_offered=False,
+                origin="live",
                 addressed_at=now,
                 updated_at=now,
                 expires_at=now + MAILBOX_EXPIRY,
@@ -261,94 +196,24 @@ class HostedMailboxStore:
         )
         return result.scalar() is not None
 
-    async def pending(
+    async def admit_pending(
         self, session: AsyncSession, agent_id: str
     ) -> list[HostedWakeMailbox]:
-        """The agent's `pending` rows, oldest first."""
-        return list(
-            await session.scalars(
-                select(HostedWakeMailbox)
-                .where(
-                    HostedWakeMailbox.tenant_id == require_tenant_id(),
-                    HostedWakeMailbox.agent_id == agent_id,
-                    HostedWakeMailbox.state == "pending",
-                )
-                .order_by(HostedWakeMailbox.addressed_at, HostedWakeMailbox.room_id)
-            )
-        )
-
-    async def mark_offered(
-        self,
-        session: AsyncSession,
-        agent_id: str,
-        keys: Sequence[tuple[str, str]],
-        offered_to: str,
-    ) -> set[tuple[str, str]]:
-        """Offer the rows that are still `pending`; the keys that moved."""
-        if not keys:
-            return set()
+        """Admit the agent's `pending` rows, oldest first: for an agent whose
+        controller takes them from the live event stream, not a `wake` frame."""
         now = datetime.now(UTC)
-        result = await session.execute(
+        rows = await session.scalars(
             update(HostedWakeMailbox)
             .where(
                 HostedWakeMailbox.tenant_id == require_tenant_id(),
                 HostedWakeMailbox.agent_id == agent_id,
-                tuple_(HostedWakeMailbox.room_id, HostedWakeMailbox.message_id).in_(
-                    list(keys)
-                ),
                 HostedWakeMailbox.state == "pending",
             )
-            .values(
-                state="offered",
-                ever_offered=True,
-                offered_to=offered_to,
-                offered_until=now + OFFER_LEASE,
-                updated_at=now,
-            )
-            .returning(HostedWakeMailbox.room_id, HostedWakeMailbox.message_id)
+            .values(state="admitted", updated_at=now)
+            .returning(HostedWakeMailbox)
             .execution_options(synchronize_session=False)
         )
-        return {(row.room_id, row.message_id) for row in result}
-
-    async def reclaim(
-        self,
-        session: AsyncSession,
-        agent_id: str | None,
-        live_offers: dict[str, str],
-    ) -> int:
-        """Return `offered` rows to `pending` unless their lease is held by a live stream.
-
-        `live_offers` maps an agent to the offer key of its attached worker;
-        a row offered to anything else (another Core boot, an older
-        generation) or past its lease is reclaimed. `agent_id` narrows it to
-        one agent.
-        """
-        now = datetime.now(UTC)
-        conditions = [
-            HostedWakeMailbox.tenant_id == require_tenant_id(),
-            HostedWakeMailbox.state == "offered",
-        ]
-        if agent_id is not None:
-            conditions.append(HostedWakeMailbox.agent_id == agent_id)
-        held = [
-            and_(
-                HostedWakeMailbox.agent_id == agent,
-                HostedWakeMailbox.offered_to == offer,
-                HostedWakeMailbox.offered_until > now,
-            )
-            for agent, offer in live_offers.items()
-        ]
-        if held:
-            conditions.append(~or_(*held))
-        result = await session.execute(
-            update(HostedWakeMailbox)
-            .where(*conditions)
-            .values(
-                state="pending", offered_to=None, offered_until=None, updated_at=now
-            )
-            .execution_options(synchronize_session=False)
-        )
-        return int(getattr(result, "rowcount", 0) or 0)
+        return sorted(rows, key=lambda row: (row.addressed_at, row.room_id))
 
     async def agents_with_pending(self, session: AsyncSession) -> list[str]:
         return list(
@@ -362,138 +227,12 @@ class HostedMailboxStore:
             )
         )
 
-    async def cancelled_entries(
-        self, session: AsyncSession, agent_id: str
-    ) -> list[dict[str, str]]:
-        """Every tombstone the worker has still to answer, for `worker_attached`."""
-        rows = await session.execute(
-            select(
-                HostedWakeMailbox.room_id,
-                HostedWakeMailbox.message_id,
-                HostedWakeMailbox.cancel_reason,
-            )
-            .where(
-                HostedWakeMailbox.tenant_id == require_tenant_id(),
-                HostedWakeMailbox.agent_id == agent_id,
-                HostedWakeMailbox.state == "cancel_requested",
-            )
-            .order_by(HostedWakeMailbox.addressed_at)
-        )
-        return [
-            {"room_id": room_id, "message_id": message_id, "reason": reason}
-            for room_id, message_id, reason in rows
-        ]
-
-    async def busy(self, session: AsyncSession, launch_id: str) -> bool:
-        """Whether a row of the launch waits for its worker (`held` and tombstones do not)."""
-        return bool(
-            await session.scalar(
-                select(
-                    select(HostedWakeMailbox.message_id)
-                    .where(
-                        HostedWakeMailbox.tenant_id == require_tenant_id(),
-                        HostedWakeMailbox.launch_id == launch_id,
-                        HostedWakeMailbox.state.in_(BUSY_STATES),
-                    )
-                    .exists()
-                )
-            )
-        )
-
-    async def stop(self, session: AsyncSession, launch_id: str) -> StopSplit:
-        """An explicit Stop: definite cancels for rows never offered, tombstones for the rest."""
-        tenant_id = require_tenant_id()
-        now = datetime.now(UTC)
-        cancelled = await session.scalars(
-            update(HostedWakeMailbox)
-            .where(
-                HostedWakeMailbox.tenant_id == tenant_id,
-                HostedWakeMailbox.launch_id == launch_id,
-                HostedWakeMailbox.state == "pending",
-                HostedWakeMailbox.ever_offered.is_(False),
-            )
-            .values(state="cancelled", notice_owed="stopped", updated_at=now)
-            .returning(HostedWakeMailbox)
-            .execution_options(synchronize_session=False)
-        )
-        notices = _notices([(row, "stopped") for row in cancelled])
-        requested = await session.execute(
-            update(HostedWakeMailbox)
-            .where(
-                HostedWakeMailbox.tenant_id == tenant_id,
-                HostedWakeMailbox.launch_id == launch_id,
-                HostedWakeMailbox.state.in_(("pending", "offered", "accepted", "held")),
-            )
-            .values(
-                state="cancel_requested",
-                cancel_reason="stopped",
-                offered_to=None,
-                offered_until=None,
-                updated_at=now,
-            )
-            .returning(HostedWakeMailbox.room_id, HostedWakeMailbox.message_id)
-            .execution_options(synchronize_session=False)
-        )
-        return StopSplit(
-            cancelled=notices,
-            cancel_requested=[(row.room_id, row.message_id) for row in requested],
-        )
-
-    async def ack(
-        self,
-        session: AsyncSession,
-        agent_id: str,
-        acks: Sequence[tuple[str, str, str]],
-    ) -> tuple[dict[tuple[str, str], str], list[MailboxNotice]]:
-        """Apply `(room, message, outcome)` acks; each row's state after, and the notices owed.
-
-        An ack for a row at or past its target, or for no row at all, changes
-        nothing and is not an error: acks are retried.
-        """
-        keys = list({(room, message) for room, message, _ in acks})
-        rows = {
-            (row.room_id, row.message_id): row
-            for row in await session.scalars(
-                select(HostedWakeMailbox)
-                .where(
-                    HostedWakeMailbox.tenant_id == require_tenant_id(),
-                    HostedWakeMailbox.agent_id == agent_id,
-                    tuple_(HostedWakeMailbox.room_id, HostedWakeMailbox.message_id).in_(
-                        keys
-                    ),
-                )
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        }
-        now = datetime.now(UTC)
-        owed: list[tuple[HostedWakeMailbox, str]] = []
-        for room, message, outcome in acks:
-            row = rows.get((room, message))
-            if row is None:
-                continue
-            sources, target = TRANSITIONS[outcome]
-            if row.state not in sources:
-                continue
-            if row.state == "cancel_requested":
-                reason = row.cancel_reason or "stopped"
-                row.notice_owed = (
-                    reason if target == "cancelled" else STARTED_BEFORE[reason]
-                )
-                owed.append((row, row.notice_owed))
-            row.state = target
-            row.offered_to = None
-            row.offered_until = None
-            row.updated_at = now
-        return {key: row.state for key, row in rows.items()}, _notices(owed)
-
     async def expire(
         self, session: AsyncSession, now: datetime
     ) -> tuple[list[MailboxNotice], int]:
         """Settle rows 24 h old by state; the notices owed and the tombstones made.
 
-        `cancel_requested` rows are never touched: a tombstone stays until the
-        watcher answers it or the launch goes.
+        `cancel_requested` rows are never touched.
         """
         tenant_id = require_tenant_id()
         due = [
@@ -637,17 +376,6 @@ class HostedMailboxStore:
             .execution_options(synchronize_session=False)
         )
         return int(getattr(result, "rowcount", 0) or 0)
-
-    async def delete_launch(self, session: AsyncSession, launch_id: str) -> None:
-        """A removed launch's rows go with it, tombstones included, with no notice."""
-        await session.execute(
-            delete(HostedWakeMailbox)
-            .where(
-                HostedWakeMailbox.tenant_id == require_tenant_id(),
-                HostedWakeMailbox.launch_id == launch_id,
-            )
-            .execution_options(synchronize_session=False)
-        )
 
     async def backlog(
         self, session: AsyncSession, since: datetime

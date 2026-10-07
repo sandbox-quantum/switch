@@ -53,7 +53,8 @@ import {
   searchDirectoryOnServer,
 } from '@main/core/switch-servers/identities';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
-import { serverKindOf } from '@main/core/switch-servers/servers-store';
+import { listServers, serverKindOf } from '@main/core/switch-servers/servers-store';
+import { isHiddenSwitchCloudServer } from '@main/core/switch-servers/switch-cloud';
 import { updateBridgeOnServer } from '@main/core/switch-servers/update-bridge';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
@@ -111,6 +112,17 @@ import {
   workspaceServer,
 } from './workspace-session';
 import { getActiveWorkspaceId, listWorkspaces, setActiveWorkspaceId } from './workspaces-store';
+
+/** Servers kept but not listed: Switch Cloud while this run has it turned off. */
+async function hiddenServerIds(): Promise<Set<string>> {
+  const servers = await listServers();
+  return new Set(servers.filter(isHiddenSwitchCloudServer).map((server) => server.id));
+}
+
+async function listedWorkspaces(): Promise<Workspace[]> {
+  const hidden = await hiddenServerIds();
+  return (await listWorkspaces()).filter((workspace) => !hidden.has(workspace.serverId));
+}
 
 /** A bridge result's discriminant as a code. Never the message beside it. */
 function bridgeFailureReason(kind: string): TelemetryBridgeFailure {
@@ -232,12 +244,21 @@ function reportRoomCreated(
  * are not workspace-scoped and stay in `switch-servers/controller.ts`.
  */
 export const workspacesController = createRPCController({
-  list: (): Promise<Workspace[]> => listWorkspaces(),
+  list: (): Promise<Workspace[]> => listedWorkspaces(),
 
-  getActiveId: (): Promise<string | null> => getActiveWorkspaceId(),
+  getActiveId: async (): Promise<string | null> => {
+    const activeId = await getActiveWorkspaceId();
+    if (activeId === null) return null;
+    const hidden = await hiddenServerIds();
+    const active = (await listWorkspaces()).find((workspace) => workspace.id === activeId);
+    return active && hidden.has(active.serverId) ? null : activeId;
+  },
 
   /** Servers where the signed-in account belongs to no workspace yet. */
-  serversWithoutMembership: async (): Promise<string[]> => listServersWithoutMembership(),
+  serversWithoutMembership: async (): Promise<string[]> => {
+    const hidden = await hiddenServerIds();
+    return listServersWithoutMembership().filter((serverId) => !hidden.has(serverId));
+  },
 
   setActive: (workspaceId: string): Promise<void> => setActiveWorkspaceId(workspaceId),
 

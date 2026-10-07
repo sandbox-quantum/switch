@@ -117,6 +117,10 @@ async function start(
     conversationLost?: boolean;
     /** The provider cannot resume the saved conversation, however often it is asked. */
     unresumable?: boolean;
+    /** The agent's instructions as its definition stands; null when the configuration has none apart. */
+    instructions?: string | null;
+    /** The provider takes developer messages mid-conversation; each one is recorded here. */
+    developerMessages?: string[];
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -209,6 +213,13 @@ async function start(
     ...(opts.backgroundWork
       ? { hasBackgroundWork: () => live && opts.backgroundWork!.running }
       : {}),
+    ...(opts.developerMessages
+      ? {
+          addDeveloperMessage: async (_sessionId: string, text: string) => {
+            opts.developerMessages!.push(text);
+          },
+        }
+      : {}),
     subscribe: (fn) => {
       listener = fn;
       return () => {
@@ -257,6 +268,7 @@ async function start(
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
       parent: connectParent(parent.port),
       parkAfterMs: opts.parkAfterMs ?? null,
+      instructions: opts.instructions ?? null,
     },
     adapter,
     stop.signal
@@ -408,6 +420,78 @@ it('turns a room message it was handed into a fenced prompt, once', async () => 
     expect(await host.stop()).toBeNull();
   }
 });
+
+it('tells a running conversation once that its instructions changed, across restarts', async () => {
+  // Each host is its own process, whose exit frees its ownership for the next.
+  const restart = async (host: Harness, instructions: string): Promise<Harness> => {
+    expect(await host.stop()).toBeNull();
+    await rm(join(host.root, 'shared-owner.lock'));
+    return start({ rooms: true, base: host.base, instructions });
+  };
+  const answer = async (host: Harness, sequence: number, body: string): Promise<string> => {
+    const before = host.turns.length;
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, body) })
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(before + 1), { timeout: 5000 });
+    const turn = host.turns.at(-1)!;
+    host.emit({ type: 'turn.completed', turnId: turn.turnId, outcome: 'completed', usage: [] });
+    return turn.text;
+  };
+
+  const first = await start({ rooms: true, instructions: 'Speak like Yoda.' });
+  expect(await answer(first, 1, 'hi')).not.toContain('instructions were changed');
+
+  const edited = await restart(first, 'Speak plainly.');
+  expect(await answer(edited, 2, 'and now?')).toMatch(
+    /^\[Switch\] Your agent instructions were changed by your owner\.[\s\S]*BEGIN AGENT INSTRUCTIONS\nSpeak plainly\.\nEND AGENT INSTRUCTIONS\n\n\[Switch\] A Person addressed you/
+  );
+  expect(await answer(edited, 3, 'again')).not.toContain('instructions were changed');
+
+  const again = await restart(edited, 'Speak plainly.');
+  try {
+    expect(await answer(again, 4, 'still?')).not.toContain('instructions were changed');
+  } finally {
+    expect(await again.stop()).toBeNull();
+  }
+}, 30_000);
+
+it('gives a provider that takes developer messages its changed instructions as one', async () => {
+  const first = await start({ rooms: true, instructions: 'Speak like Yoda.' });
+  expect(await first.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') })).toMatchObject({
+    ok: true,
+  });
+  await vi.waitFor(() => expect(first.turns).toHaveLength(1), { timeout: 5000 });
+  first.emit({
+    type: 'turn.completed',
+    turnId: first.turns[0]!.turnId,
+    outcome: 'completed',
+    usage: [],
+  });
+  expect(await first.stop()).toBeNull();
+  await rm(join(first.root, 'shared-owner.lock'));
+
+  const developerMessages: string[] = [];
+  const edited = await start({
+    rooms: true,
+    base: first.base,
+    instructions: 'Speak plainly.',
+    developerMessages,
+  });
+  try {
+    expect(developerMessages).toHaveLength(1);
+    expect(developerMessages[0]).toContain(
+      'BEGIN AGENT INSTRUCTIONS\nSpeak plainly.\nEND AGENT INSTRUCTIONS'
+    );
+    expect(
+      await edited.parent.ask({ type: 'room', handoff: roomMessage(2, 'and now?') })
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(edited.turns).toHaveLength(1), { timeout: 5000 });
+    expect(edited.turns[0]!.text).not.toContain('instructions were changed');
+  } finally {
+    expect(await edited.stop()).toBeNull();
+  }
+}, 30_000);
 
 it('fetches a room attachment from the room, and says which ones it could not take', async () => {
   const host = await start({ rooms: true });

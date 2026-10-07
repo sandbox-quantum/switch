@@ -59,6 +59,15 @@ export function managedAgentLabel(agent: ManagedAgentView): string {
 }
 
 /**
+ * Whether the agent is a Switch cloud agent: placed on a cloud machine's
+ * controller (kind `ec2`). The sidebar lists those as cloud agents, with their
+ * sessions, rather than as managed agent rows.
+ */
+export function isCloudManagedAgent(agent: ManagedAgentView): boolean {
+  return agent.machine?.kind === 'ec2';
+}
+
+/**
  * What is wrong with where the agent runs, in a sentence, or null when nothing
  * is. `machine` is the owner's machine as the server lists it, null while that
  * list is not in (or no longer names it), when only the agent's own copy of its

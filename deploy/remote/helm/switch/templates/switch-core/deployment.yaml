@@ -28,6 +28,7 @@ spec:
         {{- include "switch.labels" . | nindent 8 }}
         {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 8 }}
     spec:
+      serviceAccountName: {{ .Values.switchCore.serviceAccount.name }}
       {{- if .Values.global.imagePullSecrets }}
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
@@ -70,14 +71,20 @@ spec:
             {{- if .Values.switchCore.hostedControllerSecret }}
             - name: HOSTED_CONTROLLER_CONFIG_PATH
               value: /etc/switch-hosted/controller.json
-            - name: HOSTED_PROVIDER_VERIFICATION_ENABLED
-              value: {{ .Values.switchCore.hostedProviderVerificationEnabled | quote }}
             - name: HOSTED_LAUNCH_CAPACITY
               value: {{ .Values.switchCore.hostedLaunchCapacity | quote }}
             - name: HOSTED_DISK_RETENTION_DAYS
               value: {{ .Values.switchCore.hostedDiskRetentionDays | quote }}
             - name: HOSTED_IDLE_STOP_MINUTES
               value: {{ .Values.switchCore.hostedIdleStopMinutes | quote }}
+            {{- end }}
+            {{- if .Values.switchCore.hostedLoginKmsKeyArn }}
+            - name: HOSTED_LOGIN_KMS_KEY_ARN
+              value: {{ .Values.switchCore.hostedLoginKmsKeyArn | quote }}
+            {{- end }}
+            {{- if .Values.switchCore.hostedLoginKmsRegion }}
+            - name: HOSTED_LOGIN_KMS_REGION
+              value: {{ .Values.switchCore.hostedLoginKmsRegion | quote }}
             {{- end }}
             {{- if .Values.switchCore.githubConnectionsSecret }}
             - name: HOSTED_GITHUB_CONFIG_PATH

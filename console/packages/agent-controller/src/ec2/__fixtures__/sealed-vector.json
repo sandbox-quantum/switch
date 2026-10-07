@@ -1,0 +1,87 @@
+{
+  "dataKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "encryptedKey": "d3JhcHBlZC1kYXRhLWtleS1wbGFjZWhvbGRlcg==",
+  "keyArn": "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000",
+  "cases": {
+    "claude": {
+      "aad": "{\"context\":{\"switch:controller_id\":\"ctl-1\",\"switch:owner_id\":\"owner-1\",\"switch:provider\":\"claude\",\"switch:tenant\":\"tenant-1\"},\"revision\":3}",
+      "envelope": {
+        "v": 1,
+        "provider": "claude",
+        "revision": 3,
+        "status": "connected",
+        "key_arn": "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000",
+        "encrypted_key": "d3JhcHBlZC1kYXRhLWtleS1wbGFjZWhvbGRlcg==",
+        "iv": "AAECAwQFBgcICQoL",
+        "ciphertext": "PCClb6SRt2ive7Xo3ocWCOCi4lDSV30OXRGM9nQGbpA7Mp3eg+Ni6hvSFont9QoCzDoM7C+yxvgTtUFwdofX1NJdthP+ukMYPniIDZ3qao1W/qADGkFpSo6Ws60WhJT5rosty9QtqXn7dFHeLBBTXcc=",
+        "tag": "6UvVzHm9blxzkSzkz8XxKg==",
+        "context": {
+          "switch:tenant": "tenant-1",
+          "switch:owner_id": "owner-1",
+          "switch:controller_id": "ctl-1",
+          "switch:provider": "claude"
+        }
+      }
+    },
+    "claudeNext": {
+      "aad": "{\"context\":{\"switch:controller_id\":\"ctl-1\",\"switch:owner_id\":\"owner-1\",\"switch:provider\":\"claude\",\"switch:tenant\":\"tenant-1\"},\"revision\":4}",
+      "envelope": {
+        "v": 1,
+        "provider": "claude",
+        "revision": 4,
+        "status": "connected",
+        "key_arn": "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000",
+        "encrypted_key": "d3JhcHBlZC1kYXRhLWtleS1wbGFjZWhvbGRlcg==",
+        "iv": "AQIDBAUGBwgJCgsM",
+        "ciphertext": "fsgpoY3ghfVumEEkf32ETSE3hJq1QXK3xCmQV/fZGOe+xq/9Qpec7d/a04GgqdpnvJUjgaH9U1MaX2ekAWUWNlUce0qSmjiZaT6SGYldZ8KzRFlJjgvE4gn9u2pOig1X8rUYUM8obwaQvv5Jz5Nq4aqmWg==",
+        "tag": "RyRFAdeqb6XpuSq4Jq+0Ig==",
+        "context": {
+          "switch:tenant": "tenant-1",
+          "switch:owner_id": "owner-1",
+          "switch:controller_id": "ctl-1",
+          "switch:provider": "claude"
+        }
+      }
+    },
+    "codex": {
+      "aad": "{\"context\":{\"switch:controller_id\":\"ctl-1\",\"switch:owner_id\":\"owner-1\",\"switch:provider\":\"codex\",\"switch:tenant\":\"tenant-1\"},\"revision\":7}",
+      "envelope": {
+        "v": 1,
+        "provider": "codex",
+        "revision": 7,
+        "status": "connected",
+        "key_arn": "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000",
+        "encrypted_key": "d3JhcHBlZC1kYXRhLWtleS1wbGFjZWhvbGRlcg==",
+        "iv": "AgMEBQYHCAkKCwwN",
+        "ciphertext": "EuTXtRgOqsGAQwFYZCyTBd+P0l6IOyn30y+Z7mrsrBWacZs8bnXQTO9hN0pYODE70/MQlckhsZLpe9ZMq9mFlDofEbqaDottzDPUgBY01UjZiAum1JnUGQUanu0DKmFfDZGwbaXb6xmUyUdtRFI/uupH+OInzzRRXrEMyak3USRNhEOabTfTOb5u",
+        "tag": "gHrX4ep1LjahMHygazSfnQ==",
+        "context": {
+          "switch:tenant": "tenant-1",
+          "switch:owner_id": "owner-1",
+          "switch:controller_id": "ctl-1",
+          "switch:provider": "codex"
+        }
+      }
+    },
+    "unicode": {
+      "aad": "{\"context\":{\"switch:controller_id\":\"ctl-1\",\"switch:owner_id\":\"owner-1\",\"switch:provider\":\"claude\",\"switch:tenant\":\"t\\u00e9nant-\\u00fc-\\ud83d\\ude00\"},\"revision\":12}",
+      "envelope": {
+        "v": 1,
+        "provider": "claude",
+        "revision": 12,
+        "status": "connected",
+        "key_arn": "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000",
+        "encrypted_key": "d3JhcHBlZC1kYXRhLWtleS1wbGFjZWhvbGRlcg==",
+        "iv": "AwQFBgcICQoLDA0O",
+        "ciphertext": "k235Vre7HxvoymQz1IJ0QRPBWuolJPU6ZncpPbm7O0Rjxd4FMTrer8iFAE5KXFEgmtNgbFqiKW5GcC/2uRxL5gcrbdBXLoYxTZdQgGpPLGbmeBHzJDTa0Inmxs98gjrud+t6VaIoSQ4aGxhhuwEMWtoVl6UC",
+        "tag": "+vE4GAOZ/XDkWx1NUF4Ilw==",
+        "context": {
+          "switch:tenant": "t\u00e9nant-\u00fc-\ud83d\ude00",
+          "switch:owner_id": "owner-1",
+          "switch:controller_id": "ctl-1",
+          "switch:provider": "claude"
+        }
+      }
+    }
+  }
+}

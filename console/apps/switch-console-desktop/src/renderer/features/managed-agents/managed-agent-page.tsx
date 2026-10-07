@@ -29,6 +29,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
 import { Badge } from '@renderer/lib/ui/badge';
@@ -433,9 +434,17 @@ const MovedFromConsole = observer(function MovedFromConsole({
 }: {
   agent: ManagedAgentView;
 }) {
+  const { navigate } = useNavigate();
   const local = agentsStore
     .agentsOnServer(agent.serverId)
     .find((candidate) => candidate.switchAgentId === agent.agentId);
   if (!local) return null;
-  return <ManagedAgentSection agentId={local.id} />;
+  return (
+    <ManagedAgentSection
+      agentId={local.id}
+      onReturned={() =>
+        navigate('location', { locationId: local.locationId, agentName: local.name })
+      }
+    />
+  );
 });

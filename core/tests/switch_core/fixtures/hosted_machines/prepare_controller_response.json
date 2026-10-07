@@ -1,0 +1,22 @@
+{
+  "machine_id": "3f1c2b4a-0000-4000-8000-000000000001",
+  "slot_id": "slot-a",
+  "generation": 1,
+  "revision": 1,
+  "runtime": "controller",
+  "bundle_revision": 1,
+  "api_endpoint": "https://switch.example.com/api/agent",
+  "controller": {
+    "id": "3f1c2b4a-0000-4000-8000-0000000000e1",
+    "credential": "swcc_test-000000000000000000000000000000000000"
+  },
+  "kms": {
+    "key_arn": "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000",
+    "region": "us-east-1",
+    "context": {
+      "switch:tenant": "00000000-0000-0000-0000-000000000000",
+      "switch:owner_id": "3f1c2b4a-0000-4000-8000-0000000000b1",
+      "switch:controller_id": "3f1c2b4a-0000-4000-8000-0000000000e1"
+    }
+  }
+}

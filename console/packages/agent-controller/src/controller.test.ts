@@ -33,6 +33,7 @@ function agent(revision: number, overrides: Partial<AgentAssignment> = {}): Agen
       auto_approve: false,
       directory: null,
       isolation: 'shared',
+      skills: [],
     },
     ...overrides,
   };
@@ -55,6 +56,7 @@ let stop: AbortController;
 let running: Promise<ControllerExit> | null;
 let watchers: AbortController[];
 let blockers: Server[];
+let changedLogins: string[];
 
 function deps(server = core.url): ControllerDeps {
   store.saveIdentity({
@@ -67,6 +69,8 @@ function deps(server = core.url): ControllerDeps {
     store,
     secrets,
     runtime: runtime.build,
+    sealedLoginChanged: async (provider) => void changedLogins.push(provider),
+    pinnedRelayPort: null,
     locator: new FakeLocator(),
     fetch,
     log: silentLogger,
@@ -84,6 +88,12 @@ function deps(server = core.url): ControllerDeps {
       streamInitialBackoffMs: 10,
       streamMaxBackoffMs: 50,
       relay: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
+      control: {
+        pushBatchMs: 20,
+        pushBatchBytes: 64 * 1024,
+        reconnectMs: 50,
+        connectTimeoutMs: 1_000,
+      },
       eventBufferLimit: 100,
     },
   };
@@ -171,6 +181,7 @@ beforeEach(async () => {
   running = null;
   watchers = [];
   blockers = [];
+  changedLogins = [];
   core.rooms.set('agent-1', ['room-a']);
 });
 
@@ -202,6 +213,9 @@ describe('runController', () => {
       () => reportsFor('agent-1').some((entry) => entry.process === 'running' && entry.attached),
       'a status report with the agent attached'
     );
+    expect(core.statusReports.at(-1)!.activity).toEqual([
+      expect.objectContaining({ agent_id: 'agent-1', busy: expect.any(Boolean) }),
+    ]);
     core.pushEvent('agent-1', 1, addressed(1));
     await waitFor(() => events.length === 1, 'the event at the watcher');
     expect(events[0]).toMatchObject({ type: 'message', room_id: 'room-a', sequence: 1 });
@@ -342,6 +356,8 @@ describe('runController', () => {
       restart: false,
       replaceIdentity: false,
       clearTakenOver: false,
+      skills: [],
+      repository: null,
     });
     await runtime.writeCredentials('agent-1', {
       endpoint: `http://127.0.0.1:${port}`,
@@ -355,6 +371,17 @@ describe('runController', () => {
     expect(store.relayPort()).not.toBe(port);
     stop.abort();
     expect(await running).toBe('stopped');
+  });
+
+  it('refuses to start when the relay port its agents are configured with is taken', async () => {
+    const port = await freePort();
+    const blocker = createServer();
+    blockers.push(blocker);
+    await new Promise<void>((resolve) => blocker.listen(port, '127.0.0.1', resolve));
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    await expect(runController({ ...deps(), pinnedRelayPort: port }, stop.signal)).rejects.toThrow(
+      `The relay port ${port} this machine's agents are configured with is taken`
+    );
   });
 
   it('exits as taken over when another instance opens the controller stream', async () => {
@@ -422,8 +449,22 @@ describe('runController', () => {
     expect(runtime.launches('agent-1')[1]!.options).toMatchObject({
       restart: true,
       clearTakenOver: true,
+      skills: [],
+      repository: null,
     });
     expect(runtime.probes).toBeGreaterThan(probesBefore);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('fetches a sealed login again when Switch says it changed', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the first start');
+    core.push('provider.credential_changed', { provider: 'not-a-provider', revision: 1 });
+    core.push('provider.credential_changed', { provider: 'codex', revision: 4 });
+    await waitFor(() => changedLogins.length === 1, 'the changed login fetched');
+    expect(changedLogins).toEqual(['codex']);
     stop.abort();
     expect(await running).toBe('stopped');
   });

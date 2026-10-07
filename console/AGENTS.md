@@ -132,10 +132,17 @@ Switch Cloud, the hosted deployment the first-run page and the Add server dialog
 offer, has no URL in source. Point a run at one with `SWITCH_CLOUD_URL`, or bake
 one into a build with `MAIN_VITE_SWITCH_CLOUD_URL` (inlined into the main
 process by electron-vite). Either must be a bare https origin; with neither set
-the Cloud choice reads "Coming soon".
+the Cloud choice is not offered.
+
+The whole feature is off unless `SWITCH_CLOUD_ENABLED` (run time) or
+`MAIN_VITE_SWITCH_CLOUD_ENABLED` (build time) is exactly `true`; the run-time
+value wins when set. Off hides every Cloud surface — the Cloud choice, Switch
+Cloud servers already registered (their rows are kept), cloud agents and
+machines, Connections, and the "Switch cloud" run location — and the main
+process refuses Cloud calls. Any value other than `true` or `false` is an error.
 
 ```bash
-SWITCH_CLOUD_URL=https://cloud.example.com pnpm run dev
+SWITCH_CLOUD_ENABLED=true SWITCH_CLOUD_URL=https://cloud.example.com pnpm run dev
 ```
 
 Run main-process or renderer-only dev watches:
@@ -439,8 +446,10 @@ pnpm run lint
   enough — excess-property checking does not apply through a spread — so the runtime
   filter is what makes "nothing free-text can reach a payload" true rather than intended.
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
-  success-vs-failure, how long an operation took, app version, operating system, and the
-  random install id. A duration is a number rather than a value from a fixed set,
+  success-vs-failure, how long an operation took, app version, operating system, the
+  random install id, which kind of launch it was (first, after an update, or neither),
+  and whether a signed-in account is on a company email domain — the yes/no only, read
+  from the domain, never the address. A duration is a number rather than a value from a fixed set,
   so it is held to `TelemetryDurationMs`: measured on a monotonic clock, whole
   milliseconds, and never a span that could encode something else. That is a branded
   type, not an alias for `number`, and `startTimer()` is the only thing that mints one —

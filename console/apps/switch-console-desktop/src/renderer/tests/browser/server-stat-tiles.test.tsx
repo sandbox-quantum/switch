@@ -40,31 +40,30 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { servers: [], statusFor: () => null },
+  switchServersStore: { servers: [], statusFor: () => null, isConnected: () => true },
 }));
 
+import { runInAction } from 'mobx';
 import { ServerStatTiles } from '@renderer/features/switch-servers/server-stat-tiles';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
+
+runInAction(() => {
+  switchCloudFeature.enabled = true;
+});
 
 function cloudAgent(): CloudAgent {
   return {
-    key: 'cloud:server:launch',
-    launch: {
-      request_id: '00000000-0000-4000-8000-000000000001',
-      name: 'reviewer',
-      provider: 'claude',
-      state: 'ready',
-      desired_state: 'running',
-      revision: 1,
-      agent_id: 'agent',
-      error: null,
-      error_code: null,
-      sleeping: false,
-      machine_id: null,
-      process_state: null,
-      process_restarts: 0,
-      oom_kills: 0,
-    },
+    key: 'cloud:server:agent=agent',
+    agentId: 'agent',
+    name: 'reviewer',
+    provider: 'claude',
     machine: null,
+    controller: {
+      controllerId: 'cloud-controller',
+      desiredState: 'running',
+      process: 'running',
+      detail: null,
+    },
     sessions: null,
     problem: null,
   };

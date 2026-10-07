@@ -1,20 +1,30 @@
 /**
  * A new cloud session whose start was never confirmed is not shown as a
  * failure: once the session appears, the row offers to open it, and until
- * then it asks again for the same session rather than a new one. A worker is
- * asked for its sessions only while its row is expanded.
+ * then it asks again for the same session rather than a new one. An agent is
+ * asked for its sessions only while its row is expanded. A cloud agent is
+ * listed once, as its cloud row, not also as a managed agent row.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { CloudAgent, CloudLaunch, CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
+import type {
+  CloudAgent,
+  CloudControllerAgent,
+  CloudMachine,
+} from '@shared/core/cloud-agents/cloud-agents';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 
 const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
   cloudSessions: vi.fn(),
   cloudSessionOperation: vi.fn(),
   cloudWake: vi.fn(),
+}));
+const managedAgents = vi.hoisted(() => ({
+  list: vi.fn(),
+  machines: vi.fn(),
 }));
 const expandedCloudGroups = await vi.hoisted(async () => {
   const { observable } = await import('mobx');
@@ -32,7 +42,7 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { sdkHost, switchServers: { cloudMachineLifecycle: vi.fn() } },
+  rpc: { sdkHost, managedAgents, switchServers: { cloudMachineLifecycle: vi.fn() } },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
@@ -40,7 +50,7 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { activeServerId: 'server', statusFor: () => null },
+  switchServersStore: { activeServerId: 'server', statusFor: () => null, isConnected: () => true },
 }));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
@@ -61,34 +71,34 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
   },
 }));
 
+import { runInAction } from 'mobx';
 import { CloudAgentList } from '@renderer/features/cloud-agents/cloud-agent-list';
 import {
   cloudOperationAttempts,
   startAttemptKey,
 } from '@renderer/features/cloud-agents/cloud-operation-attempts';
+import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 
-const agentKey = 'cloud:server:launch';
+runInAction(() => {
+  switchCloudFeature.enabled = true;
+});
+
+const agentKey = 'cloud:server:agent=agent';
 
 function agent(key = agentKey, name = 'reviewer'): CloudAgent {
   return {
     key,
-    launch: {
-      request_id: '00000000-0000-4000-8000-000000000001',
-      name,
-      provider: 'claude',
-      state: 'ready',
-      desired_state: 'running',
-      revision: 4,
-      agent_id: 'agent',
-      error: null,
-      error_code: null,
-      sleeping: false,
-      machine_id: null,
-      process_state: null,
-      process_restarts: 0,
-      oom_kills: 0,
-    },
+    agentId: key.slice(key.indexOf('agent=') + 'agent='.length),
+    name,
+    provider: 'claude',
     machine: null,
+    controller: {
+      controllerId: 'cloud-controller',
+      desiredState: 'running',
+      process: 'running',
+      detail: null,
+    },
     sessions: null,
     problem: null,
   };
@@ -108,6 +118,9 @@ let root: Root | null = null;
 
 beforeEach(() => {
   navigate.mockReset();
+  managedAgents.list.mockReset();
+  managedAgents.list.mockResolvedValue([]);
+  managedAgents.machines.mockResolvedValue([]);
   sdkHost.cloudSessionOperation.mockReset();
   sdkHost.cloudSessions.mockReset();
   sdkHost.cloudWake.mockReset();
@@ -130,6 +143,7 @@ async function render(): Promise<HTMLDivElement> {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
+        <ManagedAgentList />
         <CloudAgentList />
       </QueryClientProvider>
     )
@@ -186,8 +200,8 @@ it('asks again for the same session from Check again', async () => {
   );
 });
 
-it('asks no worker while its row is collapsed, and one when that row is expanded', async () => {
-  const other = 'cloud:server:other';
+it('asks no agent while its row is collapsed, and one when that row is expanded', async () => {
+  const other = 'cloud:server:agent=other';
   sdkHost.cloudAgents.mockResolvedValue([agent(), agent(other, 'writer')]);
   sdkHost.cloudSessions.mockResolvedValue(sessions(['s1']));
   const el = await render();
@@ -205,7 +219,7 @@ it('asks no worker while its row is collapsed, and one when that row is expanded
 });
 
 it('keeps a cloud row expanded after remount', async () => {
-  const other = 'cloud:server:other';
+  const other = 'cloud:server:agent=other';
   sdkHost.cloudAgents.mockResolvedValue([agent(), agent(other, 'writer')]);
   sdkHost.cloudSessions.mockResolvedValue(sessions(['s1']));
   const el = await render();
@@ -242,10 +256,10 @@ it('labels no session the next message restarts, but still a stopped or working 
   expect(el.textContent).not.toMatch(/offline/i);
 });
 
-function asleep(overrides: Partial<CloudAgent['launch']>, wakeAvailable: boolean): CloudAgent {
+function asleep(overrides: Partial<CloudControllerAgent>, wakeAvailable: boolean): CloudAgent {
   return {
     ...agent(),
-    launch: { ...agent().launch, ...overrides },
+    controller: { ...agent().controller, ...overrides },
     problem: { code: 'worker_sleeping', message: 'The cloud machine is asleep.', wakeAvailable },
   };
 }
@@ -260,9 +274,9 @@ it('wakes a sleeping agent’s machine from the list', async () => {
 });
 
 it('says once that the machine its agents share is asleep, not under each agent', async () => {
-  const other = 'cloud:server:other';
+  const other = 'cloud:server:agent=other';
   sdkHost.cloudAgents.mockResolvedValue([
-    { ...asleep({ desired_state: 'stopped', state: 'stopped' }, false), key: other },
+    { ...asleep({ desiredState: 'stopped' }, false), key: other },
     asleep({}, true),
   ]);
   sdkHost.cloudWake.mockResolvedValue(undefined);
@@ -279,7 +293,7 @@ it('says once that the machine its agents share is asleep, not under each agent'
 it('still says under the agent why only that agent cannot be asked', async () => {
   sdkHost.cloudAgents.mockResolvedValue([
     {
-      ...onMachine({}, { process_state: 'crashed', error_code: 'agent_crashed' }),
+      ...onMachine({}, { process: 'crashed' }),
       problem: { code: 'agent_crashed', message: 'The agent crashed.', wakeAvailable: false },
     },
   ]);
@@ -292,9 +306,7 @@ it('still says under the agent why only that agent cannot be asked', async () =>
 });
 
 it('offers no wake for a stopped agent on a sleeping machine', async () => {
-  sdkHost.cloudAgents.mockResolvedValue([
-    asleep({ desired_state: 'stopped', state: 'stopped' }, false),
-  ]);
+  sdkHost.cloudAgents.mockResolvedValue([asleep({ desiredState: 'stopped' }, false)]);
   expandedCloudGroups.add(`cloud:${agentKey}`);
   const el = await render();
   expect(el.textContent).toContain('asleep');
@@ -302,10 +314,13 @@ it('offers no wake for a stopped agent on a sleeping machine', async () => {
   expect(button(el, /^wake$/i)).toBeUndefined();
 });
 
-function onMachine(machine: Partial<CloudMachine>, launch: Partial<CloudLaunch> = {}): CloudAgent {
+function onMachine(
+  machine: Partial<CloudMachine>,
+  controller: Partial<CloudControllerAgent> = {}
+): CloudAgent {
   return {
     ...agent(),
-    launch: { ...agent().launch, machine_id: 'machine', ...launch },
+    controller: { ...agent().controller, ...controller },
     machine: {
       machine_id: 'machine',
       state: 'ready',
@@ -318,6 +333,7 @@ function onMachine(machine: Partial<CloudMachine>, launch: Partial<CloudLaunch> 
       error_code: null,
       retain_until: null,
       heartbeat_at: null,
+      controller_id: 'cloud-controller',
       disk: null,
       memory: null,
       agents: [],
@@ -373,25 +389,6 @@ it.each([
   }
 );
 
-it('says the agent is starting when only its launch starts on a running machine', async () => {
-  sdkHost.cloudAgents.mockResolvedValue([
-    {
-      ...onMachine({}, { state: 'provisioning', process_state: 'starting' }),
-      problem: {
-        code: 'worker_waking',
-        message: 'The cloud machine is starting.',
-        wakeAvailable: false,
-      },
-    },
-  ]);
-  expandedCloudGroups.add(`cloud:${agentKey}`);
-  const el = await render();
-  expect(el.textContent).toContain('starting…');
-  expect(el.textContent).toContain('The agent is starting.');
-  expect(el.textContent).not.toContain('waking…');
-  expect(el.textContent).not.toContain('The cloud machine is starting.');
-});
-
 it('says the machine is starting while the machine itself wakes', async () => {
   sdkHost.cloudAgents.mockResolvedValue([
     {
@@ -408,4 +405,57 @@ it('says the machine is starting while the machine itself wakes', async () => {
   expect(el.textContent).toContain('waking…');
   expect(el.textContent).toContain('The cloud machine is starting.');
   expect(el.textContent).not.toContain('The agent is starting.');
+});
+
+function managed(
+  agentId: string,
+  name: string,
+  displayName: string | null,
+  kind: string
+): ManagedAgentView {
+  return {
+    serverId: 'server',
+    workspaceId: 'workspace',
+    agentId,
+    name,
+    displayName,
+    iconUrl: null,
+    description: '',
+    machine: { id: `${kind}-controller`, name: kind, kind, state: 'online' },
+    desiredState: 'running',
+    revision: 1,
+    definition: {
+      provider: 'claude',
+      model: null,
+      advancedConfig: {},
+      instructions: '',
+      autoApprove: false,
+      directory: null,
+      isolation: 'shared',
+    },
+    status: null,
+  };
+}
+
+it('lists each cloud agent once, as its cloud row under its display name', async () => {
+  managedAgents.list.mockResolvedValue([
+    managed('agent', 'claude', 'Claude Code', 'ec2'),
+    managed('other', 'claude2', null, 'ec2'),
+    managed('local', 'helper', 'Local Helper', 'daemon'),
+  ]);
+  sdkHost.cloudAgents.mockResolvedValue([
+    agent(agentKey, 'claude'),
+    agent('cloud:server:agent=other', 'claude2'),
+  ]);
+  const el = await render();
+
+  const managedRows = el.querySelector('[aria-label="Managed agents"]')!;
+  expect(managedRows.textContent).toContain('Local Helper');
+  expect(managedRows.textContent).not.toContain('Claude Code');
+  expect(managedRows.textContent).not.toContain('claude2');
+
+  const cloudRows = [...el.querySelectorAll('[aria-label="Cloud agents"] button[aria-expanded]')];
+  expect(cloudRows.map((row) => row.textContent)).toEqual(['Claude Code', 'claude2']);
+  expect(button(el, /New session on Claude Code/)).toBeDefined();
+  expect(el.textContent?.match(/Claude Code/g)).toHaveLength(1);
 });

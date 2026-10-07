@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,6 +30,33 @@ class SlotInUseError(StoreError):
 
 class MachineNotFoundError(StoreError):
     pass
+
+
+@dataclass(frozen=True)
+class GrantRecord:
+    """The login-key grant of one slot generation.
+
+    The row is written before CreateGrant is issued, so a grant whose creation
+    outcome is unknown still has a row (with no `grant_id`) and is retired later.
+    """
+
+    slot_id: str
+    generation: int
+    key_arn: str
+    grantee_arn: str
+    grant_id: str | None
+    grant_token: str | None = field(repr=False)
+    retired: bool
+
+
+_ADDED_MACHINE_COLUMNS = {
+    "runtime": "runtime TEXT NOT NULL DEFAULT 'worker' CHECK (runtime IN ('worker', 'controller'))",
+    "target_runtime": (
+        "target_runtime TEXT NOT NULL DEFAULT 'worker'"
+        " CHECK (target_runtime IN ('worker', 'controller'))"
+    ),
+    "target_image_id": "target_image_id TEXT",
+}
 
 
 class MachineStore:
@@ -88,8 +116,21 @@ class MachineStore:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS kms_grants (
+                slot_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK (generation >= 1),
+                key_arn TEXT NOT NULL,
+                grantee_arn TEXT NOT NULL,
+                grant_id TEXT,
+                grant_token TEXT,
+                retired INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (slot_id, generation)
+            );
             """
         )
+        self._add_missing_columns()
         self._bind_fingerprint(controller_fingerprint)
 
     def close(self) -> None:
@@ -107,6 +148,12 @@ class MachineStore:
         if live:
             self._connection.close()
             raise StoreError(LEGACY_ROWS_MESSAGE)
+
+    def _add_missing_columns(self) -> None:
+        present = {row["name"] for row in self._connection.execute("PRAGMA table_info(machines)")}
+        for column, definition in _ADDED_MACHINE_COLUMNS.items():
+            if column not in present:
+                self._connection.execute(f"ALTER TABLE machines ADD COLUMN {definition}")
 
     def _bind_fingerprint(self, fingerprint: str) -> None:
         self._connection.execute("BEGIN IMMEDIATE")
@@ -292,6 +339,7 @@ class MachineStore:
     def upgrade_terminated(
         self, claim: Machine, image_id: str, previous_runtime_fingerprint: str
     ) -> Machine:
+        """Move a stopped machine onto `image_id`, superseding a pending image change."""
         if (
             claim.desired_state is not DesiredState.STOPPED
             or not claim.instance_id
@@ -304,7 +352,9 @@ class MachineStore:
             raise StoreError("the machine already uses this image")
         cursor = self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            image_id = ?, previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
+            image_id = ?,
+            target_image_id = NULL,
+            previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
@@ -353,6 +403,58 @@ class MachineStore:
                 claim.instance_id,
             ),
         )
+        return self.get(claim.machine_id)
+
+    def request_image(self, machine_id: str, image_id: str) -> Machine:
+        """Record the image the machine should run.
+
+        An image other than the current one is applied by `switch_image` once
+        the current instance is gone.
+        """
+        self._connection.execute(
+            """
+            UPDATE machines SET
+                target_image_id = CASE WHEN image_id != ? THEN ? ELSE NULL END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ?
+            """,
+            (image_id, image_id, machine_id),
+        )
+        return self.get(machine_id)
+
+    def switch_image(self, claim: Machine) -> Machine:
+        """Adopt the requested image for the next instance.
+
+        The machine must have no instance, or a confirmed terminated one, which
+        becomes the predecessor whose data volume the next instance reattaches.
+        """
+        if claim.target_image_id is None:
+            raise StoreError("no image change is pending")
+        if claim.instance_id is not None and not claim.instance_terminal_observed:
+            raise StoreError("an image change requires a confirmed terminated predecessor")
+        if claim.instance_id is None and claim.instance_launch_issued:
+            raise StoreError("an image change cannot overtake an issued launch")
+        cursor = self._connection.execute(
+            """UPDATE machines SET image_id = target_image_id,
+            target_image_id = NULL,
+            previous_instance_id = COALESCE(instance_id, previous_instance_id), instance_id = NULL,
+            previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
+            instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
+            instance_terminate_issued = 0, instance_terminal_observed = 0,
+            observed_state = 'provisioning', error = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
+            AND desired_state = 'running' AND target_image_id = ?
+            AND instance_id IS ?""",
+            (
+                claim.machine_id,
+                claim.desired_revision,
+                claim.operation_id,
+                claim.target_image_id,
+                claim.instance_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise StoreError("machine state changed during image change; refresh before retrying")
         return self.get(claim.machine_id)
 
     def release_terminated(self, claim: Machine) -> Machine:
@@ -499,6 +601,75 @@ class MachineStore:
         )
         return self.get(machine_id)
 
+    def intend_grant(
+        self, slot_id: str, generation: int, key_arn: str, grantee_arn: str
+    ) -> GrantRecord:
+        """Record that a grant for this slot generation is about to be created.
+
+        A retired grant (a retained machine that runs again) is reopened empty,
+        since its revoked grant cannot be used again.
+        """
+        self._connection.execute(
+            """
+            INSERT INTO kms_grants (slot_id, generation, key_arn, grantee_arn)
+            VALUES (?, ?, ?, ?) ON CONFLICT (slot_id, generation) DO UPDATE SET
+                key_arn = excluded.key_arn, grantee_arn = excluded.grantee_arn,
+                grant_id = NULL, grant_token = NULL, retired = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE kms_grants.retired = 1
+            """,
+            (slot_id, generation, key_arn, grantee_arn),
+        )
+        record = self.grant(slot_id, generation)
+        if record is None:
+            raise StoreError("grant intent was not recorded")
+        if record.key_arn != key_arn or record.grantee_arn != grantee_arn:
+            raise StoreError("the grant of this slot generation has a different key or grantee")
+        return record
+
+    def record_grant(
+        self, slot_id: str, generation: int, grant_id: str, grant_token: str
+    ) -> GrantRecord:
+        cursor = self._connection.execute(
+            """
+            UPDATE kms_grants SET grant_id = ?, grant_token = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE slot_id = ? AND generation = ? AND retired = 0
+            """,
+            (grant_id, grant_token, slot_id, generation),
+        )
+        if cursor.rowcount != 1:
+            raise StoreError("no open grant intent for this slot generation")
+        record = self.grant(slot_id, generation)
+        assert record is not None
+        return record
+
+    def grant(self, slot_id: str, generation: int) -> GrantRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM kms_grants WHERE slot_id = ? AND generation = ?",
+            (slot_id, generation),
+        ).fetchone()
+        return None if row is None else _grant(row)
+
+    def open_grants(self, slot_id: str, before_generation: int) -> list[GrantRecord]:
+        return [
+            _grant(row)
+            for row in self._connection.execute(
+                """
+                SELECT * FROM kms_grants WHERE slot_id = ? AND generation < ? AND retired = 0
+                ORDER BY generation
+                """,
+                (slot_id, before_generation),
+            )
+        ]
+
+    def mark_grant_retired(self, slot_id: str, generation: int) -> None:
+        self._connection.execute(
+            """
+            UPDATE kms_grants SET retired = 1, updated_at = CURRENT_TIMESTAMP
+            WHERE slot_id = ? AND generation = ?
+            """,
+            (slot_id, generation),
+        )
+
     def get(self, machine_id: str) -> Machine:
         return self._get_row(machine_id)
 
@@ -586,7 +757,7 @@ class MachineStore:
 
 def require_recovery_allowed(machine: Machine) -> None:
     if machine.recovery_count >= RECOVERY_LIMIT:
-        raise StoreError("automatic worker recovery limit reached; operator review is required")
+        raise StoreError("automatic machine recovery limit reached; operator review is required")
 
 
 def _later(stored: datetime | None, requested: datetime | None) -> datetime | None:
@@ -645,4 +816,17 @@ def _machine(row: sqlite3.Row) -> Machine:
         required_bundle_revision=row["required_bundle_revision"],
         required_bundle_token=row["required_bundle_token"],
         bundle_token=row["bundle_token"],
+        target_image_id=row["target_image_id"],
+    )
+
+
+def _grant(row: sqlite3.Row) -> GrantRecord:
+    return GrantRecord(
+        slot_id=row["slot_id"],
+        generation=row["generation"],
+        key_arn=row["key_arn"],
+        grantee_arn=row["grantee_arn"],
+        grant_id=row["grant_id"],
+        grant_token=row["grant_token"],
+        retired=bool(row["retired"]),
     )

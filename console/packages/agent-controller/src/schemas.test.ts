@@ -122,6 +122,7 @@ const definition = {
   auto_approve: false,
   directory: null,
   isolation: 'shared',
+  skills: [],
 };
 
 describe('received messages', () => {
@@ -134,12 +135,21 @@ describe('received messages', () => {
           agent_id: 'a',
           revision: 1,
           desired_state: 'running',
-          definition: { ...definition, skills: [] },
+          definition: { ...definition, future_definition_field: true },
         },
       ],
     });
     expect(parsed).not.toHaveProperty('future_field');
-    expect(parsed.agents[0]!.definition).not.toHaveProperty('skills');
+    expect(parsed.agents[0]!.definition).not.toHaveProperty('future_definition_field');
+  });
+
+  it('reads a definition from a Core that sends no skills as having none', () => {
+    const { skills: _, ...withoutSkills } = definition;
+    const parsed = assignmentSchema.parse({
+      revision: 1,
+      agents: [{ agent_id: 'a', revision: 1, desired_state: 'running', definition: withoutSkills }],
+    });
+    expect(parsed.agents[0]!.definition.skills).toEqual([]);
   });
 
   it('reads an enum value it does not know as unknown', () => {

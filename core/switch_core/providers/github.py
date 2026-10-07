@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import re
 import secrets
 import time
@@ -12,6 +13,8 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubError(Exception):
@@ -344,3 +347,16 @@ class GitHubConnections:
                 }
             )
         return result
+
+
+async def revoke_oauth(github: GitHubConnections, token: str) -> str | None:
+    """Revoke a user's GitHub sign-in; the warning to show when GitHub would not."""
+    try:
+        async with asyncio.timeout(8):
+            await github.revoke(token)
+    except Exception as error:
+        logger.error(
+            "GitHub user token revocation failed: error_type=%s", type(error).__name__
+        )
+        return "GitHub could not revoke the old sign-in. Revoke it in your GitHub settings."
+    return None

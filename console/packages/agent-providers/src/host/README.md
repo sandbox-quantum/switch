@@ -110,8 +110,8 @@ without compaction in this experimental implementation.
 A room watcher's sessions follow their agent's definition. Each session saves
 the config it was created with, but whenever the watcher starts one — a room
 message for a session that is not running, a restart, a resume — it takes the
-model, approval mode, instructions and skill from the watcher's current
-template (`withDefinitionOf`). A watcher that starts with a template differing
+model, approval mode, instructions and skill, and where the agent's Switch
+credentials are, from the watcher's current template (`withDefinitionOf`). A watcher that starts with a template differing
 from a running session's saved definition stops that session, as it does one
 left on a superseded build, so the edit applies when the session is next
 needed. A running watcher hears its `config.json` replaced — the agents

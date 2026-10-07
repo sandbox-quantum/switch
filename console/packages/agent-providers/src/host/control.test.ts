@@ -4,9 +4,17 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
-import { AttachmentTransfers } from './attachment-transfers';
-import { CONTROL_FILE, ControlClient, ensureSessions, serveControl } from './control';
+import { AttachmentTransfers, ControlError } from './attachment-transfers';
+import {
+  CONTROL_FILE,
+  CONTROL_LINE_LIMIT_BYTES,
+  ControlClient,
+  ensureSessions,
+  ensureThroughWatcher,
+  serveControl,
+} from './control';
 import type { Supervision } from './launch';
 import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
@@ -200,7 +208,11 @@ it('moves a room to a session through the watcher, and says why when it cannot',
     displaced: 'other',
   }));
   const forgot = vi.fn(async () => {});
-  const unbind = watcher.bind({ place: placed, forget: forgot });
+  const unbind = watcher.bind({
+    place: placed,
+    forget: forgot,
+    ensure: async () => ({ created: false }),
+  });
   await console.forget('gone');
   expect(forgot).toHaveBeenCalledWith('gone');
   expect(await console.place('session', 'room')).toEqual({
@@ -416,4 +428,61 @@ it('starts a session whose start source is newer than this sidecar, as not known
   socket.destroy();
   stop.abort();
   await serving;
+});
+
+it('starts a session for an agents controller by its id alone, through the watcher', async () => {
+  const watcher = new WatcherControl();
+  const ensured = vi.fn(async () => ({ created: true }));
+  watcher.bind({ place: vi.fn(), forget: vi.fn(), ensure: ensured });
+  const ensure = ensureThroughWatcher(watcher);
+  expect(
+    await ensure({
+      config: { session: { sessionId: 's1' } },
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    })
+  ).toEqual({ created: true });
+  expect(ensured).toHaveBeenCalledWith({
+    sessionId: 's1',
+    resuming: false,
+    restart: false,
+    startSource: 'user',
+  });
+  await expect(
+    ensure({
+      config: { session: { sessionId: 's2' }, start: { provider: 'claude' } },
+      resuming: false,
+      restart: false,
+    })
+  ).rejects.toThrow('by its id alone');
+  expect(ensured).toHaveBeenCalledTimes(1);
+});
+
+it('hands a refusal’s code to the client, which raises it as the same error', async () => {
+  const { stop, serving, client } = await started();
+  const console = client();
+  await console.ready;
+  const refused = await console.send({ page: { snapshotId: 'snapshot', index: 0 } }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(refused).toBeInstanceOf(ControlError);
+  expect(refused).toMatchObject({
+    code: 'refused_message',
+    message: 'Pages are served only to relayed answers.',
+  });
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('drops a connection that sends a line longer than its limit', async () => {
+  const stream = new PassThrough();
+  const console = new ControlClient(stream, 'token');
+  const closed = new Promise<Error>((resolve) => console.onClose(resolve));
+  stream.push('x'.repeat(CONTROL_LINE_LIMIT_BYTES / 2));
+  stream.push('x'.repeat(CONTROL_LINE_LIMIT_BYTES / 2 + 1));
+  expect((await closed).message).toMatch(/longer than/);
+  await expect(console.ready).rejects.toThrow(/longer than/);
 });

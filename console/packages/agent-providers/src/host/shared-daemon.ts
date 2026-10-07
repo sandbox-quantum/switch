@@ -1,28 +1,130 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, readFile, rm } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
-import { type ControlContext, ensureSessions, serveControl } from './control';
-import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
-import { hostedWorker } from './hosted-watcher';
+import { type ControlContext, ensureSessions, ensureThroughWatcher, serveControl } from './control';
+import { OBSOLETE_BUNDLE_EXIT_CODE } from './exit-codes';
+import { dirMode } from './host-permissions';
+import { hostedUnitGitHubEnvironment, prepareHostedAgent } from './hosted-bootstrap';
+import { ensureHostedRepository } from './hosted-github';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
-import { sessionProviderEnvironment, sharedConfigSchema } from './shared-config';
+import {
+  CODEX_AUTH_ENV,
+  type SharedHostConfig,
+  sessionProviderEnvironment,
+  sharedConfigSchema,
+} from './shared-config';
 import { hostSessionProcess } from './shared-host';
 import { superviseSharedHost } from './supervisor';
+import { readTakenOver } from './taken-over';
 import { recordWatcherHealth } from './watcher-health-file';
 import { WatcherControl } from './watcher-tools';
 
 const [root, configPath, mode] = process.argv.slice(2);
 if (!root || !configPath)
   throw new Error('Shared SDK host requires a state directory and configuration file.');
+
+/**
+ * Runs the room watcher for the state root `root` in this process, with the
+ * session hosts it starts as its children. `asUnit` is true for an agents
+ * controller's unit, which reaches Switch through the controller and builds
+ * the sessions it is asked to start from its own configuration.
+ */
+async function watch(root: string, config: SharedHostConfig, asUnit: boolean): Promise<void> {
+  const stop = new AbortController();
+  process.on('SIGTERM', () => stop.abort());
+  process.on('SIGINT', () => stop.abort());
+  // The sidecar is the parent of the sessions it runs: it talks to each over
+  // IPC, and Console reaches them through its control port.
+  const links = new SessionLinks();
+  const supervision = inProcessSupervision(process.argv[1]!, links);
+  // Console's "Reconnect to room" reaches the watcher through the control port.
+  const control = new WatcherControl();
+  const ensure = asUnit ? ensureThroughWatcher(control) : ensureSessions(supervision);
+  const transfers = new AttachmentTransfers(resolve(root));
+  await transfers.clear();
+  const context: ControlContext = {
+    agentId: config.session.agentId,
+    links,
+    ensure,
+    watcher: control,
+    transfers,
+  };
+  // Console reads the watcher's connection state from this file, with the
+  // rest of the host's watcher state, rather than from the control port.
+  const stopRecording = recordWatcherHealth(resolve(root), control, links);
+  // A watcher that stops (disabled, stood down after a takeover, or
+  // signalled) takes the process with it: the control port and every
+  // session host go too, so the supervisor sees a clean exit and does not
+  // start it again.
+  try {
+    await Promise.all([
+      runAgentHost(root, config, stop.signal, supervision, control, openSwitchStream).finally(() =>
+        stop.abort()
+      ),
+      serveControl(resolve(root), context, stop.signal),
+    ]);
+  } finally {
+    stopRecording();
+    await supervision.close();
+  }
+}
+
+/**
+ * The watcher as a systemd unit of an agents controller (`--unit
+ * <watcherRoot>`). systemd is its supervisor: it is this unit's only process
+ * for the root, so owner records an earlier run left are stale and go. A
+ * watcher that stood down after a takeover exits `OBSOLETE_BUNDLE_EXIT_CODE`,
+ * which the unit does not restart.
+ */
+async function runUnit(watcherRoot: string): Promise<void> {
+  process.env[CODEX_AUTH_ENV] = 'shared';
+  const unitRoot = resolve(watcherRoot);
+  const config = sharedConfigSchema.parse(
+    JSON.parse(await readFile(join(unitRoot, 'config.json'), 'utf8'))
+  );
+  Object.assign(process.env, await hostedUnitGitHubEnvironment(dirname(unitRoot), config));
+  await rm(join(unitRoot, 'shared-owner.lock'), { force: true });
+  await rm(join(unitRoot, 'supervisor', 'owner.json'), { force: true });
+  await rm(join(unitRoot, 'ownership'), { recursive: true, force: true });
+  await watch(unitRoot, config, true);
+  if (await readTakenOver(unitRoot)) process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
+}
+
+/** Where a failure of this invocation is recorded for whoever runs it, or null for none. */
+function failureRoot(): string | null {
+  if (root === '--unit') return configPath!;
+  if (root === '--prepare') return join(configPath!, 'watcher');
+  if (root === '--probe' || root === '--models') return null;
+  if (mode === '--supervise' || mode === '--watch-supervise') return null;
+  return root!;
+}
+
 async function main(): Promise<void> {
+  if (root === '--unit') {
+    await runUnit(configPath!);
+    return;
+  }
+  if (root === '--prepare') {
+    const credentialsDirectory = process.env.CREDENTIALS_DIRECTORY;
+    if (!credentialsDirectory)
+      throw new Error(
+        'An agent unit is prepared with its systemd credentials; CREDENTIALS_DIRECTORY is not set.'
+      );
+    await rm(join(configPath!, 'watcher', 'supervisor', 'failure.json'), { force: true });
+    await prepareHostedAgent(
+      { agentRoot: configPath!, credentialsDirectory },
+      { ensureRepository: ensureHostedRepository }
+    );
+    return;
+  }
   if (root === '--models') {
     const provider = sharedConfigSchema.shape.start.shape.provider.parse(configPath);
     const adapter = adapterFor(provider, process.argv[5], '');
@@ -107,50 +209,7 @@ async function main(): Promise<void> {
       logRedactions: [],
     });
   } else if (mode === '--watch-worker') {
-    const stop = new AbortController();
-    process.on('SIGTERM', () => stop.abort());
-    process.on('SIGINT', () => stop.abort());
-    // The sidecar is the parent of the sessions it runs: it talks to each over
-    // IPC, and Console reaches them through its control port.
-    const links = new SessionLinks();
-    const supervision = inProcessSupervision(process.argv[1]!, links);
-    const ensure = ensureSessions(supervision);
-    // Console's "Reconnect to room" reaches the watcher through the control port.
-    const control = new WatcherControl();
-    const transfers = new AttachmentTransfers(resolve(root));
-    await transfers.clear();
-    const context: ControlContext = {
-      agentId: config.session.agentId,
-      links,
-      ensure,
-      watcher: control,
-      transfers,
-    };
-    const hosted = await hostedWorker(config, resolve(root), context);
-    // Console reads the watcher's connection state from this file, with the
-    // rest of the host's watcher state, rather than from the control port.
-    const stopRecording = recordWatcherHealth(resolve(root), control);
-    // A watcher that stops (disabled, stood down after a takeover, or
-    // signalled) takes the process with it: the control port and every
-    // session host go too, so the supervisor sees a clean exit and does not
-    // start it again.
-    try {
-      await Promise.all([
-        runAgentHost(
-          root,
-          config,
-          stop.signal,
-          supervision,
-          control,
-          hosted,
-          openSwitchStream
-        ).finally(() => stop.abort()),
-        serveControl(resolve(root), context, stop.signal),
-      ]);
-    } finally {
-      stopRecording();
-      await supervision.close();
-    }
+    await watch(root, config, false);
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
@@ -220,23 +279,13 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  if (error instanceof WorkerObsoleteError) {
-    // Not a failure of this bundle's to record: the worker service waits for a current one.
-    console.error(error.message);
-    process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
-  } else {
-    if (
-      root !== '--probe' &&
-      root !== '--models' &&
-      mode !== '--supervise' &&
-      mode !== '--watch-supervise'
-    ) {
-      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
-      await replaceOwner(join(root, 'supervisor', 'failure.json'), {
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-    console.error(error);
-    process.exitCode = 1;
+  const recorded = failureRoot();
+  if (recorded !== null) {
+    await mkdir(join(recorded, 'supervisor'), { recursive: true, mode: dirMode() });
+    await replaceOwner(join(recorded, 'supervisor', 'failure.json'), {
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
+  console.error(error);
+  process.exitCode = 1;
 }

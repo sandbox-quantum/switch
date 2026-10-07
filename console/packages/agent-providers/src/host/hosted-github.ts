@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, open, readFile, readdir, realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { copyFile, mkdir, open, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -87,6 +87,43 @@ export function githubLaunchEnvironment(
   };
 }
 
+/**
+ * Set on an agent unit's watcher whose workspace is a worktree of a
+ * repository (`hostedUnitGitHubEnvironment`), and inherited by the session
+ * hosts it starts: where the unit's Switch credentials are, which repository
+ * they renew a token for, and the directory holding the `gh` wrapper.
+ */
+export const HOSTED_GITHUB_CREDENTIALS_ENV = 'SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS';
+export const HOSTED_GITHUB_REPOSITORY_ENV = 'SWITCH_HOSTED_GITHUB_REPOSITORY';
+export const HOSTED_GITHUB_CLI_ENV = 'SWITCH_HOSTED_GITHUB_CLI';
+
+/**
+ * What a session's provider is given on top of its own environment so `git`
+ * and `gh` renew the repository token through the unit's credentials: empty
+ * on a host that sets none of the variables above. It replaces whatever a
+ * session saved under an earlier host left in its environment.
+ */
+export function hostedGitHubEnvironment(
+  host: NodeJS.ProcessEnv,
+  path: string | undefined
+): Record<string, string> {
+  const credentials = host[HOSTED_GITHUB_CREDENTIALS_ENV];
+  const repository = host[HOSTED_GITHUB_REPOSITORY_ENV];
+  const cli = host[HOSTED_GITHUB_CLI_ENV];
+  if (!credentials && !repository && !cli) return {};
+  if (!credentials || !repository || !cli)
+    throw new Error(
+      `${HOSTED_GITHUB_CREDENTIALS_ENV}, ${HOSTED_GITHUB_REPOSITORY_ENV} and ${HOSTED_GITHUB_CLI_ENV} are set together.`
+    );
+  const rest = (path ?? '').split(':').filter((entry) => entry !== '' && entry !== cli);
+  return {
+    ...githubLaunchEnvironment(),
+    [HOSTED_GITHUB_CREDENTIALS_ENV]: credentials,
+    [HOSTED_GITHUB_REPOSITORY_ENV]: repository,
+    PATH: [cli, ...rest].join(':'),
+  };
+}
+
 export function githubRedactions(token: string): string[] {
   return [
     token,
@@ -127,9 +164,9 @@ export async function runGitHubCredentialHelper(operation: string | undefined): 
 }
 
 export async function currentGitHubToken(): Promise<string | undefined> {
-  const credentialsPath = process.env.SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS;
+  const credentialsPath = process.env[HOSTED_GITHUB_CREDENTIALS_ENV];
   if (!credentialsPath) return process.env.GH_TOKEN;
-  return renewGitHubCredential(credentialsPath, process.env.SWITCH_HOSTED_GITHUB_REPOSITORY);
+  return renewGitHubCredential(credentialsPath, process.env[HOSTED_GITHUB_REPOSITORY_ENV]);
 }
 
 export async function renewGitHubCredential(
@@ -139,8 +176,10 @@ export async function renewGitHubCredential(
   try {
     const { env } = JSON.parse(await readFile(credentialsPath, 'utf8'));
     const endpoint = new URL(env.SWITCH_API_ENDPOINT);
+    // Plain HTTP only to an agents controller's relay on this machine.
+    const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(endpoint.hostname);
     if (
-      endpoint.protocol !== 'https:' ||
+      (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && loopback)) ||
       endpoint.username ||
       endpoint.password ||
       endpoint.search ||
@@ -225,9 +264,12 @@ export async function runGitHubCli(args: string[]): Promise<void> {
 class RepositoryStepError extends Error {}
 
 /**
- * Makes `workspace` a worktree on `switch/<agentId>` over the bare mirror every
- * agent on the machine shares for `repository`. Every git command that changes
- * the mirror holds `<mirror>.lock`, so concurrent agents take turns.
+ * Makes `workspace` a worktree on `switch/<agentId>` over the bare mirror of
+ * `repository`. Every git command that changes the mirror holds
+ * `<mirror>.lock`, so agents sharing one take turns. A workspace that is a
+ * worktree of another mirror of the same repository is moved onto this one:
+ * its branch is fetched across, its files and index are kept, and the other
+ * mirror is only read.
  */
 export async function ensureHostedRepository(input: {
   workspace: string;
@@ -287,11 +329,93 @@ export async function ensureHostedRepository(input: {
       '--auto',
     ]);
     const common = await probe(['-C', workspace, 'rev-parse', '--git-common-dir']);
+    const commonPath =
+      common === null ? null : await realpath(resolve(workspace, common)).catch(() => null);
+    if (commonPath !== null && commonPath === (await realpath(mirror))) return;
     if (
-      common !== null &&
-      (await realpath(resolve(workspace, common)).catch(() => null)) === (await realpath(mirror))
-    )
+      commonPath !== null &&
+      (await probe(['-C', workspace, 'rev-parse', '--show-toplevel'])) ===
+        (await realpath(workspace)) &&
+      (
+        await probe(['--git-dir', commonPath, 'config', '--get', 'remote.origin.url'])
+      )?.toLowerCase() === url.toLowerCase()
+    ) {
+      const gitDir = await probe(['-C', workspace, 'rev-parse', '--absolute-git-dir']);
+      const admin = gitDir === null ? null : await realpath(gitDir).catch(() => null);
+      if (admin === null || dirname(admin) !== join(commonPath, 'worktrees'))
+        throw new RepositoryStepError('the workspace is not a linked worktree');
+      let head: string;
+      try {
+        head = (await readFile(join(admin, 'HEAD'), 'utf8')).trim();
+      } catch {
+        throw new RepositoryStepError('read the workspace branch');
+      }
+      const branch = /^ref: (refs\/heads\/\S+)$/.exec(head)?.[1];
+      if (branch === undefined && !/^[0-9a-f]{40,64}$/.test(head))
+        throw new RepositoryStepError('read the workspace branch');
+      await locked('move the workspace branch to the mirror', [
+        '-C',
+        mirror,
+        'fetch',
+        '--no-tags',
+        '--',
+        commonPath,
+        branch === undefined ? head : `+${branch}:${branch}`,
+      ]);
+      const moved = join(mirror, 'worktrees', basename(admin));
+      try {
+        await mkdir(moved, { recursive: true, mode: 0o700 });
+        await writeFile(join(moved, 'HEAD'), `${head}\n`);
+        await writeFile(join(moved, 'commondir'), '../..\n');
+        await writeFile(join(moved, 'gitdir'), `${join(workspace, '.git')}\n`);
+        await copyFile(join(admin, 'index'), join(moved, 'index')).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        });
+      } catch {
+        throw new RepositoryStepError('move the worktree to the mirror');
+      }
+      let missing: string[];
+      try {
+        const staged = (
+          await exec('git', ['--git-dir', moved, 'ls-files', '-s', '-z'], {
+            env,
+            timeout: 120_000,
+            maxBuffer: 256 * 1024 * 1024,
+          })
+        ).stdout
+          .split('\0')
+          .filter((entry) => entry !== '' && !entry.startsWith('160000 '))
+          .map((entry) => entry.split(' ')[1]!);
+        const check = exec('git', ['--git-dir', mirror, 'cat-file', '--batch-check'], {
+          env,
+          timeout: 120_000,
+          maxBuffer: 256 * 1024 * 1024,
+        });
+        check.child.stdin!.end([...new Set(staged)].map((sha) => `${sha}\n`).join(''));
+        missing = (await check).stdout
+          .split('\n')
+          .filter((line) => line.endsWith(' missing'))
+          .map((line) => line.split(' ')[0]!);
+      } catch {
+        throw new RepositoryStepError('read the workspace index');
+      }
+      if (missing.length > 0)
+        await locked('move the staged changes to the mirror', [
+          '-C',
+          mirror,
+          'fetch',
+          '--no-tags',
+          '--',
+          commonPath,
+          ...missing,
+        ]);
+      try {
+        await writeFile(join(workspace, '.git'), `gitdir: ${moved}\n`);
+      } catch {
+        throw new RepositoryStepError('move the worktree to the mirror');
+      }
       return;
+    }
     let entries: string[];
     try {
       entries = await readdir(workspace);

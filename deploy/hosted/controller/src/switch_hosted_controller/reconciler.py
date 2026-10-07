@@ -74,6 +74,8 @@ class Reconciler:
             )
         if volume is None:
             return self._attention(claim, "recorded data volume cannot be found")
+        if machine.target_image_id is not None:
+            return self._change_image(claim, volume)
 
         instance = self._cloud.get_instance(machine)
         if machine.instance_id is None:
@@ -90,7 +92,7 @@ class Reconciler:
             if not machine.instance_launch_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
-                self._cloud.validate_image(machine)
+                self._cloud.validate_image(machine.image_id)
                 self._cloud.validate_capacity()
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
@@ -158,6 +160,24 @@ class Reconciler:
                 self._cloud.enforce_data_retention(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         return self._store.set_observed(claim, ObservedState.RUNNING, None)
+
+    def _change_image(self, claim: Machine, volume: dict[str, Any]) -> Machine:
+        """Replace the instance with one of the requested image on the same data volume."""
+        pending = self._terminate_instance(
+            claim, DesiredState.RUNNING, ObservedState.PROVISIONING, "image change"
+        )
+        if pending is not None:
+            return pending
+        machine = self._store.get(claim.machine_id)
+        if machine.instance_id is not None and (
+            volume.get("State") != "available" or volume.get("Attachments")
+        ):
+            return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
+        if not self._unchanged(claim, DesiredState.RUNNING):
+            return machine
+        if machine.instance_id is None and machine.instance_launch_issued:
+            return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
+        return self._store.switch_image(machine)
 
     def _stopped(self, claim: Machine) -> Machine:
         machine = claim

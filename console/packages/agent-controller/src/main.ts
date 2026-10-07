@@ -1,9 +1,19 @@
 import { hostname } from 'node:os';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import packageJson from '../package.json' with { type: 'json' };
-import { ControllerApiError, enroll, normalizeServerUrl } from './api';
-import { DEFAULT_TIMING, runController } from './controller';
+import {
+  ControllerApiError,
+  enroll,
+  type Fetch,
+  normalizeServerUrl,
+  withHostIdentity,
+} from './api';
+import { type ControllerDeps, DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
+import { groupId, readCredentialFile, readEc2Config } from './ec2/config';
+import { kmsDecrypter } from './ec2/kms';
+import { SealedLogins } from './ec2/sealed-logins';
 import { ConfigurationError, UsageError } from './errors';
 import {
   EXIT_CONFIGURATION,
@@ -20,8 +30,8 @@ import {
   resolveSharedHostBundle,
   workspaceSharedHostBundle,
 } from './handover';
-import { createLogger, errorMessage, routeConsoleTo } from './log';
-import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
+import { createLogger, errorMessage, type Logger, routeConsoleTo } from './log';
+import { dataLayout, ec2Layout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { definitionProblem } from './reconcile';
 import {
   assertSupportedPlatform,
@@ -30,13 +40,29 @@ import {
   observeOnDisk,
 } from './runtime';
 import { AgentRuntimes } from './runtimes';
-import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
-import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
+import {
+  CONTROLLER_CREDENTIAL,
+  FileSecretStore,
+  MemorySecretStore,
+  type SecretStore,
+} from './secrets';
+import {
+  contractPlatform,
+  FixedProviderLocator,
+  mapAgentProcess,
+  PathProviderLocator,
+  type ProviderLocator,
+} from './status';
 import { ControllerStore } from './store';
+import { SystemdRuntime, systemctl } from './systemd-runtime';
 
 export const VERSION: string = packageJson.version;
 
 const SIGNALS = ['SIGINT', 'SIGTERM'] as const;
+
+const EC2_DATA_ROOT = '/data';
+const EC2_RUN_ROOT = '/run/switch-controller';
+const EC2_AGENT_GROUP = 'switch-agent';
 
 const USAGE = `Usage: switch-agent-controller <command> [options]
 
@@ -54,6 +80,11 @@ Commands:
       the data directory holds none, and move the same identity to a new
       server URL when it holds that one. --credential-stdin reads the
       controller credential from stdin and keeps it in memory only.
+  run --ec2 --config <machine.json> (--credential-file <file> | --credential-stdin)
+      [--data-dir <dir>]
+      Run a cloud machine's agents as systemd units, with the identity, relay
+      port, provider executables and sealed-login key its machine
+      configuration names. --data-dir defaults to /data/.switch-controller.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
 
@@ -134,6 +165,149 @@ async function enrollCommand(args: string[]): Promise<number> {
   }
 }
 
+type RunSetup = {
+  dataDir: string;
+  store: ControllerStore;
+  secrets: SecretStore;
+  identity: { controllerId: string; server: string; name: string } | null;
+  runtime: ControllerDeps['runtime'];
+  sealedLoginChanged: ControllerDeps['sealedLoginChanged'];
+  pinnedRelayPort: ControllerDeps['pinnedRelayPort'];
+  locator: ProviderLocator;
+  fetch: Fetch;
+  workspacesFor: (server: string) => string;
+  close: () => Promise<void>;
+};
+
+async function localRun(
+  values: {
+    'data-dir'?: string;
+    'shared-host-bundle'?: string;
+    'controller-id'?: string;
+    server?: string;
+    name?: string;
+  },
+  credential: string | null,
+  log: Logger
+): Promise<RunSetup> {
+  const controllerId = values['controller-id'];
+  if ((controllerId === undefined) !== (values.server === undefined))
+    throw new UsageError('--controller-id and --server adopt an identity together; pass both.');
+  if (values.name !== undefined && controllerId === undefined)
+    throw new UsageError('--name names an identity adopted with --controller-id and --server.');
+  const sharedHostBundle = bundlePath(values['shared-host-bundle']);
+  const { dataDir, layout, store, secrets: fileSecrets } = await openState(values['data-dir']);
+  return {
+    dataDir,
+    store,
+    secrets:
+      credential === null
+        ? fileSecrets
+        : new MemorySecretStore({ [CONTROLLER_CREDENTIAL]: credential }, 'handed over on stdin'),
+    identity:
+      controllerId !== undefined && values.server !== undefined
+        ? { controllerId, server: values.server, name: values.name ?? hostname() }
+        : null,
+    runtime: (openStream, workspaces, control) =>
+      new AgentRuntimes(
+        new InProcessRuntime({
+          layout,
+          workspaces,
+          bundlePath: sharedHostBundle,
+          openStream,
+          log,
+          crashBackoffMs: 2_000,
+          control,
+        }),
+        new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
+      ),
+    locator: new PathProviderLocator(process.env.PATH),
+    fetch,
+    sealedLoginChanged: null,
+    pinnedRelayPort: null,
+    workspacesFor: serverWorkspacesDir,
+    close: async () => {},
+  };
+}
+
+/**
+ * A cloud machine: identity, relay port and provider executables from the
+ * machine configuration, agents as systemd units, provider logins sealed by
+ * Switch for this machine.
+ */
+async function ec2Run(
+  values: { 'data-dir'?: string; config?: string; 'credential-file'?: string },
+  stdinCredential: string | null,
+  log: Logger
+): Promise<RunSetup> {
+  if (!values.config) throw new UsageError('--ec2 needs --config <machine-configuration>.');
+  if ((values['credential-file'] === undefined) === (stdinCredential === null))
+    throw new UsageError(
+      '--ec2 needs exactly one of --credential-file <file> and --credential-stdin.'
+    );
+  const config = await readEc2Config(values.config);
+  const credential =
+    stdinCredential ?? (await readCredentialFile(values['credential-file'] as string));
+  const agentGroupId = await groupId(EC2_AGENT_GROUP, '/etc/group');
+  const { dataDir, store } = await openState(
+    values['data-dir'] ?? join(EC2_DATA_ROOT, '.switch-controller')
+  );
+  const hostFetch = withHostIdentity(fetch, {
+    instanceId: config.instanceId,
+    bootId: config.bootId,
+  });
+  const layout = ec2Layout({ dataRoot: EC2_DATA_ROOT, runRoot: EC2_RUN_ROOT });
+  let logins: SealedLogins | undefined;
+  let systemd: SystemdRuntime | undefined;
+  return {
+    dataDir,
+    store,
+    secrets: new MemorySecretStore(
+      { [CONTROLLER_CREDENTIAL]: credential },
+      values['credential-file'] === undefined
+        ? 'handed over on stdin'
+        : 'the machine credential file'
+    ),
+    identity: { controllerId: config.controllerId, server: config.server, name: hostname() },
+    runtime: (_openStream, _workspaces, _control, client) => {
+      logins = new SealedLogins({
+        fetchEnvelope: (provider) => client.providerCredential(provider),
+        decrypt: kmsDecrypter({ region: config.kms.region, endpoint: config.kms.endpoint }),
+        kms: {
+          keyArn: config.kms.keyArn,
+          grantTokens: config.kms.grantTokens,
+          context: config.kms.context,
+        },
+        layout,
+        log,
+      });
+      systemd = new SystemdRuntime({
+        layout,
+        systemctl,
+        logins,
+        agentGroupId,
+        log,
+        now: Date.now,
+        idleCheckMs: 60_000,
+        forceRestartAfterMs: 30 * 60_000,
+        repositoryName: (agentId) => client.repositoryName(agentId),
+      });
+      return new AgentRuntimes(systemd, systemd);
+    },
+    sealedLoginChanged: async (provider) => {
+      if (!logins) throw new Error('A sealed login changed before the agents runtime was built.');
+      await logins.current(provider);
+    },
+    pinnedRelayPort: config.relayPort,
+    locator: new FixedProviderLocator(config.providers),
+    fetch: hostFetch,
+    workspacesFor: () => layout.worktreesRoot,
+    close: async () => {
+      await systemd?.close();
+    },
+  };
+}
+
 async function runCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -144,15 +318,23 @@ async function runCommand(args: string[]): Promise<number> {
       server: { type: 'string' },
       name: { type: 'string' },
       'credential-stdin': { type: 'boolean' },
+      ec2: { type: 'boolean' },
+      config: { type: 'string' },
+      'credential-file': { type: 'string' },
     },
     strict: true,
   });
   assertSupportedPlatform(process.platform);
-  const controllerId = values['controller-id'];
-  if ((controllerId === undefined) !== (values.server === undefined))
-    throw new UsageError('--controller-id and --server adopt an identity together; pass both.');
-  if (values.name !== undefined && controllerId === undefined)
-    throw new UsageError('--name names an identity adopted with --controller-id and --server.');
+  if (values.ec2) {
+    const local = (['shared-host-bundle', 'controller-id', 'server', 'name'] as const).find(
+      (flag) => values[flag] !== undefined
+    );
+    if (local)
+      throw new UsageError(
+        `--${local} does not apply with --ec2; the machine configuration says it.`
+      );
+  } else if (values.config !== undefined || values['credential-file'] !== undefined)
+    throw new UsageError('--config and --credential-file run a cloud machine; pass --ec2.');
   const log = createLogger({
     level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
     write: (line) => process.stderr.write(line),
@@ -161,12 +343,10 @@ async function runCommand(args: string[]): Promise<number> {
   const credential = values['credential-stdin']
     ? await readCredential(process.stdin, CREDENTIAL_STDIN_TIMEOUT_MS)
     : null;
-  const sharedHostBundle = bundlePath(values['shared-host-bundle']);
-  const { dataDir, layout, store, secrets: fileSecrets } = await openState(values['data-dir']);
-  const secrets =
-    credential === null
-      ? fileSecrets
-      : new MemorySecretStore({ [CONTROLLER_CREDENTIAL]: credential }, 'handed over on stdin');
+  const setup = values.ec2
+    ? await ec2Run(values, credential, log)
+    : await localRun(values, credential, log);
+  const { dataDir, store } = setup;
   const stop = new AbortController();
   const onSignal = (signal: NodeJS.Signals) => {
     log.info(`Received ${signal}; stopping this controller's agents and exiting.`);
@@ -174,18 +354,10 @@ async function runCommand(args: string[]): Promise<number> {
   };
   for (const signal of SIGNALS) process.once(signal, onSignal);
   try {
-    if (controllerId !== undefined && values.server !== undefined) {
+    if (setup.identity !== null) {
+      const { controllerId } = setup.identity;
       const previousServer = store.identity()?.server;
-      const adopted = adoptIdentity(
-        store,
-        {
-          controllerId,
-          server: values.server,
-          name: values.name ?? hostname(),
-          now: new Date(),
-        },
-        dataDir
-      );
+      const adopted = adoptIdentity(store, { ...setup.identity, now: new Date() }, dataDir);
       if (adopted === 'adopted')
         log.info('Adopted an identity enrolled elsewhere', { controllerId, dataDir });
       if (adopted === 'server_changed')
@@ -198,24 +370,15 @@ async function runCommand(args: string[]): Promise<number> {
     const exit = await runController(
       {
         store,
-        secrets,
-        runtime: (openStream, workspaces) =>
-          new AgentRuntimes(
-            new InProcessRuntime({
-              layout,
-              workspaces,
-              bundlePath: sharedHostBundle,
-              openStream,
-              log,
-              crashBackoffMs: 2_000,
-            }),
-            new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
-          ),
-        locator: new PathProviderLocator(process.env.PATH),
-        fetch,
+        secrets: setup.secrets,
+        runtime: setup.runtime,
+        sealedLoginChanged: setup.sealedLoginChanged,
+        pinnedRelayPort: setup.pinnedRelayPort,
+        locator: setup.locator,
+        fetch: setup.fetch,
         log,
         dataDir,
-        workspacesFor: serverWorkspacesDir,
+        workspacesFor: setup.workspacesFor,
         version: VERSION,
         now: Date.now,
         random: Math.random,
@@ -226,6 +389,7 @@ async function runCommand(args: string[]): Promise<number> {
     return exit === 'revoked' ? EXIT_REVOKED : exit === 'taken_over' ? EXIT_TAKEN_OVER : EXIT_OK;
   } finally {
     for (const signal of SIGNALS) process.off(signal, onSignal);
+    await setup.close();
     store.close();
   }
 }

@@ -46,7 +46,7 @@ class ProviderConnectionStore:
         session: AsyncSession,
         user_id: str,
         kind: str,
-        encrypted: str,
+        encrypted: str | None,
         verified_at: datetime,
     ) -> None:
         values = dict(

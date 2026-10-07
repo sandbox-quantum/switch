@@ -12,16 +12,20 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.config import SwitchConfig
 from switch_core.db.models import User, require_tenant_id
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_protocol, get_session
+from switch_core.gateway.dependencies import get_config, get_protocol, get_session
+from switch_core.gateway.github_connections import service as github_service
+from switch_core.gateway.github_connections import writable_repository_name
+from switch_core.management import reason_codes
 from switch_core.management.advanced_config import advanced_config_schema
 from switch_core.management.dependencies import get_management
-from switch_core.management.errors import ManagementRoute
+from switch_core.management.errors import ManagementError, ManagementRoute
 from switch_core.management.schemas import (
     ConsoleControllerRequest,
     ControllerDescription,
@@ -29,6 +33,7 @@ from switch_core.management.schemas import (
     CreateOperationRequest,
     PatchManagedAgentRequest,
     PutManagedAgentRequest,
+    RepositoryRef,
     UpdateControllerRequest,
     wire_time,
 )
@@ -141,13 +146,34 @@ async def get_managed_agent(
 @router.post("/agents", status_code=201)
 async def create_managed_agent(
     body: CreateManagedAgentRequest,
+    request: Request,
     session: Session,
     user: CurrentUser,
     management: Management,
     protocol: Protocol,
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, Any]:
+    async def repository_name(repository: RepositoryRef) -> str:
+        try:
+            return await writable_repository_name(
+                user.id,
+                session,
+                config,
+                github_service(request),
+                repository.installation_id,
+                repository.repository_id,
+            )
+        except HTTPException as exc:
+            unavailable = exc.status_code >= 500
+            raise ManagementError(
+                exc.status_code,
+                reason_codes.INTERNAL if unavailable else reason_codes.VALIDATION_ERROR,
+                str(exc.detail),
+                retryable=unavailable,
+            ) from exc
+
     return await management.create_managed_agent(
-        session, require_tenant_id(), user.id, body, protocol
+        session, require_tenant_id(), user.id, body, protocol, repository_name
     )
 
 

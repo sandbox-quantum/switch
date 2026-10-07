@@ -18,7 +18,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { Switch } from '@renderer/lib/ui/switch';
-import { IDLE_RULE } from '@shared/core/agent-migration/agent-migration';
+import { MOVE_RULE } from '@shared/core/agent-migration/agent-migration';
 import type { HostControllerOverview } from '@shared/core/host-controllers/host-controllers';
 import { hostControllerStateChannel } from '@shared/events/hostControllerEvents';
 import {
@@ -227,7 +227,7 @@ export function HostMachineCard({
         <div className="space-y-2 rounded-lg border border-border px-3 py-2">
           <p className="text-sm text-foreground">Agents this Console runs on this host</p>
           <p className="text-xs text-foreground-muted">
-            Move them onto the host’s controller, so Switch manages them. {IDLE_RULE}
+            Move them onto the host’s controller, so Switch manages them. {MOVE_RULE}
           </p>
           {overview.movedAgents.length > 0 && (
             <p className="text-xs text-foreground-muted">

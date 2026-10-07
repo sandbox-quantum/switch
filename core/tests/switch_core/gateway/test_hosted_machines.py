@@ -3,39 +3,26 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from fastapi import FastAPI
 
-from switch_core.db.models import HostedWakeMailbox
+from switch_core.db.models import (
+    AgentController,
+    HostedMachine,
+    User,
+    require_tenant_id,
+)
+from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.dependencies import get_session
 from switch_core.gateway.hosted_machines import router as machine_router
-from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
-    controller_app,
-    machine_of,
-    observe,
-)
-from tests.switch_core.gateway.test_hosted_mailbox import (  # noqa: F401
-    address,
-    addressed,
-    attach,
-    attached_conn,
-    mailbox_app,
-    rows,
-    set_launch,
-)
-from tests.switch_core.gateway.test_hosted_supervisor import (  # noqa: F401
-    heartbeat_body,
-    supervisor,
-)
-from tests.switch_core.gateway.test_hosted_workers import (  # noqa: F401
-    _launch,
-    _machine,
-    set_machine,
-    worker_app,
-)
+from tests.switch_core.gateway.agent_route_harness import add_agent
+from tests.switch_core.hosted_machine_helpers import seed_machine
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "hosted_machines"
 HEARTBEAT = {
@@ -49,6 +36,82 @@ HEARTBEAT = {
 }
 
 
+@pytest.fixture
+async def machine_app(session_factory):
+    """An owner's running machine, on an ec2 controller, behind the owner routes."""
+    async with session_factory() as session:
+        owner = User(
+            name="owner", email="owner@example.com", role="user", password_hash="x"
+        )
+        session.add(owner)
+        await session.flush()
+        machine = await seed_machine(
+            session,
+            owner_id=owner.id,
+            slot_id="slot-a",
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        controller = AgentController(owner_id=owner.id, name="Switch cloud", kind="ec2")
+        session.add(controller)
+        await session.flush()
+        machine.controller_id = controller.id
+        ids = SimpleNamespace(
+            owner_id=owner.id, machine_id=machine.id, controller_id=controller.id
+        )
+        await session.commit()
+    app = FastAPI()
+    app.include_router(machine_router)
+
+    async def session_dependency():
+        async with session_factory() as session:
+            yield session
+
+    async def current_user():
+        async with session_factory() as session:
+            return await session.get(User, ids.owner_id)
+
+    app.dependency_overrides[get_session] = session_dependency
+    app.dependency_overrides[get_current_user] = current_user
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
+    ) as client:
+        yield SimpleNamespace(client=client, factory=session_factory, **vars(ids))
+
+
+async def set_machine(factory, machine_id: str, **values) -> None:
+    async with factory() as session:
+        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        for key, value in values.items():
+            setattr(machine, key, value)
+        await session.commit()
+
+
+async def _machine(factory, machine_id: str) -> HostedMachine:
+    async with factory() as session:
+        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        assert machine is not None
+        return machine
+
+
+async def _place_agent(app) -> str:
+    async with app.factory() as session:
+        agent = await add_agent(session, name="placed", owner_id=app.owner_id)
+        await AgentDefinitionStore().create(
+            session,
+            agent_id=agent.id,
+            owner_id=app.owner_id,
+            controller_id=app.controller_id,
+            desired_state="running",
+            definition={},
+        )
+        await session.commit()
+        return agent.id
+
+
 async def _lifecycle(app, action: str, revision: int):
     return await app.client.post(
         f"/hosted-machines/{app.machine_id}/lifecycle",
@@ -56,9 +119,10 @@ async def _lifecycle(app, action: str, revision: int):
     )
 
 
-async def test_summary_has_the_contract_shape(mailbox_app):  # noqa: F811
-    app = mailbox_app
+async def test_summary_has_the_contract_shape(machine_app):
+    app = machine_app
     expected = json.loads((FIXTURES / "machine_summary_sleeping.json").read_text())
+    agent_id = await _place_agent(app)
     await set_machine(
         app.factory,
         app.machine_id,
@@ -76,17 +140,13 @@ async def test_summary_has_the_contract_shape(mailbox_app):  # noqa: F811
     assert set(summary) == set(expected)
     assert set(summary["disk"]) == set(expected["disk"])
     assert set(summary["memory"]) == set(expected["memory"])
-    assert {
-        key: value
-        for key, value in summary.items()
-        if key not in ("machine_id", "heartbeat_at", "agents")
-    } == {
-        key: value
-        for key, value in expected.items()
-        if key not in ("machine_id", "heartbeat_at", "agents")
+    varying = ("machine_id", "heartbeat_at", "agents", "controller_id")
+    assert {key: value for key, value in summary.items() if key not in varying} == {
+        key: value for key, value in expected.items() if key not in varying
     }
     assert summary["machine_id"] == app.machine_id
-    assert summary["agents"] == [app.request_id]
+    assert summary["controller_id"] == app.controller_id
+    assert summary["agents"] == [agent_id]
     assert datetime.fromisoformat(summary["heartbeat_at"]) == datetime(
         2026, 1, 1, tzinfo=UTC
     )
@@ -94,8 +154,8 @@ async def test_summary_has_the_contract_shape(mailbox_app):  # noqa: F811
     assert single.json() == summary
 
 
-async def test_a_machine_without_a_heartbeat_reports_no_usage(mailbox_app):  # noqa: F811
-    app = mailbox_app
+async def test_a_machine_without_a_heartbeat_reports_no_usage(machine_app):
+    app = machine_app
     summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
     assert (summary["disk"], summary["memory"], summary["heartbeat_at"]) == (
         None,
@@ -103,13 +163,11 @@ async def test_a_machine_without_a_heartbeat_reports_no_usage(mailbox_app):  # n
         None,
     )
     assert summary["sleeping"] is False
-    await set_launch(app, state="deleted", desired_state="deleted")
-    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
     assert summary["agents"] == []
 
 
-async def test_other_owners_machines_read_as_missing(mailbox_app):  # noqa: F811
-    app = mailbox_app
+async def test_other_owners_machines_read_as_missing(machine_app):
+    app = machine_app
     fastapi_app = app.client._transport.app
     fastapi_app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         id="someone-else"
@@ -122,28 +180,8 @@ async def test_other_owners_machines_read_as_missing(mailbox_app):  # noqa: F811
     assert (await _machine(app.factory, app.machine_id)).desired_state == "running"
 
 
-async def test_stop_cancels_the_mailbox_and_start_resumes(mailbox_app):  # noqa: F811
-    app = mailbox_app
-    first, second = app.rooms
-    response, _ = await attach(app)
-    conn = attached_conn(app)
-    await address(app, addressed(first, "$m1"))
-    async with app.factory() as session:
-        session.add(
-            HostedWakeMailbox(
-                agent_id=app.agent_id,
-                room_id=second,
-                message_id="$n1",
-                launch_id=app.request_id,
-                thread_id="$thread-x",
-                event={},
-                addressed_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-                expires_at=datetime.now(UTC) + timedelta(hours=24),
-            )
-        )
-        await session.commit()
-
+async def test_stop_then_start(machine_app):
+    app = machine_app
     stopped = await _lifecycle(app, "stop", 1)
     assert stopped.status_code == 200, stopped.text
     machine = stopped.json()["machine"]
@@ -153,21 +191,6 @@ async def test_stop_cancels_the_mailbox_and_start_resumes(mailbox_app):  # noqa:
         machine["sleeping"],
         machine["revision"],
     ) == ("stopped", "owner", False, 2)
-    assert await rows(app) == {
-        (first, "$m1"): "cancel_requested",
-        (second, "$n1"): "cancelled",
-    }
-    assert [(room, thread) for room, thread, _ in app.sent] == [(second, "$thread-x")]
-    assert "stopped before I processed" in app.sent[0][2]
-    cancels = [
-        data for event, data in conn.worker_frames.drain() if event == "mailbox_cancel"
-    ]
-    assert [(e["room_id"], e["message_id"]) for e in cancels[0]["entries"]] == [
-        (first, "$m1")
-    ]
-    launch = await _launch(app.factory, app.request_id)
-    assert launch.desired_state == "running"
-
     assert (await _lifecycle(app, "start", 1)).status_code == 409
     started = await _lifecycle(app, "start", 2)
     assert started.status_code == 200, started.text
@@ -179,8 +202,8 @@ async def test_stop_cancels_the_mailbox_and_start_resumes(mailbox_app):  # noqa:
     )
 
 
-async def test_revision_leniency_only_while_idle_sleeping(mailbox_app):  # noqa: F811
-    app = mailbox_app
+async def test_revision_leniency_only_while_idle_sleeping(machine_app):
+    app = machine_app
     await set_machine(
         app.factory,
         app.machine_id,
@@ -198,8 +221,8 @@ async def test_revision_leniency_only_while_idle_sleeping(mailbox_app):  # noqa:
     assert (await _lifecycle(app, "stop", 5)).json() == {"detail": "revision mismatch"}
 
 
-async def test_retry_only_from_error(mailbox_app):  # noqa: F811
-    app = mailbox_app
+async def test_retry_only_from_error(machine_app):
+    app = machine_app
     assert (await _lifecycle(app, "retry", 1)).status_code == 409
     await set_machine(
         app.factory,
@@ -219,8 +242,8 @@ async def test_retry_only_from_error(mailbox_app):  # noqa: F811
     assert machine["revision"] == 2
 
 
-async def test_retry_requeues_the_retire_of_a_machine_in_error(mailbox_app):  # noqa: F811
-    app = mailbox_app
+async def test_retry_requeues_the_retire_of_a_machine_in_error(machine_app):
+    app = machine_app
     await set_machine(
         app.factory,
         app.machine_id,
@@ -252,41 +275,8 @@ async def test_retry_requeues_the_retire_of_a_machine_in_error(mailbox_app):  # 
     ],
 )
 @pytest.mark.parametrize("action", ["stop", "start", "retry"])
-async def test_a_retired_machine_refuses_lifecycle(mailbox_app, values, action):  # noqa: F811
-    app = mailbox_app
+async def test_a_retired_machine_refuses_lifecycle(machine_app, values, action):
+    app = machine_app
     await set_machine(app.factory, app.machine_id, **values)
     refused = await _lifecycle(app, action, 1)
     assert refused.status_code == 409
-
-
-async def test_stop_then_start_before_the_stop_lands_waits_for_a_fresh_heartbeat(
-    supervisor,  # noqa: F811
-):
-    client, request_id, _, _, factory, machine_id, headers = supervisor
-    client._transport.app.include_router(machine_router)
-    heartbeat = f"/hosted/machines/{machine_id}/heartbeat"
-    await observe(client, machine_id, state="running", revision=1)
-    await client.post(heartbeat, headers=headers, json=heartbeat_body())
-    assert (await machine_of(factory, request_id)).state == "ready"
-
-    lifecycle = f"/hosted-machines/{machine_id}/lifecycle"
-    stopped = await client.post(lifecycle, json={"action": "stop", "revision": 1})
-    assert stopped.status_code == 200, stopped.text
-    started = await client.post(lifecycle, json={"action": "start", "revision": 2})
-    assert started.status_code == 200, started.text
-    assert (
-        started.json()["machine"]["state"],
-        started.json()["machine"]["revision"],
-    ) == (
-        "provisioning",
-        3,
-    )
-
-    await observe(client, machine_id, state="running", revision=3)
-    observed = await machine_of(factory, request_id)
-    assert (observed.state, observed.running_observed_at is not None) == (
-        "provisioning",
-        True,
-    )
-    await client.post(heartbeat, headers=headers, json=heartbeat_body())
-    assert (await machine_of(factory, request_id)).state == "ready"

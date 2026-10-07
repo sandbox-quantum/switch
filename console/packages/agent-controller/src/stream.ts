@@ -7,6 +7,10 @@ import {
   agentApprovalOutcomeFrameSchema,
   type AgentAttachedFrame,
   agentAttachedFrameSchema,
+  type AgentControlCancelFrame,
+  agentControlCancelFrameSchema,
+  type AgentControlFrame,
+  agentControlFrameSchema,
   type AgentCursor,
   type AgentDetachedFrame,
   agentDetachedFrameSchema,
@@ -27,6 +31,8 @@ import {
   evictedSchema,
   type OperationPending,
   operationPendingSchema,
+  type ProviderCredentialChanged,
+  providerCredentialChangedSchema,
 } from './schemas';
 
 export type SseItem =
@@ -93,9 +99,12 @@ export const STREAM_FRAME_SCHEMAS = {
   'agent.attached': agentAttachedFrameSchema,
   'agent.detached': agentDetachedFrameSchema,
   'agent.rooms': agentRoomsFrameSchema,
+  'agent.control': agentControlFrameSchema,
+  'agent.control_cancel': agentControlCancelFrameSchema,
   'assignment.changed': assignmentChangedSchema,
   'operation.pending': operationPendingSchema,
   'credential.revoked': credentialRevokedSchema,
+  'provider.credential_changed': providerCredentialChangedSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 export type ControllerFrame =
@@ -108,9 +117,12 @@ export type ControllerFrame =
   | { type: 'agent.attached'; data: AgentAttachedFrame }
   | { type: 'agent.detached'; data: AgentDetachedFrame }
   | { type: 'agent.rooms'; data: AgentRoomsFrame }
+  | { type: 'agent.control'; data: AgentControlFrame }
+  | { type: 'agent.control_cancel'; data: AgentControlCancelFrame }
   | { type: 'assignment.changed'; data: { revision: number } }
   | { type: 'operation.pending'; data: OperationPending }
-  | { type: 'credential.revoked'; data: Record<string, never> };
+  | { type: 'credential.revoked'; data: Record<string, never> }
+  | { type: 'provider.credential_changed'; data: ProviderCredentialChanged };
 
 /** Why the stream stopped for good. */
 export type StreamEnding = 'stopped' | 'revoked' | 'taken_over';

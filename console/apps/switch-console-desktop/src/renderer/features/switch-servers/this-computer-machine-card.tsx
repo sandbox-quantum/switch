@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Computer, ExternalLink, Pencil, RefreshCw, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
-import { moveAllSummary } from '@renderer/features/agent-migration/agent-migration-presentation';
+import { MoveAllAgents } from '@renderer/features/agent-migration/move-all-agents';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useStateBoundFailure } from '@renderer/lib/hooks/use-state-bound-failure';
@@ -23,7 +23,6 @@ import { Label } from '@renderer/lib/ui/label';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
-import { IDLE_RULE } from '@shared/core/agent-migration/agent-migration';
 import {
   type EmbeddedControllerOverview,
   MAX_MACHINE_DESCRIPTION,
@@ -33,7 +32,6 @@ import {
 import { embeddedControllerStateChannel } from '@shared/events/embeddedControllerEvents';
 import { switchServersStore } from './switch-servers-store';
 import {
-  agentActual,
   canStartAgain,
   machineStateKey,
   machineStatus,
@@ -243,9 +241,8 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
         <MachineDetails serverId={serverId} overview={overview} onSaved={refresh} />
       )}
 
-      {overview.enrollment && <PlacedAgents overview={overview} />}
-      {overview.enrollment && overview.phase.kind === 'running' && (
-        <ConsoleAgentsHere serverId={serverId} />
+      {overview.enrollment && overview.phase.kind === 'running' && workspaceId && (
+        <MoveAllAgents serverId={serverId} workspaceId={workspaceId} />
       )}
 
       <Dialog open={confirmingOff} onOpenChange={setConfirmingOff}>
@@ -420,108 +417,6 @@ function MachineDetails({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  );
-}
-
-function PlacedAgents({ overview }: { overview: EmbeddedControllerOverview }) {
-  const remote = overview.remote;
-  if (!remote || remote.kind !== 'ok') return null;
-  if (remote.agents.length === 0)
-    return (
-      <p className="text-xs text-foreground-muted">
-        No managed agents are placed on this computer yet. Place one from the Machines page.
-      </p>
-    );
-  return (
-    <ul className="divide-y divide-border rounded-lg border border-border">
-      {remote.agents.map((agent) => {
-        const actual = agentActual(agent);
-        return (
-          <li key={agent.agentId} className="flex items-center justify-between gap-3 px-3 py-2">
-            <div className="min-w-0">
-              <p className="truncate text-sm text-foreground">{agent.displayName ?? agent.name}</p>
-              <p className="truncate text-xs text-foreground-muted">
-                {agent.provider} · wanted {agent.desiredState}
-                {agent.actual?.detail ? ` · ${agent.actual.detail}` : ''}
-              </p>
-            </div>
-            <StatusBadge tone={TONE[actual.tone]} className="shrink-0">
-              {actual.label}
-            </StatusBadge>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-/**
- * The agents this Console runs itself, moved here all at once ("Move all") or
- * brought back all at once. Each agent can also be moved on its own page.
- */
-function ConsoleAgentsHere({ serverId }: { serverId: string }) {
-  const queryClient = useQueryClient();
-  const movedKey = ['agent-migration', 'this-computer', serverId];
-  const moved = useQuery({
-    queryKey: movedKey,
-    queryFn: () => rpc.agentMigration.movedOntoThisComputer(serverId),
-    refetchInterval: REFRESH_MS,
-  });
-  const [outcome, setOutcome] = useState<string[] | null>(null);
-  const settle = (lines: string[]) => {
-    setOutcome(lines);
-    void queryClient.invalidateQueries({ queryKey: movedKey });
-    void queryClient.invalidateQueries({ queryKey: overviewKey(serverId) });
-    void queryClient.invalidateQueries({ queryKey: ['agent-migration'] });
-  };
-  const moveAll = useMutation({
-    mutationFn: () => rpc.agentMigration.moveAllOnThisComputer(serverId),
-    onSuccess: (result) => settle(moveAllSummary(result, 'Moved')),
-  });
-  const bringBack = useMutation({
-    mutationFn: () => rpc.agentMigration.stopManagingAllOnThisComputer(serverId),
-    onSuccess: (result) => settle(moveAllSummary(result, 'Brought back')),
-  });
-  const working = moveAll.isPending || bringBack.isPending;
-  const failure = moveAll.error ?? bringBack.error;
-  const names = moved.data ?? [];
-  return (
-    <div className="space-y-2 rounded-lg border border-border px-3 py-2">
-      <p className="text-sm text-foreground">Agents this Console runs</p>
-      <p className="text-xs text-foreground-muted">
-        Move every agent this Console runs on this computer for this server onto its controller, so
-        Switch manages them. {IDLE_RULE} Agents that cannot move are left as they are, with the
-        reason.
-      </p>
-      {names.length > 0 && (
-        <p className="text-xs text-foreground-muted">Moved here: {names.join(', ')}.</p>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" disabled={working} onClick={() => moveAll.mutate()}>
-          {moveAll.isPending ? 'Moving…' : 'Move all'}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={working || names.length === 0}
-          onClick={() => bringBack.mutate()}
-        >
-          {bringBack.isPending ? 'Bringing back…' : 'Bring all back'}
-        </Button>
-      </div>
-      {outcome && (
-        <ul className="space-y-0.5 text-xs text-foreground-muted">
-          {outcome.map((line) => (
-            <li key={line}>{line}</li>
-          ))}
-        </ul>
-      )}
-      {failure && (
-        <p className="text-xs text-foreground-error">
-          {failureText(failure, 'That did not work.')}
-        </p>
-      )}
     </div>
   );
 }

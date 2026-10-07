@@ -177,6 +177,9 @@ class ControllerPresence:
         self._rooms: dict[str, set[str]] = {}
         self._next_generation = secrets.randbits(32)
         self._auth_cache: ControllerAuthCache | None = None
+        # Counts every change to a binding, so a reload that read the
+        # bindings before one can tell its reading is out of date.
+        self._binding_epoch = 0
 
     def use_auth_cache(self, cache: ControllerAuthCache) -> None:
         """The cache of controller-token reads to keep in step with the
@@ -198,8 +201,33 @@ class ControllerPresence:
         for binding in bindings:
             self.bind(binding)
 
+    @property
+    def binding_epoch(self) -> int:
+        return self._binding_epoch
+
+    def reconcile(self, bindings: Iterable[Binding]) -> dict[str, str]:
+        """Bring the bindings to `bindings`, binding and unbinding only the
+        agents whose binding differs. Returns each controller that gained or
+        lost an agent, with its tenant."""
+        wanted = {binding.agent_id: binding for binding in bindings}
+        changed: dict[str, str] = {}
+        for agent_id, bound in list(self._bindings.items()):
+            if agent_id not in wanted:
+                changed[bound.controller_id] = bound.tenant_id
+                self.unbind(agent_id, DETACH_UNASSIGNED)
+        for binding in wanted.values():
+            previous = self._bindings.get(binding.agent_id)
+            if previous == binding:
+                continue
+            if previous is not None:
+                changed[previous.controller_id] = previous.tenant_id
+            changed[binding.controller_id] = binding.tenant_id
+            self.bind(binding)
+        return changed
+
     def bind(self, binding: Binding) -> None:
         """Bind an agent to a controller, moving it off any other."""
+        self._binding_epoch += 1
         previous = self._bindings.get(binding.agent_id)
         if previous is not None:
             self._forget(previous)
@@ -232,6 +260,7 @@ class ControllerPresence:
 
     def unbind(self, agent_id: str, reason: str) -> None:
         """The agent is no longer controller-backed."""
+        self._binding_epoch += 1
         previous = self._bindings.pop(agent_id, None)
         self._rooms.pop(agent_id, None)
         self._invalidate_agent_auth(agent_id)
@@ -248,9 +277,16 @@ class ControllerPresence:
 
     def rename_controller(self, controller_id: str, name: str) -> None:
         """The controller's owner renamed it: what its agents' bindings call it."""
+        self._binding_epoch += 1
         for agent_id in self._by_controller.get(controller_id, set()):
             binding = self._bindings[agent_id]
             self._bindings[agent_id] = replace(binding, controller_name=name)
+
+    def credential_replaced(self, controller_id: str) -> None:
+        """The controller's credential was replaced: forget what tokens
+        exchanged for the old one authenticated as."""
+        if self._auth_cache is not None:
+            self._auth_cache.invalidate_controller(controller_id)
 
     def revoke_controller(self, controller_id: str) -> None:
         """A revoked controller's stream ends and it cannot open another.

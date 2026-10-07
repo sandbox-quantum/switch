@@ -29,6 +29,11 @@ import { startSessionMcp } from './session-mcp';
 import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
 import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
 import { SharedState } from './shared-state';
+import {
+  instructionsChangedNote,
+  readToldInstructions,
+  recordToldInstructions,
+} from './told-instructions';
 
 /**
  * A session run on behalf of its agent.
@@ -61,6 +66,11 @@ export type SharedHostOptions = {
   parent: ParentChannel | null;
   /** How long the host waits with nothing to do before parking; null never parks. */
   parkAfterMs: number | null;
+  /**
+   * The agent's own instructions as its definition stands now; null for a
+   * configuration written before they were recorded apart.
+   */
+  instructions: string | null;
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
@@ -541,6 +551,35 @@ export async function runSharedHost(
       announcedBusy = key;
       options.parent?.busy(state, null);
     };
+    // ── Telling a running conversation its instructions changed ───────────
+    // A conversation that has not started yet is given the current ones as it
+    // starts. One that has, and was told others, gets a note with the next
+    // room message: its provider would otherwise keep the old ones.
+    const instructions = options.instructions;
+    let instructionsNote: string | null = null;
+    if (instructions !== null) {
+      const told = await readToldInstructions(options.root);
+      if (host.snapshot().turns.length === 0)
+        await recordToldInstructions(options.root, instructions);
+      else if (told !== instructions) instructionsNote = instructionsChangedNote(instructions);
+    }
+    const instructionsTold = async (): Promise<void> => {
+      if (instructions === null) return;
+      await recordToldInstructions(options.root, instructions);
+      instructionsNote = null;
+    };
+    // Where the provider takes a developer message mid-conversation, that is
+    // how it hears: it outranks anything said in a user message. Otherwise
+    // the note rides on the next room message.
+    if (instructionsNote !== null && adapter.addDeveloperMessage)
+      try {
+        await adapter.addDeveloperMessage(options.session.sessionId, instructionsNote);
+        await instructionsTold();
+      } catch (error) {
+        console.warn(
+          `Could not give session ${options.session.sessionId} its changed instructions as a developer message (${error instanceof Error ? error.message : String(error)}); it is told with its next room message instead.`
+        );
+      }
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
@@ -575,6 +614,9 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.find((entry) => entry.commandId === command.commandId);
       if (owed && status?.status === 'applied') await sendFollowup(owed);
+      // A fresh conversation starts with the instructions this host was given.
+      if (command.body.type === 'session.reset' && status?.status === 'applied')
+        await instructionsTold();
       return status ?? 'The host did not record the command.';
     };
     /** Turn each room message handed over into the command it amounts to, in order. */
@@ -613,11 +655,18 @@ export async function runSharedHost(
           message: message.data,
           surface: 'switch-web',
           attachments,
+          preface: instructionsNote,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        await run(command, null);
+        const outcome = await run(command, null);
+        if (
+          instructionsNote !== null &&
+          typeof outcome !== 'string' &&
+          outcome.status !== 'rejected'
+        )
+          await instructionsTold();
         await inbox.acknowledge(event);
       }
     };
@@ -861,6 +910,7 @@ export async function hostSessionProcess(input: {
         grant: config.grant,
         parent,
         parkAfterMs: parkAfterMs(),
+        instructions: config.execution?.instructions ?? null,
       },
       input.adapter,
       input.signal

@@ -90,12 +90,7 @@ export async function submitSessionCommand(
   const notRestarted = 'The session is not running and could not be started again: ';
   try {
     if (isCloudAgent(agentId)) {
-      const outcome = await runCloudSessionOperation(
-        agentId,
-        command.sessionId,
-        crypto.randomUUID(),
-        'restart'
-      );
+      const outcome = await runCloudSessionOperation(agentId, command.sessionId, 'restart');
       // Coded the way the relay codes the same refusal, so the composer holds
       // the message while the machine wakes or says what the user must do.
       if (outcome.state === 'failed' && outcome.code !== null)

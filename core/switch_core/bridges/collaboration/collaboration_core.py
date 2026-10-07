@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import stop_control_frame
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     PlatformAdapter,
@@ -1604,14 +1603,7 @@ class CollaborationCore:
             thread_id=target.thread_id,
             surface=self._bridge_type,
         )
-        async with tenant_session(
-            self._session_factory, self._bridge_tenant_id
-        ) as session:
-            agent = await self._agent_store.get(session, target.agent_id)
-        hosted = agent is not None and hosted_launch_of(agent.metadata_) is not None
-        if not self._connections.relay_session_command(
-            target.agent_id, frame, worker_only=hosted
-        ):
+        if not self._connections.relay_session_command(target.agent_id, frame):
             await tell(
                 "The agent was not stopped: its controller is not connected to Switch."
             )

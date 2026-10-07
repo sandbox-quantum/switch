@@ -36,6 +36,7 @@ const assignment = {
         auto_approve: false,
         directory: null,
         isolation: 'shared' as const,
+        skills: [],
       },
     },
   ],

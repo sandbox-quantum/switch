@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass
 from typing import Protocol
 
 import jwt
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from jwt import PyJWKClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -73,6 +75,10 @@ _AGENT_SESSIONS_PREFIX = "/agent-sessions/"
 # First segments under `/agents/` that name no agent. On these the agent comes
 # from `X-Switch-Agent-Id` alone.
 _NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
+# Routes outside `/agents/` a controller may also act as an agent on, naming
+# it with `X-Switch-Agent-Id`: a Switch cloud controller fetches each of its
+# agents' repository tokens here.
+_ACT_AS_PATHS = frozenset({"/hosted/github-credential"})
 # Registration: a controller registers nothing, so its token is refused here.
 _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # The connection surface a controller serves its agents itself, from its own
@@ -248,10 +254,9 @@ class BearerAuthMiddleware:
             return
 
         if not auth_header.startswith("Bearer "):
-            response = Response(
-                "Missing or invalid Authorization header", status_code=401
+            await _unauthorized(
+                scope, receive, send, "Missing or invalid Authorization header"
             )
-            await response(scope, receive, send)
             return
 
         token = auth_header[7:]
@@ -325,8 +330,7 @@ class BearerAuthMiddleware:
                 await self.app(scope, receive, send)
             return
 
-        response = Response("Invalid credentials", status_code=401)
-        await response(scope, receive, send)
+        await _unauthorized(scope, receive, send, "Invalid credentials")
 
     async def _serve_controller(
         self,
@@ -531,15 +535,39 @@ class BearerAuthMiddleware:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 
-def _controller_refusal(code: str, message: str, status_code: int) -> Response:
-    return JSONResponse(
+def _controller_refusal(code: str, message: str, status_code: int) -> ASGIApp:
+    """A controller refusal, in the contract's error envelope.
+
+    On a WebSocket, which cannot read a refused handshake (see
+    `_unauthorized`), the same refusal the agent connection sends: a `refused`
+    frame carrying the code, then a close with 4000 plus the status.
+    """
+    response = JSONResponse(
         {"error": {"code": code, "message": message, "retryable": False}},
         status_code=status_code,
     )
 
+    async def refuse(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "websocket":
+            await response(scope, receive, send)
+            return
+        await receive()  # the client's websocket.connect
+        await send({"type": "websocket.accept"})
+        frame = {
+            "event": "refused",
+            "data": {
+                "status": status_code,
+                "detail": {"code": code, "message": message},
+            },
+        }
+        await send({"type": "websocket.send", "text": json.dumps(frame)})
+        await send({"type": "websocket.close", "code": 4000 + status_code})
+
+    return refuse
+
 
 def _is_agent_route(path: str) -> bool:
-    if path.startswith(_AGENT_SESSIONS_PREFIX):
+    if path.startswith(_AGENT_SESSIONS_PREFIX) or path in _ACT_AS_PATHS:
         return True
     match = _AGENT_PATH.fullmatch(path)
     return match is not None and match["segment"] not in _REGISTRATION_SEGMENTS
@@ -553,13 +581,35 @@ def _path_agent(path: str) -> tuple[str | None, str]:
     return match["segment"], match["rest"] or ""
 
 
+async def _unauthorized(
+    scope: Scope, receive: Receive, send: Send, reason: str
+) -> None:
+    """Refuse an unauthenticated request in a form its client can read.
+
+    An HTTP 401. A WebSocket client cannot read the status of a handshake that
+    was refused (the browser-style API hides it), so it would see only a
+    failed connection and retry for ever. A WebSocket is accepted and closed at
+    once with 4401 instead: 4000 plus the status, the same mapping the agent
+    connection uses for every refusal.
+    """
+    if scope["type"] == "websocket":
+        await receive()  # the client's websocket.connect
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.close", "code": 4401, "reason": reason})
+        return
+    await Response(reason, status_code=401)(scope, receive, send)
+
+
 def _is_public_path(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in PUBLIC_PATH_PREFIXES)
 
 
-def get_agent_from_scope(request: Request) -> Agent:
-    """Get authenticated agent from request scope (set by middleware)."""
-    agent: object = request.scope.get("agent")
+def get_agent_from_scope(connection: HTTPConnection) -> Agent:
+    """Get authenticated agent from the connection's scope (set by middleware).
+
+    Any HTTP connection, so a WebSocket route can use it too.
+    """
+    agent: object = connection.scope.get("agent")
     if not isinstance(agent, Agent):
         raise HTTPException(status_code=401, detail="Not authenticated")
     return agent

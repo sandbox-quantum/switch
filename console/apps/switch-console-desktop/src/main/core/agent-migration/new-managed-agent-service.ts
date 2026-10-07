@@ -1,6 +1,8 @@
 import { type AdvancedConfig, advancedConfigProblem } from '@switch-console/plugins/agents';
+import { switchCloudEnabled } from '@main/core/switch-servers/switch-cloud';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import type { CloudRepositorySelection } from '@shared/core/switch-servers/github-connection';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { MachineRef } from './agent-migration';
 import type { MigrationLog, TargetLookup } from './agent-migration-service';
@@ -12,6 +14,8 @@ export type AddManagedAgentParams = {
   machineId: string;
   /** The working directory, absolute on the machine; null for a fresh workspace the machine chooses. */
   dir: string | null;
+  /** The GitHub repository a Switch cloud machine makes the agent's workspace a worktree of. */
+  repository: CloudRepositorySelection | null;
   name: string;
   providerId: AgentProviderId;
   serverId: string;
@@ -54,7 +58,9 @@ export type NewManagedAgentDeps = {
       icon_url: string | null;
       controller_id: string;
       desired_state: 'running' | 'stopped';
-      definition: ManagedDefinition;
+      definition: ManagedDefinition & {
+        repository: { installation_id: number; repository_id: number } | null;
+      };
     }
   ): Promise<ManagedCreateOutcome>;
   log: MigrationLog;
@@ -91,6 +97,12 @@ export class NewManagedAgentService {
    * refuses it in its own words.
    */
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
+    if (input.repository && !switchCloudEnabled())
+      return {
+        kind: 'error',
+        message:
+          'Switch Cloud is turned off in this build, so no agent can be placed on a cloud machine.',
+      };
     const workspaceId = await this.deps.workspaceFor(input.serverId);
 
     const problem = advancedConfigProblem(input.providerId, input.advancedConfig);
@@ -100,13 +112,17 @@ export class NewManagedAgentService {
     } catch (error) {
       return { kind: 'error', message: message(error) };
     }
-    const definition: ManagedDefinition = {
+    const definition = {
       provider: input.providerId,
       model: input.model || null,
       advanced_config: input.advancedConfig,
       instructions: input.instructions,
       auto_approve: input.autoApprove,
       directory: input.dir,
+      repository: input.repository && {
+        installation_id: input.repository.installationId,
+        repository_id: input.repository.repositoryId,
+      },
     };
 
     const created = await this.deps.create(workspaceId, {

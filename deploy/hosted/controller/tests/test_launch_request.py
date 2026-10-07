@@ -9,7 +9,7 @@ import pytest
 from botocore.stub import ANY, Stubber
 from test_controller import (
     MACHINE_ID,
-    WORKER_TESTDATA,
+    VM_TESTDATA,
     config,
     ec2_client,
     fixture_machine,
@@ -71,9 +71,9 @@ def test_run_request_is_valid_and_user_data_contains_only_assignment_refs(tmp_pa
     store.close()
 
 
-def test_user_data_matches_the_worker_assignment_fixture(tmp_path: Path):
+def test_user_data_matches_the_boot_assignment_fixture(tmp_path: Path):
     cfg, store, machine = fixture_machine(tmp_path, "m6i.large")
-    fixture = json.loads((WORKER_TESTDATA / "assignment.json").read_text())
+    fixture = json.loads((VM_TESTDATA / "assignment.json").read_text())
     assert json.loads(assignment(Ec2Cloud(ec2_client(), cfg)._user_data(machine))) == fixture
     store.close()
 

@@ -4,8 +4,11 @@ import {
   ControllerApiError,
   ControllerClient,
   enroll,
+  HOST_BOOT_HEADER,
+  HOST_INSTANCE_HEADER,
   normalizeServerUrl,
   PROTOCOL_HEADER,
+  withHostIdentity,
 } from './api';
 import { ConfigurationError } from './errors';
 import { silentLogger } from './log';
@@ -68,6 +71,7 @@ const assignment: Assignment = {
         auto_approve: false,
         directory: null,
         isolation: 'shared',
+        skills: [],
       },
     },
   ],
@@ -243,6 +247,38 @@ describe('assignment', () => {
   });
 });
 
+describe('repositoryName', () => {
+  it('asks Core acting for the agent, and answers the name Core gives', async () => {
+    const { client: api } = client();
+    core.scripted.push({
+      method: 'POST',
+      path: '/hosted/github-credential',
+      status: 200,
+      body: {
+        token: 'SYNTHETIC',
+        expires_at: '2026-01-01T13:00:00Z',
+        repository: 'example/project',
+      },
+    });
+    expect(await api.repositoryName('agent-1')).toBe('example/project');
+    const request = core.requests.at(-1)!;
+    expect(request.headers['x-switch-agent-id']).toBe('agent-1');
+    expect(request.headers['switch-controller-protocol']).toBe('1');
+    expect(request.headers.authorization).toMatch(/^Bearer /);
+  });
+
+  it('throws when Core refuses', async () => {
+    const { client: api } = client();
+    core.scripted.push({
+      method: 'POST',
+      path: '/hosted/github-credential',
+      status: 403,
+      body: { detail: 'This agent is not on a Switch cloud controller with a repository.' },
+    });
+    await expect(api.repositoryName('agent-1')).rejects.toMatchObject({ status: 403 });
+  });
+});
+
 describe('errors', () => {
   it('reads code, retryable and retry_after_s from the envelope', async () => {
     const { client: api } = client();
@@ -376,3 +412,72 @@ function statusReport() {
     agents: [],
   };
 }
+
+describe('cloud host identity', () => {
+  const token = () =>
+    new Response(
+      JSON.stringify({
+        access_token: 'swct_test',
+        token_type: 'Bearer',
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  const mismatch = () =>
+    new Response(
+      JSON.stringify({
+        error: {
+          code: 'instance_mismatch',
+          message: 'not this instance',
+          retryable: true,
+          retry_after_s: 0,
+        },
+      }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } }
+    );
+
+  it('names the instance and boot, and waits out instance_mismatch', async () => {
+    const seen: Headers[] = [];
+    const answers = [mismatch(), mismatch(), token()];
+    const stub: typeof fetch = async (_input, init) => {
+      seen.push(new Headers(init?.headers));
+      return answers.shift()!;
+    };
+    const warnings: string[] = [];
+    const tokens = new AccessTokens({
+      fetch: withHostIdentity(stub, { instanceId: 'i-0123456789abcdef0', bootId: 'boot-1' }),
+      server: 'https://switch.example.com',
+      controllerId: 'ctl-1',
+      credential: async () => 'swcc_test',
+      now: () => Date.now(),
+      log: { ...silentLogger, warn: (message: string) => warnings.push(message) },
+    });
+    expect(await tokens.get()).toBe('swct_test');
+    expect(seen).toHaveLength(3);
+    for (const headers of seen) {
+      expect(headers.get(HOST_INSTANCE_HEADER)).toBe('i-0123456789abcdef0');
+      expect(headers.get(HOST_BOOT_HEADER)).toBe('boot-1');
+      expect(headers.get(PROTOCOL_HEADER)).not.toBeNull();
+    }
+    expect(warnings).toHaveLength(2);
+  });
+
+  it('does not retry another refusal', async () => {
+    const stub: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          error: { code: 'controller_revoked', message: 'revoked', retryable: false },
+        }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } }
+      );
+    const tokens = new AccessTokens({
+      fetch: stub,
+      server: 'https://switch.example.com',
+      controllerId: 'ctl-1',
+      credential: async () => 'swcc_test',
+      now: () => Date.now(),
+      log: silentLogger,
+    });
+    await expect(tokens.get()).rejects.toMatchObject({ code: 'controller_revoked' });
+  });
+});

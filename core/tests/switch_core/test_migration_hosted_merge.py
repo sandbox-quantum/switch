@@ -5,9 +5,9 @@ has to run before main's `b9e4d2a71c05` drops the server-side session tables:
 the manifest is what keeps their pending work.
 
 The manifest only captures; the drop also waits for every retained volume's
-preflight check to be recorded (`hosted-cutover-upgrade record`), which the
-wrapper, `migrations/env.py` before the drop and the merge revision after it
-all enforce. `_upgrade_to` builds its own migration context and so exercises
+preflight check to be recorded, which `migrations/env.py` before the drop and
+the merge revision after it both enforce. The cases seed the state a recorded
+check leaves rather than running the retired cutover tool. `_upgrade_to` builds its own migration context and so exercises
 only the merge revision; the `test_real_upgrade_*` cases go through `env.py`
 the way `alembic upgrade` and Core's boot do.
 
@@ -27,8 +27,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from alembic import command as alembic_command
@@ -40,22 +39,10 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 import switch_core.db.models  # noqa: F401 — registers every table on Base.metadata
-from switch_core.bridges.agent.hosted_cutover import CutoverManifest
 from switch_core.config import SwitchConfig
-from switch_core.db.hosted_cutover_gate import DROP_REVISION
+from switch_core.db.hosted_cutover_gate import DROP_REVISION, cutover_gate_problems
 from switch_core.db.rls_ddl import POLICY_NAME, REQUIRE_TENANT_FUNCTION_NAME
 from switch_core.db.runtime_role import _require_every_policy, grant_runtime_role
-from switch_core.hosted_cutover_upgrade import (
-    BlockedCheck,
-    CutoverRefused,
-    ManifestCheck,
-    PreflightBlocked,
-    cutover_problems,
-    queue_all_imports,
-    record,
-    running_launches,
-    upgrade,
-)
 from switch_core.main import _migrate_and_grant
 
 _CORE = Path(__file__).resolve().parents[2]
@@ -74,22 +61,16 @@ _MANIFEST_REVISION = "a3c9e5f71d28"
 # reach: `b4e1d7a2c9f0` refuses one until they are.
 _BEFORE_MACHINES = "5c1e9b7d3f02"
 
-_HOSTED_TABLES = (
-    "provider_connections",
+_HOSTED_TABLES = ("provider_connections", "hosted_wake_mailbox")
+
+# The hosted worker tables the head no longer has.
+_WORKER_TABLES = (
     "provider_verifications",
     "hosted_launches",
     "hosted_operations",
     "github_issued_tokens",
-    "hosted_wake_mailbox",
     "hosted_cutover_volumes",
     "hosted_cutover_items",
-)
-
-_EMPTY_MANIFEST = ManifestCheck(
-    manifest=CutoverManifest(
-        manifest_sha256="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-        items=[],
-    )
 )
 
 _PREDICATE = (
@@ -286,10 +267,6 @@ _EXPECTED_MANIFEST = (
 )
 
 
-def _config(url: str) -> SwitchConfig:
-    return cast(SwitchConfig, SimpleNamespace(owner_database_url=url, database_url=url))
-
-
 async def _seed_import(connection: AsyncConnection) -> None:
     """A room message Core accepted for `a1` that no worker saw, with an attachment
     whose blob #538 tied to the session, and a session blob nothing imports."""
@@ -354,6 +331,71 @@ async def _pilot_at_manifest(url: str, *, with_import: bool) -> None:
                 await _seed_import(connection)
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to(_MANIFEST_REVISION))
+    finally:
+        await engine.dispose()
+
+
+async def _cutover_problems(url: str) -> list[str]:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as connection:
+            return await connection.run_sync(cutover_gate_problems)
+    finally:
+        await engine.dispose()
+
+
+async def _record_blocked(url: str, reason: str) -> None:
+    """The volume of `l1` as a blocked preflight check leaves it."""
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE hosted_cutover_volumes SET preflight_state = 'blocked', "
+                    "blocked_reason = :reason WHERE launch_id = 'l1'"
+                ),
+                {"reason": reason},
+            )
+    finally:
+        await engine.dispose()
+
+
+_IMPORTED_EVENT = json.dumps(
+    {
+        "type": "message",
+        "payload": {"attachments": [{"mxc": "mxc://example.invalid/kept"}]},
+        "missed": None,
+    }
+)
+
+
+async def _record_complete(url: str) -> None:
+    """The volume of `l1` as a complete preflight check with an empty manifest
+    leaves it: every item decided, `m4` imported with its blob kept."""
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE hosted_cutover_volumes SET preflight_state = 'complete', "
+                    "blocked_reason = NULL WHERE launch_id = 'l1'"
+                )
+            )
+            await connection.execute(
+                text(
+                    "UPDATE hosted_cutover_items SET disposition = CASE "
+                    "WHEN message_id = 'm4' THEN 'import' ELSE 'preserved' END, "
+                    "payload = CASE WHEN message_id = 'm4' "
+                    "THEN CAST(:event AS jsonb) ELSE payload END "
+                    "WHERE launch_id = 'l1'"
+                ),
+                {"event": _IMPORTED_EVENT},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE media_blobs SET sdk_session_id = NULL WHERE id = 'blob-kept'"
+                )
+            )
     finally:
         await engine.dispose()
 
@@ -439,6 +481,14 @@ async def _assert_merged_schema(connection: AsyncConnection) -> None:
         )
     ).all()
     assert sdk_foreign_keys == []
+
+    for table in _WORKER_TABLES:
+        assert (
+            await connection.scalar(
+                text("SELECT to_regclass(:table)"), {"table": table}
+            )
+            is None
+        ), table
 
     policies = {
         row.tablename: (row.rowsecurity, row.qual, row.with_check)
@@ -563,8 +613,8 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
             assert await connection.scalar(text("SELECT to_regclass('sdk_sessions')"))
             captured = await _cutover_rows(connection)
 
-        await record(_config(pilot_url), "l1", _EMPTY_MANIFEST)
-        assert await cutover_problems(_config(pilot_url)) == []
+        await _record_complete(pilot_url)
+        assert await _cutover_problems(pilot_url) == []
 
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to(_BEFORE_MACHINES))
@@ -601,15 +651,6 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
                 )
             ).all()
             kept = await _cutover_rows(connection)
-            decided = {
-                (row.kind, row.message_id): row.disposition
-                for row in await connection.execute(
-                    text(
-                        "SELECT kind, message_id, disposition FROM hosted_cutover_items "
-                        "WHERE agent_id = 'a1'"
-                    )
-                )
-            }
         await _remove_launches_and_upgrade(engine)
     finally:
         await engine.dispose()
@@ -623,14 +664,6 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
     assert [tuple(row) for row in tokens] == [("g1", "l1", "sealed-token")]
     assert captured == _EXPECTED_MANIFEST
     assert kept == ([("l1", "complete")], [])
-    assert decided == {
-        ("console_command", None): "owner_notice",
-        ("operation", None): "preserved",
-        ("request_open", None): "interrupted",
-        ("room_message", "m1"): "uncertain",
-        ("room_message", "m2"): "ran",
-        ("session", None): "preserved",
-    }
 
 
 async def test_pilot_upgrade_refuses_to_drop_sessions_before_the_manifest(
@@ -651,7 +684,9 @@ async def test_pilot_upgrade_refuses_to_drop_sessions_before_the_manifest(
             )
             await _seed_sdk_rows(connection)
 
-        with pytest.raises(RuntimeError, match="just hosted-cutover-upgrade"):
+        with pytest.raises(
+            RuntimeError, match="a Switch release that still has the cutover tool"
+        ):
             async with engine.begin() as connection:
                 await connection.run_sync(_upgrade_to("heads"))
 
@@ -667,23 +702,6 @@ async def test_pilot_upgrade_refuses_to_drop_sessions_before_the_manifest(
 
     assert version == _PILOT_HEAD
     assert commands == 5
-
-    config = cast(
-        SwitchConfig,
-        SimpleNamespace(owner_database_url=pilot_url, database_url=pilot_url),
-    )
-    assert await running_launches(config) == ["l1"]
-    with pytest.raises(CutoverRefused, match="l1"):
-        await upgrade(config)
-    engine = create_async_engine(pilot_url)
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(
-                text("UPDATE hosted_launches SET desired_state = 'stopped'")
-            )
-    finally:
-        await engine.dispose()
-    assert await running_launches(config) == []
 
 
 async def test_main_database_keeps_session_activity_through_the_merge(
@@ -745,13 +763,11 @@ async def test_main_database_keeps_session_activity_through_the_merge(
                     text("SELECT item_id, status, title FROM session_activity_items")
                 )
             ).all()
-            cutover = await _cutover_rows(connection)
     finally:
         await engine.dispose()
 
     assert [tuple(row) for row in requests] == [("r1", "Write file?", "open")]
     assert [tuple(row) for row in items] == [("item-1", "completed", "Read file")]
-    assert cutover == ([], [])
 
 
 async def test_later_main_database_takes_the_hosted_chain(main_url: str) -> None:
@@ -784,12 +800,10 @@ async def test_later_main_database_takes_the_hosted_chain(main_url: str) -> None
                     text("SELECT tenant_id, domain FROM tenant_join_domains")
                 )
             ).all()
-            cutover = await _cutover_rows(connection)
     finally:
         await engine.dispose()
 
     assert [tuple(row) for row in domains] == [("t1", "example.invalid")]
-    assert cutover == ([], [])
 
 
 async def test_hosted_audit_database_takes_the_agent_management_chain(
@@ -822,44 +836,32 @@ async def test_hosted_audit_database_takes_the_agent_management_chain(
 async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
     pilot_url: str,
 ) -> None:
-    config = _config(pilot_url)
     await _pilot_at_manifest(pilot_url, with_import=True)
 
-    problems = await cutover_problems(config)
+    problems = await _cutover_problems(pilot_url)
     assert any("launch l1 has no recorded preflight check" in p for p in problems)
     assert any("launch l1 has cutover items no manifest decided" in p for p in problems)
-    with pytest.raises(CutoverRefused, match="l1"):
-        await upgrade(config)
     await _ungated_heads_refused(
         pilot_url, "the volume of launch l1 has no recorded preflight check"
     )
 
-    await record(
-        config,
-        "l1",
-        BlockedCheck(
-            blocked=PreflightBlocked(
-                step="sessions",
-                file="/data/state/sessions/placeholder/events.jsonl",
-                line=3,
-                error="the line is not JSON",
-            )
-        ),
+    await _record_blocked(
+        pilot_url,
+        "sessions at /data/state/sessions/placeholder/events.jsonl:3: "
+        "the line is not JSON",
     )
-    (blocked,) = [p for p in await cutover_problems(config) if "blocked" in p]
+    (blocked,) = [p for p in await _cutover_problems(pilot_url) if "blocked" in p]
     assert (
         "launch l1: sessions at /data/state/sessions/placeholder/events.jsonl:3"
         in blocked
     )
     assert "the line is not JSON" in blocked
-    with pytest.raises(CutoverRefused, match="events.jsonl:3"):
-        await upgrade(config)
     await _ungated_heads_refused(
         pilot_url, "the preflight check blocked on the volume of launch l1"
     )
 
-    await record(config, "l1", _EMPTY_MANIFEST)
-    assert await cutover_problems(config) == []
+    await _record_complete(pilot_url)
+    assert await _cutover_problems(pilot_url) == []
 
     engine = create_async_engine(pilot_url)
     try:
@@ -871,14 +873,14 @@ async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
             )
         assert any(
             "would be dropped with its session" in p
-            for p in await cutover_problems(config)
+            for p in await _cutover_problems(pilot_url)
         )
         await _ungated_heads_refused(
             pilot_url,
             "import for launch l1 mxc://example.invalid/kept is gone",
         )
-        await record(config, "l1", _EMPTY_MANIFEST)
-        assert await cutover_problems(config) == []
+        await _record_complete(pilot_url)
+        assert await _cutover_problems(pilot_url) == []
 
         async with engine.begin() as connection:
             await connection.execute(
@@ -888,7 +890,7 @@ async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
             )
         assert any(
             "the import l1 r2 m4 has no event" in p
-            for p in await cutover_problems(config)
+            for p in await _cutover_problems(pilot_url)
         )
         await _ungated_heads_refused(pilot_url, "the import l1 r2 m4 has no event")
         async with engine.begin() as connection:
@@ -910,10 +912,9 @@ async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
 async def test_pilot_upgrade_refuses_a_capture_the_old_core_outran(
     pilot_url: str,
 ) -> None:
-    config = _config(pilot_url)
     await _pilot_at_manifest(pilot_url, with_import=False)
-    await record(config, "l1", _EMPTY_MANIFEST)
-    assert await cutover_problems(config) == []
+    await _record_complete(pilot_url)
+    assert await _cutover_problems(pilot_url) == []
     engine = create_async_engine(pilot_url)
     try:
         async with engine.begin() as connection:
@@ -926,24 +927,23 @@ async def test_pilot_upgrade_refuses_a_capture_the_old_core_outran(
             )
     finally:
         await engine.dispose()
-    (stale,) = await cutover_problems(config)
+    (stale,) = await _cutover_problems(pilot_url)
     assert stale.startswith("c1 changed in the old session tables after `prepare`")
 
 
 async def test_pilot_upgrade_refuses_a_launch_restarted_or_added_after_prepare(
     pilot_url: str,
 ) -> None:
-    config = _config(pilot_url)
     await _pilot_at_manifest(pilot_url, with_import=False)
-    await record(config, "l1", _EMPTY_MANIFEST)
-    assert await cutover_problems(config) == []
+    await _record_complete(pilot_url)
+    assert await _cutover_problems(pilot_url) == []
     engine = create_async_engine(pilot_url)
     try:
         async with engine.begin() as connection:
             await connection.execute(
                 text("UPDATE hosted_launches SET desired_state = 'running'")
             )
-        assert await cutover_problems(config) == ["launch l1 is not stopped"]
+        assert await _cutover_problems(pilot_url) == ["launch l1 is not stopped"]
         await _ungated_heads_refused(pilot_url, "launch l1 is not stopped")
         async with engine.begin() as connection:
             await connection.execute(
@@ -961,51 +961,9 @@ async def test_pilot_upgrade_refuses_a_launch_restarted_or_added_after_prepare(
             )
     finally:
         await engine.dispose()
-    (missing,) = await cutover_problems(config)
+    (missing,) = await _cutover_problems(pilot_url)
     assert missing.startswith("launch l2 has no cutover volume")
     await _ungated_heads_refused(pilot_url, "launch l2 has no cutover volume")
-
-
-async def test_pilot_upgrade_keeps_what_the_recorded_volumes_import(
-    pilot_url: str,
-) -> None:
-    config = _config(pilot_url)
-    await _pilot_at_manifest(pilot_url, with_import=True)
-    await record(config, "l1", _EMPTY_MANIFEST)
-    assert await cutover_problems(config) == []
-
-    engine = create_async_engine(pilot_url)
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(_upgrade_to(_BEFORE_MACHINES))
-        assert await cutover_problems(config) == []
-        await queue_all_imports(config)
-        await queue_all_imports(config)
-        async with engine.begin() as connection:
-            blobs = (
-                await connection.scalars(text("SELECT id FROM media_blobs ORDER BY id"))
-            ).all()
-            mailbox = (
-                await connection.execute(
-                    text(
-                        "SELECT agent_id, room_id, message_id, launch_id, state, origin, "
-                        "event->'payload'->'attachments'->0->>'mxc' AS mxc "
-                        "FROM hosted_wake_mailbox"
-                    )
-                )
-            ).all()
-            queued = await connection.scalar(
-                text("SELECT imports_queued_at IS NOT NULL FROM hosted_cutover_volumes")
-            )
-        await _remove_launches_and_upgrade(engine)
-    finally:
-        await engine.dispose()
-
-    assert blobs == ["blob-kept"]
-    assert [tuple(row) for row in mailbox] == [
-        ("a1", "r2", "m4", "l1", "pending", "cutover", "mxc://example.invalid/kept")
-    ]
-    assert queued
 
 
 def _migration_config(url: str, monkeypatch: pytest.MonkeyPatch) -> SwitchConfig:
@@ -1019,8 +977,7 @@ def _migration_config(url: str, monkeypatch: pytest.MonkeyPatch) -> SwitchConfig
         "DB_NAME": parts.database,
         "MATRIX_SERVER_NAME": "example.invalid",
         "AGENT_REGISTRATION_TOKEN": "placeholder-registration-token",
-        "JWT_SECRET_KEY": "placeholder-jwt-secret-0123456789abcdef",
-        "SECRET_KEYS": "test:placeholder-secret-key-0123456789abcdef",
+        "SECRET_KEYS": "test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "GATEWAY_ADMIN_EMAIL": "admin@example.invalid",
         "GATEWAY_ADMIN_PASSWORD": "placeholder-password",
     }
@@ -1110,7 +1067,7 @@ async def test_real_upgrade_refuses_an_incomplete_cutover_before_the_drop(
     match: str,
 ) -> None:
     await _pilot_at_manifest(pilot_url, with_import=with_import)
-    await record(_config(pilot_url), "l1", _EMPTY_MANIFEST)
+    await _record_complete(pilot_url)
     engine = create_async_engine(pilot_url)
     try:
         async with engine.begin() as connection:
@@ -1159,7 +1116,8 @@ async def test_real_upgrade_refuses_a_cutover_never_prepared(
         await engine.dispose()
 
     with pytest.raises(
-        RuntimeError, match=r"launch l1 .*run `just hosted-cutover-upgrade prepare`"
+        RuntimeError,
+        match=r"launch l1 has hosted state the cutover has not captured.*predates the controller runtime",
     ):
         await migrate(_migration_config(pilot_url, monkeypatch))
 
@@ -1173,7 +1131,7 @@ async def test_real_upgrade_completes_a_prepared_cutover(
     migrate: Callable[[SwitchConfig], Awaitable[None]],
 ) -> None:
     await _pilot_at_manifest(pilot_url, with_import=True)
-    await record(_config(pilot_url), "l1", _EMPTY_MANIFEST)
+    await _record_complete(pilot_url)
 
     with pytest.raises(RuntimeError, match="hosted_machines: 1 cloud agent"):
         await migrate(_migration_config(pilot_url, monkeypatch))

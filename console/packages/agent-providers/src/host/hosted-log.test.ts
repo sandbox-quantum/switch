@@ -53,7 +53,7 @@ describe('hosted log redaction', () => {
 
     expect(emitted.length).toBe(input.length - Buffer.byteLength(secret) + 1);
     expect(tail.length).toBe(Buffer.byteLength(secret) - 1);
-    expect(Buffer.concat([emitted, tail])).toEqual(input);
+    expect(Buffer.concat([emitted, tail]).equals(input)).toBe(true);
   });
 
   it('writes only redacted bytes to the diagnostic sink', async () => {

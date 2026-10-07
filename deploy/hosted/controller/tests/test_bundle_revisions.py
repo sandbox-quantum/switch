@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 from botocore.exceptions import ClientError
-from test_controller import MACHINE_ID, config
+from test_controller import KEY_ARN, MACHINE_ID, config
+from test_kms_grants import CONTEXT, FakeKms
 
 from switch_hosted_controller.config import ConfigError
 from switch_hosted_controller.gateway import CoreMachine, Gateway, GatewayConfig, GatewayError
+from switch_hosted_controller.kms_grants import KmsGrants
 from switch_hosted_controller.model import DesiredState, ObservedState
 from switch_hosted_controller.reconciler import Reconciler
 from switch_hosted_controller.store import MachineStore
@@ -66,7 +68,7 @@ class FakeSecrets:
 
 
 class FakeCore:
-    """Core's controller routes: one machine, a revision, one capability per revision."""
+    """Core's controller routes: one machine, a revision, one controller credential per revision."""
 
     def __init__(self, machine_id: str):
         self.machine_id = machine_id
@@ -76,8 +78,8 @@ class FakeCore:
         self.revision = 1
         self.desired_state = "running"
         self.retain_until: str | None = None
-        self.capability_revision: int | None = None
-        self.capability = ""
+        self.credential_revision: int | None = None
+        self.credential = ""
         self.prepared_revisions: list[int] = []
         self.observations: list[dict] = []
         self.prepare_failures = 0
@@ -92,7 +94,7 @@ class FakeCore:
             "revision": self.revision if revision is None else revision,
             "data_volume_id": None,
             "retain_until": self.retain_until,
-            "bundle_revision": self.capability_revision,
+            "bundle_revision": self.credential_revision,
             "owner_hint": "ignored by the controller",
         }
 
@@ -107,18 +109,20 @@ class FakeCore:
         if self.prepare_failures:
             self.prepare_failures -= 1
             raise GatewayError(503)
-        if self.capability_revision != self.revision:
-            self.capability_revision = self.revision
-            self.capability = f"SYNTHETIC-CAPABILITY-REVISION-{self.revision:04d}"
+        if self.credential_revision != self.revision:
+            self.credential_revision = self.revision
+            self.credential = credential(self.revision)
         self.prepared_revisions.append(self.revision)
         return {
             "machine_id": self.machine_id,
             "slot_id": self.slot_id,
             "generation": self.generation,
             "revision": self.revision,
-            "bundle_revision": self.capability_revision,
-            "machine_capability": self.capability,
+            "bundle_revision": self.credential_revision,
             "api_endpoint": "https://switch.example.test/agent-api",
+            "runtime": "controller",
+            "controller": {"id": CONTEXT["switch:controller_id"], "credential": self.credential},
+            "kms": {"key_arn": KEY_ARN, "region": "us-east-1", "context": dict(CONTEXT)},
             "extra": "ignored",
         }
 
@@ -157,7 +161,7 @@ class FakeCloud:
     def get_instance(self, machine):
         return self.instance
 
-    def validate_image(self, machine):
+    def validate_image(self, image_id):
         pass
 
     def validate_capacity(self):
@@ -202,6 +206,10 @@ def token(machine_id: str, revision: int) -> str:
     return str(uuid5(NAMESPACE_URL, f"{machine_id}:{revision}"))
 
 
+def credential(revision: int) -> str:
+    return f"swcc_SYNTHETIC-CREDENTIAL-REVISION-{revision:04d}"
+
+
 def harness(tmp_path):
     cfg = config(tmp_path)
     store = MachineStore(cfg.state_db_path, cfg.fingerprint())
@@ -212,6 +220,8 @@ def harness(tmp_path):
         cfg,
         store,
         secrets,
+        Mock(),
+        KmsGrants(FakeKms(), KEY_ARN, store),
     )
     gateway.request = core.request
     return store, secrets, core, gateway
@@ -256,7 +266,7 @@ def test_new_revision_prepares_once_and_writes_one_current_version(
     assert secrets.versions[first]["stages"] == set()
     version_id, bundle = secrets.current()
     assert version_id == second
-    assert bundle["machineCapability"] == "SYNTHETIC-CAPABILITY-REVISION-0002"
+    assert bundle["controller"]["credential"] == credential(2)
     assert bundle["assignment"]["dataVolumeId"] == VOLUME_ID
     machine = store.get(MACHINE_ID)
     assert machine.required_bundle_token == machine.bundle_token == second
@@ -331,7 +341,7 @@ def test_lost_put_response_and_resource_exists_retry_keep_one_version(tmp_path):
         sync(gateway, core)
 
     assert [put["token"] for put in secrets.puts].count(second) == 1
-    assert secrets.current()[1]["machineCapability"] == "SYNTHETIC-CAPABILITY-REVISION-0002"
+    assert secrets.current()[1]["controller"]["credential"] == credential(2)
     assert store.get(MACHINE_ID).bundle_token == second
     store.close()
 
@@ -352,7 +362,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     first = token(core.machine_id, 1)
     booted, bundle = secrets.current()
     assert booted == first
-    assert bundle["machineCapability"] == "SYNTHETIC-CAPABILITY-REVISION-0001"
+    assert bundle["controller"]["credential"] == credential(1)
     assert core.observations[-1] == {
         "state": "running",
         "revision": 1,
@@ -384,7 +394,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     woken = token(core.machine_id, 3)
     version_id, bundle = secrets.current()
     assert version_id == woken
-    assert bundle["machineCapability"] == "SYNTHETIC-CAPABILITY-REVISION-0003"
+    assert bundle["controller"]["credential"] == credential(3)
     assert core.prepared_revisions == [1, 3]
     assert [put["token"] for put in secrets.puts] == [first, woken]
     assert cloud.calls.count("start_instance") == 1

@@ -3,6 +3,9 @@ import type { AgentMigrationState } from '@shared/core/agent-migration/agent-mig
 import {
   migrationAction,
   migrationSummary,
+  moveAllMachineState,
+  moveAllOutcome,
+  moveAllState,
   moveAllSummary,
   operationLabel,
   targetName,
@@ -15,8 +18,6 @@ const CONSOLE: AgentMigrationState = {
   target: { kind: 'this-computer', serverId: 'server-1', machineName: 'build-box' },
   blocker: null,
   canEnableTarget: false,
-  movesWithParent: null,
-  subagents: [],
   notCarried: [],
   managed: null,
 };
@@ -128,19 +129,19 @@ describe('where an agent runs', () => {
     });
   });
 
-  it('shows a move in flight, including the wait for a turn', () => {
-    const waiting: AgentMigrationState = {
+  it('shows a move in flight', () => {
+    const telling: AgentMigrationState = {
       ...CONSOLE,
-      operation: { kind: 'moving', stage: 'waiting-for-turn', busySessions: ['s-1', 's-2'] },
+      operation: { kind: 'moving', stage: 'telling-rooms' },
     };
-    expect(migrationSummary(waiting)).toEqual({
+    expect(migrationSummary(telling)).toEqual({
       label: 'Moving…',
       tone: 'busy',
-      detail: 'Waiting for the current turn to end (2 sessions working)…',
+      detail: 'Telling the rooms it was working in that it is moving…',
     });
-    expect(
-      operationLabel({ kind: 'returning', stage: 'waiting-for-controller', busySessions: [] })
-    ).toBe('Waiting for the machine to stop it…');
+    expect(operationLabel({ kind: 'returning', stage: 'waiting-for-controller' })).toBe(
+      'Waiting for the machine to stop it…'
+    );
   });
 });
 
@@ -156,16 +157,15 @@ describe('the action offered', () => {
     );
   });
 
-  it('is Stop managing once moved, and nothing for a subagent that moves with its parent', () => {
-    expect(migrationAction(MANAGED)?.label).toBe('Stop managing');
-    expect(migrationAction({ ...MANAGED, movesWithParent: 'builder' })).toBeNull();
+  it('is Stop managing once moved', () => {
+    expect(migrationAction(MANAGED).label).toBe('Stop managing');
   });
 
   it('is held while a move is in flight', () => {
     expect(
       migrationAction({
         ...CONSOLE,
-        operation: { kind: 'moving', stage: 'adopting', busySessions: [] },
+        operation: { kind: 'moving', stage: 'adopting' },
       })?.disabledReason
     ).toBe('Working…');
   });
@@ -189,6 +189,83 @@ describe('a Move all', () => {
     ]);
     expect(moveAllSummary({ moved: [], skipped: [], failed: [] }, 'Brought back')).toEqual([
       'Brought back no agents.',
+    ]);
+  });
+});
+
+const MACHINE = {
+  kind: 'ssh-host' as const,
+  name: 'dev-vm',
+  total: 18,
+  managed: 0,
+  moving: 0,
+  blocked: 0,
+  reason: null,
+  setUpOnMove: false,
+};
+
+describe('whether moving every agent is complete', () => {
+  it('adds the machines up, and is complete once every agent is managed', () => {
+    expect(
+      moveAllState({
+        machines: [
+          { ...MACHINE, managed: 18 },
+          { ...MACHINE, name: 'This computer', kind: 'this-computer', total: 6, managed: 6 },
+        ],
+      })
+    ).toEqual({ tone: 'ok', label: 'Complete', managed: 24, total: 24 });
+  });
+
+  it('is moving while any machine moves, and not complete otherwise', () => {
+    expect(moveAllState({ machines: [{ ...MACHINE, moving: 1 }] }).label).toBe('Moving…');
+    expect(moveAllState({ machines: [{ ...MACHINE, managed: 3 }] })).toMatchObject({
+      label: 'Not complete',
+      managed: 3,
+      total: 18,
+    });
+    expect(moveAllState({ machines: [] }).label).toBe('Nothing to move');
+  });
+});
+
+describe('one machine in Move all', () => {
+  it('says a host that is not a machine yet is set up by Move all, not that its agents cannot move', () => {
+    expect(moveAllMachineState({ ...MACHINE, setUpOnMove: true })).toEqual({
+      tone: 'neutral',
+      label: 'Not a machine yet',
+      note: 'Move all sets dev-vm up as a machine, then moves its agents.',
+    });
+  });
+
+  it('gives one reason for a blocked machine, and none once it is done', () => {
+    expect(
+      moveAllMachineState({ ...MACHINE, blocked: 18, reason: 'The server is unreachable.' })
+    ).toEqual({ tone: 'warn', label: 'Blocked', note: 'The server is unreachable.' });
+    expect(moveAllMachineState({ ...MACHINE, managed: 10, blocked: 2, reason: 'x' }).label).toBe(
+      '2 blocked'
+    );
+    expect(moveAllMachineState({ ...MACHINE, managed: 18 })).toEqual({
+      tone: 'ok',
+      label: 'Done',
+      note: null,
+    });
+  });
+});
+
+describe('what Move all did', () => {
+  it('counts the moves and names the first few failures', () => {
+    const failed = Array.from({ length: 5 }, (_, index) => ({
+      agentId: `a${index}`,
+      name: `agent-${index}`,
+      message: 'controller offline',
+    }));
+    expect(
+      moveAllOutcome({ moved: [{ agentId: 'm', name: 'mover' }], skipped: [], failed }, 'Moved')
+    ).toEqual([
+      'Moved 1 agent.',
+      'agent-0: controller offline',
+      'agent-1: controller offline',
+      'agent-2: controller offline',
+      "2 more failed; see the agents' pages.",
     ]);
   });
 });

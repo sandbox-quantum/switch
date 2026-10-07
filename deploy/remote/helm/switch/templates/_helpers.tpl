@@ -59,12 +59,12 @@ SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see
 {{- with .Values.secrets.jwtSecretKey }}
 JWT_SECRET_KEY: {{ . | b64enc | quote }}
 {{- end }}
-{{- if .Values.switchCore.agentManagementEnabled }}
-{{- $controllerTokenSecret := required "secrets.controllerTokenSecret is required when switchCore.agentManagementEnabled is true (at least 32 characters, see values.yaml)" .Values.secrets.controllerTokenSecret }}
-{{- if lt (len $controllerTokenSecret) 32 }}
-{{- fail (printf "secrets.controllerTokenSecret must be at least 32 characters, got %d." (len $controllerTokenSecret)) }}
+{{- if .Values.switchCore.agentManagement.enabled }}
+{{- $controllerSecret := required "secrets.controllerTokenSecret is required when switchCore.agentManagement.enabled" .Values.secrets.controllerTokenSecret }}
+{{- if lt (len $controllerSecret) 32 }}
+{{- fail "secrets.controllerTokenSecret must be at least 32 characters; switch-core refuses to start with a shorter one." }}
 {{- end }}
-CONTROLLER_TOKEN_SECRET: {{ $controllerTokenSecret | b64enc | quote }}
+CONTROLLER_TOKEN_SECRET: {{ $controllerSecret | b64enc | quote }}
 {{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
 GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
@@ -643,14 +643,18 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
       optional: true
+{{- with .Values.switchCore.agentManagement }}
+{{- if .enabled }}
 - name: AGENT_MANAGEMENT_ENABLED
-  value: {{ .Values.switchCore.agentManagementEnabled | quote }}
-{{- if .Values.switchCore.agentManagementEnabled }}
+  value: "true"
 - name: CONTROLLER_TOKEN_SECRET
   valueFrom:
     secretKeyRef:
-      name: {{ include "switch.secretName" . }}
+      name: {{ include "switch.secretName" $ }}
       key: CONTROLLER_TOKEN_SECRET
+- name: CONTROLLER_STATUS_INTERVAL_SECONDS
+  value: {{ .statusIntervalSeconds | quote }}
+{{- end }}
 {{- end }}
 - name: GATEWAY_ADMIN_EMAIL
   valueFrom:
@@ -790,6 +794,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ .Values.switchCore.telemetry.endpoint | quote }}
 - name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
   value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
+- name: TELEMETRY_ENVIRONMENT
+  value: {{ .Values.switchCore.telemetry.environment | quote }}
+- name: TELEMETRY_INTERNAL
+  value: {{ .Values.switchCore.telemetry.internal | quote }}
 {{- end }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding

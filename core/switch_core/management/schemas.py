@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from switch_core.connections.loader import CATALOG, SKILL_PROVIDERS, deployment_skills
 from switch_core.db.models import Agent, AgentController, AgentControllerOperation
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management import reason_codes
@@ -82,6 +83,19 @@ class PublicKey(_StatusBody):
     key: str
 
 
+# Core and every controller refuse an agent id outside this.
+AGENT_ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+
+
+class RepositoryRef(_GatewayBody):
+    """The GitHub repository an agent works in, through the owner's GitHub
+    App installation. A Switch cloud controller clones it for the agent and
+    asks Core for the agent's repository token."""
+
+    installation_id: int = Field(gt=0)
+    repository_id: int = Field(gt=0)
+
+
 class DefinitionV1(_GatewayBody):
     """The v1 agent definition, as a person's client submits it."""
 
@@ -97,6 +111,7 @@ class DefinitionV1(_GatewayBody):
     # `isolated`: it runs as a process of its own (a systemd unit on a cloud
     # machine, which runs every agent isolated).
     isolation: Isolation = "shared"
+    repository: RepositoryRef | None = None
 
     @field_validator("instructions")
     @classmethod
@@ -234,6 +249,16 @@ class AgentStatus(_StatusBody):
         return self
 
 
+class AgentActivity(_StatusBody):
+    """Whether an agent is working, as its controller sees it: what tells an
+    idle cloud machine from a busy one."""
+
+    agent_id: str = Field(pattern=AGENT_ID_PATTERN)
+    busy: bool
+    sessions: int = Field(ge=0)
+    last_activity_at: str | None
+
+
 class StatusReport(_StatusBody):
     seq: int = Field(ge=0)
     observed_at: str
@@ -242,6 +267,9 @@ class StatusReport(_StatusBody):
     providers: list[ProviderStatus]
     tools: list[ToolStatus]
     agents: list[AgentStatus]
+    # Sent by a controller that knows its agents' activity (an ec2 one does);
+    # absent from the others, and then not stored.
+    activity: list[AgentActivity] | None = None
 
 
 class ProgressRequest(_ControllerBody):
@@ -327,6 +355,60 @@ class ControllerBeatRequest(_ControllerStreamBody):
     connection_id: str
     generation: int
     cursors: dict[str, int]
+
+
+# ── Sealed provider logins ────────────────────────────────────────────────────
+
+
+class SealedContext(BaseModel):
+    """The KMS encryption context of one sealed login."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    tenant: str = Field(alias="switch:tenant")
+    owner_id: str = Field(alias="switch:owner_id")
+    controller_id: str = Field(alias="switch:controller_id")
+    provider: Provider = Field(alias="switch:provider")
+
+
+class SealedEnvelope(BaseModel):
+    """A provider login sealed for one ec2 controller (`providers/sealing.py`).
+
+    Connected, every key-material field is present; revoked, all are null.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    v: Literal[1]
+    provider: Provider
+    revision: int = Field(ge=1)
+    status: Literal["connected", "revoked"]
+    key_arn: str | None
+    encrypted_key: str | None
+    iv: str | None
+    ciphertext: str | None
+    tag: str | None
+    context: SealedContext
+
+    @model_validator(mode="after")
+    def _material_matches_status(self) -> SealedEnvelope:
+        material = (
+            self.key_arn,
+            self.encrypted_key,
+            self.iv,
+            self.ciphertext,
+            self.tag,
+        )
+        if self.status == "connected" and any(value is None for value in material):
+            raise ValueError("a connected envelope carries its key and ciphertext")
+        if self.status == "revoked" and any(value is not None for value in material):
+            raise ValueError("a revoked envelope carries no key material")
+        if self.context.provider != self.provider:
+            raise ValueError("the envelope's context names another provider")
+        return self
+
+    def model_dump_wire(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", by_alias=True)
 
 
 # ── Gateway requests ──────────────────────────────────────────────────────────
@@ -427,8 +509,12 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
 
     The definition is the v1 shape, `directory` included, rather than the
     target contract's (which nests it as `local.directory` and adds fields v1
-    does not have); `agent-controllers-v1.md` defines it this way."""
+    does not have); `agent-controllers-v1.md` defines it this way.
+    `repository` is present only for a definition that names one. `skills`
+    are the connection skills its provider is given: GitHub's for an agent
+    that works in a repository, as a cloud worker gives its agents."""
     definition = row.definition
+    provider = definition["provider"]
     return {
         "agent_id": row.agent_id,
         "revision": row.revision,
@@ -437,13 +523,21 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "name": agent.name,
             "display_name": agent.display_name,
             "icon_url": agent.icon_url,
-            "provider": definition["provider"],
+            "provider": provider,
             "model": definition.get("model"),
             "advanced_config": definition.get("advanced_config", {}),
             "instructions": definition.get("instructions", ""),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),
             "isolation": definition.get("isolation", "shared"),
+            **(
+                {"repository": definition["repository"]}
+                if definition.get("repository") is not None
+                else {}
+            ),
+            "skills": deployment_skills(CATALOG, ["github"])
+            if definition.get("repository") is not None and provider in SKILL_PROVIDERS
+            else [],
         },
     }
 

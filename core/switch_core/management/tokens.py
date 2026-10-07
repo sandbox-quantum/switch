@@ -10,7 +10,9 @@ apart from the others (and from an agent API key) at a glance:
 - `swct_…` an access token: an HS256 JWT signed with
   `CONTROLLER_TOKEN_SECRET`, audience `switch-controller`, valid for an hour.
   It is never stored; every request verifies it and then checks the
-  controller has not been revoked.
+  controller has not been revoked. Its `kid` claim names the credential it
+  was exchanged for, so replacing that credential retires every token
+  exchanged for the old one, unexpired or not.
 """
 
 from __future__ import annotations
@@ -47,6 +49,10 @@ class AccessTokenClaims:
     controller_id: str
     tenant_id: str
     owner_id: str
+    # The `api_keys` row of the credential the token was exchanged for. None
+    # on a token minted before the claim existed, which the authenticator
+    # sends back to exchange again.
+    credential_id: str | None
 
 
 def new_credential() -> str:
@@ -67,6 +73,7 @@ def mint_access_token(
     controller_id: str,
     tenant_id: str,
     owner_id: str,
+    credential_id: str,
     now: datetime,
 ) -> tuple[str, datetime]:
     """Return the access token and when it expires."""
@@ -76,6 +83,7 @@ def mint_access_token(
             "cid": controller_id,
             "tid": tenant_id,
             "oid": owner_id,
+            "kid": credential_id,
             "aud": ACCESS_TOKEN_AUDIENCE,
             "iat": int(now.timestamp()),
             "exp": int(expires_at.timestamp()),
@@ -111,6 +119,14 @@ def verify_access_token(token: str, *, secret: str) -> AccessTokenClaims:
     values = (claims.get("cid"), claims.get("tid"), claims.get("oid"))
     if not all(isinstance(value, str) and value for value in values):
         raise AccessTokenInvalid("access token claims are malformed")
+    credential_id = claims.get("kid")
+    if credential_id is not None and not (
+        isinstance(credential_id, str) and credential_id
+    ):
+        raise AccessTokenInvalid("access token claims are malformed")
     return AccessTokenClaims(
-        controller_id=claims["cid"], tenant_id=claims["tid"], owner_id=claims["oid"]
+        controller_id=claims["cid"],
+        tenant_id=claims["tid"],
+        owner_id=claims["oid"],
+        credential_id=credential_id,
     )

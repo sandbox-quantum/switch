@@ -58,8 +58,45 @@
         "root_volume_gib",
         "data_volume_gib",
         "machine_slots",
-        "poll_interval_seconds"
-      ]
+        "poll_interval_seconds",
+        "login_kms_key_arn"
+      ],
+      "properties": {
+        "image_id": {
+          "type": "string",
+          "pattern": "^ami-[0-9a-f]{8,17}$"
+        },
+        "login_kms_key_arn": {
+          "type": "string",
+          "pattern": "^arn:aws[^:]*:kms:[a-z0-9-]+:[0-9]{12}:key/.+$"
+        },
+        "machine_slots": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "instance_profile_arn",
+              "assignment_secret_arn",
+              "role_arn"
+            ],
+            "properties": {
+              "instance_profile_arn": {
+                "type": "string",
+                "pattern": "^arn:aws[^:]*:iam::[0-9]{12}:instance-profile/.+$"
+              },
+              "assignment_secret_arn": {
+                "type": "string",
+                "pattern": "^arn:aws[^:]*:secretsmanager:.+$"
+              },
+              "role_arn": {
+                "type": "string",
+                "pattern": "^arn:aws[^:]*:iam::[0-9]{12}:role/.+$"
+              }
+            }
+          }
+        }
+      }
     },
     "persistence": {
       "type": "object",

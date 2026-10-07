@@ -275,6 +275,12 @@ services:
       # brought up by hand, an operator sets it here the same way.
       TELEMETRY_ENABLED:
       TELEMETRY_ENDPOINT:
+      # Which Amplitude project the usage lands in. Unset is prod; Switch
+      # Console writes its own build's environment here for a server it runs.
+      TELEMETRY_ENVIRONMENT:
+      # Whether this is one of the company's own deployments. Switch Console
+      # writes its own answer here for a server it runs.
+      TELEMETRY_INTERNAL:
       TELEMETRY_SNAPSHOT_INTERVAL_HOURS:
     depends_on:
       postgres:

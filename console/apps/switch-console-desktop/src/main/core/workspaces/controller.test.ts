@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
@@ -15,6 +15,9 @@ const switchTenant = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
 const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
+const listServers = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+const listWorkspaces = vi.hoisted(() => vi.fn());
+const getActiveWorkspaceId = vi.hoisted(() => vi.fn());
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load.
@@ -84,11 +87,12 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer,
   getSessionCookie,
+  listServers,
   serverKindOf,
 }));
 vi.mock('./workspaces-store', () => ({
-  getActiveWorkspaceId: vi.fn(),
-  listWorkspaces: vi.fn(),
+  getActiveWorkspaceId,
+  listWorkspaces,
   listWorkspacesForServer,
   requireWorkspace,
   setActiveWorkspaceId: vi.fn(),
@@ -115,6 +119,39 @@ function server(overrides: Record<string, unknown>) {
 function workspace(tenantId: string | null = null) {
   return { id: 'ws', serverId: 'srv', name: 'S', tenantId, createdAt: '', updatedAt: '' };
 }
+
+describe('workspaces on a Switch Cloud server while Switch Cloud is turned off', () => {
+  const cloud = server({ id: 'cloud', gatewayUrl: 'https://cloud.example.com' });
+  const own = server({ id: 'own', gatewayUrl: 'https://switch.example.org' });
+  const onCloud = { ...workspace(), id: 'ws-cloud', serverId: 'cloud' };
+  const onOwn = { ...workspace(), id: 'ws-own', serverId: 'own' };
+
+  beforeEach(() => {
+    vi.stubEnv('SWITCH_CLOUD_URL', 'https://cloud.example.com');
+    vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', undefined);
+    vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_ENABLED', undefined);
+    listServers.mockResolvedValue([cloud, own]);
+    listWorkspaces.mockResolvedValue([onCloud, onOwn]);
+    getActiveWorkspaceId.mockResolvedValue('ws-cloud');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    listServers.mockResolvedValue([]);
+  });
+
+  it('are not listed, nor read back as the active one', async () => {
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'false');
+    await expect(workspacesController.list()).resolves.toEqual([onOwn]);
+    await expect(workspacesController.getActiveId()).resolves.toBeNull();
+  });
+
+  it('are listed as before when it is turned on', async () => {
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'true');
+    await expect(workspacesController.list()).resolves.toEqual([onCloud, onOwn]);
+    await expect(workspacesController.getActiveId()).resolves.toBe('ws-cloud');
+  });
+});
 
 describe('disconnecting a bridge', () => {
   beforeEach(() => {

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Agent, ApiKey, Client, User
+from switch_core.db.models import Agent, AgentController, ApiKey, Client, User
+from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.user_store import UserStore
 
 _USER_STORE = UserStore()
@@ -72,3 +73,21 @@ async def add_agent(
     session.add(agent)
     await session.flush()
     return agent
+
+
+async def place_on_controller(
+    session: AsyncSession, agent: Agent, *, kind: str
+) -> None:
+    """Make `agent` a managed agent placed on a new controller of `kind`."""
+    assert agent.owner_id is not None
+    controller = AgentController(owner_id=agent.owner_id, name=f"{kind}-box", kind=kind)
+    session.add(controller)
+    await session.flush()
+    await AgentDefinitionStore().create(
+        session,
+        agent_id=agent.id,
+        owner_id=agent.owner_id,
+        controller_id=controller.id,
+        desired_state="running",
+        definition={},
+    )

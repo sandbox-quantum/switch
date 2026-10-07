@@ -401,6 +401,9 @@ none of it is needed to take part in a conversation.
   `"isolated"`), `machine` (move it; id or name from `list_machines`) and
   `desired_state`. The machine must be online with the provider installed and
   logged in, or nothing changes and the error gives a reason code to relay.
+  Changes reach the agent's running sessions on their own, so do not ask
+  anyone to reset it: a session mid-turn picks them up when the turn ends,
+  and a running conversation is told its new instructions.
   Returns the agent's detail plus `managed`, its `list_managed_agents` entry
   (null when it is not managed).
 

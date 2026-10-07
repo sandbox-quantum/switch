@@ -47,14 +47,13 @@ vi.mock('./console-identity', () => ({
 }));
 
 const {
-  cloudLifecycle,
-  getCloudLaunchConfiguration,
   getConnectionCatalog,
   getGitHubConnection,
   startGitHubConnection,
   completeGitHubConnection,
   confirmGitHubConnection,
   getClaudeConnection,
+  getCloudProviderConnection,
   connectClaude,
   disconnectClaude,
   acceptInvitation,
@@ -72,6 +71,7 @@ const {
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
+  cloudMachineLifecycle,
   ensureCloudMachine,
   fetchAuthConfig,
   fetchBridges,
@@ -80,7 +80,6 @@ const {
   registerKnownAgent,
   updateAgentDisplayName,
   updateBridge,
-  updateCloudLaunchConfiguration,
   AgentManagementUnavailableError,
   enrollConsoleController,
   fetchAdvancedConfigSchema,
@@ -94,6 +93,7 @@ const {
   fetchAgentManagementAccess,
   updateCanManageAgents,
   updateManagedAgent,
+  putManagedAgent,
 } = await import('./gateway-client');
 
 const SERVER = {
@@ -586,7 +586,7 @@ describe('room creation', () => {
       ) as never
     );
 
-    await expect(cloudLifecycle(SERVER, 'launch', 'retry', 3)).rejects.toMatchObject({
+    await expect(cloudMachineLifecycle(SERVER, 'machine-1', 'retry', 3)).rejects.toMatchObject({
       status: 409,
       detail: 'The owner stopped the cloud machine. Start it in Switch Console.',
       code: 'machine_stopped',
@@ -789,56 +789,6 @@ describe('cloud agent edits', () => {
     vi.unstubAllGlobals();
   });
 
-  const configuration = {
-    description: 'Reviews pull requests',
-    instructions: 'Be brief.',
-    definition_attributes: { model: 'opus' },
-  };
-
-  it('reads the configuration a launch carries', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
-
-    await expect(getCloudLaunchConfiguration(SERVER, 'launch-1')).resolves.toEqual(configuration);
-    const [url] = fetchMock.mock.calls[0] as unknown as [string];
-    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
-  });
-
-  it('PUTs the new instructions with the rendered definition', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
-
-    await updateCloudLaunchConfiguration(SERVER, 'launch-1', {
-      instructions: 'Be brief.',
-      definition_attributes: { model: 'opus' },
-      definition: '---\nname: helper\n---\nBe brief.',
-    });
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      { method: string; body: string },
-    ];
-    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
-    expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual({
-      instructions: 'Be brief.',
-      definition_attributes: { model: 'opus' },
-      definition: '---\nname: helper\n---\nBe brief.',
-    });
-  });
-
-  it('surfaces a refused configuration rather than reporting it saved', async () => {
-    fetchMock.mockResolvedValue(
-      errorResponse(409, '{"detail":"This worker has been removed."}') as never
-    );
-
-    await expect(
-      updateCloudLaunchConfiguration(SERVER, 'launch-1', {
-        instructions: '',
-        definition_attributes: {},
-        definition: 'x',
-      })
-    ).rejects.toMatchObject({ status: 409, detail: 'This worker has been removed.' });
-  });
-
   it('PUTs a display name, or null to clear it', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
@@ -1029,6 +979,22 @@ describe('Claude cloud connection transport', () => {
     expect(options.method).toBe('DELETE');
     expect(options.body).toBeUndefined();
   });
+  it('reads a login the cloud controller can no longer use as needing reconnecting', async () => {
+    const reconnect = {
+      status: 'reconnect_required',
+      kind: 'setup-token',
+      verified_at: '2026-01-01 00:00:00+00:00',
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(reconnect)));
+    expect(await getClaudeConnection(SERVER)).toEqual(reconnect);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...reconnect, kind: 'api-key' }))
+    );
+    expect(await getCloudProviderConnection(SERVER, 'cursor')).toEqual({
+      ...reconnect,
+      kind: 'api-key',
+    });
+  });
   it('rejects malformed connection status', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ status: 'connected', kind: 'unknown' }))
@@ -1190,6 +1156,7 @@ describe('sign-up support', () => {
       error_code: null,
       retain_until: null,
       heartbeat_at: null,
+      controller_id: null,
       disk: null,
       memory: null,
       agents: [],
@@ -1819,6 +1786,70 @@ describe('agent management calls', () => {
       },
       controller_id: 'controller-2',
     });
+  });
+
+  it('carries the repository the server holds over a PUT of the definition', async () => {
+    const definition = {
+      provider: 'claude',
+      model: null,
+      advanced_config: {},
+      instructions: '',
+      auto_approve: false,
+      directory: null,
+    };
+    const repository = { installation_id: 7, repository_id: 42 };
+    fetchMock
+      .mockImplementationOnce(async () =>
+        respond(200, { agent_id: 'agent-1', definition: { ...definition, repository } })
+      )
+      .mockImplementationOnce(async () => respond(200, {}));
+    await putManagedAgent(SERVER, 'agent-1', {
+      controller_id: 'controller-1',
+      desired_state: 'running',
+      definition: { ...definition, instructions: 'Be brief.' },
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/agents/agent-1');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({
+      controller_id: 'controller-1',
+      desired_state: 'running',
+      definition: { ...definition, instructions: 'Be brief.', repository },
+    });
+
+    fetchMock
+      .mockImplementationOnce(async () =>
+        respond(404, { error: { code: 'not_found', message: 'Agent not found', retryable: false } })
+      )
+      .mockImplementationOnce(async () => respond(200, {}));
+    await putManagedAgent(SERVER, 'agent-2', {
+      controller_id: 'controller-1',
+      desired_state: 'running',
+      definition,
+    });
+    const [, adopted] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(JSON.parse(String(adopted.body)).definition).toEqual(definition);
+  });
+
+  it('does not PUT a definition when the server’s copy could not be read', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(403, { error: { code: 'forbidden', message: 'Not yours', retryable: false } })
+    );
+    await expect(
+      putManagedAgent(SERVER, 'agent-1', {
+        controller_id: null,
+        desired_state: 'stopped',
+        definition: {
+          provider: 'claude',
+          model: null,
+          advanced_config: {},
+          instructions: '',
+          auto_approve: false,
+          directory: null,
+        },
+      })
+    ).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('maps managed agents, definition and last report included', async () => {

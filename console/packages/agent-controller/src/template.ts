@@ -151,6 +151,7 @@ export function buildWatcherTemplate(input: {
       codexConfig: launch.codexConfig,
       skill: launch.skill,
       context: launch.context,
+      instructions: launch.instructions,
     },
   } satisfies SharedHostConfig);
 }

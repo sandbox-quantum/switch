@@ -29,6 +29,8 @@ export class FakeRuntime implements AgentRuntime {
   probes = 0;
   /** Thrown from the next launch, once. */
   failNextLaunch: Error | null = null;
+  /** Agents whose observe() throws. */
+  readonly observeFailures = new Map<string, Error>();
   /** What the controller gave it to open each agent's event stream. */
   openStream: ((agentId: string) => OpenAgentStream) | null = null;
   closed = false;
@@ -53,7 +55,13 @@ export class FakeRuntime implements AgentRuntime {
   }
 
   async observe(agentId: string): Promise<AgentObservation> {
+    const failure = this.observeFailures.get(agentId);
+    if (failure) throw failure;
     return structuredClone(this.observation(agentId));
+  }
+
+  watcherRoot(agentId: string): string {
+    return `/data/watchers/${agentId}`;
   }
 
   credentialsPath(agentId: string): string {
@@ -139,6 +147,7 @@ export class FakeRuntime implements AgentRuntime {
 
 /** Every provider installed at `/usr/bin/<provider>`, unless listed as missing. */
 export class FakeLocator implements ProviderLocator {
+  readonly authSource = 'local';
   readonly missing = new Set<Provider>();
 
   async locate(provider: Provider): Promise<LocatedProvider | null> {

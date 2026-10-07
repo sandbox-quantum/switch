@@ -33,8 +33,10 @@ import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
+import { currentInternalFlag } from './core/telemetry/internal-account';
+import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
-import { trackEvent } from './core/telemetry/telemetry-service';
+import { telemetryService } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
@@ -144,7 +146,8 @@ void app.whenReady().then(async () => {
   // After the settings store, which owns the consent gate every event asks
   // before it is sent, and never before the database it is read from.
   registerTelemetryListeners();
-  trackEvent('app_launched', {});
+  telemetryService.setInternalSource(currentInternalFlag);
+  void reportLaunch(readThisLaunch);
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below

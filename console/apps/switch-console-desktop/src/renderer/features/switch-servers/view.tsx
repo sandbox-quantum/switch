@@ -60,12 +60,12 @@ import {
 import { ServerStatTiles } from './server-stat-tiles';
 import { useSharedActionConfirm } from './shared-action-confirm';
 import { SharedConsolesSection } from './shared-consoles-section';
+import { loadSwitchCloudOrigin, managedCloudServerId } from './switch-cloud-origin';
 import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
 import { ThisComputerMachineCard } from './this-computer-machine-card';
-import { loadSwitchCloudOrigin, managedCloudServerId } from './use-cloud-launches';
 import { myIdentitiesQueryKey } from './use-my-identities';
 import { VersionDriftNotice } from './VersionDriftNotice';
 

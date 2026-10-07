@@ -15,6 +15,7 @@ describe('a room command', () => {
       message: roomMessageSchema.parse(message),
       surface: 'switch-web',
       attachments: [],
+      preface: null,
     });
 
   it('is named by the room message it answers', () => {

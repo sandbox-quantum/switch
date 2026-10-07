@@ -5,6 +5,11 @@ import type {
   SessionCommand,
   SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
+import {
+  type ControlContext,
+  type ControlPush,
+  WatcherControl,
+} from '@switch-console/agent-providers';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { AgentHub } from './agent-hub';
 import { silentLogger } from './log';
@@ -35,15 +40,62 @@ async function waitFor(condition: () => boolean, what: string): Promise<void> {
 let hub: AgentHub;
 let saved: [string, number][];
 let changes: number;
+let pushed: [string, ControlPush][];
+let controlChanges: string[];
 
 beforeEach(() => {
   saved = [];
   changes = 0;
+  pushed = [];
+  controlChanges = [];
   hub = new AgentHub({
     log: silentLogger,
     onCursor: (agentId, cursor) => saved.push([agentId, cursor]),
     onChange: () => changes++,
     bufferLimit: 5,
+    onControlPush: (agentId, push) => pushed.push([agentId, push]),
+    onControlChange: (agentId) => controlChanges.push(agentId),
+  });
+});
+
+describe('relayed control messages', () => {
+  function context(watcher: WatcherControl): ControlContext {
+    return {
+      agentId: AGENT,
+      links: {} as ControlContext['links'],
+      ensure: async () => null,
+      watcher,
+      transfers: {} as ControlContext['transfers'],
+    };
+  }
+
+  it('answers through the agent host registered for the agent, and pushes its live views', async () => {
+    await expect(hub.control(AGENT, { health: true }, () => {})).rejects.toMatchObject({
+      code: 'agent_not_running',
+    });
+    const watcher = new WatcherControl();
+    const detach = hub.attachControl(AGENT, context(watcher));
+    expect(hub.controlAttached(AGENT)).toBe(true);
+    expect(controlChanges).toEqual([AGENT]);
+    expect(await hub.control(AGENT, { health: true }, () => {})).toMatchObject({
+      state: 'not-running',
+    });
+    await hub.control(AGENT, { watchHealth: true }, () => {});
+    watcher.report({ state: 'connected' });
+    expect(pushed).toEqual([[AGENT, { health: expect.objectContaining({ state: 'connected' }) }]]);
+    detach();
+    expect(hub.controlAttached(AGENT)).toBe(false);
+    expect(controlChanges).toEqual([AGENT, AGENT]);
+    watcher.report({ state: 'disconnected' });
+    expect(pushed).toHaveLength(1);
+  });
+
+  it('withdraws the registration when the agent is forgotten', () => {
+    const detach = hub.attachControl(AGENT, context(new WatcherControl()));
+    hub.forget(AGENT);
+    expect(hub.controlAttached(AGENT)).toBe(false);
+    detach();
+    expect(controlChanges).toEqual([AGENT, AGENT]);
   });
 });
 

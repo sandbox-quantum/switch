@@ -13,37 +13,48 @@ const require = createRequire(new URL('../../console/package.json', import.meta.
 const { build } = require('esbuild');
 const output = resolve(process.argv[2]);
 await mkdir(output, { recursive: true });
-const names = ['hosted-bootstrap', 'shared-host-daemon'];
-await build({
-  absWorkingDir: repository,
-  entryPoints: {
-    'hosted-bootstrap': 'console/packages/agent-providers/src/host/hosted-bootstrap-cli.ts',
-    'shared-host-daemon': 'console/packages/agent-providers/src/host/shared-daemon.ts',
+const names = ['hosted-bootstrap', 'shared-host-daemon', 'switch-agent-controller'];
+const headlessRuntimeOnly = {
+  name: 'headless-runtime-only',
+  setup(context) {
+    context.onResolve(
+      { filter: /^(electron|better-sqlite3|drizzle-orm|@main\/db)(\/|$)/ },
+      (args) => ({
+        errors: [{ text: `Hosted runtime cannot import desktop dependency: ${args.path}` }],
+      })
+    );
   },
+};
+// Every dependency, the AWS SDK included, is bundled: the image has Node and
+// these files, and no node_modules to resolve anything else from.
+const common = {
+  absWorkingDir: repository,
   outdir: output,
   outExtension: { '.js': '.mjs' },
   bundle: true,
   platform: 'node',
   format: 'esm',
   target: 'node24',
-  tsconfig: 'console/packages/agent-providers/tsconfig.json',
   banner: {
     js: "import { createRequire as createHostedRequire } from 'node:module'; const require = createHostedRequire(import.meta.url);",
   },
-  plugins: [
-    {
-      name: 'headless-runtime-only',
-      setup(context) {
-        context.onResolve(
-          { filter: /^(electron|better-sqlite3|drizzle-orm|@main\/db)(\/|$)/ },
-          (args) => ({
-            errors: [{ text: `Hosted runtime cannot import desktop dependency: ${args.path}` }],
-          })
-        );
-      },
-    },
-  ],
+  plugins: [headlessRuntimeOnly],
   logLevel: 'info',
+};
+await build({
+  ...common,
+  entryPoints: {
+    'hosted-bootstrap': 'console/packages/agent-providers/src/host/hosted-bootstrap-cli.ts',
+    'shared-host-daemon': 'console/packages/agent-providers/src/host/shared-daemon.ts',
+  },
+  tsconfig: 'console/packages/agent-providers/tsconfig.json',
+});
+await build({
+  ...common,
+  entryPoints: {
+    'switch-agent-controller': 'console/packages/agent-controller/src/cli.ts',
+  },
+  tsconfig: 'console/packages/agent-controller/tsconfig.json',
 });
 
 const files = {};

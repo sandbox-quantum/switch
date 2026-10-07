@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -10,7 +10,6 @@ from sqlalchemy import select
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.db.models import (
-    HostedLaunch,
     HostedMachine,
     ProviderConnection,
     Tenant,
@@ -64,10 +63,7 @@ async def connection_app(session_factory):
         connections=AgentConnectionRegistry()
     )
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
-    app.dependency_overrides[get_config] = lambda: SimpleNamespace(
-        keyring=KEY,
-        hosted_provider_verification_enabled=False,
-    )
+    app.dependency_overrides[get_config] = lambda: SimpleNamespace(keyring=KEY)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
     ) as client:
@@ -217,7 +213,7 @@ async def test_simultaneous_connection_changes_fail_without_waiting(connection_a
         ("antigravity", "auth-json", '{"access_token":"SYNTHETIC-PLACEHOLDER"}'),
     ],
 )
-async def test_other_provider_credentials_remain_unverified_until_worker_checks_them(
+async def test_other_provider_credentials_are_stored_unverified(
     connection_app, provider, kind, credential
 ):
     client, identity, _, factory, _ = connection_app
@@ -265,58 +261,6 @@ async def test_other_provider_invalid_credentials_are_not_echoed(
     )
     assert response.status_code == 400
     assert "PRIVATE" not in response.text
-
-
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-async def test_disconnect_rings_owners_workers_to_revoke_without_superseding(
-    connection_app, provider
-):
-    client, _, _, factory, app = connection_app
-    registry = Mock(spec=AgentConnectionRegistry)
-    app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
-        connections=registry
-    )
-    async with factory() as session:
-        session.add_all(
-            [
-                HostedLaunch(
-                    id="matching",
-                    name="matching",
-                    owner_id="first",
-                    agent_id="matching-agent",
-                    spec={"provider": provider},
-                    state="ready",
-                ),
-                HostedLaunch(
-                    id="other-owner",
-                    name="other-owner",
-                    owner_id="second",
-                    agent_id="other-owner-agent",
-                    spec={"provider": provider},
-                    state="ready",
-                ),
-                HostedLaunch(
-                    id="other-provider",
-                    name="other-provider",
-                    owner_id="first",
-                    agent_id="other-provider-agent",
-                    spec={"provider": "cursor"},
-                    state="ready",
-                ),
-            ]
-        )
-        await session.commit()
-    assert (await client.delete(f"/provider-connections/{provider}")).status_code == 204
-    registry.ring_worker.assert_called_once_with(
-        "matching-agent", "credential", {"revision": None}
-    )
-    registry.supersede.assert_not_called()
-    async with factory() as session:
-        for key in ["matching", "other-owner", "other-provider"]:
-            launch = await session.get(HostedLaunch, (require_tenant_id(), key))
-            assert launch.state == "ready"
-            assert launch.revision == 1
-            assert launch.error is None
 
 
 async def test_opencode_stores_only_its_own_login(connection_app):

@@ -139,9 +139,10 @@ def upgrade() -> None:
         if launches:
             raise RuntimeError(
                 f"{launches} hosted launches exist but sdk_sessions is already gone, so "
-                "their pre-cutover session state cannot be captured. Upgrade with "
-                "`switch-hosted-cutover-upgrade` (`just hosted-cutover-upgrade`), "
-                "which runs this revision before b9e4d2a71c05."
+                "their pre-cutover session state cannot be captured. This database "
+                "predates the controller runtime: upgrade it first with a Switch "
+                "release that still has the cutover tool, which runs this revision "
+                "before b9e4d2a71c05."
             )
         return
 

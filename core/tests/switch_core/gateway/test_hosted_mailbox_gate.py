@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,48 +11,55 @@ import pytest
 from switch_core.bridges.agent import hosted_mailbox
 from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.db.models import HostedWakeMailbox
 from tests.switch_core.bridges.agent.protocol.registration_harness import make_service
-from tests.switch_core.gateway.test_hosted_workers import worker_app  # noqa: F401
 
 
 @pytest.fixture
-def reclaim(monkeypatch) -> AsyncMock:
-    spy = AsyncMock(return_value=0)
-    monkeypatch.setattr(hosted_mailbox.HostedMailboxStore, "reclaim", spy)
+def expire(monkeypatch) -> AsyncMock:
+    spy = AsyncMock(return_value=([], 0))
+    monkeypatch.setattr(hosted_mailbox.HostedMailboxStore, "expire", spy)
     return spy
-
-
-def _unconfigured(config) -> None:
-    config.hosted_controller_config_path = None
-    config.hosted_launch_capacity = 0
 
 
 def _bare_service(session_factory):
     service = make_service(session_factory)
     service.connections = AgentConnectionRegistry()
     service.event_buffer = SimpleNamespace(boot=1)
-    _unconfigured(service.config)
+    service.config.hosted_controller_config_path = None
+    service.config.hosted_launch_capacity = 0
     return service
 
 
 async def test_unconfigured_server_with_no_hosted_work_skips_the_pass(
-    session_factory, reclaim
+    session_factory, expire
 ):
     await mailbox_upkeep(_bare_service(session_factory), datetime.now(UTC))
 
-    reclaim.assert_not_awaited()
+    expire.assert_not_awaited()
 
 
 async def test_unconfigured_server_still_tends_retained_hosted_work(
-    worker_app,  # noqa: F811
-    reclaim,
+    session_factory, expire
 ):
-    _, _, _, service, _, _ = worker_app
-    _unconfigured(service.config)
+    now = datetime.now(UTC)
+    async with session_factory() as session:
+        session.add(
+            HostedWakeMailbox(
+                agent_id="00000000-0000-4000-8000-00000000000a",
+                room_id="room-1",
+                message_id="$m1",
+                event={},
+                addressed_at=now,
+                updated_at=now,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+        await session.commit()
 
-    await mailbox_upkeep(service, datetime.now(UTC))
+    await mailbox_upkeep(_bare_service(session_factory), datetime.now(UTC))
 
-    reclaim.assert_awaited_once()
+    expire.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -60,7 +67,7 @@ async def test_unconfigured_server_still_tends_retained_hosted_work(
     [("/etc/switch/controller.json", 0), (None, 1)],
 )
 async def test_configured_server_runs_the_pass(
-    session_factory, reclaim, controller, capacity
+    session_factory, expire, controller, capacity
 ):
     service = _bare_service(session_factory)
     service.config.hosted_controller_config_path = controller
@@ -68,4 +75,4 @@ async def test_configured_server_runs_the_pass(
 
     await mailbox_upkeep(service, datetime.now(UTC))
 
-    reclaim.assert_awaited_once()
+    expire.assert_awaited_once()

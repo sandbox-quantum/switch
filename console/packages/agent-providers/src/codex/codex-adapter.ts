@@ -443,6 +443,14 @@ export class CodexAdapter implements ProviderAdapter {
     this.emit(state, { type: 'user-input.resolved', requestId });
   }
 
+  async addDeveloperMessage(sessionId: string, text: string): Promise<void> {
+    const state = this.requireSession(sessionId);
+    await state.client.request('thread/inject_items', {
+      threadId: state.threadId,
+      items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text }] }],
+    });
+  }
+
   async compactSession(sessionId: string): Promise<void> {
     const state = this.requireSession(sessionId);
     if (state.activeNativeTurnId || state.compaction) throw new Error('SESSION_BUSY');

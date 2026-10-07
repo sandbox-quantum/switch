@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "nodePath": "/opt/switch/node/bin/node",
+  "controllerPath": "/opt/switch/controller/switch-agent-controller.mjs",
+  "sharedHostDaemonPath": "/opt/switch/agent-providers/shared-host-daemon.mjs",
+  "bootstrapPath": "/opt/switch/agent-providers/hosted-bootstrap.mjs",
+  "bootPath": "/usr/local/libexec/switch-machine-boot",
+  "providerBinaryPath": "/opt/switch/claude/bin/claude",
+  "controllerUser": "switch-controller",
+  "agentUser": "switch-agent",
+  "agentGroup": "switch-agent",
+  "path": "/opt/switch/node/bin:/opt/switch/claude/bin:/usr/local/bin:/usr/bin:/bin",
+  "allowInitialFormat": true,
+  "artifactSha256": {
+    "node": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sharedHostDaemon": "0000000000000000000000000000000000000000000000000000000000000000",
+    "bootstrap": "0000000000000000000000000000000000000000000000000000000000000000",
+    "controller": "0000000000000000000000000000000000000000000000000000000000000000",
+    "boot": "0000000000000000000000000000000000000000000000000000000000000000",
+    "provider": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "providers": {
+    "codex": {"path": "/opt/switch/providers/codex", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "antigravity": {"path": "/opt/switch/providers/antigravity-acp", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+  }
+}

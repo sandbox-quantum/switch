@@ -9,7 +9,14 @@ variable "availability_zone" { type = string }
 variable "worker_vpc_cidr" { type = string }
 variable "public_subnet_cidr" { type = string }
 variable "private_subnet_cidr" { type = string }
-variable "worker_image_id" { type = string }
+variable "controller_image_id" {
+  description = "AMI every machine slot runs: the agent controller image"
+  type        = string
+}
+variable "login_kms_key_arn" {
+  description = "KMS key sealing provider logins; the controller grants slot roles Decrypt on it"
+  type        = string
+}
 variable "oidc_provider_arn" { type = string }
 variable "oidc_issuer_url" { type = string }
 variable "namespace" { type = string }

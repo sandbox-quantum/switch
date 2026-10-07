@@ -51,23 +51,33 @@ def _agent(agent_id: str = "a1") -> Agent:
 
 def test_entries_expire_after_the_ttl(clock: _Clock) -> None:
     cache = ControllerAuthCache(ttl_seconds=5, max_entries=8)
-    cache.put_controller(_principal(), cache.generation)
+    cache.put_controller(_principal(), "k1", cache.generation)
     cache.put_agent("t1", _agent(), cache.generation)
 
     clock.now += 4.9
-    assert cache.controller("t1", "c1") == _principal()
+    assert cache.controller("t1", "c1", "k1") == _principal()
     assert cache.agent("t1", "a1") is not None
     clock.now += 0.2
-    assert cache.controller("t1", "c1") is None
+    assert cache.controller("t1", "c1", "k1") is None
     assert cache.agent("t1", "a1") is None
+
+
+def test_an_entry_answers_only_for_the_credential_it_was_read_under(
+    clock: _Clock,
+) -> None:
+    cache = ControllerAuthCache(ttl_seconds=5, max_entries=8)
+    cache.put_controller(_principal(), "k1", cache.generation)
+
+    assert cache.controller("t1", "c1", "k1") == _principal()
+    assert cache.controller("t1", "c1", "k2") is None
 
 
 def test_an_entry_is_keyed_by_its_tenant(clock: _Clock) -> None:
     cache = ControllerAuthCache(ttl_seconds=5, max_entries=8)
-    cache.put_controller(_principal(), cache.generation)
+    cache.put_controller(_principal(), "k1", cache.generation)
     cache.put_agent("t1", _agent(), cache.generation)
 
-    assert cache.controller("t2", "c1") is None
+    assert cache.controller("t2", "c1", "k1") is None
     assert cache.agent("t2", "a1") is None
 
 
@@ -75,8 +85,8 @@ def test_a_read_that_straddled_an_invalidation_is_not_stored(clock: _Clock) -> N
     cache = ControllerAuthCache(ttl_seconds=5, max_entries=8)
     before_revoke = cache.generation
     cache.invalidate_controller("c1")
-    cache.put_controller(_principal(), before_revoke)
-    assert cache.controller("t1", "c1") is None
+    cache.put_controller(_principal(), "k1", before_revoke)
+    assert cache.controller("t1", "c1", "k1") is None
 
     before_unbind = cache.generation
     cache.invalidate_agent("a1")
@@ -87,16 +97,16 @@ def test_a_read_that_straddled_an_invalidation_is_not_stored(clock: _Clock) -> N
 def test_invalidation_drops_only_what_it_names(clock: _Clock) -> None:
     cache = ControllerAuthCache(ttl_seconds=5, max_entries=8)
     for principal in (_principal("c1"), _principal("c2"), _principal("c1", "t2")):
-        cache.put_controller(principal, cache.generation)
+        cache.put_controller(principal, "k1", cache.generation)
     for agent_id in ("a1", "a2"):
         cache.put_agent("t1", _agent(agent_id), cache.generation)
 
     cache.invalidate_controller("c1")
     cache.invalidate_agent("a1")
 
-    assert cache.controller("t1", "c1") is None
-    assert cache.controller("t2", "c1") is None
-    assert cache.controller("t1", "c2") is not None
+    assert cache.controller("t1", "c1", "k1") is None
+    assert cache.controller("t2", "c1", "k1") is None
+    assert cache.controller("t1", "c2", "k1") is not None
     assert cache.agent("t1", "a1") is None
     assert cache.agent("t1", "a2") is not None
 
@@ -111,10 +121,10 @@ def test_it_holds_no_more_than_its_bound(clock: _Clock) -> None:
 
 def test_a_ttl_of_zero_stores_nothing(clock: _Clock) -> None:
     cache = ControllerAuthCache(ttl_seconds=0, max_entries=8)
-    cache.put_controller(_principal(), cache.generation)
+    cache.put_controller(_principal(), "k1", cache.generation)
     cache.put_agent("t1", _agent(), cache.generation)
     assert not cache.enabled
-    assert cache.controller("t1", "c1") is None
+    assert cache.controller("t1", "c1", "k1") is None
     assert cache.agent("t1", "a1") is None
 
 
@@ -142,7 +152,7 @@ def test_presence_keeps_it_in_step_with_bindings_and_revocations(
     )
 
     def warm() -> None:
-        cache.put_controller(_principal(), cache.generation)
+        cache.put_controller(_principal(), "k1", cache.generation)
         cache.put_agent("t1", _agent(), cache.generation)
 
     warm()
@@ -164,8 +174,8 @@ def test_presence_keeps_it_in_step_with_bindings_and_revocations(
     warm()
     presence.unbind("a1", DETACH_UNASSIGNED)
     assert cache.agent("t1", "a1") is None
-    assert cache.controller("t1", "c1") is not None
+    assert cache.controller("t1", "c1", "k1") is not None
 
     warm()
     presence.revoke_controller("c1")
-    assert cache.controller("t1", "c1") is None
+    assert cache.controller("t1", "c1", "k1") is None

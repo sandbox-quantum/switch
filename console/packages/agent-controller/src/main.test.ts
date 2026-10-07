@@ -158,4 +158,68 @@ describe('main', () => {
     );
     expect(lastLine()).toMatch(/not enrolled/);
   });
+  it('runs a cloud machine only from its configuration and credential file', async () => {
+    expect(await main(['run', '--config', join(dir, 'machine.json')])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe(
+      'switch-agent-controller: --config and --credential-file run a cloud machine; pass --ec2.'
+    );
+    expect(await main(['run', '--ec2', '--server', 'https://switch.example.com'])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(lastLine()).toMatch(/--server does not apply with --ec2/);
+    expect(await main(['run', '--ec2', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/--ec2 needs --config/);
+    const config = join(dir, 'machine.json');
+    expect(await main(['run', '--ec2', '--config', config, '--data-dir', dir])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(lastLine()).toMatch(/exactly one of --credential-file/);
+
+    writeFileSync(config, JSON.stringify({ controllerId: 'controller-1' }));
+    const credential = join(dir, 'credential');
+    writeFileSync(credential, 'not-a-credential\n');
+    const run = [
+      'run',
+      '--ec2',
+      '--config',
+      config,
+      '--credential-file',
+      credential,
+      '--data-dir',
+      dir,
+    ];
+    expect(await main(run)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/machine configuration .* is invalid: server/);
+
+    writeFileSync(
+      config,
+      JSON.stringify({
+        controllerId: 'controller-1',
+        server: 'https://switch.example.com',
+        relayPort: 47100,
+        instanceId: 'i-0123456789abcdef0',
+        bootId: '00000000-0000-0000-0000-000000000000',
+        kms: {
+          keyArn: 'arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000',
+          region: 'us-east-1',
+          grantTokens: [],
+          context: {
+            'switch:tenant': 'tenant',
+            'switch:owner_id': 'owner',
+            'switch:controller_id': 'controller-1',
+          },
+        },
+        providers: {
+          claude: '/opt/switch/providers/claude',
+          codex: '/opt/switch/providers/codex',
+          opencode: '/opt/switch/providers/opencode',
+          cursor: '/opt/switch/providers/cursor',
+          antigravity: '/opt/switch/providers/antigravity',
+        },
+      })
+    );
+    expect(await main(run)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/does not hold a controller credential/);
+    expect(stderr.join('')).not.toContain('not-a-credential');
+  });
 });

@@ -29,6 +29,7 @@ function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): Agent
       auto_approve: false,
       directory: null,
       isolation: 'shared',
+      skills: [],
       ...definition,
     },
   };
@@ -92,6 +93,8 @@ describe('reconcile', () => {
       restart: false,
       replaceIdentity: false,
       clearTakenOver: true,
+      skills: [],
+      repository: null,
     });
     expect(launch!.template.start.input.cwd).toBe('/data/workspaces/scout');
     expect(launch!.template.execution!.credentialsPath).toBe(
@@ -269,6 +272,31 @@ describe('reconcile', () => {
     expect(runtime.calls).toEqual([]);
   });
 
+  it('hands an isolated agent its skills to install', async () => {
+    const skills = [{ slug: 'github', files: { 'SKILL.md': '# GitHub' } }];
+    await reconcile(assignment(agent({}, { isolation: 'isolated', skills })), deps());
+    expect(runtime.launches()[0]!.options).toMatchObject({ isolation: 'isolated', skills });
+  });
+
+  it('hands an isolated agent the repository its definition names, and none otherwise', async () => {
+    const repository = { installation_id: 123, repository_id: 456 };
+    await reconcile(assignment(agent({}, { isolation: 'isolated', repository })), deps());
+    await reconcile(assignment(agent({ agent_id: 'agent-2' }, { name: 'other' })), deps());
+    const [first, second] = runtime.launches();
+    expect(first!.options.repository).toEqual(repository);
+    expect(second!.options.repository).toBeNull();
+  });
+
+  it('records skills it cannot install as invalid', async () => {
+    const skills = [{ slug: 'github', files: { 'README.md': 'no SKILL.md' } }];
+    await reconcile(assignment(agent({}, { isolation: 'isolated', skills })), deps());
+    expect(store.agent('agent-1')?.failure).toMatchObject({
+      reason: 'definition_invalid',
+      detail: expect.stringContaining('SKILL.md'),
+    });
+    expect(runtime.calls).toEqual([]);
+  });
+
   it('records an agent id that cannot be a directory name as invalid', async () => {
     await reconcile(assignment(agent({ agent_id: '../escape' })), deps());
     expect(store.agent('../escape')?.failure?.reason).toBe('definition_invalid');
@@ -293,6 +321,16 @@ describe('reconcile', () => {
       reason: 'internal',
       detail: 'launcher exploded',
     });
+    expect(store.agent('agent-2')?.appliedRevision).toBe(1);
+  });
+
+  it('observes and starts agent-2 when agent-1 observe() throws', async () => {
+    runtime.observeFailures.set(
+      'agent-1',
+      new Error('config.json is a symbolic link; it is not followed.')
+    );
+    await reconcile(assignment(agent(), agent({ agent_id: 'agent-2' }, { name: 'other' })), deps());
+    expect(runtime.launches('agent-2')).toHaveLength(1);
     expect(store.agent('agent-2')?.appliedRevision).toBe(1);
   });
 });

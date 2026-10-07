@@ -25,6 +25,12 @@ of its agents' watchers exactly the stream it would have had from Switch:
 - `agent.detached {agent_id, reason}`: `unassigned` or `deleted`.
 - The management nudges, passed through as they come: `assignment.changed`,
   `operation.pending`, and `credential.revoked`, which ends the stream.
+- Console relays, passed through with the nudges and before a revocation
+  (`control_relay.py`): `agent.control {relay_id, agent_id, message,
+  deadline_ms}`, a Console request to answer at
+  `POST /v1/management/controllers/{id}/control/{relay_id}` by `deadline_ms`
+  (milliseconds since the epoch), and `agent.control_cancel {relay_id}` once
+  that deadline has passed with no answer.
 - `evicted {code, reason}`: the stream ends. `taken_over` is terminal for the
   client that receives it; the rest are recovered by opening again.
 
@@ -75,7 +81,11 @@ CREDENTIAL_REVOKED = "credential.revoked"
 
 
 class ControllerNudges(Protocol):
-    """Management's pending signals for one open stream, opaque to Core."""
+    """Management's pending signals for one open stream, opaque to Core.
+
+    Its Console relay frames come through here too, so they reach only the
+    stream the controller holds now.
+    """
 
     @property
     def wake(self) -> asyncio.Event: ...

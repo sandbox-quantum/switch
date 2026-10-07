@@ -67,6 +67,7 @@ describe('sessionLaunchConfig', () => {
       codexConfig: '',
       skill: '',
       context: SWITCH_SKILL_CONTEXT,
+      instructions: '',
     });
   });
 
@@ -106,6 +107,7 @@ describe('sessionLaunchConfig', () => {
       codexConfig: '',
       skill: SWITCH_SKILL_FILE,
       context: 'Review pull requests.',
+      instructions: 'Review pull requests.',
     });
   });
 
@@ -122,6 +124,7 @@ describe('sessionLaunchConfig', () => {
       codexConfig: '',
       skill: '',
       context: `${SWITCH_SKILL_CONTEXT}\n\nReview pull requests.`,
+      instructions: 'Review pull requests.',
     });
   });
 

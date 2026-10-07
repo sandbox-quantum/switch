@@ -10,6 +10,8 @@ import { SessionHostFailedError, SessionUnavailableError } from './session-chann
 type Reply = { status: number; body: unknown };
 type Relayed = { message: Record<string, unknown>; timeout_ms: number };
 
+const AGENT_BASE = '/management/agents/agent-1/control';
+
 const worker = { launch_revision: 3, boot_id: 'boot', generation: 1 };
 const ok = (value: unknown): Reply => ({ status: 200, body: { ok: true, value, worker } });
 const refused = (status: number, code: string, message = code, extra = {}): Reply => ({
@@ -20,31 +22,35 @@ const refused = (status: number, code: string, message = code, extra = {}): Repl
 let server: Server;
 let base: string;
 let relayed: Relayed[];
+let relayedTo: string[];
 let answer: (message: Record<string, unknown>) => Reply;
-let streams: { query: URLSearchParams; response: ServerResponse }[];
+let streams: { path: string; query: URLSearchParams; response: ServerResponse }[];
 
 beforeEach(async () => {
   relayed = [];
+  relayedTo = [];
   streams = [];
   answer = () => refused(500, 'unexpected');
   server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? '/', 'http://relay');
-    if (request.method === 'GET' && url.pathname === '/launch/relay/stream') {
+    const streamOf = url.pathname.replace(/\/stream$/, '');
+    if (request.method === 'GET' && streamOf !== url.pathname && streamOf === AGENT_BASE) {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.write(': keepalive\n\n');
-      streams.push({ query: url.searchParams, response });
+      streams.push({ path: url.pathname, query: url.searchParams, response });
       return;
     }
     let body = '';
     request.on('data', (chunk: Buffer) => (body += chunk.toString()));
     request.on('end', () => {
-      if (url.pathname !== '/launch/relay') {
+      if (request.method !== 'POST' || url.pathname !== AGENT_BASE) {
         response.writeHead(404, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ detail: 'Cloud launch not found.' }));
         return;
       }
       const parsed = JSON.parse(body) as Relayed;
       relayed.push(parsed);
+      relayedTo.push(url.pathname);
       const reply = answer(parsed.message);
       response.writeHead(reply.status, { 'content-type': 'application/json' });
       response.end(JSON.stringify(reply.body));
@@ -60,15 +66,16 @@ afterEach(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-function client(launch = 'launch', retryMs = 2000): CloudRelayClient {
+function client(basePath = AGENT_BASE, retryMs = 2000): CloudRelayClient {
   return new CloudRelayClient(
     (path, init) =>
-      fetch(`${base}/${launch}${path}`, {
+      fetch(`${base}${path}`, {
         method: init.method,
         headers: { 'content-type': 'application/json' },
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
         signal: init.signal,
       }),
+    basePath,
     { retryMs, timeoutMs: 1000 }
   );
 }
@@ -232,7 +239,7 @@ it('asks again while the worker is waking or busy, within its window', async () 
   expect(relayed).toHaveLength(3);
 
   answer = () => refused(409, 'worker_not_attached', 'No worker is attached.');
-  await expect(client('launch', 300).health()).rejects.toMatchObject({
+  await expect(client(AGENT_BASE, 300).health()).rejects.toMatchObject({
     relayCode: 'worker_not_attached',
   });
 });
@@ -281,7 +288,7 @@ it('raises the errors a sidecar raises for a stopped or failed session', async (
   answer = () => refused(400, 'refused_message', 'Console may not send that.');
   await expect(client().forget('one')).rejects.toMatchObject({ relayCode: 'refused_message' });
 
-  await expect(client('elsewhere').forget('one')).rejects.toMatchObject({
+  await expect(client('/management/agents/elsewhere/control').forget('one')).rejects.toMatchObject({
     relayCode: 'not_found',
     status: 404,
   });
@@ -403,9 +410,9 @@ it('resets a view when the worker behind it changes or the stream ends', async (
   await vi.waitFor(() => expect(again).toHaveBeenCalledOnce());
 });
 
-it('refuses a view of a launch Switch will not relay', async () => {
+it('refuses a view of an agent Switch will not relay', async () => {
   await expect(
-    client('elsewhere').subscribe(
+    client('/management/agents/elsewhere/control').subscribe(
       'one',
       () => {},
       () => {},
@@ -432,4 +439,48 @@ it('follows the watcher’s health and closes when its stream ends', async () =>
   await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce());
   expect(relay.isClosed).toBe(true);
   await expect(relay.health()).rejects.toThrow(/closed/);
+});
+
+it('reads agent management’s error envelope as the refusal it names', async () => {
+  answer = () => ({
+    status: 409,
+    body: { error: { code: 'agent_stopped', message: 'The agent is stopped.' } },
+  });
+  await expect(client(AGENT_BASE).forget('one')).rejects.toMatchObject({
+    relayCode: 'agent_stopped',
+    message: 'The agent is stopped.',
+    status: 409,
+    wakeAvailable: false,
+  });
+});
+
+it('asks a controller to start a session by its id alone, and never twice on a changed generation', async () => {
+  answer = () => ok({ created: true });
+  expect(
+    await client(AGENT_BASE).ensure({
+      sessionId: 'one',
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    })
+  ).toEqual({ created: true });
+  expect(relayed[0]!.message).toEqual({
+    ensure: {
+      config: { session: { sessionId: 'one' } },
+      resuming: false,
+      restart: false,
+      startSource: 'user',
+    },
+  });
+
+  answer = () => refused(409, 'generation_changed');
+  await expect(
+    client(AGENT_BASE).ensure({
+      sessionId: 'one',
+      resuming: true,
+      restart: true,
+      startSource: null,
+    })
+  ).rejects.toMatchObject({ relayCode: 'generation_changed' });
+  expect(relayed).toHaveLength(2);
 });

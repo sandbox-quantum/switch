@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import secrets
 from datetime import datetime, timedelta
 from typing import Literal, cast
@@ -9,7 +8,12 @@ from uuid import uuid4
 from sqlalchemy import exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import HostedLaunch, HostedMachine, require_tenant_id
+from switch_core.db.models import (
+    AgentDefinition,
+    HostedMachine,
+    require_tenant_id,
+)
+from switch_core.gateway.cloud_controllers import CloudControllers
 from switch_core.keys import Keyring
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
@@ -22,14 +26,11 @@ MACHINE_NEEDS_ADMIN = (
 MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
+DISK_FULL_BELOW_BYTES = 1 << 30
 
 
 class HostedMachineConflict(Exception):
     """A machine cannot take the requested change; the message is the 409 detail."""
-
-
-def capability_hash(capability: str) -> str:
-    return hashlib.sha256(capability.encode()).hexdigest()
 
 
 async def _advisory_lock(session: AsyncSession, key: str) -> None:
@@ -40,22 +41,27 @@ async def _advisory_lock(session: AsyncSession, key: str) -> None:
 
 
 async def lock_launches(session: AsyncSession) -> None:
-    """The tenant-wide lock taken before creating a launch or claiming a machine."""
+    """The tenant-wide lock taken before claiming a machine."""
     await _advisory_lock(session, f"hosted-launches:{require_tenant_id()}")
 
 
 async def lock_machine(session: AsyncSession, machine_id: str) -> None:
-    """The per-machine lock, taken after the tenant lock and before any launch lock."""
+    """The per-machine lock, taken after the tenant lock."""
     await _advisory_lock(session, f"hosted-machine:{require_tenant_id()}:{machine_id}")
-
-
-async def lock_launch(session: AsyncSession, launch_id: str) -> None:
-    """The per-launch advisory lock every lifecycle, relay and attach step takes."""
-    await _advisory_lock(session, f"hosted-launch:{require_tenant_id()}:{launch_id}")
 
 
 def idle_sleeping(machine: HostedMachine) -> bool:
     return machine.desired_state == "stopped" and machine.stop_reason == "idle"
+
+
+def record_free_disk(machine: HostedMachine, available_bytes: int) -> None:
+    """Raise `disk_full` while the machine's disk is nearly full, unless it
+    already shows another error, and clear it once there is room again."""
+    if available_bytes < DISK_FULL_BELOW_BYTES:
+        if machine.error_code is None:
+            machine.error_code = "disk_full"
+    elif machine.error_code == "disk_full":
+        machine.error_code = None
 
 
 def owner_stopped(machine: HostedMachine) -> bool:
@@ -70,6 +76,18 @@ def machine_starting(machine: HostedMachine) -> bool:
         "stopped",
         "retained",
     }
+
+
+def accepts_controller_exchange(machine: HostedMachine, instance_id: str) -> bool:
+    """Whether an ec2 controller on `instance_id` may exchange its credential:
+    the machine is meant to run, is starting or running, and Core has seen
+    that instance as the machine's."""
+    return (
+        machine.desired_state == "running"
+        and machine.state in {"provisioning", "ready"}
+        and machine.instance_id is not None
+        and secrets.compare_digest(machine.instance_id, instance_id)
+    )
 
 
 def retention_expired(machine: HostedMachine, now: datetime) -> bool:
@@ -151,23 +169,20 @@ class HostedMachineStore:
             ),
         )
 
-    async def locked_launch(
-        self, session: AsyncSession, launch_id: str
-    ) -> tuple[HostedLaunch | None, HostedMachine | None]:
-        """A launch and its machine, locked machine first, then launch."""
-        tenant_id = require_tenant_id()
-        launch = await session.get(HostedLaunch, (tenant_id, launch_id))
-        if launch is None:
-            return None, None
-        machine_id = launch.machine_id
-        if machine_id is not None:
-            await lock_machine(session, machine_id)
-        await lock_launch(session, launch_id)
-        launch = await session.get(
-            HostedLaunch, (tenant_id, launch_id), populate_existing=True
+    async def linking_controller(
+        self, session: AsyncSession, controller_id: str
+    ) -> HostedMachine | None:
+        """The live machine that runs as ec2 controller `controller_id`."""
+        return cast(
+            HostedMachine | None,
+            await session.scalar(
+                select(HostedMachine).where(
+                    HostedMachine.tenant_id == require_tenant_id(),
+                    HostedMachine.controller_id == controller_id,
+                    HostedMachine.state != "deleted",
+                )
+            ),
         )
-        machine = None if machine_id is None else await self.get(session, machine_id)
-        return launch, machine
 
     async def claim(
         self,
@@ -177,12 +192,30 @@ class HostedMachineStore:
         slots: list[str],
         capacity: int,
         now: datetime,
+        controllers: CloudControllers,
     ) -> HostedMachine:
-        """The owner's machine, reused or newly placed on a free slot.
+        """The owner's machine, reused or newly placed on a free slot, linked
+        to its ec2 controller.
 
         The caller holds `lock_launches`, so no other claim in the tenant can
         take the same slot or count towards capacity meanwhile.
         """
+        machine = await self._claim(
+            session, owner_id=owner_id, slots=slots, capacity=capacity, now=now
+        )
+        await controllers.cloud_controller(session, machine)
+        await session.flush()
+        return machine
+
+    async def _claim(
+        self,
+        session: AsyncSession,
+        *,
+        owner_id: str,
+        slots: list[str],
+        capacity: int,
+        now: datetime,
+    ) -> HostedMachine:
         tenant_id = require_tenant_id()
         machine = await self.live_for_owner(session, owner_id)
         if machine is not None:
@@ -228,6 +261,7 @@ class HostedMachineStore:
             owner_id=owner_id,
             slot_id=slot_id,
             generation=(generation or 0) + 1,
+            runtime="controller",
             state="queued",
             desired_state="running",
             active_at=now,
@@ -265,21 +299,6 @@ class HostedMachineStore:
     def bump_agents(self, machine: HostedMachine) -> None:
         machine.agents_version += 1
 
-    async def launches(
-        self, session: AsyncSession, machine_id: str
-    ) -> list[HostedLaunch]:
-        return list(
-            await session.scalars(
-                select(HostedLaunch)
-                .where(
-                    HostedLaunch.tenant_id == require_tenant_id(),
-                    HostedLaunch.machine_id == machine_id,
-                    HostedLaunch.state != "deleted",
-                )
-                .order_by(HostedLaunch.created_at)
-            )
-        )
-
     async def retain_if_empty(
         self,
         session: AsyncSession,
@@ -290,16 +309,15 @@ class HostedMachineStore:
     ) -> bool:
         """Retain the machine's disk once no agent is left on it.
 
+        The machine's agents are every managed agent placed on its controller.
         Returns whether it did. The caller holds the machine lock and commits.
         """
         await session.flush()
-        if await session.scalar(
+        if machine.controller_id is not None and await session.scalar(
             select(
                 exists().where(
-                    HostedLaunch.tenant_id == require_tenant_id(),
-                    HostedLaunch.machine_id == machine.id,
-                    HostedLaunch.state != "deleted",
-                    HostedLaunch.desired_state != "deleted",
+                    AgentDefinition.tenant_id == require_tenant_id(),
+                    AgentDefinition.controller_id == machine.controller_id,
                 )
             )
         ):
@@ -310,65 +328,25 @@ class HostedMachineStore:
         bump_revision(machine, now)
         return True
 
-    async def release_if_empty(
-        self,
-        session: AsyncSession,
-        machine: HostedMachine,
-        *,
-        retention_days: int,
-        now: datetime,
-    ) -> bool:
-        """Retain an agentless machine, expiring at once if it never had an agent.
-
-        Launch rows are never hard-deleted, so a machine no row references has
-        no disk worth keeping. The caller holds the machine lock and commits.
-        """
-        if not await self.retain_if_empty(
-            session, machine, retention_days=retention_days, now=now
-        ):
-            return False
-        if not await self.ever_hosted(session, machine.id):
-            machine.retain_until = now
-        return True
-
-    async def ever_hosted(self, session: AsyncSession, machine_id: str) -> bool:
-        """Whether any launch row ever referenced the machine, deleted or not."""
-        return bool(
-            await session.scalar(
-                select(
-                    exists().where(
-                        HostedLaunch.tenant_id == require_tenant_id(),
-                        HostedLaunch.machine_id == machine_id,
-                    )
-                )
-            )
-        )
-
-    def issue_capability(self, machine: HostedMachine, keyring: Keyring) -> str:
-        """The machine capability for the machine's current revision.
-
-        The same bytes for every call at one revision; a new revision mints new
-        ones and overwrites the old, so at most one is ever valid. The caller
-        commits.
-        """
+    @staticmethod
+    def stored_controller_credential(
+        machine: HostedMachine, keyring: Keyring
+    ) -> str | None:
+        """The controller credential issued at the machine's current revision,
+        or None when this revision has not been issued one."""
         if (
-            machine.machine_capability_revision == machine.revision
-            and machine.machine_capability_encrypted is not None
+            machine.controller_credential_revision == machine.revision
+            and machine.controller_credential_encrypted is not None
         ):
-            return keyring.decrypt(machine.machine_capability_encrypted)
-        capability = secrets.token_urlsafe(32)
-        machine.machine_capability_encrypted = keyring.encrypt(capability)
-        machine.machine_capability_hash = capability_hash(capability)
-        machine.machine_capability_revision = machine.revision
-        return capability
+            return keyring.decrypt(machine.controller_credential_encrypted)
+        return None
 
     @staticmethod
-    def capability_matches(machine: HostedMachine, capability: str) -> bool:
-        """Whether `capability` is the one last issued for the machine.
-
-        Not tied to the current revision: issuing rotates it, so the stored hash
-        is the only valid one. Machine state is the caller's to check alongside.
-        """
-        return machine.machine_capability_hash is not None and secrets.compare_digest(
-            machine.machine_capability_hash, capability_hash(capability)
-        )
+    def store_controller_credential(
+        machine: HostedMachine, credential: str, keyring: Keyring
+    ) -> None:
+        """Keep the credential just issued for the machine's current revision,
+        so a retried prepare at that revision returns it again. The caller
+        commits."""
+        machine.controller_credential_encrypted = keyring.encrypt(credential)
+        machine.controller_credential_revision = machine.revision

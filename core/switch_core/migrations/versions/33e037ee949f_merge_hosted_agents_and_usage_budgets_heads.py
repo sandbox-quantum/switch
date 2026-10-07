@@ -113,8 +113,8 @@ def upgrade() -> None:
             "Refusing to drop the old session tables before the hosted cutover is "
             "complete: "
             + "; ".join(problems)
-            + ". Run `just hosted-cutover-upgrade status` and follow the cutover "
-            "steps in docs/hosted-activity-contracts.md."
+            + ". This database predates the controller runtime: upgrade it first "
+            "with a Switch release that still has the cutover tool."
         )
 
 

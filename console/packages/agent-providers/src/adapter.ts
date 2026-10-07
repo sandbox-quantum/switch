@@ -145,6 +145,12 @@ export interface ProviderAdapter {
   canCompact?(sessionId: string): Promise<boolean>;
   listModels?(sessionId: string): Promise<ModelChoice[]>;
   setModel?(sessionId: string, model: ModelSelection): Promise<void>;
+  /**
+   * Adds a developer message to the conversation, read by the model before
+   * the next turn with a developer message's weight. Absent means the provider
+   * has no such channel; a caller says it in the next user message instead.
+   */
+  addDeveloperMessage?(sessionId: string, text: string): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
   hasSession(sessionId: string): boolean;

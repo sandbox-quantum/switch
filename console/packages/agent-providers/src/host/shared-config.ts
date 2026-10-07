@@ -9,6 +9,7 @@ import { z } from 'zod';
 import type { HttpMcpServerSpec } from '../adapter';
 import { prepareCodexSessionHome } from '../codex/home';
 import { EXECUTION_INHERIT_ENV } from './agent-env';
+import { hostedGitHubEnvironment } from './hosted-github';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
 
@@ -39,6 +40,12 @@ export const sharedConfigSchema = z.strictObject({
       codexConfig: z.string(),
       skill: z.string(),
       context: z.string(),
+      /**
+       * The agent's own instructions, alone (they are also part of
+       * `context`). What a running conversation is told when they change.
+       * Absent from configurations written before it existed.
+       */
+      instructions: z.string().optional(),
       /**
        * A definition on the host's disk to run as, named by an earlier Console.
        * Sessions saved then still relaunch from it; a current Console hands the
@@ -88,13 +95,14 @@ export async function prepareSharedConfig(
       execution.inheritEnv
     );
     input.env = { ...inherited, ...input.env };
+    Object.assign(input.env, hostedGitHubEnvironment(process.env, input.env.PATH));
     if (config.start.provider === 'codex')
       input.env.CODEX_HOME = await prepareCodexSessionHome({
         root: join(root, 'provider-home'),
         sessionId: config.session.sessionId,
         sourceHome: input.env.CODEX_HOME || join(homedir(), '.codex'),
         config: execution.codexConfig,
-        auth: process.env.SWITCH_HOSTED_BOOTSTRAP === '1' ? 'refresh' : 'copy-once',
+        auth: codexAuthMode(),
       });
     input.systemContext = execution.context;
   }
@@ -102,6 +110,20 @@ export async function prepareSharedConfig(
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   return { agentApiUrl, token, input };
+}
+
+/**
+ * Set by a host whose provider login is owned by Switch and can be
+ * reconnected (an agents controller's unit, a hosted worker), so sessions
+ * share the host's login instead of keeping their first copy of it.
+ */
+export const CODEX_AUTH_ENV = 'SWITCH_CODEX_AUTH';
+
+function codexAuthMode(): 'copy-once' | 'shared' {
+  const value = process.env[CODEX_AUTH_ENV];
+  if (value === undefined) return 'copy-once';
+  if (value === 'shared') return 'shared';
+  throw new Error(`${CODEX_AUTH_ENV} must be 'shared' or unset, not '${value}'.`);
 }
 
 export async function readSharedCredentials(config: SharedHostConfig) {

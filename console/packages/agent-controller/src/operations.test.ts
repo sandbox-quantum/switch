@@ -20,6 +20,7 @@ function entry(desired: 'running' | 'stopped' = 'running'): AgentAssignment {
       auto_approve: false,
       directory: null,
       isolation: 'shared',
+      skills: [],
     },
   };
 }

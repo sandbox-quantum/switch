@@ -11,6 +11,13 @@ _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SLOT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,39}$")
 _INSTANCE_TYPE = re.compile(r"^[a-z0-9][a-z0-9.]{1,30}$")
 _ARN = re.compile(r"^arn:(aws|aws-us-gov|aws-cn):[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}:.+$")
+_ROLE_ARN = re.compile(
+    r"^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$"
+)
+_KMS_KEY_ARN = re.compile(
+    r"^arn:(aws|aws-us-gov|aws-cn):kms:([a-z]{2}(-gov)?-[a-z]+-\d):[0-9]{12}:key/[A-Za-z0-9-]{1,128}$"
+)
+_IMAGE_ID = re.compile(r"^ami-[0-9a-f]+$")
 
 
 class ConfigError(ValueError):
@@ -21,6 +28,7 @@ class ConfigError(ValueError):
 class MachineSlot:
     instance_profile_arn: str
     assignment_secret_arn: str
+    role_arn: str
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,7 @@ class ControllerConfig:
     state_db_path: Path
     lock_path: Path
     poll_interval_seconds: float
+    login_kms_key_arn: str
 
     @classmethod
     def load(cls, path: Path) -> ControllerConfig:
@@ -69,6 +78,7 @@ class ControllerConfig:
             "state_db_path",
             "lock_path",
             "poll_interval_seconds",
+            "login_kms_key_arn",
         }
         unknown = set(raw) - required
         missing = required - set(raw)
@@ -85,7 +95,11 @@ class ControllerConfig:
         if not availability_zone.startswith(region):
             raise ConfigError("availability_zone must belong to configured region")
         subnet_id = _validated_string(raw, "subnet_id", re.compile(r"^subnet-[0-9a-f]+$"))
-        image_id = _validated_string(raw, "image_id", re.compile(r"^ami-[0-9a-f]+$"))
+        image_id = _validated_string(raw, "image_id", _IMAGE_ID)
+        login_kms_key_arn = _validated_string(raw, "login_kms_key_arn", _KMS_KEY_ARN)
+        key_match = _KMS_KEY_ARN.fullmatch(login_kms_key_arn)
+        if key_match is None or key_match.group(2) != region:
+            raise ConfigError("login_kms_key_arn must be a key in the configured region")
         root_device_name = _validated_string(
             raw, "root_device_name", re.compile(r"^/dev/[A-Za-z0-9._-]+$")
         )
@@ -123,12 +137,10 @@ class ControllerConfig:
         slots: dict[str, MachineSlot] = {}
         for slot_id, slot_raw in slots_raw.items():
             _validated_value(slot_id, "machine_slots key", _SLOT_ID)
-            if not isinstance(slot_raw, dict) or set(slot_raw) != {
-                "instance_profile_arn",
-                "assignment_secret_arn",
-            }:
+            slot_keys = {"instance_profile_arn", "assignment_secret_arn", "role_arn"}
+            if not isinstance(slot_raw, dict) or set(slot_raw) != slot_keys:
                 raise ConfigError(
-                    f"machine slot {slot_id!r} must contain only instance_profile_arn and assignment_secret_arn"
+                    f"machine slot {slot_id!r} must contain instance_profile_arn, assignment_secret_arn and role_arn"
                 )
             profile = _validated_value(
                 slot_raw["instance_profile_arn"], "instance_profile_arn", _ARN
@@ -140,7 +152,8 @@ class ControllerConfig:
                 raise ConfigError(f"machine slot {slot_id!r} has an invalid instance profile ARN")
             if ":secretsmanager:" not in secret or ":secret:" not in secret:
                 raise ConfigError(f"machine slot {slot_id!r} has an invalid secret ARN")
-            slots[slot_id] = MachineSlot(profile, secret)
+            role = _validated_value(slot_raw["role_arn"], "role_arn", _ROLE_ARN)
+            slots[slot_id] = MachineSlot(profile, secret, role)
         if len(slots) < max_machines:
             raise ConfigError("max_machines exceeds configured machine slots")
         profiles = [slot.instance_profile_arn for slot in slots.values()]
@@ -149,6 +162,9 @@ class ControllerConfig:
             raise ConfigError("machine slot instance profiles must be unique")
         if len(set(secrets)) != len(secrets):
             raise ConfigError("machine slot secrets must be unique")
+        roles = [slot.role_arn for slot in slots.values()]
+        if len(set(roles)) != len(roles):
+            raise ConfigError("machine slot roles must be unique")
 
         state_db_path = _absolute_path(raw, "state_db_path")
         lock_path = _absolute_path(raw, "lock_path")
@@ -171,6 +187,7 @@ class ControllerConfig:
             state_db_path=state_db_path,
             lock_path=lock_path,
             poll_interval_seconds=float(poll_interval),
+            login_kms_key_arn=login_kms_key_arn,
         )
 
     def fingerprint(self) -> str:

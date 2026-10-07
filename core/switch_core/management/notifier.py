@@ -20,6 +20,7 @@ from typing import Any
 ASSIGNMENT_CHANGED = "assignment.changed"
 OPERATION_PENDING = "operation.pending"
 CREDENTIAL_REVOKED = "credential.revoked"
+PROVIDER_CREDENTIAL_CHANGED = "provider.credential_changed"
 CONNECTION_STATE = "connection_state"
 
 
@@ -32,6 +33,7 @@ class ControllerSubscription:
         self.wake = asyncio.Event()
         self._assignment_revision: int | None = None
         self._operations: dict[str, dict[str, Any]] = {}
+        self._logins: dict[str, int] = {}
         self._revoked = False
 
     def _assignment_changed(self, revision: int) -> None:
@@ -41,6 +43,11 @@ class ControllerSubscription:
 
     def _operation_pending(self, data: dict[str, Any]) -> None:
         self._operations[data["operation_id"]] = data
+        self.wake.set()
+
+    def _provider_credential_changed(self, provider: str, revision: int) -> None:
+        if revision > self._logins.get(provider, -1):
+            self._logins[provider] = revision
         self.wake.set()
 
     def _credential_revoked(self) -> None:
@@ -61,6 +68,14 @@ class ControllerSubscription:
         for data in self._operations.values():
             frames.append((OPERATION_PENDING, data))
         self._operations.clear()
+        for provider, revision in self._logins.items():
+            frames.append(
+                (
+                    PROVIDER_CREDENTIAL_CHANGED,
+                    {"provider": provider, "revision": revision},
+                )
+            )
+        self._logins.clear()
         if self._revoked:
             frames.append((CREDENTIAL_REVOKED, {}))
             self._revoked = False
@@ -100,6 +115,12 @@ class ControllerNotifier:
         data = {"operation_id": operation_id, "kind": kind, "agent_id": agent_id}
         for subscription in self._subscriptions.get(controller_id, ()):
             subscription._operation_pending(data)
+
+    def provider_credential_changed(
+        self, controller_id: str, provider: str, revision: int
+    ) -> None:
+        for subscription in self._subscriptions.get(controller_id, ()):
+            subscription._provider_credential_changed(provider, revision)
 
     def credential_revoked(self, controller_id: str) -> None:
         for subscription in self._subscriptions.get(controller_id, ()):

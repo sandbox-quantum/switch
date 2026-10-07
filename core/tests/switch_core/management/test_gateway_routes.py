@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_icon import generated_icon_url
+from switch_core.db.models import AgentController
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.management.gateway_routes import router as gateway_router
@@ -532,6 +534,40 @@ class TestManagedAgents:
         assert assignment.json() == {"revision": 2, "agents": []}
         async with harness.session_factory() as session:
             assert await AgentStore().get(session, agent_id) is not None
+
+    async def test_a_cloud_agent_is_deleted_only_once_unmanaged(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            async with harness.session_factory() as session:
+                await session.execute(
+                    update(AgentController)
+                    .where(AgentController.id == controller.controller_id)
+                    .values(kind="ec2")
+                )
+                await session.commit()
+            refused = await client.delete(
+                f"/gateway/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            unmanaged = await client.delete(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            deleted = await client.delete(
+                f"/gateway/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+        assert refused.status_code == 409, refused.text
+        assert "cloud agent" in refused.json()["detail"]
+        assert unmanaged.status_code == 200, unmanaged.text
+        assert deleted.status_code == 200, deleted.text
+        async with harness.session_factory() as session:
+            assert await AgentStore().get(session, agent_id) is None
 
     async def test_the_view_carries_the_agents_reported_status(
         self, harness: Harness

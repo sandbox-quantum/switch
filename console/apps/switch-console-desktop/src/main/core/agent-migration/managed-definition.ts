@@ -102,7 +102,7 @@ export function advancedConfigFromSpecialization(
 
 export type DefinitionSource = {
   providerId: AgentProviderId;
-  /** The name the managed agent runs under: the agent's, or the subagent's. */
+  /** The name the managed agent runs under. */
   name: string;
   /** The agent's launch specialisation (`agentLaunchConfig`), or undefined when it sets none. */
   specialization: Record<string, string | undefined> | undefined;
@@ -117,11 +117,6 @@ export type DefinitionSource = {
   shellSetup: boolean;
   /** The provider CLI Console was told to use, when it is not simply the one on PATH. */
   chosenBinary: string | null;
-  /**
-   * For a subagent watched under its parent: the body of its provider
-   * definition file, which today shapes every session it runs.
-   */
-  subagentDefinition: { name: string; body: string | null } | null;
 };
 
 export type BuiltDefinition = {
@@ -131,33 +126,21 @@ export type BuiltDefinition = {
   notCarried: string[];
 };
 
-/** The body of a definition file, without its front matter. */
-export function definitionBody(text: string): string {
-  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text);
-  return (match ? text.slice(match[0].length) : text).trim();
-}
-
 /**
  * The managed definition an agent's Console configuration amounts to, and
  * what it leaves behind. Pure.
  *
  * The advanced configuration is the agent's own settings, which its machine's
- * controller applies as Console does. A subagent watched under its parent
- * runs from its own definition file in Console, taking only the model and its
- * option from the parent, so that is all of the parent's settings it carries.
+ * controller applies as Console does.
  *
  * A managed agent always starts a session when addressed. One whose watcher
  * was stopped by hand moves as the desired state `stopped`.
  */
 export function buildManagedDefinition(source: DefinitionSource): BuiltDefinition {
   const specialization = source.specialization ?? {};
-  const optionKey = source.providerId === 'opencode' ? 'variant' : 'effort';
-  const settings = source.subagentDefinition
-    ? { [optionKey]: specialization[optionKey] }
-    : specialization;
   const { advancedConfig, notCarried } = advancedConfigFromSpecialization(
     source.providerId,
-    settings
+    specialization
   );
   if (source.shellSetup)
     notCarried.push('The location’s shell setup: managed sessions start without running it first.');
@@ -165,17 +148,10 @@ export function buildManagedDefinition(source: DefinitionSource): BuiltDefinitio
     notCarried.push(
       `The provider CLI chosen in Console (${source.chosenBinary}): the managed agent uses the one on the machine's PATH.`
     );
-  const parts = [specialization.instructions ?? ''];
-  if (source.subagentDefinition) {
-    if (source.subagentDefinition.body) parts.push(source.subagentDefinition.body);
-    notCarried.push(
-      `${source.subagentDefinition.name}’s definition file settings other than its prompt (its tools and model, say): the managed subagent gets the prompt as instructions.`
-    );
-  }
-  const instructions = parts.filter(Boolean).join('\n\n');
+  const instructions = specialization.instructions ?? '';
   assertInstructionsFit(instructions);
   const model = specialization.model || null;
-  if (source.providerDefinition && !source.subagentDefinition) {
+  if (source.providerDefinition) {
     const managed = sessionLaunchConfig({
       provider: source.providerId,
       slug: source.name,

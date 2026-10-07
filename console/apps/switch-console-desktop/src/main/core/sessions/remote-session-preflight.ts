@@ -15,9 +15,8 @@ import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-cred
  *     exec context prepends `cd <workDir> &&`, so a missing dir rejects the whole
  *     command, while present-but-missing tools and node's version are reported on
  *     stdout. A too-old node is rejected here rather than surfacing later as an
- *     opaque "sidecar exited during startup" — the sidecar bundle (and this
- *     module's own reachability probe) rely on `fetch`/optional chaining, which
- *     only stabilised in Node 18;
+ *     opaque "sidecar exited during startup" — the sidecar holds its agent
+ *     connection on Node's built-in WebSocket, stable only from Node 22;
  *  2. the agent's Switch creds exist on the remote host — checked at the agent's
  *     provider-neutral per-agent path (`.switch/agents/<name>.json`) first, then
  *     the legacy `.claude/settings.local.json` for un-migrated installs
@@ -32,9 +31,9 @@ import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-cred
 
 const REQUIRED_BINARIES = ['node', 'git'] as const;
 const REACHABILITY_TIMEOUT_MS = 5000;
-// Global `fetch` and `AbortSignal.timeout` (used by the reachability probe below
-// and throughout the sidecar bundle) are only stable from Node 18.
-const MIN_NODE_MAJOR = 18;
+// The sidecar holds its agent connection on Node's built-in `WebSocket`, which
+// is only stable from Node 22.
+const MIN_NODE_MAJOR = 22;
 
 // Prints `missing <tool>` for each absent binary and, when node is present,
 // `node <version>` (e.g. `node v18.19.0`), then exits 0 — so a present working

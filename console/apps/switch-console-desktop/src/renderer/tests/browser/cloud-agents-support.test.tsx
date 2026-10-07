@@ -1,5 +1,5 @@
 /**
- * A server without cloud agents (its Core has no launch list) shows no error
+ * A server without cloud agents (its Core has no cloud machines) shows no error
  * and is not polled; it is asked again once its session or version changes.
  * A server with an empty list keeps being polled, and a failure still shows.
  */
@@ -29,6 +29,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     activeServerId: 'server',
     statusFor: () => ({ serverId: 'server', connected: true, ...status.get() }),
+    isConnected: () => status.get().user !== null,
   },
 }));
 
@@ -47,6 +48,11 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
 
 import { runInAction } from 'mobx';
 import { CloudAgentList } from '@renderer/features/cloud-agents/cloud-agent-list';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
+
+runInAction(() => {
+  switchCloudFeature.enabled = true;
+});
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -95,7 +101,7 @@ it('shows nothing for a server without cloud agents, and stops asking it', async
   expect(sdkHost.cloudAgents).toHaveBeenCalledTimes(1);
 });
 
-it('keeps asking a server whose launch list is empty', async () => {
+it('keeps asking a server whose cloud agent list is empty', async () => {
   sdkHost.cloudAgents.mockResolvedValue([]);
   const el = await render();
   expect(el.querySelector('[role="alert"]')).toBeNull();

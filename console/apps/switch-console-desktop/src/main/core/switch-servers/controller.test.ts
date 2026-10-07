@@ -9,6 +9,7 @@ const fetchAuthConfig = vi.hoisted(() => vi.fn());
 const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const findServerByGatewayUrl = vi.hoisted(() => vi.fn());
+const listServers = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
 const signup = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
@@ -83,7 +84,7 @@ vi.mock('./servers-store', () => ({
   addServer,
   findServerByGatewayUrl,
   deleteSessionCookie: vi.fn(),
-  listServers: vi.fn(),
+  listServers,
   removeServer: vi.fn(),
   renameServer: vi.fn(),
   serverKindOf,
@@ -641,6 +642,8 @@ describe('connecting to Switch Cloud', () => {
 
   beforeEach(() => {
     vi.unstubAllEnvs();
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'true');
+    vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_ENABLED', undefined);
     vi.stubEnv('SWITCH_CLOUD_URL', 'https://cloud.example.com');
     vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', undefined);
     addServer.mockReset();
@@ -682,6 +685,26 @@ describe('connecting to Switch Cloud', () => {
     );
     expect(addServer).not.toHaveBeenCalled();
   });
+
+  it('refuses when Switch Cloud is turned off', async () => {
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'false');
+
+    await expect(switchServersController.connectToSwitchCloud()).rejects.toThrow(
+      'Switch Cloud is turned off'
+    );
+    await expect(switchServersController.switchCloud()).resolves.toBeNull();
+    await expect(switchServersController.switchCloudEnabled()).resolves.toBe(false);
+    expect(addServer).not.toHaveBeenCalled();
+  });
+
+  it('does not list a Switch Cloud server already registered while it is turned off', async () => {
+    const OWN = server({ id: 'own', gatewayUrl: 'https://switch.example.org' });
+    listServers.mockResolvedValue([CLOUD, OWN]);
+
+    await expect(switchServersController.listServers()).resolves.toEqual([CLOUD, OWN]);
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'false');
+    await expect(switchServersController.listServers()).resolves.toEqual([OWN]);
+  });
 });
 
 describe('finding the server an invite link is for', () => {
@@ -694,6 +717,8 @@ describe('finding the server an invite link is for', () => {
 
   beforeEach(() => {
     vi.unstubAllEnvs();
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'true');
+    vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_ENABLED', undefined);
     vi.stubEnv('SWITCH_CLOUD_URL', 'https://cloud.example.com');
     vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', undefined);
     addServer.mockReset();
@@ -735,5 +760,14 @@ describe('finding the server an invite link is for', () => {
     await expect(
       switchServersController.serverForInvite('https://cloud.example.com')
     ).resolves.toEqual({ kind: 'unknown', origin: 'https://cloud.example.com' });
+  });
+  it('refuses a link for Switch Cloud while it is turned off', async () => {
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'false');
+    findServerByGatewayUrl.mockResolvedValue(CLOUD);
+
+    await expect(
+      switchServersController.serverForInvite('https://cloud.example.com')
+    ).rejects.toThrow('Switch Cloud is turned off');
+    expect(addServer).not.toHaveBeenCalled();
   });
 });

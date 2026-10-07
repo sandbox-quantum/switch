@@ -103,3 +103,56 @@ function safeSegment(value: string, what: string): string {
     throw new Error(`The ${what} '${value}' cannot be used as a directory name.`);
   return value;
 }
+
+/** The agent ids a systemd template unit instance may carry. */
+export const AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function requireAgentId(agentId: string): string {
+  if (!AGENT_ID.test(agentId))
+    throw new Error(`The agent id '${agentId}' is not a valid unit instance.`);
+  return agentId;
+}
+
+export type Ec2Layout = {
+  dataRoot: string;
+  agentsRoot: string;
+  worktreesRoot: string;
+  runDir: string;
+  agentRoot: (agentId: string) => string;
+  watcherRoot: (agentId: string) => string;
+  worktreeRoot: (agentId: string) => string;
+  /** The agent's own bare repository mirrors, `<owner>/<name>.git`, inside its root. */
+  reposRoot: (agentId: string) => string;
+  credentialsFile: (agentId: string) => string;
+  providerFile: (agentId: string) => string;
+  envFile: (agentId: string) => string;
+  unitCredentialsPath: (agentId: string) => string;
+  unit: (agentId: string) => string;
+};
+
+/**
+ * A cloud machine's layout: agent roots and worktrees on the data volume, and
+ * the files each agent unit loads at start in the controller's runtime
+ * directory.
+ */
+export function ec2Layout(input: { dataRoot: string; runRoot: string }): Ec2Layout {
+  const agentsRoot = join(input.dataRoot, 'agents');
+  const worktreesRoot = join(input.dataRoot, 'worktrees');
+  const runDir = join(input.runRoot, 'agents');
+  const unit = (agentId: string) => `switch-agent@${requireAgentId(agentId)}.service`;
+  return {
+    dataRoot: input.dataRoot,
+    agentsRoot,
+    worktreesRoot,
+    runDir,
+    agentRoot: (agentId) => join(agentsRoot, requireAgentId(agentId)),
+    watcherRoot: (agentId) => join(agentsRoot, requireAgentId(agentId), 'watcher'),
+    worktreeRoot: (agentId) => join(worktreesRoot, requireAgentId(agentId)),
+    reposRoot: (agentId) => join(agentsRoot, requireAgentId(agentId), 'repos'),
+    credentialsFile: (agentId) => join(runDir, `${requireAgentId(agentId)}.credentials.json`),
+    providerFile: (agentId) => join(runDir, `${requireAgentId(agentId)}.provider.json`),
+    envFile: (agentId) => join(runDir, `${requireAgentId(agentId)}.env`),
+    unitCredentialsPath: (agentId) => join('/run/credentials', unit(agentId), 'agent'),
+    unit,
+  };
+}

@@ -35,7 +35,6 @@ from switch_core.bridges.agent.operations.callctx import (
 )
 from switch_core.bridges.agent.protocol.agent_connections import UnknownConnectionError
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.protocol.hosted_workers import CodedPermissionError
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
 from switch_core.observability.catalogue import (
@@ -310,8 +309,6 @@ async def post_operation(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BadArgumentsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except CodedPermissionError as exc:
-        raise HTTPException(status_code=403, detail=exc.detail) from exc
     except BudgetExceeded as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except PermissionError as exc:

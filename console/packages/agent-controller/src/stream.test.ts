@@ -252,7 +252,8 @@ describe('runControllerStream', () => {
       );
     const stop = new AbortController();
     const { ending } = run(scripted, stop.signal);
-    await waitFor(() => scripted.opens.length === 2, 'a second open');
+    // Every stream is evicted, so the opens keep coming a few ms apart.
+    await waitFor(() => scripted.opens.length >= 2, 'a second open');
     stop.abort();
     expect(await ending).toBe('stopped');
   });
@@ -447,7 +448,10 @@ describe('runControllerStream against the controller stream routes', () => {
     });
     await waitFor(() => core.streamCount === 1, 'the stream');
     core.push('assignment.changed', { revision: 4 });
-    await waitFor(() => frames.length === 1, 'the frame');
+    // The stream opens with its own connection_state frame, which can arrive in
+    // the same read as the pushed one, so wait for the pushed frame by type.
+    await waitFor(() => frames.some((frame) => frame.type === 'assignment.changed'), 'the frame');
+    expect(frames.map((frame) => frame.type)).toEqual(['connection_state', 'assignment.changed']);
     await waitFor(() => core.beats.length > 0, 'a beat');
     expect(core.beats[0]).toEqual({ 'agent-1': 3 });
 

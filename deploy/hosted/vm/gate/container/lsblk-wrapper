@@ -1,0 +1,40 @@
+#!/usr/bin/python3
+"""Stands in for /usr/bin/lsblk so the gate's loop device looks like the
+assigned EBS volume: a `disk` whose serial is the volume id, as an attached
+NVMe EBS volume reports it. Every other device, and every other invocation,
+is the real lsblk's (moved to /usr/bin/lsblk.real)."""
+
+import json
+import os
+import subprocess
+import sys
+
+REAL = "/usr/bin/lsblk.real"
+LOOP_FILE = "/etc/cc-gate/loop-device"
+SERIAL = "vol0123456789abcdef0"
+
+result = subprocess.run([REAL, *sys.argv[1:]], capture_output=True, text=True)
+if result.returncode != 0 or "--json" not in sys.argv[1:]:
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    sys.exit(result.returncode)
+try:
+    loop = open(LOOP_FILE).read().strip()
+except OSError:
+    loop = ""
+value = json.loads(result.stdout)
+for device in value.get("blockdevices", []):
+    path = device.get("path") or ("/dev/" + device.get("name", ""))
+    if loop and os.path.realpath(path) == os.path.realpath(loop):
+        device["type"] = "disk"
+        device["serial"] = SERIAL
+        if not device.get("fstype") or not device.get("uuid"):
+            probe = subprocess.run(
+                ["/usr/sbin/blkid", "-p", "-o", "export", loop], capture_output=True, text=True
+            )
+            fields = dict(
+                line.split("=", 1) for line in probe.stdout.splitlines() if "=" in line
+            )
+            device["fstype"] = device.get("fstype") or fields.get("TYPE")
+            device["uuid"] = device.get("uuid") or fields.get("UUID")
+json.dump(value, sys.stdout)

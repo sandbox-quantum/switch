@@ -17,21 +17,25 @@ import {
   SessionUnavailableError,
   type SessionRequest,
 } from './session-channel';
+import type { HostStartSource } from './session-start';
 import { type PlaceOutcome, type WatcherHealth, watcherHealthSchema } from './watcher-tools';
 
 /**
- * Console's end of a cloud worker's sessions, relayed through Switch.
+ * Console's end of a managed agent's sessions, relayed through Switch.
  *
- * A cloud worker accepts no inbound connection, so where a sidecar is reached
+ * A managed agent accepts no inbound connection, so where a sidecar is reached
  * over its loopback control port this goes through the Switch gateway: one
- * `POST …/relay` per request, answered by the worker's watcher, and one
- * `GET …/relay/stream` per live view. The messages are the control
+ * `POST <base>` per request, answered by the agent controller, and one
+ * `GET <base>/stream` per live view. The messages are the control
  * vocabulary's (`ControlMessage`), and the methods are `ControlClient`'s, so
  * the callers of either do not tell them apart. Large answers arrive in pages
  * and are reassembled here; attachments go up in chunks.
+ *
+ * The base is the managed agent's control route
+ * (`/management/agents/{id}/control`).
  */
 
-/** One call to the launch's relay routes; `path` is relative to the launch. */
+/** One call to the relay routes; `path` is relative to the gateway and starts with the base path. */
 export type RelayFetch = (
   path: string,
   init: { method: 'GET' | 'POST'; body: unknown; signal: AbortSignal }
@@ -72,6 +76,10 @@ const replySchema = z.object({
   error: z.object({ code: z.string(), message: z.string() }).optional(),
   wake_available: z.boolean().optional(),
 });
+/** Agent management's error envelope, which its routes answer a refusal before any relay with. */
+const managementErrorSchema = z.object({
+  error: z.object({ code: z.string(), message: z.string() }),
+});
 
 const firstPageSchema = z.object({
   snapshotId: z.string().min(1),
@@ -111,7 +119,7 @@ const chunkAnswerSchema = z.union([
   z.object({ staged: z.object({ transferId: z.string(), ref: z.string().min(1) }) }),
 ]);
 
-const MUTATING = ['place', 'forget', 'attachment', 'attachmentCancel'];
+const MUTATING = ['place', 'forget', 'attachment', 'attachmentCancel', 'ensure'];
 
 function mutating(message: ControlMessage): boolean {
   if ('request' in message) return message.request.type === 'command';
@@ -141,9 +149,11 @@ async function readReply(response: Response): Promise<z.infer<typeof replySchema
   }
   const reply = replySchema.safeParse(body);
   if (reply.success) return reply.data;
+  const envelope = managementErrorSchema.safeParse(body);
+  if (envelope.success) return { ok: false, error: envelope.data.error };
   const detail = z.object({ detail: z.unknown() }).safeParse(body);
   if (response.status === 404)
-    throw new CloudRelayError('not_found', 'Cloud launch not found.', 404, false);
+    throw new CloudRelayError('not_found', 'Cloud agent not found.', 404, false);
   throw new CloudRelayError(
     'http',
     `Switch answered the relay with ${response.status}: ${JSON.stringify(detail.success ? detail.data.detail : body).slice(0, 500)}`,
@@ -194,8 +204,13 @@ export class CloudRelayClient {
   private healthStream: RelayStream | null = null;
   private readonly views = new Set<(reason: string) => void>();
 
+  /**
+   * `basePath` is the agent's relay, relative to the gateway: requests are
+   * posted to it and live views read from `<basePath>/stream`.
+   */
   constructor(
     private readonly fetchRelay: RelayFetch,
+    readonly basePath: string,
     private readonly options: CloudRelayOptions
   ) {
     if (options.timeoutMs > RELAY_TIMEOUT_MS)
@@ -209,7 +224,7 @@ export class CloudRelayClient {
   private async once(message: ControlMessage): Promise<unknown> {
     let response: Response;
     try {
-      response = await this.fetchRelay('/relay', {
+      response = await this.fetchRelay(this.basePath, {
         method: 'POST',
         body: { message, timeout_ms: this.options.timeoutMs },
         signal: AbortSignal.timeout(this.options.timeoutMs + 15_000),
@@ -306,6 +321,27 @@ export class CloudRelayClient {
     await this.call({ forget: sessionId });
   }
 
+  /**
+   * Start the session, or run it again, on an agent its cloud machine's
+   * controller runs. Only the session id is sent: the agent's host builds
+   * the session from its own configuration.
+   */
+  async ensure(input: {
+    sessionId: string;
+    resuming: boolean;
+    restart: boolean;
+    startSource: HostStartSource | null;
+  }): Promise<unknown> {
+    return this.call({
+      ensure: {
+        config: { session: { sessionId: input.sessionId } },
+        resuming: input.resuming,
+        restart: input.restart,
+        startSource: input.startSource,
+      },
+    });
+  }
+
   async health(): Promise<WatcherHealth> {
     return watcherHealthSchema.parse(await this.call({ health: true }));
   }
@@ -392,7 +428,7 @@ export class CloudRelayClient {
     });
     let opened = false;
     void (async () => {
-      const response = await this.fetchRelay(`/relay/stream?${query}`, {
+      const response = await this.fetchRelay(`${this.basePath}/stream?${query}`, {
         method: 'GET',
         body: undefined,
         signal: abort.signal,

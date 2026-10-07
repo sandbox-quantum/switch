@@ -19,7 +19,8 @@ variables {
   worker_vpc_cidr     = "10.80.0.0/16"
   public_subnet_cidr  = "10.80.0.0/24"
   private_subnet_cidr = "10.80.1.0/24"
-  worker_image_id     = "ami-00000000000000000"
+  controller_image_id = "ami-11111111111111111"
+  login_kms_key_arn   = "arn:aws:kms:us-east-1:000000000000:key/11111111-1111-1111-1111-111111111111"
   oidc_provider_arn   = "arn:aws:iam::000000000000:oidc-provider/example.invalid"
   oidc_issuer_url     = "https://example.invalid"
   namespace           = "example-hosted"
@@ -127,5 +128,54 @@ run "rendered_permissions" {
   assert {
     condition     = length(aws_security_group.worker.ingress) == 0
     error_message = "Workers must not expose inbound ports."
+  }
+  assert {
+    condition = toset(one([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement : statement if statement.Sid == "ApprovedLaunchInputs"]).Resource) == toset([
+      "arn:aws:ec2:us-east-1::image/${var.controller_image_id}",
+      "arn:aws:ec2:us-east-1:000000000000:subnet/${aws_subnet.worker.id}",
+      "arn:aws:ec2:us-east-1:000000000000:security-group/${aws_security_group.worker.id}",
+    ])
+    error_message = "RunInstances must allow exactly the controller image in the worker subnet and security group."
+  }
+  assert {
+    condition     = !strcontains(aws_iam_role_policy.controller.policy, "switch-provider-verification")
+    error_message = "The controller must not launch provider-verification instances."
+  }
+  assert {
+    condition = alltrue([
+      for statement in [one([for statement in jsondecode(aws_iam_policy.controller_assignments.policy).Statement : statement if statement.Sid == "GrantSlotLoginDecrypt"])] :
+      statement.Action == ["kms:CreateGrant"] && statement.Resource == var.login_kms_key_arn
+      && statement.Condition["ForAllValues:StringEquals"]["kms:GrantOperations"] == ["Decrypt"]
+      && toset(statement.Condition["ForAllValues:StringEquals"]["kms:EncryptionContextKeys"]) == toset(["switch:tenant", "switch:owner_id", "switch:controller_id"])
+      && toset(statement.Condition.StringEquals["kms:GranteePrincipal"]) == toset([for role in aws_iam_role.worker : role.arn])
+      && statement.Condition.StringEquals["kms:GrantConstraintType"] == "EncryptionContextSubset"
+      && statement.Condition.StringEqualsIfExists["kms:RetiringPrincipal"] == aws_iam_role.controller.arn
+      && alltrue([for key in ["switch:tenant", "switch:owner_id", "switch:controller_id"] : statement.Condition.Null["kms:EncryptionContext:${key}"] == "false"])
+    ])
+    error_message = "Login grants must be Decrypt-only, to slot roles, constrained to the machine's tenant, owner and controller."
+  }
+  assert {
+    condition     = toset(one([for statement in jsondecode(aws_iam_policy.controller_assignments.policy).Statement : statement if statement.Sid == "ManageSlotLoginGrants"]).Action) == toset(["kms:ListGrants", "kms:RevokeGrant"])
+    error_message = "The controller must be able to list and revoke login grants."
+  }
+  assert {
+    condition = !anytrue([for statement in concat(jsondecode(aws_iam_role_policy.controller.policy).Statement, jsondecode(aws_iam_policy.controller_assignments.policy).Statement) :
+      (contains(flatten([statement.Action]), "kms:Decrypt") || contains(flatten([statement.Action]), "kms:GenerateDataKey")) && contains(flatten([statement.Resource]), var.login_kms_key_arn)
+    ])
+    error_message = "The controller must not decrypt or seal provider logins itself."
+  }
+  assert {
+    condition = alltrue([for policy in aws_iam_role_policy.worker_secret :
+      !strcontains(policy.policy, var.login_kms_key_arn)
+    ])
+    error_message = "Slot roles may decrypt provider logins only through grants, never through IAM."
+  }
+  assert {
+    condition     = output.slot_role_arns["example-slot"] == aws_iam_role.worker["example-slot"].arn
+    error_message = "slot_role_arns must map each slot to its role."
+  }
+  assert {
+    condition     = output.machine_slots["example-slot"].role_arn == aws_iam_role.worker["example-slot"].arn
+    error_message = "machine_slots must name each slot's role, the grantee of its login grant."
   }
 }

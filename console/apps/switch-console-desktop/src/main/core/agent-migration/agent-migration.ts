@@ -20,16 +20,14 @@ import { hostControllerService } from '@main/core/host-controllers/host-controll
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport } from '@main/core/locations/location-transport';
-import { getPlugin } from '@main/core/providers/plugin-registry';
+import { connectionHealth } from '@main/core/sdk-host/connection-health';
 import { listHostSessionsFor } from '@main/core/sdk-host/host-sessions';
 import { stopLocalSessionsOf } from '@main/core/sdk-host/local-host';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
-import {
-  listAutoSessionSubagents,
-  listStoppedControllerAgentIds,
-} from '@main/core/switch-rooms/auto-session-store';
+import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
+import { postRoomMessage } from '@main/core/switch-rooms/switch-room-client';
 import {
   AgentManagementUnavailableError,
   deleteManagedAgent,
@@ -53,7 +51,6 @@ import {
   type MigrationCredentialsPort,
   type MigrationMachinePort,
   type MigrationManagementPort,
-  type SubagentRef,
   type TargetLookup,
 } from './agent-migration-service';
 import {
@@ -64,7 +61,7 @@ import {
   managedRecordFor,
   setManagedAgentRecord,
 } from './managed-agents-store';
-import { buildManagedDefinition, definitionBody } from './managed-definition';
+import { buildManagedDefinition } from './managed-definition';
 import { type MachineScript, runHandoff } from './session-handoff';
 
 const execute = promisify(execFile);
@@ -340,30 +337,60 @@ const management: MigrationManagementPort = {
     }),
 };
 
+/** What a room is told when a move cuts the agent's turn there off. */
+const TURN_CUT_NOTE =
+  'Moved to a managed machine mid-task, so this request was cut off. Please send it again.';
+
 const machine: MigrationMachinePort = {
-  sessions: async (agent, switchAgentIds) =>
-    (await listHostSessionsFor(agent.id, switchAgentIds)).map((session) => ({
-      sessionId: session.sessionId,
-      switchAgentId: session.agentId,
-      busy:
+  roomsMidTurn: async (agent) => {
+    const busy = (await listHostSessionsFor(agent.id, [agent.switchAgentId!])).filter(
+      (session) =>
         session.status !== 'stopped' &&
         session.connectivity === 'online' &&
-        (session.status === 'running' || session.pendingRequestIds.length > 0),
-    })),
-  stopConsoleWatchers: async (agent, subagents) => {
+        (session.status === 'running' || session.pendingRequestIds.length > 0)
+    );
+    if (!busy.length) return [];
+    const { placements } = await connectionHealth(agent.serverId!);
+    const rooms = new Set<string>();
+    for (const session of busy) {
+      const roomId = placements[session.sessionId];
+      if (roomId) rooms.add(roomId);
+    }
+    return [...rooms];
+  },
+  tellTurnsCut: async (agent, roomIds) => {
+    const relPath = agentSettingsRelativePath(agent.name);
+    const workdir = await resolveWorkdirFsFor(agent.sshHost, agent.dir);
+    let raw: string | null;
+    try {
+      raw = await workdir.fs.read(relPath);
+    } finally {
+      workdir.close();
+    }
+    const creds = raw === null ? null : parseSwitchAgentCredentials(raw, credentialsLog);
+    if (!creds)
+      return roomIds.map((roomId) => ({
+        roomId,
+        reason: `${relPath} holds no Switch credentials to post with.`,
+      }));
+    const untold: { roomId: string; reason: string }[] = [];
+    for (const roomId of roomIds)
+      try {
+        await postRoomMessage(creds, roomId, TURN_CUT_NOTE);
+      } catch (error) {
+        untold.push({ roomId, reason: error instanceof Error ? error.message : String(error) });
+      }
+    return untold;
+  },
+  stopConsoleWatcher: async (agent) => {
     await autoSessionWatcher.stopForAgent(agent.id);
-    for (const subagent of subagents)
-      await autoSessionWatcher.stopForSubagent(agent.id, subagent.name);
     // On an SSH host a session is the sidecar watcher's child and stopped
     // with it; here Console supervises each one itself.
     if (agent.sshHost) return;
-    for (const switchAgentId of [agent.switchAgentId!, ...subagents.map((s) => s.switchAgentId)])
-      await stopLocalSessionsOf(switchAgentId);
+    await stopLocalSessionsOf(agent.switchAgentId!);
   },
-  startConsoleWatchers: async (agent, subagents) => {
+  startConsoleWatcher: async (agent) => {
     await autoSessionWatcher.bringUp(agent.id, 'explicit');
-    for (const subagent of subagents)
-      await autoSessionWatcher.startForSubagent(agent.id, subagent.name);
   },
   handoff: (agent, request) => runHandoff(machineScript(agent), request),
 };
@@ -441,35 +468,7 @@ const credentials: MigrationCredentialsPort = {
   },
 };
 
-async function subagentsOf(agent: MigrationAgent): Promise<SubagentRef[]> {
-  const refs: SubagentRef[] = [];
-  for (const subagent of await listAutoSessionSubagents()) {
-    if (subagent.parentAgentId !== agent.id) continue;
-    const switchAgentId = await identityInFile(agent, subagent.name);
-    if (!switchAgentId) {
-      log.warn('agent-migration: a watched subagent has no credentials file; it cannot move', {
-        agentId: agent.id,
-        subagent: subagent.name,
-      });
-      continue;
-    }
-    refs.push({ name: subagent.name, switchAgentId });
-  }
-  return refs;
-}
-
-async function parentOf(agent: MigrationAgent): Promise<MigrationAgent | null> {
-  const row = await requireRow(agent.id);
-  for (const subagent of await listAutoSessionSubagents()) {
-    if (subagent.name !== agent.name || subagent.parentAgentId === agent.id) continue;
-    const parent = await getAgentById(subagent.parentAgentId);
-    if (parent && parent.locationId === row.locationId)
-      return toMigrationAgent(parent, await getAgentLocation(parent));
-  }
-  return null;
-}
-
-async function buildDefinition(agent: MigrationAgent, subagent: SubagentRef | null) {
+async function buildDefinition(agent: MigrationAgent) {
   const row = await requireRow(agent.id);
   const location = await getAgentLocation(row);
   const transport = locationTransport(location);
@@ -486,24 +485,9 @@ async function buildDefinition(agent: MigrationAgent, subagent: SubagentRef | nu
     transport.kind === 'ssh' ? transport.connectionId : 'local',
     agent.providerId
   );
-  let subagentDefinition: { name: string; body: string | null } | null = null;
-  if (subagent) {
-    const repoAgents = getPlugin(agent.providerId).behavior.repoAgents;
-    let body: string | null = null;
-    if (repoAgents) {
-      const workdir = await resolveWorkdirFsFor(agent.sshHost, agent.dir);
-      try {
-        const text = await workdir.fs.read(repoAgents.definitionPath(subagent.name));
-        body = text === null ? null : definitionBody(text) || null;
-      } finally {
-        workdir.close();
-      }
-    }
-    subagentDefinition = { name: subagent.name, body };
-  }
   return buildManagedDefinition({
     providerId: agent.providerId,
-    name: subagent ? subagent.name : agent.name,
+    name: agent.name,
     specialization: launch.specialization,
     providerDefinition: launch.definition,
     autoApprove: row.autoApprove,
@@ -516,7 +500,6 @@ async function buildDefinition(agent: MigrationAgent, subagent: SubagentRef | nu
         : selection?.kind === 'path'
           ? selection.path
           : null,
-    subagentDefinition,
   });
 }
 
@@ -529,8 +512,6 @@ export const agentMigrationService = new AgentMigrationService({
         agents.push(toMigrationAgent(agent, await getAgentLocation(agent)));
       return agents;
     },
-    subagentsOf,
-    parentOf,
     stoppedByHand: async (agentId) => (await listStoppedControllerAgentIds()).includes(agentId),
   },
   definitions: { build: buildDefinition },
@@ -541,6 +522,13 @@ export const agentMigrationService = new AgentMigrationService({
         workspaceId: agent.workspaceId,
         sshHost: agent.sshHost,
       }),
+    enable: async (agent) => {
+      if (!agent.serverId || !agent.workspaceId)
+        throw new Error(`${agent.name} is not on a Switch workspace.`);
+      if (agent.sshHost)
+        await hostControllerService.enable(agent.sshHost, agent.serverId, agent.workspaceId);
+      else await embeddedControllerService.enable(agent.serverId, agent.workspaceId);
+    },
   },
   management,
   machine,
@@ -559,8 +547,8 @@ export const agentMigrationService = new AgentMigrationService({
     error: (message, fields) => log.error(message, { event: 'agent_migration', ...fields }),
   },
   now: Date.now,
-  sleep: (ms, signal) => delay(ms, undefined, { signal }),
+  sleep: (ms) => delay(ms),
   pollMs: 2_000,
-  turnWaitMs: 15 * 60_000,
   controllerStopWaitMs: 60_000,
+  machineReadyWaitMs: 180_000,
 });

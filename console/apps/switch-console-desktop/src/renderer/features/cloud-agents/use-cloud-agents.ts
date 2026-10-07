@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -15,18 +16,26 @@ export function serverNotSignedIn(serverId: string | null): boolean {
 }
 
 /**
- * The server's cloud agents, from its launch list; no worker is asked. Not
- * asked until signed in: the sidebar says to sign in meanwhile.
+ * The server's cloud agents, from its managed agents and cloud machines; no
+ * machine is asked for sessions. Not asked until signed in: the sidebar says to sign in meanwhile.
  *
- * `null` means the server has no cloud agents. It is not asked again until its
+ * `null` means the server has no cloud agents, and is the answer without
+ * asking when Switch Cloud is turned off. It is not asked again until its
  * session or declared version changes, which is when it may have gained them.
  */
 export function useCloudAgents(serverId: string | null) {
   const signedIn = serverId !== null && switchServersStore.isConnected(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
+  const cloudEnabled = switchCloudFeature.enabled;
   return useQuery({
-    queryKey: ['cloud-agents', serverId, user?.id ?? null, user?.server?.version ?? null],
-    queryFn: () => rpc.sdkHost.cloudAgents(serverId!),
+    queryKey: [
+      'cloud-agents',
+      serverId,
+      user?.id ?? null,
+      user?.server?.version ?? null,
+      cloudEnabled,
+    ],
+    queryFn: () => (cloudEnabled ? rpc.sdkHost.cloudAgents(serverId!) : null),
     enabled: signedIn,
     refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,
@@ -35,15 +44,16 @@ export function useCloudAgents(serverId: string | null) {
 
 /**
  * The caller's cloud machines on the server, asked the way `useCloudAgents`
- * asks for launches. `null` means the server has no cloud agents. Under
+ * asks for agents. `null` means the server has no cloud agents. Under
  * `['cloud-agents']`, so every refresh of the list refreshes this too.
  */
 export function useCloudMachines(serverId: string | null) {
   const signedIn = serverId !== null && switchServersStore.isConnected(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
+  const cloudEnabled = switchCloudFeature.enabled;
   return useQuery({
-    queryKey: ['cloud-agents', serverId, 'machines', user?.id ?? null],
-    queryFn: () => rpc.sdkHost.cloudMachines(serverId!),
+    queryKey: ['cloud-agents', serverId, 'machines', user?.id ?? null, cloudEnabled],
+    queryFn: () => (cloudEnabled ? rpc.sdkHost.cloudMachines(serverId!) : null),
     enabled: signedIn,
     refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,
@@ -51,9 +61,9 @@ export function useCloudMachines(serverId: string | null) {
 }
 
 /**
- * The agent with its worker's sessions, asked over the relay only while
- * `watched` and while the window is visible, since each ask is a round trip
- * through the server. A launch that says its worker cannot be asked is not,
+ * The agent with its sessions, asked over the relay only while `watched` and
+ * while the window is visible, since each ask is a round trip through the
+ * server. An agent that says it cannot be asked is not,
  * and carries the sessions last read from it while its machine is down.
  * Under `['cloud-agents']`, so every refresh of the list refreshes this too.
  */
@@ -103,7 +113,7 @@ function useCloudMachineAction() {
   return useMutation({
     mutationFn: ({ agent, action }: { agent: CloudAgent; action: 'start' | 'retry' }) => {
       const key = parseCloudAgentKey(agent.key);
-      if (!key || !agent.machine) throw new Error(`${agent.launch.name} has no cloud machine.`);
+      if (!key || !agent.machine) throw new Error(`${agent.name} has no cloud machine.`);
       return rpc.switchServers.cloudMachineLifecycle(
         key.serverId,
         agent.machine.machine_id,
@@ -123,7 +133,7 @@ export type CloudProblemAction = {
 };
 
 /**
- * What the user can do about why an agent's worker cannot be asked: wake a
+ * What the user can do about why an agent cannot be asked: wake a
  * sleeping machine (only where `wake`, since a composer wakes it by sending),
  * start one its owner stopped, or retry one in error.
  */

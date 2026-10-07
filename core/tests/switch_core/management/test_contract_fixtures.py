@@ -22,6 +22,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.commands import room_control_frame
+from switch_core.bridges.agent.protocol.control_relay import (
+    CONTROL_CANCEL_FRAME,
+    CONTROL_FRAME,
+)
 from switch_core.bridges.agent.protocol.event_buffer import Reader
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.stores.agent_store import AgentStore
@@ -51,6 +55,9 @@ from tests.switch_core.management.harness import (
     report_status,
     take,
 )
+
+#: Provoked and checked against this fixture by `test_control_relay.py`.
+CONTROL_RELAY_FRAMES = frozenset({CONTROL_FRAME, CONTROL_CANCEL_FRAME})
 
 
 def _fixture(name: str) -> Any:
@@ -339,7 +346,11 @@ class _Outcomes:
 
 class TestStreamFrames:
     async def test_each_frame_matches(self, harness: Harness) -> None:
-        recorded = {entry["event"]: entry for entry in _fixture("stream_frames.json")}
+        recorded = {
+            entry["event"]: entry
+            for entry in _fixture("stream_frames.json")
+            if entry["event"] not in CONTROL_RELAY_FRAMES
+        }
         harness.protocol.approval_outcomes = _Outcomes(  # type: ignore[assignment]
             recorded["agent.approval_outcome"]["data"]["outcome"]
         )
@@ -413,6 +424,11 @@ class TestStreamFrames:
                 operation_id="op",
                 kind="provider.recheck",
                 agent_id=None,
+            )
+            provoked += await take(stream, 1)
+
+            harness.management.service.notifier.provider_credential_changed(
+                controller.controller_id, "claude", 2
             )
             provoked += await take(stream, 1)
 

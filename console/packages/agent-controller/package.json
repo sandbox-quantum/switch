@@ -24,6 +24,8 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "^3.1146.0",
+    "@aws-sdk/credential-providers": "^3.1146.0",
     "@switch-console/agent-providers": "workspace:*",
     "@switch-console/plugins": "workspace:*",
     "zod": "^4.4.3"

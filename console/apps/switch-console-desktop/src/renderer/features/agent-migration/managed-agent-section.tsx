@@ -16,12 +16,7 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
-import {
-  type AgentMigrationState,
-  IDLE_RULE,
-  SESSIONS_ON_MOVE,
-  SESSIONS_ON_RETURN,
-} from '@shared/core/agent-migration/agent-migration';
+import { type AgentMigrationState, MOVE_RULE } from '@shared/core/agent-migration/agent-migration';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 import {
   migrationAction,
@@ -72,7 +67,14 @@ export function useAgentMigrationState(agentId: string) {
  * Switch's agent management, which runs it on a machine's controller, and
  * brings it back to this Console.
  */
-export function ManagedAgentSection({ agentId }: { agentId: string }) {
+export function ManagedAgentSection({
+  agentId,
+  onReturned,
+}: {
+  agentId: string;
+  /** Called once the agent is back with this Console; null when the page already shows it. */
+  onReturned: (() => void) | null;
+}) {
   const queryClient = useQueryClient();
   const query = useAgentMigrationState(agentId);
   const [confirming, setConfirming] = useState<'move' | 'return' | null>(null);
@@ -86,9 +88,9 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
   });
   const giveBack = useMutation({
     mutationFn: () => rpc.agentMigration.stopManaging(agentId),
+    onSuccess: () => onReturned?.(),
     onSettled: refresh,
   });
-  const cancel = useMutation({ mutationFn: () => rpc.agentMigration.cancel(agentId) });
   const enable = useMutation({
     mutationFn: () => {
       const agent = agentsStore.agentById(agentId);
@@ -122,6 +124,7 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
   const action = migrationAction(state);
   const where = targetName(state.target);
   const failure = move.error ?? giveBack.error ?? enable.error;
+  const untold = move.data?.untold ?? [];
 
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border p-3">
@@ -133,30 +136,27 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
         </StatusBadge>
       </div>
       {summary.detail && <p className="text-sm text-foreground-muted">{summary.detail}</p>}
-      {state.runner === 'console' && !state.operation && !state.movesWithParent && (
+      {state.runner === 'console' && !state.operation && (
         <p className="text-sm text-foreground-muted">
           Move to managed hands this agent to Switch’s agent management, which runs it on {where}{' '}
-          instead of this Console. {IDLE_RULE}
-          {state.subagents.length > 0 &&
-            ` Its subagents ${state.subagents.join(', ')} move with it.`}
+          instead of this Console. {MOVE_RULE}
         </p>
       )}
       {state.runner === 'managed' &&
         !state.operation &&
-        !state.movesWithParent &&
         state.managed?.machine.kind !== 'removed' && (
           <p className="text-sm text-foreground-muted">
             This Console does not run it while it is managed: its room watcher here is off and its
-            sessions run on the machine. Stop managing brings it back. {IDLE_RULE}
+            sessions run on the machine. Stop managing brings it back. {MOVE_RULE}
           </p>
         )}
-      {state.movesWithParent && (
-        <p className="text-sm text-foreground-muted">
-          Watched under {state.movesWithParent}: it moves to a managed machine, and comes back, with
-          it.
+      {untold.length > 0 && (
+        <p role="alert" className="text-sm text-foreground-muted">
+          Moved. {untold.length === 1 ? 'One room' : `${untold.length} rooms`} where it was working
+          could not be told the request was cut off: {untold.map((room) => room.reason).join('; ')}
         </p>
       )}
-      {state.blocker && !state.operation && !state.movesWithParent && (
+      {state.blocker && !state.operation && (
         <p role="alert" className="text-sm text-foreground-muted">
           {state.blocker}
         </p>
@@ -167,20 +167,18 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        {action && (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={action.disabledReason !== null || move.isPending || giveBack.isPending}
-            onClick={() => {
-              move.reset();
-              giveBack.reset();
-              setConfirming(action.kind);
-            }}
-          >
-            <ArrowRightLeft className="size-3.5" /> {action.label}
-          </Button>
-        )}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={action.disabledReason !== null || move.isPending || giveBack.isPending}
+          onClick={() => {
+            move.reset();
+            giveBack.reset();
+            setConfirming(action.kind);
+          }}
+        >
+          <ArrowRightLeft className="size-3.5" /> {action.label}
+        </Button>
         {state.canEnableTarget && state.target && (
           <Button
             variant="outline"
@@ -191,16 +189,6 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
             {state.target.kind === 'this-computer'
               ? 'Run managed agents on this computer'
               : `Run managed agents on ${state.target.sshHost}`}
-          </Button>
-        )}
-        {state.operation?.stage === 'waiting-for-turn' && (
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={cancel.isPending}
-            onClick={() => cancel.mutate()}
-          >
-            Cancel
           </Button>
         )}
       </div>
@@ -216,8 +204,8 @@ export function ManagedAgentSection({ agentId }: { agentId: string }) {
           <DialogContentArea>
             <DialogDescription>
               {confirming === 'move'
-                ? `Switch’s agent management will run this agent on ${where}, and this Console stops running it. ${SESSIONS_ON_MOVE} ${IDLE_RULE}`
-                : `Switch stops managing this agent, the machine stops it, and this Console runs it again. ${SESSIONS_ON_RETURN} ${IDLE_RULE}`}
+                ? `Switch’s agent management will run this agent on ${where}, and this Console stops running it. ${MOVE_RULE}`
+                : `Switch stops managing this agent, the machine stops it, and this Console runs it again. ${MOVE_RULE}`}
             </DialogDescription>
             {confirming === 'move' && state.notCarried.length > 0 && (
               <div className="mt-3 space-y-1 text-sm">

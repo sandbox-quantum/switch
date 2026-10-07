@@ -50,7 +50,12 @@ from switch_core.management.dependencies import (
     get_management_session_factory,
     require_controller,
 )
-from switch_core.management.errors import ManagementError, ManagementRoute, error_body
+from switch_core.management.errors import (
+    ManagementError,
+    ManagementRoute,
+    error_body,
+    not_found,
+)
 from switch_core.management.schemas import (
     MAX_STATUS_BYTES,
     ControllerBeatRequest,
@@ -59,11 +64,13 @@ from switch_core.management.schemas import (
     EnrollRequest,
     OperationResultRequest,
     ProgressRequest,
+    SealedEnvelope,
     StatusReport,
     TokenRequest,
     wire_time,
 )
 from switch_core.management.service import ManagementService
+from switch_core.providers.sealing import stored_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +188,8 @@ async def exchange_token(
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_management_session_factory)
     ],
+    x_switch_host_instance_id: Annotated[str | None, Header(max_length=256)] = None,
+    x_switch_host_boot_id: Annotated[str | None, Header(max_length=256)] = None,
 ) -> dict[str, str]:
     tenant_id = await authenticator.tenant_of_secret(body.credential)
     if tenant_id is None:
@@ -193,6 +202,8 @@ async def exchange_token(
             tenant_id,
             controller_id=controller_id,
             credential=body.credential,
+            instance_id=x_switch_host_instance_id,
+            boot_id=x_switch_host_boot_id,
         )
     return {"access_token": access_token, "expires_at": wire_time(expires_at)}
 
@@ -205,6 +216,31 @@ async def rotate_credential(
     principal: PathController, management: Management, session: Session
 ) -> dict[str, str]:
     return {"credential": await management.rotate_credential(session, principal)}
+
+
+@router.get(
+    "/v1/management/controllers/{controller_id}/provider-credentials/{provider}"
+)
+async def get_provider_credential(
+    controller_id: str,
+    provider: str,
+    response: Response,
+    principal: Principal,
+    management: Management,
+    session: Session,
+) -> dict[str, Any]:
+    """The owner's login for `provider`, sealed for this Switch cloud
+    controller. 404 for any other controller, as for no login."""
+    response.headers["Cache-Control"] = "no-store"
+    if controller_id != principal.controller_id:
+        raise not_found("Sealed provider credential")
+    controller = await management.cloud_controller_for_owner(
+        session, principal.tenant_id, principal.owner_id, controller_id
+    )
+    envelope = await stored_envelope(session, controller.id, provider)
+    if envelope is None:
+        raise not_found("Sealed provider credential")
+    return SealedEnvelope.model_validate(envelope).model_dump_wire()
 
 
 @router.get("/v1/management/controllers/{controller_id}/assignment")

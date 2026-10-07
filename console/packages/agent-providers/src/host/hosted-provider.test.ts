@@ -153,7 +153,7 @@ it('keeps the different providers in their native authentication locations', asy
   }
 });
 
-it('keeps the prepared Codex home and refreshes its auth before provider startup', async () => {
+it('keeps the prepared Codex home and shares the host’s auth with it', async () => {
   const env: Record<string, string> = {};
   const original = credential('{"fixture":"original"}');
   await materializeHostedProvider(root, env, original, 'fixture-cli');
@@ -163,10 +163,11 @@ it('keeps the prepared Codex home and refreshes its auth before provider startup
     sessionId: 'session',
     sourceHome,
     config: 'model = "fixture-model"',
-    auth: 'refresh',
+    auth: 'shared',
   });
   env.CODEX_HOME = home;
   await writeFile(join(home, 'auth.json'), '{"fixture":"native-refresh"}');
+  expect(await readFile(join(sourceHome, 'auth.json'), 'utf8')).toContain('native-refresh');
   await materializeHostedProvider(root, env, original, 'fixture-cli');
   expect(env.CODEX_HOME).toBe(home);
   expect(await readFile(join(home, 'auth.json'), 'utf8')).toContain('native-refresh');

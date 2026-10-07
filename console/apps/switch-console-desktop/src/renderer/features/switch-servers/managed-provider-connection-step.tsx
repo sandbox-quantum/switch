@@ -228,6 +228,15 @@ function OtherProviderConnectionStep({
               </Button>
             </div>
           )}
+        {connection.data?.status === 'reconnect_required' && (
+          <div role="alert" className="rounded-lg border p-3 text-sm">
+            Your cloud machine's controller was replaced, and it cannot use your saved credential.
+            Reconnect {name} to run cloud agents again.
+            <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run(true)}>
+              Disconnect
+            </Button>
+          </div>
+        )}
         {verifying && (
           <div role="status" className="space-y-2 rounded-lg border p-3 text-sm">
             <p className="flex items-center gap-2">
@@ -356,7 +365,10 @@ function OtherProviderConnectionStep({
         <Button variant="outline" onClick={onBack} disabled={pending}>
           Back
         </Button>
-        {(!localAuthentication || error || connection.data?.status === 'failed') && (
+        {(!localAuthentication ||
+          error ||
+          connection.data?.status === 'failed' ||
+          connection.data?.status === 'reconnect_required') && (
           <Button
             disabled={
               busy ||
@@ -368,9 +380,11 @@ function OtherProviderConnectionStep({
           >
             {busy
               ? 'Checking connection…'
-              : connection.data?.status === 'failed' || localAuthentication
-                ? 'Retry connection'
-                : 'Save credential'}
+              : connection.data?.status === 'reconnect_required'
+                ? 'Reconnect'
+                : connection.data?.status === 'failed' || localAuthentication
+                  ? 'Retry connection'
+                  : 'Save credential'}
           </Button>
         )}
         <Button

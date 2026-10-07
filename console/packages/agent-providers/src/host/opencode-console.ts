@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { openCodeConsoleCredentialSchema } from '../opencode/console-credential';
+import { shareLoginDirectory } from './host-permissions';
 
 const exec = promisify(execFile);
 interface Database {
@@ -36,6 +37,9 @@ export async function importOpenCodeConsole(
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await shareLoginDirectory(dataHome);
+  await shareLoginDirectory(directory);
   const fingerprint = createHash('sha256').update(credential).digest('hex');
   try {
     if (
@@ -46,7 +50,6 @@ export async function importOpenCodeConsole(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  await mkdir(directory, { recursive: true, mode: 0o700 });
   try {
     await exec(binaryPath, ['db', 'SELECT 1', '--format', 'json'], {
       env,

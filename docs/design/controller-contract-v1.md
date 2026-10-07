@@ -191,7 +191,7 @@ Claim leases last 5 minutes and are renewed by `progress`. Every operation reach
 
 ---
 
-## 5. Tokens and secrets (Management)
+## 5. Tokens, secrets and Console relays (Management)
 
 ```
 POST /v1/management/controllers/{id}/connector-token
@@ -199,18 +199,61 @@ POST /v1/management/controllers/{id}/connector-token
   → 200 { token: string, expires_at: Time }          // ≤ 1h. Every issuance is audited
   → 403 not_assigned | 404 connector_not_connected
 
-GET /v1/management/controllers/{id}/provider-credentials/{provider}
-  → 200 { revision: string, sealed: { alg: "X25519-XChaCha20Poly1305", key_id: string, ciphertext: base64 } }
-  → 404 provider_login_missing
+GET /v1/management/controllers/{id}/provider-credentials/{provider}      // Switch EC2 controllers only
+  → 200 SealedEnvelope                               // Cache-Control: no-store
+  → 404 not_found                                    // no login, or not this controller's
 ```
 
-- The Console seals a provider login to the controller's `public_key`, and the server stores only the ciphertext.
-- On Switch EC2, the blob is sealed with a KMS key that only that VM's role can decrypt.
-- The controller **prefers a local login** (`auth_source: "local"`) and fetches a sealed one only when none exists.
-- When a CLI refreshes and rotates a login on the machine, the controller doesn't upload it back.
+**Sealed logins (Switch EC2).** Core never hands a cloud machine a login in the clear. For each of the owner's logins it asks KMS for a fresh AES-256 data key under an encryption context naming the tenant, owner, controller and provider, encrypts the login with AES-256-GCM, and keeps only the envelope. Core cannot decrypt. The machine's instance role can, through a KMS grant constrained to its own `{switch:tenant, switch:owner_id, switch:controller_id}`.
+
+```ts
+type SealedEnvelope = {
+  v: 1
+  provider: string
+  revision: number                     // bumps on every re-seal or revocation
+  status: "connected" | "revoked"
+  key_arn: string | null               // null, like the four below, when revoked
+  encrypted_key: base64 | null         // the data key as KMS encrypted it
+  iv: base64 | null                    // 12 bytes
+  ciphertext: base64 | null
+  tag: base64 | null                   // 16 bytes
+  context: { "switch:tenant": string; "switch:owner_id": string;
+             "switch:controller_id": string; "switch:provider": string }
+}
+// AAD = canonical JSON {"context": context, "revision": revision} (sorted keys, no spaces).
+// Plaintext = { status: "connected", revision: "<N>", provider, kind, credential }.
+```
+
+- The controller decrypts the data key with `kms:Decrypt` under the envelope's `context`. A context naming another controller fails.
+- When the owner logs in again or disconnects, Core seals again (or writes a revoked envelope) and sends `provider.credential_changed {provider, revision}` on the stream (§6). The controller fetches the envelope again and restarts the agents that use that provider once they are idle.
+- A login made while the machine runs the controller is only ever sealed. A machine moved from the per-agent worker (`switch-migrate-hosted-to-controller`) has its existing logins sealed and keeps their keyring copies, so it can roll back to the worker, until `--finalize` deletes those copies.
+- The controller **prefers a local login** (`auth_source: "local"`) and fetches a sealed one only when none exists. When a CLI refreshes and rotates a login on the machine, the controller doesn't upload it back.
+
+**Console relays.** Console requests for a controller-backed agent (session lists, transcripts, prompts, `ensure`) reach the controller as stream frames (§6), and the controller answers over Management:
+
+```ts
+| { type: "agent.control"; relay_id: string; agent_id: string; message: unknown; deadline_ms: number }
+                                  // answer by deadline_ms (ms since the epoch)
+| { type: "agent.control_cancel"; relay_id: string }
+                                  // the deadline passed unanswered; drop the work
+```
+
+```
+POST /v1/management/controllers/{id}/control/{relay_id}
+  { ok: true, result?: unknown } | { ok: false, error: { code: string, message: string } }
+  → 200 { ok: true }
+  → 404 not_found | 403 forbidden (sent to another controller) | 409 relay_resolved
+
+POST /v1/management/controllers/{id}/control/push
+  { agent_id: string, subscription: string,
+    events: { seq: number, event?: unknown, failure?: string | null, health?: unknown }[] }   // exactly one of event, failure, health
+  → 200 { unsubscribe: boolean }      // true: no Console view holds the subscription; drop it
+  → 403 forbidden                     // the agent is not bound to this controller
+```
+
+Replies and pushes are at most 1 MiB plus 64 KiB of envelope. Relays are memory only: one lost to a Core restart fails for the Console as a timeout. A request for an agent whose cloud machine is asleep wakes the machine and answers `503 machine_asleep` with `retryable: true`; the Console retries once the machine is back.
 
 ---
-
 ## 6. Event stream (Core)
 
 One stream per controller. It carries events for every agent assigned to it.
@@ -249,8 +292,13 @@ type StreamEvent =
   | { type: "agent.detached";     agent_id: string; reason: "unassigned" | "superseded" | "deleted" }
   | { type: "assignment.changed"; revision: number }
   | { type: "operation.pending";  operation_id: string; kind: OperationKind; agent_id: string | null }
+  | { type: "provider.credential_changed"; provider: string; revision: number }
+                                  // Switch EC2 only: the owner's login for `provider` was sealed again
+                                  // or revoked for this controller. Fetch the envelope again (§5)
   | { type: "credential.revoked" }
 ```
+
+`provider.credential_changed` carries no secret. Like the other nudges it coalesces, to the latest revision per provider, and a lost one costs a delay: the controller reads the envelope again whenever it next needs the login.
 
 Cursors are **per agent**, because each agent keeps its own sequence in Core's buffer. That's why resume uses the `cursors` map and not `Last-Event-ID`.
 
@@ -330,6 +378,7 @@ The personal agent relays that reason to the user as is.
 | `out_of_memory` | status | Killed by the memory limit |
 | `disk_full` / `capacity_exceeded` | status, placement | No disk / no session slots |
 | `controller_offline` | placement | Target is `unknown` |
+| `relay_resolved` | control relay | The relayed request was already answered or has expired |
 | `internal` | any | Server or controller bug, with `retryable` set honestly |
 
 ---

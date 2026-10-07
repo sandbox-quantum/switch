@@ -67,7 +67,11 @@ export function ManagedClaudeConnectionStep({
     <>
       <DialogHeader>
         <DialogTitle>
-          {connection?.status === 'connected' ? 'Claude Code connected' : 'Connect Claude Code'}
+          {connection?.status === 'connected'
+            ? 'Claude Code connected'
+            : connection?.status === 'reconnect_required'
+              ? 'Reconnect Claude Code'
+              : 'Connect Claude Code'}
         </DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
@@ -90,6 +94,12 @@ export function ManagedClaudeConnectionStep({
               it with Claude.
             </p>
           </>
+        ) : connection?.status === 'reconnect_required' ? (
+          <p role="alert" className="text-sm">
+            Your cloud machine's controller was replaced, and it cannot use your saved{' '}
+            {connection.kind === 'api-key' ? 'API key' : 'setup token'}. Reconnect Claude Code to
+            run cloud agents again.
+          </p>
         ) : null}
         {error && (
           <p role="alert" className="text-sm text-destructive">
@@ -106,32 +116,38 @@ export function ManagedClaudeConnectionStep({
         <Button variant="outline" onClick={onBack} disabled={loading}>
           Back
         </Button>
-        {!loading && connection?.status === 'connected' && (
-          <>
-            <Button variant="outline" onClick={() => setEditing(true)}>
-              Replace credential
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={async () => {
-                setLoading(true);
-                setError(null);
-                try {
-                  await rpc.switchServers.disconnectClaude(serverId);
-                  setConnection({ status: 'not_connected' });
-                  changed();
-                } catch (cause) {
-                  setError(failureText(cause, 'Could not remove the Claude connection.'));
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              Remove
-            </Button>
-            <Button onClick={onDone}>{continueLabel}</Button>
-          </>
-        )}
+        {!loading &&
+          (connection?.status === 'connected' || connection?.status === 'reconnect_required') && (
+            <>
+              <Button
+                variant={connection.status === 'connected' ? 'outline' : 'default'}
+                onClick={() => setEditing(true)}
+              >
+                {connection.status === 'connected' ? 'Replace credential' : 'Reconnect'}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={async () => {
+                  setLoading(true);
+                  setError(null);
+                  try {
+                    await rpc.switchServers.disconnectClaude(serverId);
+                    setConnection({ status: 'not_connected' });
+                    changed();
+                  } catch (cause) {
+                    setError(failureText(cause, 'Could not remove the Claude connection.'));
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                Remove
+              </Button>
+              {connection.status === 'connected' && (
+                <Button onClick={onDone}>{continueLabel}</Button>
+              )}
+            </>
+          )}
       </DialogFooter>
     </>
   );

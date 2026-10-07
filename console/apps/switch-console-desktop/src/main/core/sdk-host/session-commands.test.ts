@@ -162,15 +162,14 @@ it('sends a cloud command through the relay and restarts a parked cloud session 
   mocks.cloud.request
     .mockRejectedValueOnce(new Unavailable('The session host is not running.'))
     .mockResolvedValueOnce(applied);
-  expect(await submitSessionCommand('cloud:server:launch', command)).toEqual(applied);
+  expect(await submitSessionCommand('cloud:server:agent=agent', command)).toEqual(applied);
   expect(mocks.cloud.request).toHaveBeenCalledWith(
     'session',
     expect.objectContaining({ type: 'command' })
   );
   expect(mocks.cloudOperation).toHaveBeenCalledWith(
-    'cloud:server:launch',
+    'cloud:server:agent=agent',
     'session',
-    expect.any(String),
     'restart'
   );
   expect(mocks.hydrate).not.toHaveBeenCalled();
@@ -186,7 +185,7 @@ it.each(['worker_waking', 'machine_stopped', 'machine_error'])(
       message: 'The cloud machine is starting. Try again in a moment.',
       code,
     } as never);
-    const error = await submitSessionCommand('cloud:server:launch', command).catch(
+    const error = await submitSessionCommand('cloud:server:agent=agent', command).catch(
       (caught: unknown) => caught
     );
     expect(error).toBeInstanceOf(RelayError);

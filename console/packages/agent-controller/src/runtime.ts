@@ -1,18 +1,31 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  stat,
+  unlink,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
+  AttachmentTransfers,
   clearTakenOver,
   ensureSharedProcess,
+  ensureThroughWatcher,
+  type HostedWorkspace,
   inProcessSupervision,
   type OpenAgentStream,
   type ProviderReadiness,
   providerReadinessSchema,
-  readTakenOver,
   readWatchFlags,
   recordWatcherHealth,
   runAgentHost,
@@ -29,10 +42,12 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
+import { z } from 'zod';
+import type { ControlRegistry } from './agent-hub';
 import { ConfigurationError, ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
-import type { Isolation, Provider } from './schemas';
+import type { Isolation, Provider, RepositoryRef } from './schemas';
 
 const execute = promisify(execFile);
 
@@ -48,6 +63,10 @@ export type AgentObservation = {
   /** `supervisor/failure.json`: why the agent host stopped and was not restarted. */
   failure: string | null;
   takenOver: TakenOver | null;
+  /** Whether the agent host has work in hand, when it says; null when it does not. */
+  activity: { busy: boolean; lastActivityAt: string | null } | null;
+  /** What the service manager counted, for an agent host it supervises; null otherwise. */
+  unit: { restarts10m: number; oomKills: number } | null;
 };
 
 /** What an agent with no agent host root at all looks like. */
@@ -59,6 +78,8 @@ export function emptyObservation(): AgentObservation {
     health: null,
     failure: null,
     takenOver: null,
+    activity: null,
+    unit: null,
   };
 }
 
@@ -74,6 +95,10 @@ export type LaunchOptions = {
   replaceIdentity: boolean;
   /** Someone asked for this agent host on purpose: a standing-down marker is cleared. */
   clearTakenOver: boolean;
+  /** The connection skills an isolated agent's unit installs for its provider. */
+  skills: HostedWorkspace['skills'];
+  /** The repository an isolated agent's unit makes its working directory a worktree of. */
+  repository: RepositoryRef | null;
 };
 
 /** What an agent host reads to reach Switch: the controller's relay, and a token for it. */
@@ -95,6 +120,8 @@ export interface AgentRunner {
  * fake.
  */
 export interface AgentRuntime extends AgentRunner {
+  /** The agent host's state root: where it keeps `config.json`, `health.json` and `control.json`. */
+  watcherRoot(agentId: string): string;
   credentialsPath(agentId: string): string;
   /** The credentials file as written, or null when there is none or it cannot be read. */
   readCredentials(agentId: string): Promise<RelayCredentials | null>;
@@ -122,24 +149,103 @@ const CRASH_WINDOW_MS = 10 * 60 * 1000;
  */
 const IN_PROCESS_BUILD = 'switch-agent-controller:in-process';
 
-export async function writeAtomic(path: string, body: string): Promise<void> {
+export type WriteOptions = {
+  mode: number;
+  /** The group the file is given; the process's own when absent. */
+  gid?: number;
+};
+
+/**
+ * Writes `body` under a fresh temporary name created exclusively, never
+ * through a symbolic link, and renames it over `path`: a link planted at
+ * either name is replaced, not followed.
+ */
+export async function writeAtomic(
+  path: string,
+  body: string,
+  options: WriteOptions = { mode: 0o600 }
+): Promise<void> {
   const temporary = `${path}.${randomUUID()}`;
-  const file = await open(temporary, 'wx', 0o600);
+  const file = await open(
+    temporary,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    options.mode
+  );
   try {
+    if (options.gid !== undefined) await file.chown(-1, options.gid);
+    await file.chmod(options.mode);
     await file.writeFile(body);
     await file.sync();
-  } finally {
+  } catch (error) {
     await file.close();
+    await removeOptional(temporary);
+    throw error;
   }
+  await file.close();
   await rename(temporary, path);
 }
 
+/** The most an agent host's state file is read to; anything larger is refused. */
+export const STATE_FILE_LIMIT = 4 * 1024 * 1024;
+
+/**
+ * A state file's text, or null when there is none. Never read through a
+ * symbolic link, and never past `STATE_FILE_LIMIT`: an agent host's root may
+ * be written by the agent itself.
+ */
 export async function readOptional(path: string): Promise<string | null> {
+  return readNoFollow(path, null);
+}
+
+/**
+ * `readOptional` for `parts` below `root`, where whoever may write below
+ * `root` could have replaced a directory on the way with a link: no component
+ * below `root` may be one. On Linux the opened file must also be the one at
+ * that path, which closes the race between checking and opening.
+ */
+export async function readOptionalBelow(root: string, parts: string[]): Promise<string | null> {
+  let directory = root;
+  for (const part of parts.slice(0, -1)) {
+    directory = join(directory, part);
+    let info;
+    try {
+      info = await lstat(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    if (info.isSymbolicLink())
+      throw new Error(`${directory} is a symbolic link; it is not followed.`);
+    if (!info.isDirectory()) throw new Error(`${directory} is not a directory.`);
+  }
+  const expected = process.platform === 'linux' ? join(await realpath(root), ...parts) : null;
+  return readNoFollow(join(root, ...parts), expected);
+}
+
+async function readNoFollow(path: string, expected: string | null): Promise<string | null> {
+  let file;
   try {
-    return await readFile(path, 'utf8');
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    if (code === 'ELOOP') throw new Error(`${path} is a symbolic link; it is not followed.`);
     throw error;
+  }
+  try {
+    if (expected !== null && (await readlink(`/proc/self/fd/${file.fd}`)) !== expected)
+      throw new Error(`${path} is reached through a symbolic link; it is not followed.`);
+    const info = await file.stat();
+    if (!info.isFile()) throw new Error(`${path} is not a regular file.`);
+    if (info.size > STATE_FILE_LIMIT)
+      throw new Error(`${path} is larger than ${STATE_FILE_LIMIT} bytes; it is not read.`);
+    const buffer = Buffer.alloc(STATE_FILE_LIMIT + 1);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > STATE_FILE_LIMIT)
+      throw new Error(`${path} is larger than ${STATE_FILE_LIMIT} bytes; it is not read.`);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await file.close();
   }
 }
 
@@ -155,12 +261,15 @@ export function isInside(root: string, path: string): boolean {
   return rest !== '' && rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
 }
 
+/** A process another user owns is alive too: signalling it is refused, not missed. */
 export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    if (code === 'ESRCH') return false;
     throw error;
   }
 }
@@ -180,7 +289,12 @@ export async function ownsRoot(pid: number, root: string): Promise<boolean> {
 export async function recordedPid(path: string): Promise<number | null> {
   const text = await readOptional(path);
   if (text === null) return null;
-  const pid = (JSON.parse(text) as { pid?: unknown }).pid;
+  let pid: unknown;
+  try {
+    pid = (JSON.parse(text) as { pid?: unknown } | null)?.pid;
+  } catch {
+    return null;
+  }
   return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
@@ -211,26 +325,63 @@ export async function observeOnDisk(
   return { ...(await readRoot(root)), alive: running, health };
 }
 
+const TAKEN_OVER_FILE = 'taken-over.json';
+const takenOverSchema = z.object({ at: z.string(), reason: z.string(), connectionId: z.string() });
+
+const configuredSchema = z.object({
+  start: z.object({ provider: z.string(), input: z.object({ cwd: z.string() }) }),
+});
+
 /** Everything about an agent host root but whether it runs. */
 export async function readRoot(root: string): Promise<Omit<AgentObservation, 'alive'>> {
   const config = await readOptional(join(root, 'config.json'));
   let configured: AgentObservation['configured'] = null;
   if (config !== null) {
-    const parsed = JSON.parse(config) as SharedHostConfig;
+    const parsed = configuredSchema.parse(JSON.parse(config));
     configured = { provider: parsed.start.provider, cwd: parsed.start.input.cwd };
   }
-  let flags: WatchFlags | null = null;
-  try {
-    flags = await readWatchFlags(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-  const failureText = await readOptional(join(root, 'supervisor', 'failure.json'));
+  const flagsText = await readOptional(join(root, WATCH_FLAGS_FILE));
+  const flags: WatchFlags | null =
+    flagsText === null ? null : watchFlagsSchema.parse(JSON.parse(flagsText));
+  const failureText = await readOptionalBelow(root, ['supervisor', 'failure.json']);
   const failure =
     failureText === null
       ? null
       : String((JSON.parse(failureText) as { message?: unknown }).message ?? failureText);
-  return { configured, flags, health: null, failure, takenOver: await readTakenOver(root) };
+  const takenOverText = await readOptional(join(root, TAKEN_OVER_FILE));
+  return {
+    configured,
+    flags,
+    health: null,
+    failure,
+    takenOver: takenOverText === null ? null : takenOverSchema.parse(JSON.parse(takenOverText)),
+    activity: null,
+    unit: null,
+  };
+}
+
+/** The credentials file an agent host reads to reach Switch through the relay. */
+export function relayCredentialsBody(agentId: string, credentials: RelayCredentials): string {
+  return JSON.stringify({
+    env: {
+      SWITCH_API_ENDPOINT: credentials.endpoint,
+      SWITCH_API_TOKEN: credentials.token,
+      SWITCH_AGENT_ID: agentId,
+    },
+  });
+}
+
+/** The relay endpoint and token in a credentials file, or null when it names another agent or is not one. */
+export function parseRelayCredentials(text: string, agentId: string): RelayCredentials | null {
+  try {
+    const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
+    const endpoint = env.SWITCH_API_ENDPOINT;
+    const token = env.SWITCH_API_TOKEN;
+    if (env.SWITCH_AGENT_ID !== agentId) return null;
+    return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
+  } catch {
+    return null;
+  }
 }
 
 type RunningAgentHost = {
@@ -270,9 +421,15 @@ export class InProcessRuntime implements AgentRuntime {
       log: Logger;
       /** How long a failed agent host waits before it is started again. */
       crashBackoffMs: number;
+      /** Where each agent host registers to answer relayed control messages while it runs. */
+      control: ControlRegistry;
     }
   ) {
     assertSupportedPlatform(process.platform);
+  }
+
+  watcherRoot(agentId: string): string {
+    return this.deps.layout.watcherRoot(agentId);
   }
 
   credentialsPath(agentId: string): string {
@@ -281,30 +438,12 @@ export class InProcessRuntime implements AgentRuntime {
 
   async readCredentials(agentId: string): Promise<RelayCredentials | null> {
     const text = await readOptional(this.credentialsPath(agentId));
-    if (text === null) return null;
-    try {
-      const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
-      const endpoint = env.SWITCH_API_ENDPOINT;
-      const token = env.SWITCH_API_TOKEN;
-      if (env.SWITCH_AGENT_ID !== agentId) return null;
-      return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
-    } catch {
-      return null;
-    }
+    return text === null ? null : parseRelayCredentials(text, agentId);
   }
 
   async writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void> {
     await mkdir(this.deps.layout.agentDir(agentId), { recursive: true, mode: 0o700 });
-    await writeAtomic(
-      this.credentialsPath(agentId),
-      JSON.stringify({
-        env: {
-          SWITCH_API_ENDPOINT: credentials.endpoint,
-          SWITCH_API_TOKEN: credentials.token,
-          SWITCH_AGENT_ID: agentId,
-        },
-      })
-    );
+    await writeAtomic(this.credentialsPath(agentId), relayCredentialsBody(agentId, credentials));
   }
 
   async deleteCredentials(agentId: string): Promise<void> {
@@ -432,19 +571,22 @@ export class InProcessRuntime implements AgentRuntime {
     const control = new WatcherControl();
     const sessions = inProcessSupervision(this.deps.bundlePath, this.links);
     // For `status`, which runs in another process and reads only disk.
-    const stopRecording = recordWatcherHealth(root, control);
+    const stopRecording = recordWatcherHealth(root, control, null);
     const done = (async () => {
+      let detach = () => {};
       try {
-        await runAgentHost(
-          root,
-          config,
-          signal,
-          sessions,
-          control,
-          null,
-          this.deps.openStream(agentId)
-        );
+        const transfers = new AttachmentTransfers(root);
+        await transfers.clear();
+        detach = this.deps.control.attachControl(agentId, {
+          agentId,
+          links: this.links,
+          ensure: ensureThroughWatcher(control),
+          watcher: control,
+          transfers,
+        });
+        await runAgentHost(root, config, signal, sessions, control, this.deps.openStream(agentId));
       } finally {
+        detach();
         stopRecording();
         await sessions.close();
       }

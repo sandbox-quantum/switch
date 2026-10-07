@@ -22,10 +22,11 @@ from __future__ import annotations
 import logging
 import ntpath
 import posixpath
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,7 @@ from switch_core.agent_icon import (
 )
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
+from switch_core.bridges.agent.protocol.control_relay import ControlRelays
 from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
@@ -50,6 +52,7 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerOperation,
     ApiKey,
+    HostedMachine,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -59,6 +62,16 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.hosted_machine_store import (
+    HostedMachineStore,
+    accepts_controller_exchange,
+)
+from switch_core.gateway.cloud_workspace import worktree_path
+from switch_core.gateway.hosted_controller_activity import (
+    record_controller_heartbeat,
+    wake_controller_machine,
+    wake_for_placement,
+)
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
@@ -66,7 +79,7 @@ from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.placement import (
     ControllerState,
     controller_state,
-    require_placement,
+    placement_refusal,
 )
 from switch_core.management.schemas import (
     PROVIDER_KNOWN_AGENT_TYPES,
@@ -74,6 +87,7 @@ from switch_core.management.schemas import (
     CreateManagedAgentRequest,
     DefinitionV1,
     PublicKey,
+    RepositoryRef,
     StatusReport,
     assignment_entry,
     controller_view,
@@ -82,6 +96,7 @@ from switch_core.management.schemas import (
     operation_wire,
     workspaces_dir_of,
 )
+from switch_core.providers.sealing import reusable_cloud_controller
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +107,11 @@ OPERATION_TTL = timedelta(hours=1)
 OPERATION_LIST_LIMIT = 200
 
 V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
+
+CLOUD_CONTROLLER_KIND = "ec2"
+CLOUD_CONTROLLER_NAME = "Switch cloud"
+CLOUD_CONTROLLER_VERSION = "pending"
+CLOUD_CONTROLLER_PLATFORM = {"os": "linux", "arch": "unknown", "os_version": "unknown"}
 
 
 @dataclass(frozen=True)
@@ -123,9 +143,11 @@ class ManagementService:
         api_keys: ApiKeyStore,
         agents: AgentStore,
         presence: ControllerPresence,
+        control_relays: ControlRelays,
         clock: Callable[[], datetime],
     ) -> None:
         self.settings = settings
+        self.control_relays = control_relays
         self.notifier = notifier
         self.presence = presence
         self.controllers = controllers
@@ -134,6 +156,9 @@ class ManagementService:
         self.api_keys = api_keys
         self.agents = agents
         self._clock = clock
+        # The latest revision of each (controller, provider) sealed login its
+        # controller has been told of, so a reload announces only newer ones.
+        self._announced_logins: dict[tuple[str, str], int] = {}
 
     def now(self) -> datetime:
         return self._clock()
@@ -277,7 +302,17 @@ class ManagementService:
         *,
         controller_id: str,
         credential: str,
+        instance_id: str | None,
+        boot_id: str | None,
     ) -> tuple[str, datetime]:
+        """Exchange a credential for an access token.
+
+        An ec2 controller says which instance and boot it runs on, and only
+        the instance Core has seen as its machine's, while that machine is
+        starting or running, gets a token: a credential copied off a machine
+        is no use anywhere else, and a replaced instance cannot outlive its
+        replacement.
+        """
         invalid = ManagementError(
             401, reason_codes.INVALID_CREDENTIAL, "The credential is not valid."
         )
@@ -297,18 +332,74 @@ class ManagementService:
             raise ManagementError(
                 401, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )
+        if controller.kind == CLOUD_CONTROLLER_KIND:
+            await self._check_cloud_instance(session, controller, instance_id, boot_id)
         return tokens.mint_access_token(
             secret=self.settings.token_secret,
             controller_id=controller.id,
             tenant_id=tenant_id,
             owner_id=controller.owner_id,
+            credential_id=key.id,
             now=self.now(),
         )
+
+    async def _check_cloud_instance(
+        self,
+        session: AsyncSession,
+        controller: AgentController,
+        instance_id: str | None,
+        boot_id: str | None,
+    ) -> None:
+        if not instance_id or not boot_id:
+            raise ManagementError(
+                401,
+                reason_codes.INVALID_CREDENTIAL,
+                "An ec2 controller must send X-Switch-Host-Instance-Id and "
+                "X-Switch-Host-Boot-Id with its credential.",
+            )
+        machine = await HostedMachineStore().linking_controller(session, controller.id)
+        if machine is None or not accepts_controller_exchange(machine, instance_id):
+            logger.warning(
+                "Refused a token exchange for ec2 controller %s from instance %s "
+                "(boot %s): machine %s is %s/%s on instance %s",
+                controller.id,
+                instance_id,
+                boot_id,
+                machine.id if machine is not None else None,
+                machine.state if machine is not None else None,
+                machine.desired_state if machine is not None else None,
+                machine.instance_id if machine is not None else None,
+            )
+            raise ManagementError(
+                409,
+                reason_codes.INSTANCE_MISMATCH,
+                "This instance is not the one running the controller's cloud "
+                "machine, or that machine is not starting or running.",
+                retryable=True,
+            )
 
     async def rotate_credential(
         self, session: AsyncSession, principal: ControllerPrincipal
     ) -> str:
         controller = await self._principal_controller(session, principal)
+        if await HostedMachineStore().linking_controller(session, controller.id):
+            raise ManagementError(
+                403,
+                reason_codes.FORBIDDEN,
+                "A Switch cloud controller's credential is issued with its "
+                "machine and cannot be rotated by the controller.",
+            )
+        credential = await self._replace_credential(session, controller)
+        await session.commit()
+        self.presence.credential_replaced(controller.id)
+        return credential
+
+    async def _replace_credential(
+        self, session: AsyncSession, controller: AgentController
+    ) -> str:
+        """Give the controller a new credential and delete the old one, which
+        retires every access token exchanged for it. The caller commits, then
+        tells `presence.credential_replaced`."""
         key, credential = await self._new_hash_only_key(
             session,
             owner_id=controller.owner_id,
@@ -317,12 +408,120 @@ class ManagementService:
         )
         old_key_id = controller.api_key_id
         await self.controllers.set_credential(
-            session, principal.tenant_id, controller.id, key.id
+            session, controller.tenant_id, controller.id, key.id
         )
+        controller.api_key_id = key.id
         if old_key_id is not None:
             await self.api_keys.delete(session, old_key_id)
-        await session.commit()
         return credential
+
+    # ── Switch cloud controllers ──────────────────────────────────────────────
+
+    async def cloud_controller(
+        self, session: AsyncSession, machine: HostedMachine
+    ) -> tuple[AgentController, bool]:
+        """The ec2 controller a cloud machine runs as, linked to it. Returns it
+        and whether it was linked just now.
+
+        The machine's own controller while it is not revoked; otherwise the
+        oldest live one any of the owner's machines ever ran as; otherwise a
+        new one. Only a controller a machine was linked to counts: an owner
+        can enroll a controller that says it is ec2, and that one is never
+        taken over. The caller holds the machine's lock and commits.
+        """
+        if machine.controller_id is not None:
+            linked = await self.controllers.get(
+                session, machine.tenant_id, machine.controller_id
+            )
+            if linked is not None and linked.revoked_at is None:
+                return linked, False
+        reused = await reusable_cloud_controller(session, machine.owner_id)
+        if reused is None:
+            key, _ = await self._new_hash_only_key(
+                session,
+                owner_id=machine.owner_id,
+                key_type=CONTROLLER_KEY_TYPE,
+                label=f"controller {CLOUD_CONTROLLER_NAME}",
+            )
+            reused = await self.controllers.create(
+                session,
+                owner_id=machine.owner_id,
+                name=CLOUD_CONTROLLER_NAME,
+                description=None,
+                kind=CLOUD_CONTROLLER_KIND,
+                platform=CLOUD_CONTROLLER_PLATFORM,
+                version=CLOUD_CONTROLLER_VERSION,
+                public_key=None,
+                api_key_id=key.id,
+            )
+            logger.info(
+                "Created Switch cloud controller %s for user %s on machine %s",
+                reused.id,
+                machine.owner_id,
+                machine.id,
+            )
+        machine.controller_id = reused.id
+        return reused, True
+
+    def credential_replaced(self, controller_id: str) -> None:
+        self.presence.credential_replaced(controller_id)
+
+    def provider_credential_changed(
+        self, controller_id: str, provider: str, revision: int
+    ) -> None:
+        key = (controller_id, provider)
+        self._announced_logins[key] = max(
+            revision, self._announced_logins.get(key, revision)
+        )
+        self.notifier.provider_credential_changed(controller_id, provider, revision)
+
+    def announce_login_revisions(self, revisions: dict[tuple[str, str], int]) -> int:
+        """Tell each controller of every sealed login revision newer than the
+        one it was last told of. Returns how many."""
+        announced = 0
+        for (controller_id, provider), revision in sorted(revisions.items()):
+            if revision > self._announced_logins.get((controller_id, provider), -1):
+                self.provider_credential_changed(controller_id, provider, revision)
+                announced += 1
+        return announced
+
+    def pending_control_relays(self, controller_id: str) -> int:
+        return self.control_relays.pending_control_relays(controller_id)
+
+    async def cloud_credential(
+        self,
+        session: AsyncSession,
+        machine: HostedMachine,
+        controller: AgentController,
+        stored: str | None,
+    ) -> tuple[str, bool]:
+        """The controller credential for the machine's current revision, and
+        whether it was replaced just now.
+
+        `stored` is what the machine kept for this revision. It is returned
+        again while it is still the controller's credential; anything else
+        mints a new one and deletes the old, so at most one is ever valid.
+        """
+        if stored is not None and controller.api_key_id is not None:
+            key = await self.api_keys.get(session, controller.api_key_id)
+            if key is not None and key.key_hash == tokens.hash_secret(stored):
+                return stored, False
+        return await self._replace_credential(session, controller), True
+
+    async def cloud_controller_for_owner(
+        self, session: AsyncSession, tenant_id: str, owner_id: str, controller_id: str
+    ) -> AgentController:
+        """A Switch cloud controller of the owner's, or 404 for any other."""
+        controller = await self.owned_controller(
+            session, tenant_id, owner_id, controller_id
+        )
+        if (
+            controller.kind != CLOUD_CONTROLLER_KIND
+            or await HostedMachineStore().linking_controller(session, controller.id)
+            is None
+        ):
+            raise not_found("Controller")
+        return controller
 
     # ── The controller's own view ─────────────────────────────────────────────
 
@@ -382,6 +581,11 @@ class ManagementService:
         controller = await self._principal_controller(session, principal)
         revision = controller.assignment_revision
         await session.commit()
+        if stored and controller.kind == CLOUD_CONTROLLER_KIND:
+            await record_controller_heartbeat(
+                session, controller.id, report.model_dump(mode="json"), self.now()
+            )
+            await session.commit()
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
@@ -683,14 +887,31 @@ class ManagementService:
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
         )
-        if check_placement:
-            require_placement(
-                controller,
-                provider,
-                now=self.now(),
-                interval_seconds=self.settings.status_interval_seconds,
+        if not check_placement:
+            return controller
+        refusal = placement_refusal(
+            controller,
+            provider,
+            now=self.now(),
+            interval_seconds=self.settings.status_interval_seconds,
+        )
+        if refusal is None:
+            return controller
+        code, message = refusal
+        # A cloud machine asleep reports nothing; its controller takes the
+        # agent once the machine this wakes is back.
+        if (
+            code == reason_codes.CONTROLLER_OFFLINE
+            and controller.kind == CLOUD_CONTROLLER_KIND
+            and await wake_for_placement(session, controller.id, self.now())
+        ):
+            logger.info(
+                "Placing an agent on controller %s while its cloud machine "
+                "sleeps; woke the machine",
+                controller.id,
             )
-        return controller
+            return controller
+        raise ManagementError(409, code, f"Cannot place the agent: {message}.")
 
     async def _bump_and_collect(
         self, session: AsyncSession, tenant_id: str, controller_ids: set[str | None]
@@ -728,10 +949,13 @@ class ManagementService:
         owner_id: str,
         request: CreateManagedAgentRequest,
         protocol: AgentCore,
+        repository_name: Callable[[RepositoryRef], Awaitable[str]],
     ) -> dict[str, Any]:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
-        refusal leaves nothing behind."""
+        refusal leaves nothing behind; a failure after registering deletes the
+        registered agent again. `repository_name` resolves the `owner/name` of
+        the repository a Switch cloud agent works in."""
         controller = await self._check_target(
             session,
             tenant_id,
@@ -740,7 +964,19 @@ class ManagementService:
             request.definition.provider,
             check_placement=True,
         )
-        definition = with_directory(request.definition, controller, request.name)
+        refuse_repository_off_cloud(request.definition, controller)
+        agent_id: str | None = None
+        if controller is not None and controller.kind == CLOUD_CONTROLLER_KIND:
+            # Its worktree there is named by its id, so the id comes first.
+            agent_id = str(uuid4())
+            repository = request.definition.repository
+            definition = cloud_definition(
+                request.definition,
+                agent_id,
+                None if repository is None else await repository_name(repository),
+            )
+        else:
+            definition = with_directory(request.definition, controller, request.name)
         try:
             icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
                 request.name
@@ -763,24 +999,30 @@ class ManagementService:
                 metadata=metadata,
                 owner_id=owner_id,
                 owner_only=True,
+                reserved_agent_id=agent_id,
             )
         except AgentExistsError as exc:
             raise ManagementError(409, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         except ValueError as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
-        row = await self.definitions.create(
-            session,
-            agent_id=result.agent_id,
-            owner_id=owner_id,
-            controller_id=request.controller_id,
-            desired_state=request.desired_state,
-            definition=definition.model_dump(),
-        )
-        revisions = await self._bump_and_collect(
-            session, tenant_id, {request.controller_id}
-        )
-        await session.commit()
-        await self._bind(session, tenant_id, row)
+        try:
+            row = await self.definitions.create(
+                session,
+                agent_id=result.agent_id,
+                owner_id=owner_id,
+                controller_id=request.controller_id,
+                desired_state=request.desired_state,
+                definition=definition.model_dump(),
+            )
+            revisions = await self._bump_and_collect(
+                session, tenant_id, {request.controller_id}
+            )
+            await session.commit()
+            await self._bind(session, tenant_id, row)
+        except Exception:
+            await session.rollback()
+            await self._discard_registered(protocol, result.agent_id)
+            raise
         self._nudge(revisions)
         logger.info(
             "Created managed agent %s on controller %s",
@@ -789,6 +1031,24 @@ class ManagementService:
         )
         agent = await self._owned_agent(session, owner_id, result.agent_id)
         return await self._view(session, tenant_id, row, agent, {})
+
+    async def _discard_registered(self, protocol: AgentCore, agent_id: str) -> None:
+        """Delete an agent registered for a managed agent whose creation then
+        failed, so the failure leaves no agent behind. The caller re-raises the
+        original error; a failure here is logged beside it, not raised over it."""
+        try:
+            await protocol.delete_agent(agent_id=agent_id)
+        except Exception:
+            logger.error(
+                "Could not delete agent %s after creating it as a managed agent "
+                "failed; it is left registered with no definition",
+                agent_id,
+                exc_info=True,
+            )
+            return
+        logger.warning(
+            "Deleted agent %s: creating it as a managed agent failed", agent_id
+        )
 
     async def put_managed_agent(
         self,
@@ -860,6 +1120,7 @@ class ManagementService:
             definition.provider,
             check_placement=moved or to_running,
         )
+        refuse_repository_off_cloud(definition, controller)
         directory = definition.directory
         if (
             moved
@@ -871,10 +1132,10 @@ class ManagementService:
                 session, tenant_id, existing.controller_id
             )
             # The old machine's workspace for the agent means nothing on the new one.
-            if directory == default_directory(previous, agent.name):
+            if directory == placed_directory(previous, agent.id, agent.name):
                 directory = None
         if directory is None:
-            directory = default_directory(controller, agent.name)
+            directory = placed_directory(controller, agent.id, agent.name)
         if directory != definition.directory:
             definition = definition.model_copy(update={"directory": directory})
             target = replace(
@@ -937,8 +1198,9 @@ class ManagementService:
         self, session: AsyncSession, tenant_id: str, owner_id: str, agent_id: str
     ) -> None:
         """Stop managing the agent. Its controller stops it; the agent itself
-        is not deleted."""
-        row, _agent = await self._owned_definition(
+        is not deleted.
+        """
+        row, agent = await self._owned_definition(
             session, tenant_id, owner_id, agent_id
         )
         await self.definitions.delete(session, tenant_id, agent_id)
@@ -1037,6 +1299,8 @@ class ManagementService:
                     "provider.recheck takes no agent_id and params.provider naming "
                     f"one of {', '.join(sorted(PROVIDER_KNOWN_AGENT_TYPES))}.",
                 )
+        if controller.kind == CLOUD_CONTROLLER_KIND:
+            await wake_controller_machine(session, controller_id, self.now())
         operation = await self.operations.create(
             session,
             controller_id=controller_id,
@@ -1112,6 +1376,48 @@ def default_directory(controller: AgentController | None, name: str) -> str | No
     if platform.get("os") == "windows":
         return ntpath.join(root, name)
     return posixpath.join(root, name)
+
+
+def placed_directory(
+    controller: AgentController | None, agent_id: str, name: str
+) -> str | None:
+    """The directory an agent works in on `controller` when its definition
+    names none: on a Switch cloud machine its own worktree, which is the only
+    place that machine runs it; elsewhere the machine's workspace for it."""
+    if controller is not None and controller.kind == CLOUD_CONTROLLER_KIND:
+        return worktree_path(agent_id, None)
+    return default_directory(controller, name)
+
+
+def cloud_definition(
+    definition: DefinitionV1, agent_id: str, repository: str | None
+) -> DefinitionV1:
+    """A new agent's definition on a Switch cloud machine, which runs every
+    agent isolated, in its own worktree of `repository` (its `owner/name`)
+    unless the definition names a directory."""
+    return definition.model_copy(
+        update={
+            "isolation": "isolated",
+            "directory": definition.directory or worktree_path(agent_id, repository),
+        }
+    )
+
+
+def refuse_repository_off_cloud(
+    definition: DefinitionV1, controller: AgentController | None
+) -> None:
+    """Only a Switch cloud machine clones a repository for its agents."""
+    if (
+        definition.repository is not None
+        and controller is not None
+        and controller.kind != CLOUD_CONTROLLER_KIND
+    ):
+        raise ManagementError(
+            422,
+            reason_codes.VALIDATION_ERROR,
+            "Only an agent on a Switch cloud machine can work in a GitHub "
+            "repository; choose your Switch cloud machine, or no repository.",
+        )
 
 
 def with_directory(

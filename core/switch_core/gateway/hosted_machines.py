@@ -6,11 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.api.hosted_worker_routes import post_mailbox_notices
-from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
-from switch_core.db.models import HostedMachine, User, require_tenant_id
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
+from switch_core.db.models import (
+    AgentDefinition,
+    HostedMachine,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineConflict,
     HostedMachineStore,
@@ -19,14 +21,16 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_launches,
     owner_stopped,
 )
-from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore, MailboxNotice
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_protocol, get_session
-from switch_core.gateway.hosted_launches import (
+from switch_core.gateway.cloud_controllers import (
+    CloudControllersUnavailable,
+    cloud_controllers,
+)
+from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.hosted_settings import (
     LAUNCH_DISABLED,
     hosted_settings,
     launch_enabled,
-    ring_mailbox_cancel,
 )
 from switch_core.providers.hosted import HostedControllerSettings
 
@@ -46,7 +50,20 @@ def _usage(heartbeat: dict | None, key: str) -> dict | None:
 
 
 async def machine_summary(session: AsyncSession, machine: HostedMachine) -> dict:
-    launches = await HostedMachineStore().launches(session, machine.id)
+    agents = (
+        []
+        if machine.controller_id is None
+        else list(
+            await session.scalars(
+                select(AgentDefinition.agent_id)
+                .where(
+                    AgentDefinition.tenant_id == require_tenant_id(),
+                    AgentDefinition.controller_id == machine.controller_id,
+                )
+                .order_by(AgentDefinition.created_at)
+            )
+        )
+    )
     return {
         "machine_id": machine.id,
         "state": machine.state,
@@ -65,7 +82,8 @@ async def machine_summary(session: AsyncSession, machine: HostedMachine) -> dict
         else machine.heartbeat_at.isoformat(),
         "disk": _usage(machine.heartbeat, "disk"),
         "memory": _usage(machine.heartbeat, "memory"),
-        "agents": [launch.id for launch in launches],
+        "controller_id": machine.controller_id,
+        "agents": agents,
     }
 
 
@@ -79,7 +97,8 @@ async def ensure_machine(
     config: SwitchConfig,
     settings: HostedControllerSettings | None,
 ) -> HostedMachine:
-    """The owner's machine, claimed and started so it warms before an agent needs it.
+    """The owner's machine, claimed and started so it warms before an agent
+    needs it, and linked to the ec2 controller its agents are placed on.
 
     A machine its owner stopped, or one in error or being removed, is
     returned as it is.
@@ -89,6 +108,10 @@ async def ensure_machine(
     """
     if settings is None or not launch_enabled(config, settings):
         raise MachineUnavailable(LAUNCH_DISABLED)
+    try:
+        controllers = cloud_controllers()
+    except CloudControllersUnavailable as error:
+        raise MachineUnavailable(str(error)) from error
     machines = HostedMachineStore()
     await lock_launches(session)
     existing = await machines.live_for_owner(session, owner_id)
@@ -105,6 +128,7 @@ async def ensure_machine(
         slots=list(settings.machine_slots),
         capacity=config.hosted_launch_capacity,
         now=datetime.now(UTC),
+        controllers=controllers,
     )
 
 
@@ -172,7 +196,6 @@ async def lifecycle(
     body: MachineLifecycleRequest,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
     machines = HostedMachineStore()
     await _owned(session, machine_id, user.id)
@@ -192,19 +215,8 @@ async def lifecycle(
     ):
         raise HTTPException(409, f"machine is {machine.desired_state}")
     now = datetime.now(UTC)
-    cancelled: list[MailboxNotice] = []
-    cancel_requested: dict[str, list[tuple[str, str]]] = {}
     if body.action == "stop":
         machines.stop(machine, "owner", now)
-        mailbox = HostedMailboxStore()
-        for candidate in await machines.launches(session, machine.id):
-            launch = await HostedLaunchStore().locked(session, candidate.id)
-            if launch is None or launch.desired_state == "deleted":
-                continue
-            split = await mailbox.stop(session, launch.id)
-            cancelled.extend(split.cancelled)
-            if launch.agent_id and split.cancel_requested:
-                cancel_requested[launch.agent_id] = split.cancel_requested
     elif body.action == "start":
         machines.start(machine, now)
     else:
@@ -212,7 +224,4 @@ async def lifecycle(
             raise HTTPException(409, "Only a machine in error can be retried.")
         machines.retry(machine, now)
     await session.commit()
-    for agent_id, entries in cancel_requested.items():
-        ring_mailbox_cancel(protocol, agent_id, entries)
-    await post_mailbox_notices(protocol, cancelled)
     return {"machine": await machine_summary(session, machine)}

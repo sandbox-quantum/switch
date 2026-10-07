@@ -138,6 +138,8 @@ export function roomCommand(input: {
   message: RoomMessage;
   surface: Surface;
   attachments: PlannedAttachment[];
+  /** Said before the message, such as that the agent's instructions changed; null for nothing. */
+  preface: string | null;
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -162,6 +164,7 @@ export function roomCommand(input: {
   const marker = randomBytes(8).toString('hex');
   const senderName = payload.sender_name.split(/\s+/).filter(Boolean).join(' ');
   const text =
+    (input.preface === null ? '' : `${input.preface}\n\n`) +
     `[Switch] ${senderName} addressed you in room ${input.roomId} (message_id ${payload.message_id}, thread_id ${payload.thread_id ?? 'none'}):\n` +
     `BEGIN SWITCH MESSAGE ${marker}\n` +
     `${payload.body}\n` +

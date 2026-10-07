@@ -28,6 +28,10 @@ class ControllerAuthCache:
 
     What it deliberately does not do:
 
+    - **Outlive a credential.** Each controller is stored with the credential
+      it authenticated under, and a token exchanged for any other one misses,
+      so a token minted before the credential was replaced always reaches
+      the database and is refused there.
     - **Cache a refusal.** Only a controller that authenticated and an agent
       that was found are stored, so a revoked controller or a missing agent
       always reaches the database.
@@ -54,7 +58,7 @@ class ControllerAuthCache:
         self._ttl = ttl_seconds
         self._max_entries = max_entries
         self._controllers: OrderedDict[
-            tuple[str, str], tuple[float, ControllerPrincipal]
+            tuple[str, str], tuple[float, tuple[str, ControllerPrincipal]]
         ] = OrderedDict()
         self._agents: OrderedDict[tuple[str, str], tuple[float, Agent]] = OrderedDict()
         # Bumped by every invalidation. A reader takes it before going to the
@@ -71,15 +75,22 @@ class ControllerAuthCache:
         return self._generation
 
     def controller(
-        self, tenant_id: str, controller_id: str
+        self, tenant_id: str, controller_id: str, credential_id: str
     ) -> ControllerPrincipal | None:
-        return _get(self._controllers, (tenant_id, controller_id))
+        entry = _get(self._controllers, (tenant_id, controller_id))
+        if entry is None or entry[0] != credential_id:
+            return None
+        return entry[1]
 
-    def put_controller(self, principal: ControllerPrincipal, generation: int) -> None:
+    def put_controller(
+        self, principal: ControllerPrincipal, credential_id: str, generation: int
+    ) -> None:
         if not self.enabled or generation != self._generation:
             return
         self._put(
-            self._controllers, (principal.tenant_id, principal.controller_id), principal
+            self._controllers,
+            (principal.tenant_id, principal.controller_id),
+            (credential_id, principal),
         )
 
     def agent(self, tenant_id: str, agent_id: str) -> Agent | None:

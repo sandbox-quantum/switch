@@ -17,7 +17,8 @@
         "instructions": "Review pull requests in this repository.",
         "auto_approve": false,
         "directory": "/home/example/src/project",
-        "isolation": "shared"
+        "isolation": "shared",
+        "skills": []
       }
     }
   ]

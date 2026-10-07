@@ -1,13 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
-  isCloudRunLocation,
+  addSwitchCloudAgent,
   machineFor,
   machineIdOf,
   machineRunLocation,
   machineRunLocations,
   reconciledRunLocation,
   sshHostIsMachine,
+  switchCloudMachine,
   thisComputerIsMachine,
 } from './server-run-locations';
 
@@ -74,43 +75,74 @@ describe('the run locations a server with agent management offers', () => {
   });
 });
 
-describe('the run locations a Switch Cloud server offers', () => {
-  it('runs in Switch cloud unless one of the owner machines is chosen', () => {
-    expect(isCloudRunLocation('cloud', true)).toBe(true);
-    expect(isCloudRunLocation('local', true)).toBe(true);
-    expect(isCloudRunLocation(machineRunLocation('vm'), true)).toBe(false);
+describe('reconciling the run location', () => {
+  it('keeps Switch cloud', () => {
+    expect(reconciledRunLocation('cloud', MACHINES)).toBeNull();
   });
 
-  it('runs in Switch cloud elsewhere only when it is chosen', () => {
-    expect(isCloudRunLocation('cloud', false)).toBe(true);
-    expect(isCloudRunLocation('local', false)).toBe(false);
-    expect(isCloudRunLocation('devbox', false)).toBe(false);
-    expect(isCloudRunLocation(machineRunLocation('vm'), false)).toBe(false);
-  });
-
-  it('keeps Switch cloud rather than turning this computer into its machine', () => {
-    expect(reconciledRunLocation('cloud', MACHINES, true)).toBeNull();
-    expect(reconciledRunLocation('local', MACHINES, true)).toBeNull();
-  });
-
-  it('keeps a listed machine, and falls back to Switch cloud when it goes away', () => {
-    expect(reconciledRunLocation(machineRunLocation('vm'), MACHINES, true)).toBeNull();
-    expect(reconciledRunLocation(machineRunLocation('gone'), MACHINES, true)).toBe('cloud');
-    expect(reconciledRunLocation(machineRunLocation('vm'), null, true)).toBe('cloud');
-  });
-});
-
-describe('reconciling the run location off Switch Cloud', () => {
   it('picks this computer or an SSH host as its machine once it is one', () => {
-    expect(reconciledRunLocation('local', MACHINES, false)).toBe('machine:laptop');
-    expect(reconciledRunLocation('devbox', MACHINES, false)).toBe('machine:box');
-    expect(reconciledRunLocation('other-host', MACHINES, false)).toBeNull();
-    expect(reconciledRunLocation('local', null, false)).toBeNull();
+    expect(reconciledRunLocation('local', MACHINES)).toBe('machine:laptop');
+    expect(reconciledRunLocation('devbox', MACHINES)).toBe('machine:box');
+    expect(reconciledRunLocation('other-host', MACHINES)).toBeNull();
+    expect(reconciledRunLocation('local', null)).toBeNull();
   });
 
   it('falls back to this computer when the chosen machine is not listed', () => {
-    expect(reconciledRunLocation(machineRunLocation('vm'), MACHINES, false)).toBeNull();
-    expect(reconciledRunLocation(machineRunLocation('gone'), MACHINES, false)).toBe('local');
-    expect(reconciledRunLocation(machineRunLocation('vm'), null, false)).toBe('local');
+    expect(reconciledRunLocation(machineRunLocation('vm'), MACHINES)).toBeNull();
+    expect(reconciledRunLocation(machineRunLocation('gone'), MACHINES)).toBe('local');
+    expect(reconciledRunLocation(machineRunLocation('vm'), null)).toBe('local');
+  });
+});
+
+describe('the Switch cloud machine', () => {
+  const cloud = machine({ id: 'cloud', name: 'switch-cloud', kind: 'ec2' });
+
+  it('is the owner’s ec2 controller, which Switch cloud then places agents on', () => {
+    expect(switchCloudMachine([...MACHINES, cloud])?.id).toBe('cloud');
+  });
+
+  it('is none without an ec2 controller, so Switch cloud stays a hosted launch', () => {
+    expect(switchCloudMachine(MACHINES)).toBeNull();
+    expect(switchCloudMachine([])).toBeNull();
+    expect(switchCloudMachine(null)).toBeNull();
+    expect(switchCloudMachine([machine({ id: 'old', kind: 'ec2', state: 'revoked' })])).toBeNull();
+  });
+
+  it('is offered as Switch cloud, not as one of the listed machines', () => {
+    expect(machineRunLocations([...MACHINES, cloud]).map((option) => option.value)).toEqual(
+      machineRunLocations(MACHINES).map((option) => option.value)
+    );
+  });
+});
+
+describe('adding a Switch cloud agent', () => {
+  it('ensures the cloud machine first, then places the agent on its controller', async () => {
+    const calls: string[] = [];
+    const ensure = vi.fn(async () => {
+      calls.push('ensure');
+      return { controller_id: 'controller-1' };
+    });
+    const add = vi.fn(async (machineId: string) => {
+      calls.push(`add:${machineId}`);
+      return 'agent';
+    });
+    await expect(addSwitchCloudAgent(null, ensure, add)).resolves.toBe('agent');
+    expect(calls).toEqual(['ensure', 'add:controller-1']);
+  });
+
+  it('places the agent on the existing cloud machine without ensuring one', async () => {
+    const ensure = vi.fn(async () => ({ controller_id: 'other' }));
+    const add = vi.fn(async (machineId: string) => machineId);
+    const cloud = machine({ id: 'cloud', kind: 'ec2' });
+    await expect(addSwitchCloudAgent(cloud, ensure, add)).resolves.toBe('cloud');
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('fails loud when the ensured machine runs no controller', async () => {
+    const add = vi.fn(async (machineId: string) => machineId);
+    await expect(
+      addSwitchCloudAgent(null, async () => ({ controller_id: null }), add)
+    ).rejects.toThrow(/does not run the agent controller/);
+    expect(add).not.toHaveBeenCalled();
   });
 });

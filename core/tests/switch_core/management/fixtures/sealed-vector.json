@@ -1,0 +1,23 @@
+{
+  "description": "AES-256-GCM sealed provider login. Decrypt with data_key (base64) over ciphertext||tag, iv, and aad = UTF-8 of canonical JSON {context, revision} with sorted keys and no spaces. encrypted_key stands in for the KMS CiphertextBlob and is not decryptable.",
+  "data_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "aad": "{\"context\":{\"switch:controller_id\":\"controller-00000000\",\"switch:owner_id\":\"owner-00000000\",\"switch:provider\":\"codex\",\"switch:tenant\":\"tenant-00000000\"},\"revision\":3}",
+  "plaintext": "{\"status\":\"connected\",\"revision\":\"3\",\"provider\":\"codex\",\"kind\":\"api-key\",\"credential\":\"sk-PLACEHOLDER-NOT-A-REAL-KEY\"}",
+  "envelope": {
+    "v": 1,
+    "provider": "codex",
+    "revision": 3,
+    "status": "connected",
+    "key_arn": "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000",
+    "encrypted_key": "cGxhY2Vob2xkZXIta21zLWNpcGhlcnRleHQtYmxvYg==",
+    "iv": "oKGio6Slpqeoqaqr",
+    "ciphertext": "nToPWSS/d8xAX6WwaBSuuxPYPHSwm2Ae+XhP9RbEGyPoVHTdgwAjTzDqbaxsCKHDZXgpLAeoOFJjNWIwwFK/ktXM7EJbwJ3C2MCcauqqqdS5YsrI5/u7CYVYbtbw2QjcwMhv7lGDwdTK9kd9182sZAkbJPf8SA==",
+    "tag": "DIVq+Wni5g8I0kKVC84OYw==",
+    "context": {
+      "switch:tenant": "tenant-00000000",
+      "switch:owner_id": "owner-00000000",
+      "switch:controller_id": "controller-00000000",
+      "switch:provider": "codex"
+    }
+  }
+}

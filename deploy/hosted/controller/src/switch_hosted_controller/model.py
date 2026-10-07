@@ -60,3 +60,4 @@ class Machine:
     required_bundle_revision: int | None
     required_bundle_token: str | None
     bundle_token: str | None
+    target_image_id: str | None

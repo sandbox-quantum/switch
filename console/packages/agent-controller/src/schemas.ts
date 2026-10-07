@@ -112,6 +112,14 @@ export const credentialRotateResponseSchema = z.object({ credential: id });
 
 // §2 Assignment (v1 definition)
 
+export const repositoryRefSchema = z.object({
+  installation_id: z.number().int().positive(),
+  repository_id: z.number().int().positive(),
+});
+export type RepositoryRef = z.infer<typeof repositoryRefSchema>;
+
+export const repositoryCredentialSchema = z.object({ repository: z.string().min(1) });
+
 export const agentDefinitionSchema = z.object({
   name: z.string().min(1),
   display_name: z.string().nullish(),
@@ -134,6 +142,21 @@ export const agentDefinitionSchema = z.object({
   directory: z.string().nullable(),
   /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
   isolation: receivedEnum(['shared', 'isolated']),
+  /**
+   * The connection skills the provider is given (GitHub's for an agent that
+   * works in a repository), installed by an isolated agent's unit. Checked
+   * only as loosely here, so a bad set fails its own agent
+   * (`definitionProblem`); absent from a Core that sends none.
+   */
+  skills: z
+    .array(z.object({ slug: z.string(), files: z.record(z.string(), z.string()) }))
+    .default([]),
+  /**
+   * The GitHub repository the agent works in, by id; present only for a
+   * definition that names one. An isolated agent's unit clones it, by the
+   * name Core answers for it (`ControllerClient.repositoryName`).
+   */
+  repository: repositoryRefSchema.optional(),
 });
 export type Isolation = 'shared' | 'isolated';
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
@@ -205,6 +228,15 @@ export const agentStatusSchema = z
   );
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 
+/** Whether an agent has work in hand, for the server to decide when its machine may sleep. */
+export const agentActivitySchema = z.object({
+  agent_id: id,
+  busy: z.boolean(),
+  sessions: z.number().int().nonnegative(),
+  last_activity_at: time.nullable(),
+});
+export type AgentActivity = z.infer<typeof agentActivitySchema>;
+
 export const statusReportSchema = z.object({
   seq: z.number().int().positive(),
   observed_at: time,
@@ -227,6 +259,7 @@ export const statusReportSchema = z.object({
   providers: z.array(providerStatusSchema),
   tools: z.array(toolStatusSchema),
   agents: z.array(agentStatusSchema),
+  activity: z.array(agentActivitySchema).optional(),
 });
 export type StatusReport = z.infer<typeof statusReportSchema>;
 
@@ -391,3 +424,64 @@ export const operationPendingSchema = z.object({
 export type OperationPending = z.infer<typeof operationPendingSchema>;
 
 export const credentialRevokedSchema = z.object({});
+
+/** A login Switch seals for this controller was sealed again or revoked: fetch it again. */
+export const providerCredentialChangedSchema = z.object({
+  provider: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+});
+export type ProviderCredentialChanged = z.infer<typeof providerCredentialChangedSchema>;
+
+// Console control relayed through Switch: one request answered by an agent's
+// host, and the live views it pushes.
+
+/**
+ * A control message for one agent's host, answered by
+ * `POST …/control/{relay_id}` before `deadline_ms` (Unix epoch ms). The
+ * message is kept unparsed here so a malformed one is answered as refused
+ * rather than dropped with the frame.
+ */
+export const agentControlFrameSchema = z.object({
+  relay_id: id,
+  agent_id: id,
+  message: z.unknown(),
+  deadline_ms: z.number().int().nonnegative(),
+});
+export type AgentControlFrame = z.infer<typeof agentControlFrameSchema>;
+
+/** Switch gave up on the relay; one not yet sent to the agent's host is abandoned. */
+export const agentControlCancelFrameSchema = z.object({ relay_id: id });
+export type AgentControlCancelFrame = z.infer<typeof agentControlCancelFrameSchema>;
+
+export const controlReplySchema = z.union([
+  z.object({ ok: z.literal(true), result: z.unknown() }),
+  z.object({
+    ok: z.literal(false),
+    error: z.object({ code: z.string().min(1), message: z.string() }),
+  }),
+]);
+export type ControlReply = z.infer<typeof controlReplySchema>;
+
+/**
+ * One live update of a subscription: a session's event, its host's failure
+ * (null once it is up again), or the watcher's health. `seq` counts per
+ * agent and subscription from 1 for the controller's lifetime; a skipped
+ * number means updates were lost.
+ */
+export const controlPushEventSchema = z.union([
+  z.object({ seq: z.number().int().positive(), event: z.unknown() }),
+  z.object({ seq: z.number().int().positive(), failure: z.string().nullable() }),
+  z.object({ seq: z.number().int().positive(), health: z.unknown() }),
+]);
+export type ControlPushEvent = z.infer<typeof controlPushEventSchema>;
+
+/** `subscription` is a session id, or `health` for the watcher's health. */
+export const controlPushSchema = z.object({
+  agent_id: id,
+  subscription: id,
+  events: z.array(controlPushEventSchema).min(1),
+});
+export type ControlPushBody = z.infer<typeof controlPushSchema>;
+
+/** `unsubscribe`: Switch holds no view of the subscription; the controller drops it. */
+export const controlPushAnswerSchema = z.object({ unsubscribe: z.boolean().default(false) });

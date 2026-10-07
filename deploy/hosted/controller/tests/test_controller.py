@@ -17,9 +17,10 @@ from switch_hosted_controller.reconciler import Reconciler
 from switch_hosted_controller.store import CapacityError, MachineStore, SlotInUseError, StoreError
 
 MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000001"
+KEY_ARN = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-4000-8000-0000000000aa"
 
 
-WORKER_TESTDATA = Path(__file__).parents[2] / "worker" / "testdata"
+VM_TESTDATA = Path(__file__).parents[2] / "vm" / "tests" / "testdata"
 CORE_FIXTURES = (
     Path(__file__).parents[4] / "core" / "tests" / "switch_core" / "fixtures" / "hosted_machines"
 )
@@ -36,11 +37,15 @@ def fixture_config(tmp_path: Path, instance_type: str) -> ControllerConfig:
     """The installation of the cross-stream fixtures: inst-test with the one slot slot-a."""
     raw = config_dict(tmp_path, max_machines=1)
     raw["installation_id"] = "inst-test"
+    raw["login_kms_key_arn"] = json.loads(
+        (CORE_FIXTURES / "prepare_controller_response.json").read_text()
+    )["kms"]["key_arn"]
     raw["allowed_instance_types"] = [instance_type]
     raw["machine_slots"] = {
         "slot-a": {
             "instance_profile_arn": "arn:aws:iam::000000000000:instance-profile/slot-a",
             "assignment_secret_arn": FIXTURE_SECRET_ARN,
+            "role_arn": "arn:aws:iam::000000000000:role/slot-a",
         }
     }
     return ControllerConfig.from_dict(raw)
@@ -76,6 +81,7 @@ def config_dict(tmp_path: Path, *, max_machines: int) -> dict:
         f"slot-{number}": {
             "instance_profile_arn": f"arn:aws:iam::123456789012:instance-profile/worker-{number}",
             "assignment_secret_arn": f"arn:aws:secretsmanager:us-east-1:123456789012:secret:slot-{number}",
+            "role_arn": f"arn:aws:iam::123456789012:role/worker-{number}",
         }
         for number in range(1, max_machines + 1)
     }
@@ -95,6 +101,7 @@ def config_dict(tmp_path: Path, *, max_machines: int) -> dict:
         "state_db_path": str(tmp_path / "state.db"),
         "lock_path": str(tmp_path / "controller.lock"),
         "poll_interval_seconds": 1,
+        "login_kms_key_arn": KEY_ARN,
     }
 
 
@@ -415,7 +422,7 @@ def test_stop_and_start_use_only_recorded_instance(tmp_path: Path):
 def test_config_rejects_duplicate_assignment_credentials(tmp_path: Path):
     cfg = config(tmp_path, max_machines=2)
     raw = {
-        **cfg.__dict__,
+        **{key: value for key, value in cfg.__dict__.items() if key != "machine_slots"},
         "security_group_ids": list(cfg.security_group_ids),
         "allowed_instance_types": list(cfg.allowed_instance_types),
         "state_db_path": str(cfg.state_db_path),
@@ -424,6 +431,7 @@ def test_config_rejects_duplicate_assignment_credentials(tmp_path: Path):
             slot_id: {
                 "instance_profile_arn": slot.instance_profile_arn,
                 "assignment_secret_arn": cfg.slot("slot-1").assignment_secret_arn,
+                "role_arn": slot.role_arn,
             }
             for slot_id, slot in cfg.machine_slots.items()
         },

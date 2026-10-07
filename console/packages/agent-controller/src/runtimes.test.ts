@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   type AgentObservation,
   type AgentRunner,
+  type AgentRuntime,
   emptyObservation,
-  type InProcessRuntime,
   type LaunchOptions,
 } from './runtime';
 import { AgentRuntimes } from './runtimes';
@@ -41,6 +41,8 @@ const options = (isolation: 'shared' | 'isolated'): LaunchOptions => ({
   restart: false,
   replaceIdentity: false,
   clearTakenOver: false,
+  skills: [],
+  repository: null,
 });
 
 function runtimes() {
@@ -49,7 +51,7 @@ function runtimes() {
   return {
     shared,
     isolated,
-    runtimes: new AgentRuntimes(shared as unknown as InProcessRuntime, isolated),
+    runtimes: new AgentRuntimes(shared as unknown as AgentRuntime, isolated),
   };
 }
 
@@ -79,5 +81,16 @@ describe('AgentRuntimes', () => {
     await both.close();
     expect(shared.calls).toEqual(['stop wait=false', 'close']);
     expect(isolated.calls).toEqual(['stop wait=false', 'close']);
+  });
+
+  it('drives one runner filling both slots once per call', async () => {
+    const only = new FakeRunner('only');
+    const one = new AgentRuntimes(only as unknown as AgentRuntime, only);
+    await one.launch('agent-1', TEMPLATE, options('shared'));
+    await one.launch('agent-1', TEMPLATE, options('isolated'));
+    expect((await one.observe('agent-1')).alive).toBe(true);
+    await one.stop('agent-1', { wait: true });
+    await one.close();
+    expect(only.calls).toEqual(['launch shared', 'launch isolated', 'stop wait=true', 'close']);
   });
 });

@@ -1,7 +1,7 @@
 """The gateway routes that delete an agent refuse a cloud agent.
 
-A cloud agent's identity belongs to its hosted launch, and only removing the
-launch cleans up both; deleting the identity alone would strand the launch.
+A cloud agent is removed through its managed agent, which stops it on its
+cloud machine before the identity goes.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from tests.switch_core.gateway.agent_route_harness import (
     add_agent,
     add_user,
     is_admin,
+    place_on_controller,
 )
 
 _AGENT_STORE = AgentStore()
@@ -34,8 +35,7 @@ async def test_a_cloud_agent_is_not_deleted(
     async with session_factory() as session:
         owner = await add_user(session, name="owner")
         agent = await add_agent(session, name="cloud", owner_id=owner.id)
-        agent.metadata_ = {"hosted_launch_id": "launch-1"}
-        await session.flush()
+        await place_on_controller(session, agent, kind="ec2")
         protocol = AsyncMock()
 
         with pytest.raises(HTTPException) as refused:
@@ -61,6 +61,26 @@ async def test_a_cloud_agent_is_not_deleted(
         assert refused.value.status_code == 409
         assert refused.value.detail == CLOUD_AGENT_DELETE_REFUSED
         protocol.delete_agent.assert_not_awaited()
+
+
+async def test_an_agent_managed_on_another_machine_is_deleted(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        owner = await add_user(session, name="owner")
+        agent = await add_agent(session, name="managed", owner_id=owner.id)
+        await place_on_controller(session, agent, kind="daemon")
+        protocol = AsyncMock()
+
+        assert await delete_agent(
+            agent.id,
+            session,
+            _AGENT_STORE,
+            protocol,
+            owner,
+            await is_admin(session, owner),
+        ) == {"ok": True}
+        protocol.delete_agent.assert_awaited_once_with(agent_id=agent.id)
 
 
 async def test_a_local_agent_is_deleted(

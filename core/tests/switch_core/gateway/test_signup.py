@@ -22,6 +22,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
 from switch_core.gateway.auth_routes import MACHINE_OWNER_STOPPED, _prewarm
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.cloud_controllers import set_cloud_controllers
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
@@ -29,10 +30,11 @@ from switch_core.gateway.dependencies import (
     get_system_session,
     get_user_store,
 )
-from switch_core.gateway.hosted_launches import LAUNCH_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
+from switch_core.gateway.hosted_settings import LAUNCH_DISABLED
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+from tests.switch_core.hosted_machine_helpers import LinkingControllers
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -41,6 +43,13 @@ KEYRING = Keyring.parse(
     legacy_secret=None,
 )
 PASSWORD = "correct horse battery"
+
+
+@pytest.fixture(autouse=True)
+def cloud_controllers_installed():
+    set_cloud_controllers(LinkingControllers())
+    yield
+    set_cloud_controllers(None)
 
 
 @pytest.fixture
@@ -288,6 +297,33 @@ async def test_ensure_is_idempotent(signup_app):
     assert first.json()["machine_id"] == second.json()["machine_id"]
     assert first.json()["desired_state"] == "running"
     assert len(await _machines(app)) == 1
+
+
+async def test_ensure_gives_a_new_user_a_controller_machine(signup_app):
+    app = signup_app
+    app.config.hosted_launch_capacity = 0
+    await _signup(app)
+    app.config.hosted_launch_capacity = 2
+    response = await _ensure(app, "new.person@example.com")
+    assert response.status_code == 200, response.text
+    (machine,) = await _machines(app)
+    assert machine.runtime == "controller"
+    assert machine.controller_id is not None
+    assert response.json()["controller_id"] == machine.controller_id
+    again = await _ensure(app, "new.person@example.com")
+    assert again.json()["controller_id"] == machine.controller_id
+
+
+async def test_ensure_refuses_without_agent_management(signup_app):
+    app = signup_app
+    app.config.hosted_launch_capacity = 0
+    await _signup(app)
+    app.config.hosted_launch_capacity = 2
+    set_cloud_controllers(None)
+    response = await _ensure(app, "new.person@example.com")
+    assert response.status_code == 503
+    assert "AGENT_MANAGEMENT_ENABLED" in response.json()["detail"]
+    assert await _machines(app) == []
 
 
 async def test_ensure_leaves_an_owner_stopped_machine_stopped(signup_app):

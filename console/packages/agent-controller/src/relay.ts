@@ -28,7 +28,12 @@ import type {
  * `AgentHub` instead; the room of its calls comes from there too.
  */
 
-/** The agent-protocol revisions the relay serves, as switch-core declares its own. */
+/**
+ * The agent-protocol revisions the relay serves: switch-core's, up to the
+ * socket. Revision 8 moved the connection onto a WebSocket, which the relay
+ * does not serve; it serves the event stream and its beat, which the runtime
+ * falls back to against a server that speaks 7 or older.
+ */
 export const RELAY_AGENT_PROTOCOL = { speaks: 7, accepts: 1 } as const;
 /** From this revision a client names its connection incarnation on every beat and room request. */
 const FENCED_PROTOCOL_REVISION = 2;
@@ -190,7 +195,8 @@ const placementsSchema = z.object({
 
 const LOCAL_ROUTE = /^\/agents\/([^/]+)\/(events|connection\/[^/]+)$/;
 /** The prefixes forwarded to Switch. Anything else, the management routes above all, stays here. */
-const FORWARDED = /^\/(agents\/[^/]+\/.+|agent-sessions\/.+|sessions\/.+|version|health)$/;
+const FORWARDED =
+  /^\/(agents\/[^/]+\/.+|agent-sessions\/.+|sessions\/.+|hosted\/github-credential|version|health)$/;
 /** `/agents/<segment>/...` routes whose segment is not an agent. */
 const AGENTLESS_SEGMENTS = new Set(['rooms', 'feature-flags']);
 
@@ -213,8 +219,12 @@ export class LocalRelay {
 
   constructor(private readonly deps: RelayDeps) {}
 
-  /** Listens on 127.0.0.1: on `preferredPort` when it is free, so running watchers find it again. */
-  async start(preferredPort: number | null): Promise<number> {
+  /**
+   * Listens on 127.0.0.1: on `preferredPort` when it is free, so running
+   * watchers find it again. A `pinned` port is the only one the agents can
+   * reach, so its being taken is an error rather than a reason to move.
+   */
+  async start(preferredPort: number | null, pinned: boolean): Promise<number> {
     const server = createServer((req, res) => {
       void this.handle(req, res).catch((error: unknown) => {
         this.deps.log.error('The relay failed a request', {
@@ -242,6 +252,11 @@ export class LocalRelay {
     } catch (error) {
       if (preferredPort === null || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE')
         throw error;
+      if (pinned)
+        throw new Error(
+          `The relay port ${preferredPort} this machine's agents are configured with is taken by another process.`,
+          { cause: error }
+        );
       this.deps.log.warn(
         'The relay port the agents were given is taken; using a new one. Running agents are restarted to pick it up.',
         { port: preferredPort }

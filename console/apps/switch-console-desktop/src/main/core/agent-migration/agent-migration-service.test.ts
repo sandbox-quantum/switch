@@ -4,10 +4,8 @@ import {
   type AgentMigrationDeps,
   AgentMigrationService,
   MigrationBlockedError,
-  MigrationCancelledError,
   type MigrationAgent,
   type ResolvedTarget,
-  type SubagentRef,
   type TargetLookup,
 } from './agent-migration-service';
 import type { ManagedAgentRecord } from './managed-agents-store';
@@ -26,13 +24,6 @@ const PARENT: MigrationAgent = {
   serverId: 'server-1',
   dir: '/work/builder',
   sshHost: null,
-};
-
-const SUBAGENT_ROW: MigrationAgent = {
-  ...PARENT,
-  id: 'agent-2',
-  name: 'reviewer',
-  switchAgentId: 'switch-2',
 };
 
 const TARGET: ResolvedTarget = {
@@ -56,22 +47,25 @@ const BUILT: BuiltDefinition = {
 };
 
 function emptyHandoff(): HandoffResult {
-  return { watchers: [], cleared: [], resumed: [] };
+  return { watchers: [] };
 }
 
 type World = {
   calls: string[];
   events: AgentMigrationEvent[];
   records: Map<string, ManagedAgentRecord>;
-  subagents: SubagentRef[];
-  busy: boolean[];
+  roomsMidTurn: string[];
+  untellable: string[];
   lookup: TargetLookup;
+  /** What the machine looks like once `enable` has turned it on; null leaves it as it was. */
+  lookupAfterEnable: TargetLookup | null;
+  enableFails: boolean;
   eligibility: { management: boolean; owner: string | null; ownedByMe: boolean };
   stoppedByHand: boolean;
   controllerRunning: boolean[];
   failAdoptOn: string | null;
   failStopWatchers: boolean;
-  failFreshStart: boolean;
+  failStartFresh: boolean;
   failDesiredState: boolean;
   releaseOutcome: 'released' | 'already_gone';
   managedView: { controllerId: string | null; desiredState: 'running' | 'stopped' } | null;
@@ -83,20 +77,21 @@ let world: World;
 function deps(): AgentMigrationDeps {
   return {
     agents: {
-      get: async (agentId) => [PARENT, SUBAGENT_ROW].find((agent) => agent.id === agentId) ?? null,
+      get: async (agentId) => (agentId === PARENT.id ? PARENT : null),
       list: async () => [PARENT],
-      subagentsOf: async (agent) => (agent.id === PARENT.id ? world.subagents : []),
-      parentOf: async (agent) =>
-        agent.id === SUBAGENT_ROW.id && world.subagents.length ? PARENT : null,
       stoppedByHand: async () => world.stoppedByHand,
     },
     definitions: {
-      build: async (_agent, subagent) =>
-        subagent
-          ? { ...BUILT, notCarried: ['Its definition file settings other than its prompt.'] }
-          : BUILT,
+      build: async () => BUILT,
     },
-    targets: { resolve: async () => world.lookup },
+    targets: {
+      resolve: async () => world.lookup,
+      enable: async (agent) => {
+        world.calls.push(`enable ${agent.sshHost ?? 'this computer'}`);
+        if (world.enableFails) throw new Error('ssh: connect to host gpu-1: Connection refused');
+        world.lookup = world.lookupAfterEnable ?? world.lookup;
+      },
+    },
     management: {
       eligibility: async () => world.eligibility,
       adopt: async (workspaceId, switchAgentId, body) => {
@@ -120,24 +115,27 @@ function deps(): AgentMigrationDeps {
           : null,
     },
     machine: {
-      sessions: async (_agent, ids) => {
-        const busy = world.busy.length > 1 ? world.busy.shift()! : (world.busy[0] ?? false);
-        return [{ sessionId: 'session-a', switchAgentId: ids[0]!, busy }];
+      roomsMidTurn: async () => world.roomsMidTurn,
+      tellTurnsCut: async (_agent, roomIds) => {
+        world.calls.push(`tell ${roomIds.join(',')}`);
+        return roomIds
+          .filter((roomId) => world.untellable.includes(roomId))
+          .map((roomId) => ({ roomId, reason: 'HTTP 403' }));
       },
-      stopConsoleWatchers: async (agent, subagents) => {
-        world.calls.push(
-          `stop console ${[agent.name, ...subagents.map((subagent) => subagent.name)].join(',')}`
-        );
+      stopConsoleWatcher: async (agent) => {
+        world.calls.push(`stop console ${agent.name}`);
         if (world.failStopWatchers) throw new Error('watcher did not stop');
       },
-      startConsoleWatchers: async (agent, subagents) => {
-        world.calls.push(
-          `start console ${[agent.name, ...subagents.map((subagent) => subagent.name)].join(',')}`
-        );
+      startConsoleWatcher: async (agent) => {
+        world.calls.push(`start console ${agent.name}`);
       },
       handoff: async (_agent, request: HandoffRequest) => {
         const ids = request.identities.map((identity) => identity.switchAgentId).join(',');
-        world.calls.push(`${request.op} ${ids}`);
+        world.calls.push(
+          request.op === 'start-fresh'
+            ? `start-fresh ${request.side} ${ids}`
+            : `${request.op} ${ids}`
+        );
         if (request.op === 'status') {
           const running =
             world.controllerRunning.length > 1
@@ -152,8 +150,8 @@ function deps(): AgentMigrationDeps {
             })),
           };
         }
-        if (request.op === 'fresh-start' && world.failFreshStart)
-          throw new Error('The controller is already running agent switch-1');
+        if (request.op === 'start-fresh' && request.side === 'controller' && world.failStartFresh)
+          throw new Error('A watcher of agent switch-1 is still running there');
         return emptyHandoff();
       },
     },
@@ -187,13 +185,12 @@ function deps(): AgentMigrationDeps {
     emit: (event) => world.events.push(event),
     log: { info: () => {}, warn: () => {}, error: () => {} },
     now: () => world.clock,
-    sleep: async (ms, signal) => {
-      if (signal?.aborted) throw new Error('aborted');
+    sleep: async (ms) => {
       world.clock += ms;
     },
     pollMs: 1_000,
-    turnWaitMs: 10_000,
     controllerStopWaitMs: 8_000,
+    machineReadyWaitMs: 5_000,
   };
 }
 
@@ -202,8 +199,8 @@ beforeEach(() => {
     calls: [],
     events: [],
     records: new Map(),
-    subagents: [],
-    busy: [false],
+    roomsMidTurn: [],
+    untellable: [],
     lookup: {
       display: TARGET.display,
       target: TARGET,
@@ -211,12 +208,14 @@ beforeEach(() => {
       canEnable: false,
       controller: { controllerId: CONTROLLER, state: 'running' },
     },
+    lookupAfterEnable: null,
+    enableFails: false,
     eligibility: { management: true, owner: 'Ada', ownedByMe: true },
     stoppedByHand: false,
     controllerRunning: [false],
     failAdoptOn: null,
     failStopWatchers: false,
-    failFreshStart: false,
+    failStartFresh: false,
     failDesiredState: false,
     releaseOutcome: 'released',
     managedView: { controllerId: CONTROLLER, desiredState: 'running' },
@@ -225,15 +224,15 @@ beforeEach(() => {
 });
 
 describe('moving an agent onto its controller', () => {
-  it('places it stopped, stops Console’s watcher, hands over, then starts it on the controller', async () => {
+  it('places it stopped, stops Console’s watcher, then starts it afresh on the controller', async () => {
     const service = new AgentMigrationService(deps());
-    await service.moveToManaged(PARENT.id);
+    expect(await service.moveToManaged(PARENT.id)).toEqual({ untold: [] });
     expect(world.calls).toEqual([
       'adopt switch-1 stopped on controller-1',
       'record agent-1',
       'stop console builder',
-      'fresh-start switch-1',
       'stash builder',
+      'start-fresh controller switch-1',
       'desired switch-1 running',
     ]);
     const record = world.records.get(PARENT.id)!;
@@ -307,6 +306,7 @@ describe('moving an agent onto its controller', () => {
     const service = new AgentMigrationService({
       ...deps(),
       targets: {
+        ...deps().targets,
         resolve: async () => {
           throw new Error('ssh: connect to host build-box port 22: Connection refused');
         },
@@ -389,51 +389,37 @@ describe('moving an agent on an SSH host', () => {
   });
 });
 
-describe('waiting for the agent to be idle', () => {
-  it('waits for a running turn to end before changing anything', async () => {
-    world.busy = [true, true, false];
+describe('a turn running when the agent moves', () => {
+  it('is cut without waiting, after its room is told, while the agent can still post', async () => {
+    world.roomsMidTurn = ['room-a', 'room-b'];
     const service = new AgentMigrationService(deps());
-    await service.moveToManaged(PARENT.id);
-    const waiting = world.events.filter((event) => event.operation?.stage === 'waiting-for-turn');
-    expect(waiting.length).toBe(2);
-    expect(waiting[0]!.operation!.busySessions).toEqual(['session-a']);
-    expect(world.calls[0]).toBe('adopt switch-1 stopped on controller-1');
+    expect(await service.moveToManaged(PARENT.id)).toEqual({ untold: [] });
+    expect(world.calls.slice(0, 2)).toEqual([
+      'tell room-a,room-b',
+      'adopt switch-1 stopped on controller-1',
+    ]);
+    expect(world.clock).toBe(0);
+    expect(world.events.some((event) => event.operation?.stage === 'telling-rooms')).toBe(true);
   });
 
-  it('gives up with nothing changed when the turn does not end in time', async () => {
-    world.busy = [true];
+  it('does not hold the move up when a room cannot be told, and says which', async () => {
+    world.roomsMidTurn = ['room-a', 'room-b'];
+    world.untellable = ['room-b'];
     const service = new AgentMigrationService(deps());
-    await expect(service.moveToManaged(PARENT.id)).rejects.toBeInstanceOf(MigrationBlockedError);
-    expect(world.calls).toEqual([]);
-    expect(world.records.size).toBe(0);
-  });
-
-  it('can be cancelled while it waits, with nothing changed', async () => {
-    world.busy = [true];
-    const service = new AgentMigrationService({
-      ...deps(),
-      sleep: async (_ms, signal) => {
-        service.cancel(PARENT.id);
-        if (signal?.aborted) throw new Error('aborted');
-      },
+    expect(await service.moveToManaged(PARENT.id)).toEqual({
+      untold: [{ roomId: 'room-b', reason: 'HTTP 403' }],
     });
-    await expect(service.moveToManaged(PARENT.id)).rejects.toBeInstanceOf(MigrationCancelledError);
-    expect(world.calls).toEqual([]);
+    expect(world.records.has(PARENT.id)).toBe(true);
   });
 
-  it('waits for the controller’s sessions too before bringing an agent back', async () => {
-    const service = new AgentMigrationService(deps());
-    await service.moveToManaged(PARENT.id);
-    world.calls = [];
-    world.busy = [true, false];
-    await service.stopManaging(PARENT.id);
-    expect(world.calls[0]).toBe('release switch-1');
-    expect(world.clock).toBeGreaterThan(0);
+  it('tells no room when nothing is running', async () => {
+    await new AgentMigrationService(deps()).moveToManaged(PARENT.id);
+    expect(world.calls.some((call) => call.startsWith('tell'))).toBe(false);
   });
 });
 
 describe('bringing an agent back', () => {
-  it('stops managing it, waits for the controller, hands back and starts Console’s watcher', async () => {
+  it('stops managing it, waits for the controller, and starts Console’s watcher afresh', async () => {
     const service = new AgentMigrationService(deps());
     await service.moveToManaged(PARENT.id);
     world.calls = [];
@@ -443,7 +429,7 @@ describe('bringing an agent back', () => {
       'release switch-1',
       'status switch-1',
       'status switch-1',
-      'come-back switch-1',
+      'start-fresh console switch-1',
       'restore builder',
       'forget agent-1',
       'start console builder',
@@ -483,73 +469,13 @@ describe('bringing an agent back', () => {
   });
 });
 
-describe('subagents watched under the agent', () => {
-  beforeEach(() => {
-    world.subagents = [{ name: 'reviewer', switchAgentId: 'switch-2' }];
-  });
-
-  it('move with their parent, and come back with it', async () => {
-    const service = new AgentMigrationService(deps());
-    await service.moveToManaged(PARENT.id);
-    expect(world.calls).toEqual([
-      'adopt switch-1 stopped on controller-1',
-      'adopt switch-2 stopped on controller-1',
-      'record agent-1',
-      'stop console builder,reviewer',
-      'fresh-start switch-1,switch-2',
-      'stash builder',
-      'stash reviewer',
-      'desired switch-1 running',
-      'desired switch-2 running',
-    ]);
-    expect(world.records.get(PARENT.id)!.identities.map((identity) => identity.subagent)).toEqual([
-      null,
-      'reviewer',
-    ]);
-    world.calls = [];
-    await service.stopManaging(PARENT.id);
-    expect(world.calls).toEqual([
-      'release switch-1',
-      'release switch-2',
-      'status switch-1,switch-2',
-      'come-back switch-1,switch-2',
-      'restore builder',
-      'restore reviewer',
-      'forget agent-1',
-      'start console builder,reviewer',
-    ]);
-  });
-
-  it('cannot move on their own, before or after their parent moves', async () => {
-    const service = new AgentMigrationService(deps());
-    expect(await service.state(SUBAGENT_ROW.id)).toMatchObject({
-      runner: 'console',
-      movesWithParent: 'builder',
-    });
-    await expect(service.moveToManaged(SUBAGENT_ROW.id)).rejects.toBeInstanceOf(
-      MigrationBlockedError
-    );
-    await service.moveToManaged(PARENT.id);
-    expect(await service.state(SUBAGENT_ROW.id)).toMatchObject({
-      runner: 'managed',
-      movesWithParent: 'builder',
-    });
-    await expect(service.stopManaging(SUBAGENT_ROW.id)).rejects.toThrow(/parent/);
-  });
-});
-
 describe('a move that fails', () => {
   it('changes nothing when Switch refuses the placement', async () => {
-    world.subagents = [{ name: 'reviewer', switchAgentId: 'switch-2' }];
-    world.failAdoptOn = 'switch-2';
+    world.failAdoptOn = 'switch-1';
     await expect(new AgentMigrationService(deps()).moveToManaged(PARENT.id)).rejects.toThrow(
       'controller_offline'
     );
-    expect(world.calls).toEqual([
-      'adopt switch-1 stopped on controller-1',
-      'adopt switch-2 stopped on controller-1',
-      'release switch-1',
-    ]);
+    expect(world.calls).toEqual(['adopt switch-1 stopped on controller-1']);
     expect(world.records.size).toBe(0);
   });
 
@@ -570,17 +496,19 @@ describe('a move that fails', () => {
   });
 
   it('undoes everything when the machine cannot be prepared, keeping Console’s stream position', async () => {
-    world.failFreshStart = true;
+    world.failStartFresh = true;
     await expect(new AgentMigrationService(deps()).moveToManaged(PARENT.id)).rejects.toThrow(
-      /already running/
+      /still running/
     );
     expect(world.calls).toEqual([
       'adopt switch-1 stopped on controller-1',
       'record agent-1',
       'stop console builder',
-      'fresh-start switch-1',
+      'stash builder',
+      'start-fresh controller switch-1',
       'release switch-1',
       'status switch-1',
+      'restore builder',
       'forget agent-1',
       'start console builder',
     ]);
@@ -594,7 +522,7 @@ describe('a move that fails', () => {
     expect(world.calls.slice(-6)).toEqual([
       'release switch-1',
       'status switch-1',
-      'come-back switch-1',
+      'start-fresh console switch-1',
       'restore builder',
       'forget agent-1',
       'start console builder',
@@ -694,5 +622,109 @@ describe('moving every agent on a machine', () => {
       name: 'builder',
       reason: expect.stringMatching(/owner/),
     });
+  });
+});
+
+describe('moving every agent of a workspace', () => {
+  const REMOTE: MigrationAgent = {
+    ...PARENT,
+    id: 'agent-2',
+    name: 'trainer',
+    switchAgentId: 'switch-2',
+    sshHost: 'gpu-1',
+    dir: '/srv/trainer',
+  };
+  const ELSEWHERE: MigrationAgent = {
+    ...PARENT,
+    id: 'agent-3',
+    name: 'other',
+    switchAgentId: 'switch-3',
+    workspaceId: 'workspace-2',
+  };
+  const all = [PARENT, REMOTE, ELSEWHERE];
+  const service = () =>
+    new AgentMigrationService({
+      ...deps(),
+      agents: {
+        ...deps().agents,
+        get: async (agentId) => all.find((agent) => agent.id === agentId) ?? null,
+        list: async () => all,
+      },
+    });
+  const scope = { kind: 'workspace', serverId: 'server-1', workspaceId: WORKSPACE } as const;
+
+  it('takes the agents on SSH hosts too, not another workspace’s, and counts them per machine', async () => {
+    const migration = service();
+    const before = await migration.moveAllProgress(scope);
+    expect(before.machines.map((m) => [m.name, m.managed, m.total])).toEqual([
+      ['This computer', 0, 1],
+      ['gpu-1', 0, 1],
+    ]);
+    const moved = await migration.moveAll(scope);
+    expect(moved.moved.map((agent) => agent.name)).toEqual(['builder', 'trainer']);
+    const after = await migration.moveAllProgress(scope);
+    expect(after.machines.every((m) => m.managed === m.total)).toBe(true);
+    const back = await migration.stopManagingAll(scope);
+    expect(back.moved.map((agent) => agent.name)).toEqual(['builder', 'trainer']);
+  });
+
+  it('names the commonest reason a machine’s agents cannot move, once per machine', async () => {
+    world.eligibility = { management: true, owner: 'Grace', ownedByMe: false };
+    const progress = await service().moveAllProgress(scope);
+    expect(progress.machines[0]).toMatchObject({
+      name: 'This computer',
+      managed: 0,
+      blocked: 1,
+      reason: expect.stringMatching(/owner/),
+      setUpOnMove: false,
+    });
+  });
+
+  it('sets up a host that is not a machine yet, then moves its agents', async () => {
+    const ready = world.lookup;
+    world.lookup = {
+      ...ready,
+      target: null,
+      blocker: 'Make gpu-1 a machine first.',
+      canEnable: true,
+    };
+    world.lookupAfterEnable = ready;
+    const migration = service();
+    expect((await migration.moveAllProgress(scope)).machines.map((m) => m.setUpOnMove)).toEqual([
+      true,
+      true,
+    ]);
+    const moved = await migration.moveAll(scope);
+    expect(world.calls.filter((call) => call.startsWith('enable'))).toEqual([
+      'enable this computer',
+    ]);
+    expect(moved.moved.map((agent) => agent.name)).toEqual(['builder', 'trainer']);
+  });
+
+  it('reports a host that cannot be set up once for its agents, and moves the rest', async () => {
+    world.lookup = {
+      ...world.lookup,
+      target: null,
+      blocker: 'Make it a machine first.',
+      canEnable: true,
+    };
+    world.enableFails = true;
+    const moved = await service().moveAll(scope);
+    expect(moved.moved).toEqual([]);
+    expect(moved.skipped.map((agent) => agent.reason)).toEqual([
+      expect.stringMatching(/^this computer could not be made a machine: ssh: connect/),
+      expect.stringMatching(/^gpu-1 could not be made a machine: ssh: connect/),
+    ]);
+  });
+
+  it('gives up waiting for a machine that never becomes ready, saying so', async () => {
+    world.lookup = {
+      ...world.lookup,
+      target: null,
+      blocker: 'Not reached Switch yet.',
+      canEnable: true,
+    };
+    const moved = await service().moveAll(scope);
+    expect(moved.skipped[0]?.reason).toMatch(/is not ready for agents yet: Not reached Switch yet/);
   });
 });

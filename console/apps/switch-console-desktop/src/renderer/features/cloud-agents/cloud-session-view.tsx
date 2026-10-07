@@ -9,6 +9,7 @@ import {
   SessionHeaderOutlet,
   SessionHeaderSlotsProvider,
 } from '@renderer/features/sessions/session-header-slots';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -46,7 +47,7 @@ function CloudSessionTitlebar() {
   );
 }
 
-/** The launch's state over the transcript while its worker cannot be asked. */
+/** The agent's state over the transcript while it cannot be asked. */
 const CloudWorkerStatus = observer(function CloudWorkerStatus({
   agentKey,
   agent,
@@ -104,7 +105,7 @@ const CloudSessionPanel = observer(function CloudSessionPanel() {
         client={client}
         hostState={agent ? cloudAgentState(agent) : null}
         autoWake={{
-          phase: agent ? cloudAgentPhase(agent.launch, agent.machine) : null,
+          phase: agent ? cloudAgentPhase(agent.machine, agent.controller) : null,
           machineReady: agent ? cloudMachineReady(agent.machine) : false,
           blocked: agent ? cloudHoldBlocker(agent) : null,
           wake: () => wake.mutateAsync(params.agentKey),
@@ -144,6 +145,7 @@ export const cloudSessionView = {
       typeof value.name !== 'string'
     )
       return { ok: false, redirect: 'home', discardParams: true };
+    if (!switchCloudFeature.enabled) return { ok: false, redirect: 'home' };
     return { ok: true };
   },
 } satisfies ViewDefinition<CloudSessionParams>;

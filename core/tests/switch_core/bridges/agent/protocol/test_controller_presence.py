@@ -194,9 +194,7 @@ class TestTheRegistryAsksTheController:
         holder = registry.controllers.holder_id(binding)
 
         assert not registry.is_live("agent")
-        assert not registry.relay_session_command(
-            "agent", {"origin": {}}, worker_only=False
-        )
+        assert not registry.relay_session_command("agent", {"origin": {}})
         assert holder not in registry.live_connection_ids()
 
         conn = _go_live(registry, ("agent", {ROOM}))
@@ -211,9 +209,7 @@ class TestTheRegistryAsksTheController:
         assert holder in registry.live_connection_ids()
         assert registry.live_connection_count() == 1
         assert rooms_occupied("agent", registry) == {ROOM}
-        assert registry.relay_session_command(
-            "agent", {"origin": {"roomId": ROOM}}, worker_only=False
-        )
+        assert registry.relay_session_command("agent", {"origin": {"roomId": ROOM}})
         assert conn.session_commands == [("agent", {"origin": {"roomId": ROOM}})]
 
         _lapse(conn)
@@ -458,9 +454,7 @@ class TestTheAgentClientsReplies:
         }
         assert not registry.is_live("auto")
         assert rooms_occupied("auto", registry) == set()
-        assert not registry.relay_session_command(
-            "auto", {"origin": {"roomId": ROOM}}, worker_only=False
-        )
+        assert not registry.relay_session_command("auto", {"origin": {"roomId": ROOM}})
 
         registry.controllers.bind(
             Binding(

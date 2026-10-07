@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
+import { useCloudAgents } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { switchRoomsStore } from './switch-rooms-store';
-import { useCloudLaunches } from './use-cloud-launches';
 
 /**
  * How much of this server Switch Console is holding: the agents onboarded
@@ -21,7 +21,7 @@ export const ServerStatTiles = observer(function ServerStatTiles({
 }: {
   serverId: string;
 }) {
-  const cloud = useCloudLaunches(serverId);
+  const cloud = useCloudAgents(serverId);
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
 
   // Shares the key every other bridge reader uses, so the list is already in
@@ -46,8 +46,8 @@ export const ServerStatTiles = observer(function ServerStatTiles({
         // a failed ask leaves the total unknown rather than reporting the local
         // agents alone as all of them.
         value={
-          agentsStore.loaded && cloud.isSuccess && cloud.data
-            ? agentsStore.agentsOnServer(serverId).length + cloud.data.length
+          agentsStore.loaded && cloud.isSuccess
+            ? agentsStore.agentsOnServer(serverId).length + (cloud.data?.length ?? 0)
             : null
         }
         failure={cloud.error ? failureText(cloud.error, 'Could not count cloud agents.') : null}

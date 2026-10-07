@@ -3,7 +3,6 @@ import { rpc } from '@renderer/lib/ipc';
 import type { CloudOperationOutcome } from '@shared/core/cloud-agents/cloud-agents';
 
 export type CloudOperationAttempt = {
-  operationId: string;
   sessionId: string;
   status: 'pending' | 'unknown';
   message: string | null;
@@ -12,9 +11,9 @@ export type CloudOperationAttempt = {
 /**
  * Starts and restarts of cloud sessions that have not reached a definite
  * result, keyed by what they act on and kept outside any component so a
- * remount does not forget them. Asking again reuses the attempt's operation
- * id, which the server dedupes, so a lost response never queues a second
- * session or restart.
+ * remount does not forget them. Asking again reuses the attempt's session id,
+ * and a start of a session that exists goes on with it, so a lost response
+ * never starts a second session.
  */
 class CloudOperationAttempts {
   private readonly attempts = observable.map<string, CloudOperationAttempt>();
@@ -37,22 +36,15 @@ class CloudOperationAttempts {
   ): Promise<{ sessionId: string; outcome: CloudOperationOutcome } | null> {
     const existing = this.attempts.get(key);
     if (existing?.status === 'pending') return null;
-    const target = existing?.sessionId ?? sessionId ?? crypto.randomUUID();
     const attempt: CloudOperationAttempt = {
-      operationId: existing?.operationId ?? (action === 'start' ? target : crypto.randomUUID()),
-      sessionId: target,
+      sessionId: existing?.sessionId ?? sessionId ?? crypto.randomUUID(),
       status: 'pending',
       message: null,
     };
     runInAction(() => this.attempts.set(key, attempt));
     let outcome: CloudOperationOutcome;
     try {
-      outcome = await rpc.sdkHost.cloudSessionOperation(
-        agentKey,
-        attempt.sessionId,
-        attempt.operationId,
-        action
-      );
+      outcome = await rpc.sdkHost.cloudSessionOperation(agentKey, attempt.sessionId, action);
     } catch (error) {
       outcome = { state: 'unknown', message: String(error) };
     }

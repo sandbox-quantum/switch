@@ -9,7 +9,7 @@ export const cloudProviderConnectionSchema = z.discriminatedUnion('status', [
     error: z.string().nullable(),
   }),
   z.object({
-    status: z.enum(['connected', 'configured']),
+    status: z.enum(['connected', 'configured', 'reconnect_required']),
     kind: z.enum(['api-key', 'setup-token', 'auth-json']),
     verified_at: z.string(),
   }),

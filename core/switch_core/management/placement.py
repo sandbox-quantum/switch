@@ -19,7 +19,6 @@ from typing import Any, Literal
 
 from switch_core.db.models import AgentController
 from switch_core.management import reason_codes
-from switch_core.management.errors import ManagementError
 
 ControllerState = Literal["online", "unknown", "revoked"]
 
@@ -90,18 +89,3 @@ def placement_refusal(
             f"the {provider} login on this controller has expired",
         )
     return None
-
-
-def require_placement(
-    controller: AgentController,
-    provider: str,
-    *,
-    now: datetime,
-    interval_seconds: int,
-) -> None:
-    refusal = placement_refusal(
-        controller, provider, now=now, interval_seconds=interval_seconds
-    )
-    if refusal is not None:
-        code, message = refusal
-        raise ManagementError(409, code, f"Cannot place the agent: {message}.")

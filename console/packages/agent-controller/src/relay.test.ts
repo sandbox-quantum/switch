@@ -46,6 +46,7 @@ function assigned(agentId: string): AgentAssignment {
       auto_approve: false,
       directory: null,
       isolation: 'shared',
+      skills: [],
     },
   };
 }
@@ -122,7 +123,7 @@ beforeEach(async () => {
     timing: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
     bufferLimit: 100,
   });
-  await relay.start(null);
+  await relay.start(null, false);
   token = relay.mint(AGENT);
   relay.streamAttached();
   relay.attach(AGENT, 0, ['room-a', 'room-b']);
@@ -212,8 +213,13 @@ async function post(path: string, body: unknown, bearer = token): Promise<Respon
 }
 
 describe('the relay as the agent protocol, read by the real SwitchEventStream', () => {
-  it('serves the relay’s protocol range as switch-core declares its own', () => {
-    expect(RELAY_AGENT_PROTOCOL).toEqual(CONTRACTS['agent-protocol']['switch-core']);
+  it('serves switch-core’s revisions up to the socket, which the runtime still accepts', () => {
+    const core = CONTRACTS['agent-protocol']['switch-core'];
+    const runtime = CONTRACTS['agent-protocol']['agent-runtime'];
+    // The relay serves the event stream, not the socket of agent-protocol 8.
+    expect(RELAY_AGENT_PROTOCOL).toEqual({ speaks: 7, accepts: core.accepts });
+    expect(runtime.accepts).toBeLessThanOrEqual(RELAY_AGENT_PROTOCOL.speaks);
+    expect(RELAY_AGENT_PROTOCOL.accepts).toBeLessThanOrEqual(runtime.speaks);
   });
 
   it('connects, then delivers addressed events in order, with their ids and missed counts', async () => {
@@ -341,7 +347,7 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
       timing: { heartbeatTtlMs: 300, heartbeatIntervalS: 2, sweepMs: 20, keepaliveMs: 15_000 },
       bufferLimit: 100,
     });
-    await relay.start(null);
+    await relay.start(null, false);
     token = relay.mint(AGENT);
     relay.setReady();
     const response = await fetch(
@@ -552,7 +558,7 @@ describe('what the relay refuses', () => {
       timing: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
       bufferLimit: 100,
     });
-    await starting.start(null);
+    await starting.start(null, false);
     try {
       const early = await fetch(`${starting.endpoint}/agents/${AGENT}/ops`, {
         headers: { Authorization: 'Bearer swlr_unknown' },
@@ -609,6 +615,26 @@ describe('forwarding to Switch', () => {
     expect(forwarded.headers['x-switch-room-id']).toBeUndefined();
     expect(forwarded.headers['switch-controller-protocol']).toBe('1');
     expect(forwarded.body).toEqual({ row: 1 });
+  });
+
+  it('forwards a hosted GitHub credential request as the controller, naming the agent', async () => {
+    core.scripted.push({
+      method: 'POST',
+      path: '/hosted/github-credential',
+      status: 200,
+      body: { token: 'placeholder', expires_at: '2026-01-01T01:00:00Z' },
+    });
+    const response = await post('/hosted/github-credential', { repository: 'org/repo' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      token: 'placeholder',
+      expires_at: '2026-01-01T01:00:00Z',
+    });
+    const forwarded = core.requests.at(-1)!;
+    expect(forwarded.method).toBe('POST');
+    expect(forwarded.headers.authorization).toMatch(/^Bearer access-token-/);
+    expect(forwarded.headers['x-switch-agent-id']).toBe(AGENT);
+    expect(forwarded.body).toEqual({ repository: 'org/repo' });
   });
 
   it('names the room of a shared agent’s call from its host in the controller', async () => {

@@ -9,6 +9,7 @@ import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agent
 import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { type AgentPresence, SidebarAgentRow } from '../sidebar/agent-row';
 import {
+  isCloudManagedAgent,
   type ManagedAgentState,
   managedAgentLabel,
   managedAgentState,
@@ -18,7 +19,8 @@ import { useManagedAgents, useOwnedMachines } from './use-managed-agents';
 /**
  * The active server's managed agents: every one the server lists, whatever
  * machine it runs on and wherever it was created, in the same rows as the
- * agents this Console runs.
+ * agents this Console runs. Cloud agents are left to `CloudAgentList`, which
+ * lists each with its sessions.
  */
 export const ManagedAgentList = observer(function ManagedAgentList() {
   const serverId = switchServersStore.activeServerId;
@@ -30,10 +32,11 @@ export const ManagedAgentList = observer(function ManagedAgentList() {
         {failureText(agents.error, 'Managed agents could not be listed.')}
       </div>
     );
-  if (!agents.data?.length) return null;
+  const listed = agents.data?.filter((agent) => !isCloudManagedAgent(agent)) ?? [];
+  if (!listed.length) return null;
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Managed agents">
-      {agents.data.map((agent) => (
+      {listed.map((agent) => (
         <ManagedAgentRow key={agent.agentId} agent={agent} />
       ))}
     </div>

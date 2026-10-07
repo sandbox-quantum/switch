@@ -55,18 +55,8 @@ export const sdkHostController = createRPCController({
   cloudMachines: (serverId: string) => listServerCloudMachines(serverId),
   cloudSessions: (agentId: string) => listCloudSessions(agentId),
   cloudWake: (agentId: string) => wakeCloudAgent(agentId),
-  cloudSessionOperation: async (
-    agentId: string,
-    sessionId: string,
-    operationId: string,
-    action: 'start' | 'restart'
-  ) =>
-    runCloudSessionOperation(
-      agentId,
-      sessionId,
-      z.string().uuid().parse(operationId),
-      z.enum(['start', 'restart']).parse(action)
-    ),
+  cloudSessionOperation: async (agentId: string, sessionId: string, action: 'start' | 'restart') =>
+    runCloudSessionOperation(agentId, sessionId, z.enum(['start', 'restart']).parse(action)),
   cloudUploadAttachment: (
     agentId: string,
     sessionId: string,

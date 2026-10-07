@@ -1,0 +1,8 @@
+// switch-controller may start, stop, restart and reset one agent unit at a
+// time, and nothing else. Every other request falls through to the defaults.
+polkit.addRule(function (action, subject) {
+  if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "switch-controller") return;
+  var unit = action.lookup("unit"), verb = action.lookup("verb");
+  if (/^switch-agent@[A-Za-z0-9_-]{1,64}\.service$/.test(unit) &&
+      ["start", "stop", "restart", "reset-failed"].indexOf(verb) >= 0) return polkit.Result.YES;
+});

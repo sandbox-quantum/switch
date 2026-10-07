@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
+import { dirMode, fileMode } from './host-permissions';
 import { pipeRedactedHostedLogs } from './hosted-log';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner, killProcessTree } from './process-fence';
@@ -16,7 +17,9 @@ function alive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    if (code === 'ESRCH') return false;
     throw error;
   }
 }
@@ -59,7 +62,7 @@ export async function superviseSharedHost(input: {
   logRedactions: string[];
 }): Promise<void> {
   const directory = join(input.root, 'supervisor');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await mkdir(directory, { recursive: true, mode: dirMode() });
   const ownerPath = join(directory, 'owner.json');
   const owner = { pid: process.pid, token: randomUUID(), build: input.build };
   await withOwnershipLock(directory, async () => {
@@ -76,7 +79,7 @@ export async function superviseSharedHost(input: {
         await delay(500, undefined, { signal: input.signal });
         continue;
       }
-      const log = await open(join(directory, 'worker.log'), 'a', 0o600);
+      const log = await open(join(directory, 'worker.log'), 'a', fileMode());
       const redacting = input.logRedactions.length > 0;
       const output = redacting ? 'pipe' : log.fd;
       const child = spawn(input.executable, input.args, {

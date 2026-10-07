@@ -3,11 +3,13 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { refreshCodexAuthentication } from '../codex/home';
+import { linkCodexAuthentication } from '../codex/home';
+import { shareLoginDirectory } from './host-permissions';
 import { importOpenCodeConsole } from './opencode-console';
 import { readSharedCredentials, type SharedHostConfig } from './shared-config';
 
-const credentialSchema = z.discriminatedUnion('status', [
+/** What `/hosted/provider-credential` answers, and what an agents controller hands a unit. */
+export const hostedCredentialSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('revoked') }),
   z.object({
     status: z.literal('connected'),
@@ -17,7 +19,7 @@ const credentialSchema = z.discriminatedUnion('status', [
     credential: z.string().min(1).max(16384),
   }),
 ]);
-export type HostedCredential = z.infer<typeof credentialSchema>;
+export type HostedCredential = z.infer<typeof hostedCredentialSchema>;
 
 async function hostedOrigin(config: SharedHostConfig): Promise<{ origin: string; token: string }> {
   const credentials = await readSharedCredentials(config);
@@ -69,7 +71,7 @@ export async function fetchHostedProvider(config: SharedHostConfig): Promise<Hos
     await response.body?.cancel();
     throw new Error(`Cloud provider access check failed (HTTP ${response.status}).`);
   }
-  const result = credentialSchema.parse(await response.json());
+  const result = hostedCredentialSchema.parse(await response.json());
   if (result.status === 'connected' && result.provider !== config.start.provider)
     throw new Error('Cloud provider credentials do not match this session.');
   return result;
@@ -115,6 +117,7 @@ async function writeAuthentication(root: string, relative: string, content: stri
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if ((await lstat(directory)).isSymbolicLink())
       throw new Error('Provider authentication directory must not be a symbolic link.');
+    await shareLoginDirectory(directory);
   }
   const path = join(root, relative);
   const fingerprint = createHash('sha256').update(content).digest('hex');
@@ -174,7 +177,7 @@ export async function materializeHostedProvider(
         ? JSON.stringify({ OPENAI_API_KEY: credential.credential })
         : credential.credential;
     await writeAuthentication(sourceHome, 'auth.json', content);
-    if (env.CODEX_HOME !== sourceHome) await refreshCodexAuthentication(env.CODEX_HOME, sourceHome);
+    if (env.CODEX_HOME !== sourceHome) await linkCodexAuthentication(env.CODEX_HOME, sourceHome);
   } else if (credential.provider === 'opencode') {
     env.XDG_DATA_HOME = join(root, 'provider-data');
     if (JSON.parse(credential.credential).format === 'switch-opencode-console-v1') {

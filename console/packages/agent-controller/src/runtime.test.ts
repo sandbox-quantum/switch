@@ -12,7 +12,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { type OpenAgentStream, readSharedCredentials } from '@switch-console/agent-providers';
+import {
+  type ControlContext,
+  type OpenAgentStream,
+  readSharedCredentials,
+} from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
@@ -34,6 +38,8 @@ const LAUNCH = {
   restart: false,
   replaceIdentity: false,
   clearTakenOver: false,
+  skills: [],
+  repository: null,
 };
 
 let dir: string;
@@ -44,6 +50,8 @@ let opened: { agentId: string; scope: string; filter: string; signal: AbortSigna
 let attempts: number;
 let failOpens: number;
 const children: ChildProcess[] = [];
+/** What each running agent host registered to answer relayed control messages. */
+let controls: Map<string, ControlContext>;
 
 /** The controller's end of each watcher's stream: it records the open and never delivers anything. */
 function openStream(agentId: string): OpenAgentStream {
@@ -59,7 +67,6 @@ function openStream(agentId: string): OpenAgentStream {
       start: () => {},
       setSpawnCapable: () => {},
       replacePlacements: async () => {},
-      workerCall: () => Promise.reject(new Error('not a worker')),
     };
   };
 }
@@ -81,6 +88,7 @@ beforeEach(() => {
   opened = [];
   attempts = 0;
   failOpens = 0;
+  controls = new Map();
   runtime = new InProcessRuntime({
     layout: dataLayout(join(dir, 'data')),
     workspaces: join(dir, 'data', 'workspaces'),
@@ -88,6 +96,14 @@ beforeEach(() => {
     openStream,
     log: silentLogger,
     crashBackoffMs: 5,
+    control: {
+      attachControl: (agentId, context) => {
+        controls.set(agentId, context);
+        return () => {
+          if (controls.get(agentId) === context) controls.delete(agentId);
+        };
+      },
+    },
   });
 });
 
@@ -187,6 +203,26 @@ describe('InProcessRuntime', () => {
     expect(opened[0]!.signal.aborted).toBe(true);
   });
 
+  it('answers relayed control messages while the watcher runs, starting sessions only by id', async () => {
+    await runtime.writeCredentials('agent-1', RELAY);
+    await runtime.launch('agent-1', template(), LAUNCH);
+    await waitFor(() => controls.has('agent-1'), 'the control registered');
+    const context = controls.get('agent-1')!;
+    expect(context.agentId).toBe('agent-1');
+    await waitFor(() => context.watcher.running, 'the watcher bound');
+    await expect(
+      context.ensure({
+        config: template('/elsewhere'),
+        resuming: false,
+        restart: false,
+        startSource: 'user',
+      })
+    ).rejects.toThrow('by its id alone');
+
+    await runtime.stop('agent-1', { wait: true });
+    expect(controls.has('agent-1')).toBe(false);
+  });
+
   it('restarts into a new provider or directory, replacing the saved configuration', async () => {
     await runtime.writeCredentials('agent-1', RELAY);
     await runtime.launch('agent-1', template(), LAUNCH);
@@ -196,6 +232,8 @@ describe('InProcessRuntime', () => {
       restart: true,
       replaceIdentity: true,
       clearTakenOver: true,
+      skills: [],
+      repository: null,
     });
     await waitFor(() => opened.length === 2, 'the second watcher');
     expect(opened[0]!.signal.aborted).toBe(true);

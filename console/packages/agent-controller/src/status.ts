@@ -7,8 +7,9 @@ import { promisify } from 'node:util';
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
-import type { AgentObservation, AgentRuntime } from './runtime';
+import { emptyObservation, type AgentObservation, type AgentRuntime } from './runtime';
 import {
+  type AgentActivity,
   type AgentAssignment,
   type AgentStatus,
   type Assignment,
@@ -42,6 +43,8 @@ export type LocatedProvider = { path: string; version: string | null };
 
 /** Finds a provider's CLI on this machine. */
 export interface ProviderLocator {
+  /** Where a signed-in provider's login comes from: the machine's own, or sealed by Switch. */
+  readonly authSource: 'local' | 'sealed';
   locate(provider: Provider): Promise<LocatedProvider | null>;
 }
 
@@ -50,6 +53,8 @@ export interface ProviderLocator {
  * as Console's dependency detection does, and asks it for its version.
  */
 export class PathProviderLocator implements ProviderLocator {
+  readonly authSource = 'local';
+
   constructor(private readonly path: string | undefined) {}
 
   async locate(provider: Provider): Promise<LocatedProvider | null> {
@@ -76,6 +81,35 @@ export class PathProviderLocator implements ProviderLocator {
   }
 }
 
+/**
+ * Each provider's CLI at the path a cloud machine's image installed it, whose
+ * logins Switch seals for the machine.
+ */
+export class FixedProviderLocator implements ProviderLocator {
+  readonly authSource = 'sealed';
+
+  constructor(private readonly paths: Partial<Record<Provider, string>>) {}
+
+  async locate(provider: Provider): Promise<LocatedProvider | null> {
+    const path = this.paths[provider];
+    if (path === undefined) return null;
+    try {
+      await access(path, constants.X_OK);
+    } catch {
+      return null;
+    }
+    const plugin = pluginRegistry.get(provider);
+    if (!plugin) throw new Error(`No provider plugin is registered for '${provider}'.`);
+    const dependency = plugin.capabilities.hostDependency;
+    return {
+      path,
+      version: dependency.skipVersionProbe
+        ? null
+        : await readVersion(path, dependency.versionArgs ?? ['--version']),
+    };
+  }
+}
+
 async function readVersion(binary: string, args: string[]): Promise<string | null> {
   try {
     const { stdout, stderr } = await promisify(execFile)(binary, args, {
@@ -91,7 +125,8 @@ export function providerStatusFrom(
   provider: Provider,
   located: LocatedProvider | null,
   readiness: ProviderReadiness | null,
-  checkedAt: string
+  checkedAt: string,
+  authSource: 'local' | 'sealed'
 ): ProviderStatus {
   if (!located)
     return {
@@ -107,7 +142,7 @@ export function providerStatusFrom(
   if (!readiness) return { ...base, auth: 'unknown', auth_source: null, reason: 'internal' };
   switch (readiness.status) {
     case 'authenticated':
-      return { ...base, auth: 'ok', auth_source: 'local' };
+      return { ...base, auth: 'ok', auth_source: authSource };
     case 'unauthenticated':
     case 'unconfigured':
       return { ...base, auth: 'missing', auth_source: null, reason: 'provider_login_missing' };
@@ -153,7 +188,13 @@ export class ProviderStatuses {
           error: errorMessage(error),
         });
       }
-    const status = providerStatusFrom(provider, located, readiness, new Date(at).toISOString());
+    const status = providerStatusFrom(
+      provider,
+      located,
+      readiness,
+      new Date(at).toISOString(),
+      this.deps.locator.authSource
+    );
     const previous = this.entries.get(provider);
     this.entries.set(provider, { status, path: located?.path ?? null, at });
     if (!previous || fingerprintProvider(previous.status) !== fingerprintProvider(status))
@@ -307,18 +348,34 @@ export class StatusCollector {
       workspacesDir: string;
       version: string;
       now: () => number;
+      log: Logger;
     }
   ) {}
 
-  async collect(assignment: Assignment | null): Promise<Omit<StatusReport, 'seq'>> {
+  async collect(
+    assignment: Assignment | null
+  ): Promise<Omit<StatusReport, 'seq'> & { activity: AgentActivity[] }> {
     const nowMs = this.deps.now();
     const now = new Date(nowMs).toISOString();
     const agents: AgentStatus[] = [];
+    const activity: AgentActivity[] = [];
     const seen = new Set<string>();
     for (const entry of assignment?.agents ?? []) {
       seen.add(entry.agent_id);
       const row = this.deps.store.agent(entry.agent_id);
-      const observation = await this.deps.runtime.observe(entry.agent_id);
+      let observation: AgentObservation;
+      try {
+        observation = await this.deps.runtime.observe(entry.agent_id);
+      } catch (error) {
+        this.deps.log.warn('Could not observe agent state; reporting as failed', {
+          agentId: entry.agent_id,
+          error: errorMessage(error),
+        });
+        observation = {
+          ...emptyObservation(),
+          failure: errorMessage(error),
+        };
+      }
       const mapped = mapAgentProcess({
         assignment: entry,
         row,
@@ -338,13 +395,21 @@ export class StatusCollector {
         process: mapped.process,
         attached: mapped.attached,
         sessions: { active: ids.length, ids },
-        restarts_10m: this.deps.store.restartsSince(entry.agent_id, nowMs - 10 * 60 * 1000),
-        // v1 does not observe OOM kills; nothing here can count one.
-        oom_kills: 0,
+        restarts_10m:
+          this.deps.store.restartsSince(entry.agent_id, nowMs - 10 * 60 * 1000) +
+          (observation.unit?.restarts10m ?? 0),
+        oom_kills: observation.unit?.oomKills ?? 0,
         directory: observation.configured?.cwd ?? null,
         since,
         ...(mapped.reason ? { reason: mapped.reason } : {}),
         ...(mapped.detail ? { detail: mapped.detail } : {}),
+      });
+      // An agent host that does not say whether it is busy is taken to be.
+      activity.push({
+        agent_id: entry.agent_id,
+        busy: observation.alive ? (observation.activity?.busy ?? true) : false,
+        sessions: ids.length,
+        last_activity_at: observation.activity?.lastActivityAt ?? null,
       });
     }
     for (const agentId of this.previous.keys())
@@ -371,6 +436,7 @@ export class StatusCollector {
       providers: this.deps.providers.snapshot(),
       tools: [],
       agents,
+      activity,
     };
   }
 }

@@ -1,0 +1,66 @@
+[Unit]
+Description=Switch agent %i
+After=switch-machine-boot.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+AssertPathIsMountPoint=/data
+
+[Service]
+Type=simple
+User=switch-agent
+Group=switch-agent
+Slice=switch-agents.slice
+UMask=0007
+Environment=SWITCH_HOST_SHARED_GROUP=1
+Environment=HOME=/data/agents/%i/home
+Environment=TMPDIR=/data/agents/%i/tmp
+Environment=PATH=/opt/switch/node/bin:/opt/switch/claude/bin:/usr/local/bin:/usr/bin:/bin
+LoadCredential=agent:/run/switch-controller/agents/%i.credentials.json
+LoadCredential=provider:/run/switch-controller/agents/%i.provider.json
+EnvironmentFile=-/run/switch-controller/agents/%i.env
+WorkingDirectory=/data/agents/%i
+# Every agent runs as the one switch-agent uid, and ProtectProc= hides only
+# other users' processes, so without more one agent could reach another's
+# files and credentials through /proc/<pid>/root. Each command therefore runs
+# in a PID namespace (and /proc) of its own: started as root ("!" ignores
+# User=, nothing else), which may only make the namespace and drop to
+# switch-agent with no capabilities left. switch-agent-init is the
+# namespace's PID 1, reaping orphans. User= stays set, so systemd hands the
+# credentials to switch-agent.
+ExecStartPre=!/usr/bin/unshare --pid --fork --mount-proc --kill-child -- /usr/bin/setpriv --reuid=switch-agent --regid=switch-agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs -- /usr/bin/python3 -I -S /usr/local/libexec/switch-agent-init /opt/switch/node/bin/node /opt/switch/agent-providers/shared-host-daemon.mjs --prepare /data/agents/%i
+ExecStart=!/usr/bin/unshare --pid --fork --mount-proc --kill-child -- /usr/bin/setpriv --reuid=switch-agent --regid=switch-agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs -- /usr/bin/python3 -I -S /usr/local/libexec/switch-agent-init /opt/switch/node/bin/node /opt/switch/agent-providers/shared-host-daemon.mjs --unit /data/agents/%i/watcher
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+TemporaryFileSystem=/data/agents:ro /data/worktrees:ro
+BindPaths=/data/agents/%i /data/worktrees/%i
+# Each agent keeps its repository mirrors under its own root. The shared one
+# predates that and is read only to move an existing worktree off it.
+BindReadOnlyPaths=/data/repos
+InaccessiblePaths=/data/.switch-controller /data/.switch-hosted /run/switch-controller /run/switch-machine /etc/switch-hosted
+IPAddressDeny=169.254.169.254/32 fd00:ec2::254/128
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=75
+MemoryMax=75%
+OOMPolicy=stop
+NoNewPrivileges=yes
+# For the root wrapper above only: setpriv drops every one before the agent runs.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SETPCAP
+AmbientCapabilities=
+ProtectProc=invisible
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+# No RestrictSUIDSGID: it also refuses the setgid bit on directories, and
+# the agents' shared directories are setgid (3770). /data is mounted nosuid
+# and NoNewPrivileges is set, so a set-id file there grants nothing.
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

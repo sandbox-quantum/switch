@@ -160,6 +160,8 @@ export type SessionLaunch = {
   skill: string;
   /** The system context: the Switch skill for a provider that takes it that way, then the instructions. */
   context: string;
+  /** The agent's own instructions, alone. */
+  instructions: string;
 };
 
 /**
@@ -203,6 +205,7 @@ export function sessionLaunchFrom(input: {
     context: [provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT, specialization.instructions]
       .filter(Boolean)
       .join('\n\n'),
+    instructions: specialization.instructions ?? '',
   };
 }
 

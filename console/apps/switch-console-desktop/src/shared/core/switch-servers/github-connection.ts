@@ -21,3 +21,9 @@ export const gitHubFlowSchema = z.object({
   login: z.string(),
 });
 export type GitHubFlow = z.infer<typeof gitHubFlowSchema>;
+
+/** A repository the owner's GitHub App installation gives access to, by id. */
+export type CloudRepositorySelection = {
+  installationId: number;
+  repositoryId: number;
+};

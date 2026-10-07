@@ -2,11 +2,9 @@ import asyncio
 import json
 import secrets
 import time
-from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -14,17 +12,19 @@ from fastapi import FastAPI
 from sqlalchemy import select, text
 
 from switch_core.db.models import (
-    GitHubIssuedToken,
-    HostedLaunch,
     ProviderConnection,
     User,
     require_tenant_id,
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
-from switch_core.gateway.github_connections import router
+from switch_core.gateway.github_connections import page, router
 from switch_core.keys import Keyring
-from switch_core.providers.github import GitHubConnections, GitHubError
+from switch_core.providers.github import (
+    GitHubAuthorizationError,
+    GitHubConnections,
+    GitHubError,
+)
 from switch_core.tenant_context import tenant_scope
 
 KEY = Keyring.parse("test:" + "synthetic-encryption-test-key" * 2, legacy_secret=None)
@@ -265,6 +265,39 @@ async def test_refresh_saved_before_repository_failure(github_app):
         assert saved["refresh_token"] == "NEW-SYNTHETIC-REFRESH"
 
 
+async def test_expired_refresh_reports_reconnect_required(github_app):
+    client, github, _, _ = github_app
+    flow_id = await authorize(client)
+    github.exchange.return_value["expires_at"] = 0
+    github.exchange.return_value["refresh_expires_at"] = 0
+    await relay(client, flow_id)
+    await complete(client, flow_id)
+    await confirm(client, flow_id)
+    response = await client.get(BASE)
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "GitHub authorization expired. Reconnect GitHub.",
+        "code": "github_reconnect_required",
+    }
+
+
+async def test_revoked_access_reports_reconnect_required(github_app):
+    client, github, _, _ = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    await complete(client, flow_id)
+    await confirm(client, flow_id)
+    github.repositories.side_effect = GitHubAuthorizationError(
+        "GitHub access expired or was revoked. Connect GitHub again."
+    )
+    response = await client.get(BASE)
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "GitHub access expired or was revoked. Connect GitHub again.",
+        "code": "github_reconnect_required",
+    }
+
+
 async def test_failed_authorization_preserves_saved_connection(github_app):
     client, github, _, _ = github_app
     flow_id = await authorize(client)
@@ -433,34 +466,12 @@ async def test_oauth_revocation_deletes_only_the_selected_token(
     assert request.call_args.kwargs["json"] == {"access_token": "SYNTHETIC-OLD-ACCESS"}
 
 
-async def test_relink_queues_existing_installation_tokens(github_app, monkeypatch):
-    client, github, identity, factory = github_app
+async def test_relink_revokes_the_previous_access_token(github_app):
+    client, github, _, _ = github_app
     first = await authorize(client)
     await relay(client, first)
     assert (await complete(client, first)).status_code == 204
     assert (await confirm(client, first)).status_code == 200
-    async with factory() as session:
-        launch = HostedLaunch(
-            id=str(uuid4()), owner_id=identity["user"].id, name="relink-worker", spec={}
-        )
-        session.add(launch)
-        await session.flush()
-        issued = GitHubIssuedToken(
-            id=str(uuid4()),
-            owner_id=launch.owner_id,
-            launch_id=launch.id,
-            launch_revision=1,
-            encrypted_token=KEY.encrypt("SYNTHETIC-INSTALLATION"),
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-            revoke_requested=False,
-            attempts=0,
-        )
-        session.add(issued)
-        await session.commit()
-    monkeypatch.setattr(
-        "switch_core.gateway.github_connections.revoke_pending",
-        AsyncMock(return_value=True),
-    )
     github.exchange.return_value = {
         **github.exchange.return_value,
         "access_token": "SYNTHETIC-RELINKED-ACCESS",
@@ -470,8 +481,23 @@ async def test_relink_queues_existing_installation_tokens(github_app, monkeypatc
     assert (await complete(client, second)).status_code == 204
     response = await confirm(client, second)
     assert response.status_code == 200
-    assert response.json()["warning"]
+    assert response.json()["warning"] is None
     github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
-    async with factory() as session:
-        row = await session.get(GitHubIssuedToken, (require_tenant_id(), issued.id))
-        assert row.revoke_requested
+
+
+def test_result_page_is_branded_and_allows_only_inline_styles():
+    response = page("Sign-in was interrupted. Start it again from Switch Console.", 400)
+    policy = response.headers["content-security-policy"]
+    body = response.body.decode()
+
+    assert response.status_code == 400
+    assert "default-src 'none'" in policy
+    assert "style-src 'unsafe-inline'" in policy
+    assert "frame-ancestors 'none'" in policy
+    assert "script-src" not in policy
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "Sign-in was interrupted. Start it again from Switch Console." in body
+    assert 'class="status error"' in body
+    assert "<script" not in body

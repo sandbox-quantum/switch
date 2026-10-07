@@ -502,6 +502,7 @@ export async function buildSharedHostConfig(
       codexConfig: sessionLaunch.codexConfig,
       skill: sessionLaunch.skill,
       context: sessionLaunch.context,
+      instructions: sessionLaunch.instructions,
     },
   };
   return config;

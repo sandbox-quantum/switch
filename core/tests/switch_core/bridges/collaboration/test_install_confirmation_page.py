@@ -16,8 +16,11 @@ from fastapi import FastAPI
 
 from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_routes import (
+    _confirmation_page,
+    _page,
     create_messaging_install_router,
 )
+from switch_core.bridges.collaboration.install_service import PendingInstall
 from tests.conftest import RLSHarness
 
 from .test_install_service import _ORIGIN, _begin, _fixture
@@ -147,3 +150,41 @@ async def test_a_forged_ticket_is_refused(rls_harness: RLSHarness) -> None:
 
     assert response.status_code == 400
     assert fixture.lifecycle.registered == []
+
+
+def test_the_confirmation_page_escapes_what_it_shows_and_runs_no_script() -> None:
+    pending = PendingInstall(
+        ticket='t"<x>',
+        platform="slack",
+        workspace_name="<b>Acme</b>",
+        external_workspace_id="T1",
+        organisation="Org & <i>Co</i>",
+        requested_by="ops@example.com",
+    )
+
+    response = _confirmation_page(pending)
+    body = response.body.decode()
+    policy = response.headers["content-security-policy"]
+
+    assert "<b>Acme" not in body and "&lt;b&gt;Acme&lt;/b&gt; (T1)" in body
+    assert "Org &amp; &lt;i&gt;Co&lt;/i&gt;" in body
+    assert 'value="t&quot;&lt;x&gt;"' in body
+    assert 'value="connect">Connect</button>' in body
+    assert 'class="secondary">Cancel</button>' in body
+    assert "style-src 'unsafe-inline'" in policy
+    assert "default-src 'none'" in policy
+    assert "script-src" not in policy
+    assert "<script" not in body
+
+
+def test_a_result_page_escapes_its_detail_and_shows_its_kind() -> None:
+    body = _page(
+        title="Install could not be completed",
+        detail="<script>alert(1)</script>",
+        status=400,
+        kind="error",
+    ).body.decode()
+
+    assert "<script>alert(1)</script>" not in body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+    assert 'class="status error"' in body

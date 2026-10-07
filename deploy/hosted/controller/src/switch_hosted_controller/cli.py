@@ -9,7 +9,6 @@ import signal
 import sys
 import threading
 import uuid
-from dataclasses import replace
 from pathlib import Path
 from time import time
 from typing import Any
@@ -20,11 +19,11 @@ from .cloud import Ec2Cloud
 from .config import ConfigError, ControllerConfig, validate_slot_id
 from .gateway import Gateway, GatewayConfig
 from .health import check_health
+from .kms_grants import KmsGrants
 from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import DesiredState, Machine
 from .reconciler import Reconciler
 from .store import MachineStore, StoreError
-from .verification import VerificationWorkers
 
 
 def parser() -> argparse.ArgumentParser:
@@ -49,7 +48,7 @@ def parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--delete-volume", action="store_true")
 
     upgrade = subparsers.add_parser(
-        "upgrade", help="use the configured image after the old worker is stopped and terminated"
+        "upgrade", help="use the configured image after the old instance is stopped and terminated"
     )
     upgrade.add_argument("slot_id")
     upgrade.add_argument("--confirm-instance-id", required=True)
@@ -147,7 +146,7 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 raise StoreError(
                     "the old instance must be confirmed terminated and its retained disk detached"
                 )
-            cloud.validate_image(replace(machine, image_id=config.image_id))
+            cloud.validate_image(config.image_id)
             claim = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
             _print_machine(
                 store.upgrade_terminated(claim, config.image_id, args.previous_runtime_fingerprint)
@@ -162,19 +161,25 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
     with ControllerLock(config.lock_path):
         store = MachineStore(config.state_db_path, config.fingerprint())
         try:
-            ec2 = boto3.client("ec2", region_name=config.region)
-            reconciler = Reconciler(store, Ec2Cloud(ec2, config))
+            cloud = Ec2Cloud(boto3.client("ec2", region_name=config.region), config)
+            reconciler = Reconciler(store, cloud)
+            grants = KmsGrants(
+                boto3.client("kms", region_name=config.region),
+                config.login_kms_key_arn,
+                store,
+            )
             gateway = (
                 Gateway(
                     GatewayConfig.load(gateway_path),
                     config,
                     store,
                     boto3.client("secretsmanager", region_name=config.region),
+                    cloud,
+                    grants,
                 )
                 if gateway_path
                 else None
             )
-            verification = VerificationWorkers(ec2, config, gateway) if gateway else None
             _touch_health()
             if command == "reconcile-once":
                 try:
@@ -190,15 +195,6 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
             signal.signal(signal.SIGTERM, request_stop)
             signal.signal(signal.SIGINT, request_stop)
             while not stop.is_set():
-                if verification:
-                    try:
-                        verification.reconcile()
-                    except Exception as error:
-                        logging.error(
-                            "Provider verification reconciliation failed: %s (status %s)",
-                            type(error).__name__,
-                            getattr(error, "status", "n/a"),
-                        )
                 listed = None
                 if gateway:
                     try:

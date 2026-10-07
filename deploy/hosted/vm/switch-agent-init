@@ -1,0 +1,68 @@
+#!/usr/bin/python3
+"""PID 1 of an agent unit's PID namespace.
+
+switch-agent@.service runs each agent in a PID namespace of its own, so one
+agent cannot reach another through /proc (they share the switch-agent uid,
+which ProtectProc= does not separate). The namespace's first process inherits
+every orphan in it, and a provider's tools leave orphans as a matter of
+course: a background shell command outlives the shell that started it. Node
+reaps only the children it spawned itself, so the agent host cannot be PID 1.
+
+This runs the command it is given, passes it the signals systemd sends, reaps
+every process that exits in the namespace, and exits as the command did. Its
+exit takes whatever is still running in the namespace with it.
+"""
+
+import os
+import signal
+import sys
+
+FORWARDED = (
+    signal.SIGTERM,
+    signal.SIGINT,
+    signal.SIGHUP,
+    signal.SIGQUIT,
+    signal.SIGUSR1,
+    signal.SIGUSR2,
+)
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print("usage: switch-agent-init COMMAND [ARG...]", file=sys.stderr)
+        return 2
+    # Signals that arrive before the child exists are held, then delivered.
+    signal.pthread_sigmask(signal.SIG_BLOCK, FORWARDED)
+    child = os.fork()
+    if child == 0:
+        for number in FORWARDED:
+            signal.signal(number, signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, FORWARDED)
+        try:
+            os.execvp(sys.argv[1], sys.argv[1:])  # nosemgrep
+        except OSError as error:
+            print(f"switch-agent-init: cannot run {sys.argv[1]}: {error}", file=sys.stderr)
+            os._exit(127)
+
+    def forward(number: int, _frame: object) -> None:
+        try:
+            os.kill(child, number)
+        except ProcessLookupError:
+            pass
+
+    for number in FORWARDED:
+        signal.signal(number, forward)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, FORWARDED)
+    while True:
+        try:
+            pid, status = os.wait()
+        except ChildProcessError:
+            return 1
+        except InterruptedError:
+            continue
+        if pid == child:
+            return os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -285,7 +285,7 @@ class LaunchCloud:
     def get_instance(self, machine):
         return None
 
-    def validate_image(self, machine):
+    def validate_image(self, image_id):
         pass
 
     def validate_capacity(self):

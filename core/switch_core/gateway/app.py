@@ -44,9 +44,7 @@ from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
-from switch_core.gateway.hosted_launches import router as hosted_launches_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
-from switch_core.gateway.hosted_relay import router as hosted_relay_router
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
@@ -56,9 +54,6 @@ from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.packages import router as packages_router
 from switch_core.gateway.provider_connections import (
     router as provider_connections_router,
-)
-from switch_core.gateway.provider_verifications import (
-    router as provider_verifications_router,
 )
 from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
@@ -146,16 +141,8 @@ def create_gateway_app(
         raise ValueError(
             "Cloud launch capacity requires enough configured machine slots."
         )
-    app.include_router(hosted_launches_router, tags=["hosted-launches"])
-    app.include_router(hosted_relay_router, tags=["hosted-launches"])
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
-    if (
-        config.hosted_provider_verification_enabled
-        and app.state.hosted_controller_settings is None
-    ):
-        raise ValueError("Provider verification requires a hosted controller.")
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
-    app.include_router(provider_verifications_router, tags=["provider-verifications"])
     app.state.github_connections = (
         GitHubConnections(config.hosted_github_config_path)
         if config.hosted_github_config_path

@@ -1,6 +1,7 @@
 import ReactDOM from 'react-dom/client';
 import { setupNavigationGuards, views } from '@renderer/app/view-registry';
 import { prefetchAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import './index.css';
 import 'devicon/devicon.min.css';
 import 'katex/dist/katex.min.css';
@@ -33,6 +34,7 @@ async function bootstrap() {
     appState.locations.load(),
     prefetchAppSettingsKey('interface'),
     prefetchAppSettingsKey('telemetry'),
+    switchCloudFeature.load(),
   ]);
 
   viewStateCache.populate(allViewState as Record<string, unknown>);

@@ -1645,6 +1645,26 @@ def test_mattermost_creates_the_bot_under_the_display_name() -> None:
     ]
 
 
+def test_overlapping_mattermost_registrations_of_one_agent_create_one_bot() -> None:
+    """Registration and the background provisioner can reach the same agent at
+    once, and every Mattermost call yields, so without a lock both would see no
+    bot and each mint a token and open a socket."""
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, admin = _mattermost_identity_adapter(bridge, [], "full_name")
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await asyncio.gather(
+            adapter.create_agent_identity("switchdev", "a Switch agent"),
+            adapter.create_agent_identity("switchdev", "a Switch agent"),
+        )
+
+    _run(_go())
+
+    assert len(admin.bodies("post", "/bots")) == 1
+    assert len(admin.bodies("post", "/users/bot-switchdev/tokens")) == 1
+
+
 def test_a_mattermost_bot_username_is_never_the_display_name() -> None:
     """The hazard the whole split exists for: a username is the routing handle
     and is also constrained to lowercase alphanumerics, so a label like this

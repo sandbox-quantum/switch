@@ -1,12 +1,10 @@
 import { useQueries } from '@tanstack/react-query';
 import { useCallback, useEffect } from 'react';
+import { useCloudAgents } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { managedCloudServerId } from '@renderer/features/switch-servers/switch-cloud-origin';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import {
-  managedCloudServerId,
-  useCloudLaunches,
-} from '@renderer/features/switch-servers/use-cloud-launches';
 import { providerReadinessQuery } from '@renderer/lib/components/provider-connection-status';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -38,8 +36,9 @@ import { AGENT_PROVIDERS, asAgentProviderId } from '@shared/core/providers/agent
 export function useOnboardingProgress(): OnboardingProgress {
   const { data: agentTypes } = useAgentTypeAvailability();
   const cloudServerId = managedCloudServerId();
-  const cloud = useCloudLaunches(cloudServerId);
-  const hasCloudAgent = cloud.data?.some((agent) => agent.state === 'ready') ?? false;
+  const cloud = useCloudAgents(cloudServerId);
+  const hasCloudAgent =
+    cloud.data?.some((agent) => agent.controller.process === 'running') ?? false;
   const localReadiness = useQueries({
     queries: (agentTypes ?? [])
       .filter((type) => type.available)

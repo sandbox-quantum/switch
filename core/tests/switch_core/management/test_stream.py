@@ -33,6 +33,7 @@ from switch_core.management.notifier import (
     ASSIGNMENT_CHANGED,
     CREDENTIAL_REVOKED,
     OPERATION_PENDING,
+    PROVIDER_CREDENTIAL_CHANGED,
     ControllerNotifier,
 )
 from tests.switch_core.management.harness import (
@@ -83,6 +84,9 @@ class TestTheNotifier:
         notifier.operation_pending(
             "c1", operation_id="o1", kind="agent.restart", agent_id="a"
         )
+        notifier.provider_credential_changed("c1", "claude", 2)
+        notifier.provider_credential_changed("c1", "claude", 3)
+        notifier.provider_credential_changed("c1", "claude", 1)
         notifier.assignment_changed("c2", 9)
 
         assert subscription.wake.is_set()
@@ -92,6 +96,7 @@ class TestTheNotifier:
                 OPERATION_PENDING,
                 {"operation_id": "o1", "kind": "agent.restart", "agent_id": "a"},
             ),
+            (PROVIDER_CREDENTIAL_CHANGED, {"provider": "claude", "revision": 3}),
             (CREDENTIAL_REVOKED, {}),
         ]
         assert not subscription.wake.is_set()
@@ -354,9 +359,7 @@ class TestLiveChanges:
             surface="slack",
             requester_name="Ada",
         )
-        assert harness.protocol.connections.relay_session_command(
-            agent_id, command, worker_only=False
-        )
+        assert harness.protocol.connections.relay_session_command(agent_id, command)
         (frame,) = await take(stream, 1)
         await stream.aclose()
 

@@ -42,9 +42,11 @@ vi.mock('@renderer/lib/ipc', () => ({
     switchServers: { getCloudProviderConnection },
   },
 }));
-vi.mock('@renderer/features/switch-servers/use-cloud-launches', () => ({
+vi.mock('@renderer/features/switch-servers/switch-cloud-origin', () => ({
   managedCloudServerId: () => state.cloudServerId,
-  useCloudLaunches: () => ({ data: [] }),
+}));
+vi.mock('@renderer/features/cloud-agents/use-cloud-agents', () => ({
+  useCloudAgents: () => ({ data: [] }),
 }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { servers: [], isConnected: () => state.cloudSignedIn },

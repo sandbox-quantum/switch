@@ -208,6 +208,20 @@ about settings; they apply what they are given.
   `provider` needs an `advanced_config` the new provider takes.
 
 The assignment entry adds the agent's `name`, `display_name` and `icon_url`, read from the agents row.
+It also carries `skills`, the connection skills the agent's provider is given, as
+`[{slug, files}]`: GitHub's for a definition with a `repository` whose provider takes skills
+(Claude, Codex, OpenCode), the rule a cloud worker applies to its agents, and `[]` otherwise.
+Core derives them as it serves the assignment; nothing stores them. An isolated agent's unit
+installs them; a shared agent host does not, and its controller logs that.
+
+A definition with a `repository` (`{installation_id, repository_id}`) on a Switch cloud
+controller is cloned for the agent, as a cloud worker did. Before starting the agent's unit,
+the controller asks `POST /hosted/github-credential` acting for the agent (its access token
+and `X-Switch-Agent-Id`) for the repository's `owner/name`, and writes it into the unit's
+`workspace.json` with the mirror every agent on the repository shares,
+`/data/repos/<owner>/<name>.git` (lowercased). The unit's prepare step makes the agent's
+`directory`, which must be under `/data/worktrees/<agent_id>/`, a worktree of it. A lookup
+that fails leaves the agent stopped with `repo_clone_failed`.
 
 ### Reason codes
 These are the codes from the contract, plus `forbidden`, `invalid_credential`, `enrollment_code_invalid`,

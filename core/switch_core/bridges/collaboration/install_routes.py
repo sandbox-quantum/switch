@@ -16,7 +16,7 @@ would work today, when the person installing is an operator who can reach it,
 and would break the moment the same flow is offered to a customer who cannot:
 the gateway is on a private hostname and the callback is not. So the outcome is
 rendered here, in one self-contained page, on the origin the browser already
-reached. It is deliberately plain; when there is a place to send people, this
+reached. It links nowhere else; when there is a place to send people, this
 becomes a redirect and the page becomes its fallback.
 
 The event routes answer nobody who reads English, so they answer in status
@@ -58,32 +58,23 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallClaimedError,
     MessagingInstallStateError,
 )
+from switch_core.web_page import PageKind, render_page, status_icon
 
 logger = logging.getLogger(__name__)
 
-_PAGE = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>{title}</title>
-<style>
- body {{ font: 16px/1.5 system-ui, sans-serif; margin: 4rem auto; max-width: 34rem;
-        padding: 0 1rem; color: #1a1a1a; }}
- h1 {{ font-size: 1.25rem; }}
- p {{ color: #444; }}
-</style></head>
-<body><h1>{title}</h1><p>{detail}</p>{extra}</body></html>
-"""
-
 _CONFIRM_FORM = """<dl>
- <dt>{platform} workspace</dt><dd>{workspace}</dd>
- <dt>Switch organisation</dt><dd>{organisation}</dd>
- <dt>Requested by</dt><dd>{requested_by}</dd>
+ <div><dt>{platform} workspace</dt><dd>{workspace}</dd></div>
+ <div><dt>Switch organisation</dt><dd>{organisation}</dd></div>
+ <div><dt>Requested by</dt><dd>{requested_by}</dd></div>
 </dl>
 <form method="post" action="{action}">
  <input type="hidden" name="ticket" value="{ticket}">
- <button type="submit" name="decision" value="connect">Connect</button>
- <button type="submit" name="decision" value="cancel">Cancel</button>
+ <div class="actions">
+  <button type="submit" name="decision" value="connect">Connect</button>
+  <button type="submit" name="decision" value="cancel" class="secondary">Cancel</button>
+ </div>
 </form>
-<p>If you do not recognise this organisation or the person who requested it,
+<p class="note">If you do not recognise this organisation or the person who requested it,
 choose Cancel. Closing this page connects nothing, but leaves the app in your
 workspace until you remove it there.</p>
 """
@@ -102,9 +93,15 @@ _PAGE_HEADERS = {
 }
 
 
-def _page(*, title: str, detail: str, status: int, extra: str = "") -> HTMLResponse:
+def _page(
+    *, title: str, detail: str, status: int, kind: PageKind, extra: str = ""
+) -> HTMLResponse:
     return HTMLResponse(
-        _PAGE.format(title=html.escape(title), detail=html.escape(detail), extra=extra),
+        render_page(
+            title=title,
+            icon=status_icon(kind),
+            body=f"<p>{html.escape(detail)}</p>{extra}",
+        ),
         status_code=status,
         headers=_PAGE_HEADERS,
     )
@@ -118,6 +115,7 @@ def _confirmation_page(pending: PendingInstall) -> HTMLResponse:
             "before it is connected."
         ),
         status=200,
+        kind="info",
         extra=_CONFIRM_FORM.format(
             platform=html.escape(pending.platform),
             workspace=html.escape(
@@ -157,6 +155,7 @@ def create_messaging_install_router(
                 title="Install cancelled",
                 detail=f"{platform} reported: {error}. Nothing was connected.",
                 status=200,
+                kind="info",
             )
 
         if not code or not state:
@@ -167,6 +166,7 @@ def create_messaging_install_router(
                     "the install again from Switch."
                 ),
                 status=400,
+                kind="error",
             )
 
         try:
@@ -185,18 +185,21 @@ def create_messaging_install_router(
                     "install again from Switch."
                 ),
                 status=400,
+                kind="error",
             )
         except MessagingInstallStateError as failure:
             return _page(
                 title="Install link already used",
                 detail=str(failure),
                 status=400,
+                kind="error",
             )
         except MessagingInstallError as failure:
             return _page(
                 title="Install could not be completed",
                 detail=str(failure),
                 status=400,
+                kind="error",
             )
 
         return _confirmation_page(pending)
@@ -226,6 +229,7 @@ def create_messaging_install_router(
                             f"remove the app from the {platform} workspace."
                         ),
                         status=502,
+                        kind="error",
                     )
                 return _page(
                     title="Install cancelled",
@@ -235,6 +239,7 @@ def create_messaging_install_router(
                         "app; remove it there if you no longer want it."
                     ),
                     status=200,
+                    kind="info",
                 )
             install = await service.confirm(platform=platform, ticket=ticket)
         except (InstallTicketError, InstallPlatformMismatch) as failure:
@@ -246,24 +251,28 @@ def create_messaging_install_router(
                     "expired. Start the install again from Switch."
                 ),
                 status=400,
+                kind="error",
             )
         except MessagingInstallStateError as failure:
             return _page(
                 title="Install already decided",
                 detail=str(failure),
                 status=400,
+                kind="error",
             )
         except MessagingInstallClaimedError as failure:
             return _page(
                 title="Workspace already connected",
                 detail=str(failure),
                 status=409,
+                kind="error",
             )
         except MessagingInstallError as failure:
             return _page(
                 title="Install could not be completed",
                 detail=str(failure),
                 status=400,
+                kind="error",
             )
 
         return _page(
@@ -274,6 +283,7 @@ def create_messaging_install_router(
                 "it up there."
             ),
             status=200,
+            kind="success",
         )
 
     async def _deliver(target: WebhookTarget, event: InboundWebhook) -> None:

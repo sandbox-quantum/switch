@@ -1,0 +1,14 @@
+# Agents run as switch-agent and must never reach the instance metadata
+# service: it would hand them the machine role. Loaded by
+# switch-machine-boot.service; switch-agent@.service also sets IPAddressDeny.
+# Declaring then deleting the table makes a reload replace it atomically.
+table inet switch_imds
+delete table inet switch_imds
+
+table inet switch_imds {
+  chain output {
+    type filter hook output priority filter; policy accept;
+    meta skuid "switch-agent" ip daddr 169.254.169.254 drop
+    meta skuid "switch-agent" ip6 daddr fd00:ec2::254 drop
+  }
+}

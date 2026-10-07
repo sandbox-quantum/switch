@@ -1,3 +1,4 @@
+import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
@@ -14,10 +15,13 @@ import { localWatcherControl } from './local-host';
 const REMOTE_POLL_MS = 5_000;
 
 const monitor = new ConnectionHealthMonitor({
+  // A moved agent's Console watcher is off by design: its controller runs it,
+  // so it is not this Console's connection to report on.
   linkedAgents: async (serverId) => {
     if (!(await getServer(serverId))) throw new Error('Switch server not found.');
+    const moved = new Set((await listManagedAgentRecords()).map((record) => record.agentId));
     return (await getAgents()).flatMap((agent) =>
-      agent.serverId === serverId && agent.switchAgentId
+      agent.serverId === serverId && agent.switchAgentId && !moved.has(agent.id)
         ? [
             {
               id: agent.id,

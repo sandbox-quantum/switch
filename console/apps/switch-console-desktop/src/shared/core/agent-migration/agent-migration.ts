@@ -18,12 +18,10 @@ export type MigrationTarget =
 /** The step a move or a return is at, so the UI can say what it is waiting for. */
 export type MigrationStage =
   | 'checking'
-  /** A session of the agent is mid-turn; the move waits for the turn to end. */
-  | 'waiting-for-turn'
+  /** Telling the rooms where a turn was running that it is cut. */
+  | 'telling-rooms'
   | 'adopting'
   | 'stopping-console-watcher'
-  /** Clearing what an earlier stay left on the machine, so its rooms start afresh there. */
-  | 'preparing-machine'
   | 'releasing'
   | 'waiting-for-controller'
   | 'restoring-console-watcher';
@@ -31,8 +29,6 @@ export type MigrationStage =
 export type MigrationOperation = {
   kind: 'moving' | 'returning';
   stage: MigrationStage;
-  /** The sessions holding the move up while it waits for a turn to end. */
-  busySessions: string[];
 };
 
 /** What the controller last reported for a moved agent. */
@@ -82,10 +78,6 @@ export type AgentMigrationState = {
    * it on: this computer's controller for the agent's server, or an SSH host's.
    */
   canEnableTarget: boolean;
-  /** Set on a subagent watched under its parent: it moves with the parent, never alone. */
-  movesWithParent: string | null;
-  /** The subagents watched under this agent, which move with it. */
-  subagents: string[];
   /**
    * What the managed definition does not carry over from the agent's Console
    * configuration. Empty when nothing is lost.
@@ -94,12 +86,34 @@ export type AgentMigrationState = {
   managed: ManagedPlacement | null;
 };
 
+/** A move that went through. `untold` lists the rooms where a turn was cut that could not be told so, and why. */
+export type MoveToManagedResult = { untold: { roomId: string; reason: string }[] };
+
 /** One agent of a "Move all" that did not move, and why. */
 export type MoveAllResult = {
   moved: { agentId: string; name: string }[];
   skipped: { agentId: string; name: string; reason: string }[];
   failed: { agentId: string; name: string; message: string }[];
 };
+
+/** One machine's agents in "Move all"; see `AgentMigrationService.moveAllProgress`. */
+export type MoveAllMachine = {
+  kind: 'this-computer' | 'ssh-host';
+  /** "This computer", or the SSH host's name. */
+  name: string;
+  total: number;
+  managed: number;
+  /** Moving, or coming back, right now. */
+  moving: number;
+  /** Not managed, and kept from moving by something other than the machine not being set up. */
+  blocked: number;
+  /** The commonest reason among the blocked ones; null when none is. */
+  reason: string | null;
+  /** The machine is not running managed agents yet, and "Move all" turns it on. */
+  setUpOnMove: boolean;
+};
+
+export type MoveAllProgress = { machines: MoveAllMachine[] };
 
 export type AgentMigrationEvent = {
   agentId: string;
@@ -108,23 +122,11 @@ export type AgentMigrationEvent = {
 };
 
 /**
- * The rule a move follows about work in progress, said once so the UI and the
- * errors agree.
+ * What a move or a return does to work in progress and to conversations, said
+ * once so the UI and the errors agree.
  */
-export const IDLE_RULE =
-  'An agent moves only between turns: if one of its sessions is working, the move waits for that turn to end and never interrupts it.';
-
-/**
- * What happens to an agent's conversations when it moves. A session's saved
- * state is bound to the address it reaches Switch at, and a controller's
- * sessions reach it through the controller's local relay, so a session cannot
- * be resumed across the move.
- */
-export const SESSIONS_ON_MOVE =
-  'Conversations do not move with it: the next message in each room starts a fresh session on the machine. Its sessions here stay in Console to read.';
-
-export const SESSIONS_ON_RETURN =
-  'Each room picks up the conversation it had in this Console before the move; what was said while it was managed stays in the sessions the machine ran.';
+export const MOVE_RULE =
+  'It moves straight away: a turn still running is cut, and its room is asked to send the request again. Conversations do not move with it: the next message in each room starts a fresh conversation.';
 
 /**
  * A machine cannot be turned off or removed while it runs agents this Console

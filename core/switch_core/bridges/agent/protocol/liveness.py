@@ -16,7 +16,7 @@ from typing import Literal
 HEARTBEAT_INTERVAL_SECONDS = 2.0
 HEARTBEAT_TTL_SECONDS = 6.0
 
-CloseCode = Literal["taken_over", "heartbeat_lapsed", "closed", "launch_superseded"]
+CloseCode = Literal["taken_over", "heartbeat_lapsed", "closed"]
 
 
 @dataclass(frozen=True, slots=True)

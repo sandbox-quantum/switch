@@ -1,4 +1,4 @@
-"""Telling Core, at startup, which controller runs each managed agent.
+"""Telling Core which controller runs each managed agent.
 
 Core keeps the bindings in memory (`ControllerPresence`), so a restart forgets
 them, and they must be back before the agent bridge serves: until then a
@@ -6,12 +6,14 @@ controller-backed agent would read as directly connected, and its own API key
 would be let in. They are read from every tenant, which is a question no
 tenant can be scoped to, so the tenants come from the exemption
 (`db/tenant_lookup.py`) and each tenant's definitions are then read under its
-own policy.
+own policy. `management/reload.py` reads them the same way afterwards, to
+follow changes made outside this process.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,17 +31,26 @@ from switch_core.management.service import binding_of
 logger = logging.getLogger(__name__)
 
 
-async def load_bindings(
+@dataclass(frozen=True)
+class Placements:
+    """Every placed definition as a binding, the controllers already revoked
+    that agents are still placed on, and the assignment revision of each
+    controller an agent is placed on."""
+
+    bindings: list[Binding]
+    revoked: set[str]
+    revisions: dict[str, int]
+
+
+async def read_placements(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     definitions: AgentDefinitionStore,
     controllers: AgentControllerStore,
-    presence: ControllerPresence,
-) -> int:
-    """Load every placed definition into `presence`, and mark the controllers
-    already revoked that agents are still placed on. Returns how many."""
+) -> Placements:
     bindings: list[Binding] = []
     revoked: set[str] = set()
+    revisions: dict[str, int] = {}
     for tenant_id in await all_tenant_ids(session_factory):
         async with tenant_session(session_factory, tenant_id) as session:
             placed_on: dict[str, AgentController] = {}
@@ -59,11 +70,29 @@ async def load_bindings(
                             f"{row.controller_id}, which does not exist"
                         )
                     placed_on[controller.id] = controller
+                    revisions[controller.id] = controller.assignment_revision
                 if controller.revoked_at is not None:
                     revoked.add(controller.id)
                 bindings.append(binding_of(tenant_id, row, controller))
-    presence.load(bindings)
-    for controller_id in revoked:
+    return Placements(bindings, revoked, revisions)
+
+
+async def load_bindings(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    definitions: AgentDefinitionStore,
+    controllers: AgentControllerStore,
+    presence: ControllerPresence,
+) -> int:
+    """Load every placed definition into `presence`, and mark the controllers
+    already revoked that agents are still placed on. Returns how many."""
+    placements = await read_placements(
+        session_factory=session_factory,
+        definitions=definitions,
+        controllers=controllers,
+    )
+    presence.load(placements.bindings)
+    for controller_id in placements.revoked:
         presence.revoke_controller(controller_id)
-    logger.info("Loaded %d controller binding(s) into Core", len(bindings))
-    return len(bindings)
+    logger.info("Loaded %d controller binding(s) into Core", len(placements.bindings))
+    return len(placements.bindings)

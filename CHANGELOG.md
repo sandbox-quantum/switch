@@ -44,6 +44,30 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **The Helm chart turns agent management on from its values.**
+  `switchCore.agentManagement.enabled` and `secrets.controllerTokenSecret` (or
+  `CONTROLLER_TOKEN_SECRET` in `secrets.existingSecret`) set
+  `AGENT_MANAGEMENT_ENABLED`, `CONTROLLER_TOKEN_SECRET` and
+  `CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core and its migration Job. Until
+  now they had to be added with `kubectl set env` after each upgrade, rolling the
+  pods twice. Rendering fails when the secret is missing or shorter than 32
+  characters. Remove variables set by hand before the first upgrade that renders
+  them (see the chart README).
+
+#### Fixed
+- **The Helm chart's Ingress now routes every agent API path to switch-core.**
+  `/agent-sessions` (session starts, turn activity, approval requests and their
+  answers), `/version` and `/deeplink` were missing from
+  `ingress.agentApiPaths` and from the sample Ingress, and so is `/v1`, where
+  agents controllers enroll and connect. Behind a path-routed
+  ingress they reached the gateway, which answered with its web page. Agent
+  sessions then failed mid-turn with `Unexpected token '<'`, and activity and
+  approval cards never reached messaging platforms. An install that overrides
+  `ingress.agentApiPaths`, or routes with its own Ingress, must add these paths
+  itself. A test now fails when the agent bridge serves a path the chart does
+  not route.
+
 ### [0.29.0] - 2026-09-29
 
 #### Added

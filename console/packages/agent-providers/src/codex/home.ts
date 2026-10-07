@@ -1,7 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
+import { shareLoginDirectory } from '../host/host-permissions';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
 
 /** Native rollouts remain in the persistent session directory on the execution host. */
@@ -11,17 +23,18 @@ export async function prepareCodexSessionHome(input: {
   sourceHome: string;
   config: string;
   /**
-   * `refresh` replaces the session's login whenever the source login changes
-   * (a hosted worker, whose owner can reconnect the provider); `copy-once`
-   * keeps whatever the session refreshed after its first copy.
+   * `shared` links the session's login to the source login, which its owner
+   * can reconnect (a host whose login Switch holds); `copy-once` keeps
+   * whatever the session refreshed after its first copy.
    */
-  auth: 'copy-once' | 'refresh';
+  auth: 'copy-once' | 'shared';
 }): Promise<string> {
   const key = createHash('sha256').update(input.sessionId).digest('hex');
   const home = join(input.root, key);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await chmod(home, 0o700);
-  if (input.auth === 'refresh') await refreshCodexAuthentication(home, input.sourceHome);
+  await shareLoginDirectory(home);
+  if (input.auth === 'shared') await linkCodexAuthentication(home, input.sourceHome);
   else await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
   const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
@@ -60,33 +73,34 @@ async function copyCodexAuthenticationOnce(home: string, sourceHome: string): Pr
   }
 }
 
-async function replacePrivateFile(path: string, value: string): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, value, { mode: 0o600, flag: 'wx' });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
 /**
- * Keeps a native token refresh until the source login changes, then replaces
- * the session's login with the new one.
+ * Points the session's auth.json at the host's, so every session refreshes
+ * the one login: Codex rotates the refresh token on use, and separate copies
+ * would each spend it and sign the others out with `refresh_token_reused`.
+ * Codex writes a refreshed login through the link, and a reconnected login
+ * replaced on the host is what every session reads next.
  */
-export async function refreshCodexAuthentication(home: string, sourceHome: string): Promise<void> {
+export async function linkCodexAuthentication(home: string, sourceHome: string): Promise<void> {
+  const source = join(sourceHome, 'auth.json');
   const authPath = join(home, 'auth.json');
-  const sourceAuth = await optionalText(join(sourceHome, 'auth.json'));
-  if (sourceAuth === null) return;
-  const fingerprint = createHash('sha256').update(sourceAuth).digest('hex');
-  const marker = join(home, '.switch-auth-source');
-  const previous = await optionalText(marker);
-  const auth = await lstat(authPath).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return null;
+  try {
+    await lstat(source);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  const current = await readlink(authPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT' || error.code === 'EINVAL') return null;
     throw error;
   });
-  if (auth && !auth.isFile()) throw new Error('Codex auth.json must be a regular file.');
-  if (!auth || (previous !== null && previous !== fingerprint))
-    await replacePrivateFile(authPath, sourceAuth);
-  await replacePrivateFile(marker, fingerprint);
+  if (current !== source) {
+    const temporary = `${authPath}.${randomUUID()}.tmp`;
+    try {
+      await symlink(source, temporary, 'file');
+      await rename(temporary, authPath);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  }
+  await rm(join(home, '.switch-auth-source'), { force: true });
 }

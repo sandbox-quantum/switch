@@ -14,35 +14,72 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ConnectionIcon } from './connection-icon';
 import { filterConnections } from './connections-filter';
-import { ManagedGitHubStep } from './managed-github-step';
+import { gitHubReconnectMessage, ManagedGitHubStep } from './managed-github-step';
 
-const STATUS_LABEL: Record<ConnectionCatalogEntry['status'], string> = {
+type CardStatus = ConnectionCatalogEntry['status'] | 'checking' | 'reconnect' | 'error';
+
+const STATUS_LABEL: Record<CardStatus, string> = {
   connected: 'Connected',
   not_connected: 'Not connected',
   coming_soon: 'Coming soon',
+  checking: 'Checking…',
+  reconnect: 'Reconnect required',
+  error: 'Error',
 };
+
+/**
+ * The catalog only records that a GitHub credential is saved, so a saved but
+ * expired or revoked authorization is checked against the live status.
+ */
+export type GitHubLiveStatus =
+  | { status: 'checking' | 'connected' | 'not_connected' }
+  | { status: 'reconnect' | 'error'; message: string };
 
 export type ConnectionCatalog = {
   connections: ConnectionCatalogEntry[] | null;
   error: string | null;
+  github: GitHubLiveStatus | null;
   reload: () => Promise<void>;
 };
 
 export function useConnectionCatalog(serverId: string): ConnectionCatalog {
   const [connections, setConnections] = useState<ConnectionCatalogEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [github, setGitHub] = useState<GitHubLiveStatus | null>(null);
   const reload = useCallback(async () => {
     setError(null);
+    let entries: ConnectionCatalogEntry[];
     try {
-      setConnections(await rpc.switchServers.getConnectionCatalog(serverId));
+      entries = await rpc.switchServers.getConnectionCatalog(serverId);
     } catch (cause) {
       setError(failureText(cause, 'Could not load connections.'));
+      return;
+    }
+    setConnections(entries);
+    if (!entries.some((entry) => entry.slug === 'github' && entry.status === 'connected')) {
+      setGitHub(null);
+      return;
+    }
+    setGitHub({ status: 'checking' });
+    try {
+      setGitHub({ status: (await rpc.switchServers.getGitHubConnection(serverId)).status });
+    } catch (cause) {
+      const reconnectMessage = gitHubReconnectMessage(cause);
+      setGitHub(
+        reconnectMessage === null
+          ? { status: 'error', message: failureText(cause, 'Could not check GitHub access.') }
+          : { status: 'reconnect', message: reconnectMessage }
+      );
     }
   }, [serverId]);
   useEffect(() => {
     void reload();
   }, [reload]);
-  return { connections, error, reload };
+  return { connections, error, github, reload };
+}
+
+function cardStatus(entry: ConnectionCatalogEntry, github: GitHubLiveStatus | null): CardStatus {
+  return entry.slug === 'github' && github ? github.status : entry.status;
 }
 
 export function ConnectionsGrid({
@@ -56,7 +93,7 @@ export function ConnectionsGrid({
   onQueryChange: (query: string) => void;
   onOpen: (slug: string) => void;
 }) {
-  const { connections, error, reload } = catalog;
+  const { connections, error, github, reload } = catalog;
   const visible = connections ? filterConnections(connections, query) : [];
   return (
     <>
@@ -96,6 +133,11 @@ export function ConnectionsGrid({
           >
             {visible.map((connection) => {
               const available = connection.enabled && connection.slug === 'github';
+              const status = cardStatus(connection, github);
+              const problem =
+                connection.slug === 'github' && github && 'message' in github
+                  ? github.message
+                  : null;
               return (
                 <button
                   key={connection.slug}
@@ -115,10 +157,17 @@ export function ConnectionsGrid({
                     </span>
                     <Badge
                       className="mt-1.5"
-                      variant={connection.status === 'connected' ? 'outline' : 'secondary'}
+                      variant={
+                        status === 'connected' ? 'outline' : problem ? 'destructive' : 'secondary'
+                      }
                     >
-                      {STATUS_LABEL[connection.status]}
+                      {STATUS_LABEL[status]}
                     </Badge>
+                    {problem && (
+                      <span role="alert" className="mt-1 block text-xs text-destructive">
+                        {problem}
+                      </span>
+                    )}
                   </span>
                 </button>
               );
@@ -161,9 +210,7 @@ export function ConnectionsStep({
       />
     );
 
-  const githubConnected = catalog.connections?.some(
-    (connection) => connection.slug === 'github' && connection.status === 'connected'
-  );
+  const githubConnected = catalog.github?.status === 'connected';
   return (
     <>
       <ConnectionsGrid catalog={catalog} query={query} onQueryChange={setQuery} onOpen={setOpen} />

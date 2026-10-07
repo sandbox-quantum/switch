@@ -4,7 +4,9 @@ The managed service is Switch Cloud: point a run at it with `SWITCH_CLOUD_URL`,
 or bake it into a build with `MAIN_VITE_SWITCH_CLOUD_URL` (see "Switch Cloud" in
 `AGENTS.md`). The gateway and agent API share that origin. The value is public
 build configuration, not a secret. With neither set the Cloud is not offered,
-and an invalid value is reported where the Cloud would be.
+and an invalid value is reported where the Cloud would be. The Cloud is also
+off unless `SWITCH_CLOUD_ENABLED` (or `MAIN_VITE_SWITCH_CLOUD_ENABLED` in a
+build) is `true`.
 
 Add server → Connect to Switch Cloud reuses server registration, password/SSO
 sign-in (or creating an account, where the server allows sign-up) and encrypted

@@ -173,14 +173,16 @@ class SwitchConfig(BaseSettings):
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
-    hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
-    hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
-    hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
+    hosted_idle_stop_minutes: int = Field(default=1440, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
     hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
-    hosted_provider_verification_enabled: bool = False
     hosted_claude_verifier_path: str | None = None
+    # The KMS key provider logins are sealed under for cloud machines that run
+    # the agent controller, and its region. Required as soon as any machine
+    # runs runtime=controller: sealing refuses to run without them.
+    hosted_login_kms_key_arn: str | None = None
+    hosted_login_kms_region: str | None = None
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -338,6 +340,22 @@ class SwitchConfig(BaseSettings):
     # timezone it is in; the schedule is anchored to what was last sent, not
     # to how long this process has been up.
     telemetry_snapshot_interval_hours: float = 24.0
+
+    # Which Amplitude project this deployment's usage lands in, sent as
+    # `flint_env`. The relay keeps one project per environment and files an
+    # event naming none, or `prod`, under production — which is what every
+    # customer's deployment is, and why it is the default. Our own non-customer
+    # servers say so here: `dev` for the development deployment, `local` for a
+    # developer's machine (`just init-env` writes it), so their usage never
+    # reads as adoption. Any other value is refused at startup, because the
+    # relay drops an event naming an environment it has no project for.
+    telemetry_environment: Literal["prod", "staging", "dev", "local"] = "prod"
+
+    # Whether this deployment is one of the company's own, sent as
+    # `flint_internal` so staff usage can be told from adoption. A customer's
+    # deployment never sets it. Within a deployment, staff accounts are counted
+    # separately by email domain whether or not this is set.
+    telemetry_internal: bool = False
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { z } from 'zod';
 import { ConfigurationError } from './errors';
 import type { Logger } from './log';
@@ -19,6 +20,8 @@ import {
   type OperationResult,
   operationSchema,
   PROTOCOL_VERSION,
+  type Provider,
+  repositoryCredentialSchema,
   type StatusReport,
   type StatusResponse,
   statusResponseSchema,
@@ -31,6 +34,27 @@ export const PROTOCOL_HEADER = 'Switch-Controller-Protocol';
 export const CONTROLLER_CLIENT = 'switch-agent-controller';
 
 export type Fetch = typeof fetch;
+
+export const HOST_INSTANCE_HEADER = 'X-Switch-Host-Instance-Id';
+export const HOST_BOOT_HEADER = 'X-Switch-Host-Boot-Id';
+
+/**
+ * A fetch that names the cloud instance and boot it runs on in every request,
+ * which the server requires before it exchanges a cloud controller's
+ * credential for a token.
+ */
+export function withHostIdentity(
+  fetchImpl: Fetch,
+  host: { instanceId: string; bootId: string }
+): Fetch {
+  return (input, init) => {
+    const merged = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, name) => merged.set(name, value));
+    merged.set(HOST_INSTANCE_HEADER, host.instanceId);
+    merged.set(HOST_BOOT_HEADER, host.bootId);
+    return fetchImpl(input, { ...init, headers: merged });
+  };
+}
 
 /**
  * A refusal from the server, read from its `{"error": {code, message,
@@ -196,6 +220,18 @@ export async function exchangeToken(
 /** The shortest lifetime a token is treated as having, so a skewed clock cannot spin. */
 const MIN_LIFETIME_MS = 30_000;
 
+const MISMATCH_FIRST_WAIT_MS = 1_000;
+const MISMATCH_MAX_WAIT_MS = 30_000;
+
+/**
+ * The server does not yet (or no longer) know this instance as the machine's:
+ * it is still starting, or was replaced. Waiting is the only answer, and
+ * running agents meanwhile could duplicate the replacement's.
+ */
+export function isInstanceMismatch(error: unknown): boolean {
+  return error instanceof ControllerApiError && error.code === 'instance_mismatch';
+}
+
 /**
  * The controller's access token: exchanged from the credential on first use,
  * and again once 80% of its lifetime has passed or when the server refuses it.
@@ -230,14 +266,31 @@ export class AccessTokens {
   }
 
   private async exchange(): Promise<string> {
-    const issuedAt = this.deps.now();
     const credential = await this.deps.credential();
-    const response = await exchangeToken(
-      this.deps.fetch,
-      this.deps.server,
-      this.deps.controllerId,
-      credential
-    );
+    let issuedAt = this.deps.now();
+    let response: TokenResponse;
+    for (let wait = MISMATCH_FIRST_WAIT_MS; ; wait = Math.min(wait * 2, MISMATCH_MAX_WAIT_MS)) {
+      issuedAt = this.deps.now();
+      try {
+        response = await exchangeToken(
+          this.deps.fetch,
+          this.deps.server,
+          this.deps.controllerId,
+          credential
+        );
+        break;
+      } catch (error) {
+        if (!isInstanceMismatch(error)) throw error;
+        const retryAfter = (error as ControllerApiError).retryAfterS;
+        const waitMs =
+          retryAfter === null ? wait : Math.min(retryAfter * 1000, MISMATCH_MAX_WAIT_MS);
+        this.deps.log.warn(
+          'The server does not recognise this instance as the machine’s yet; retrying the token exchange.',
+          { waitMs, message: (error as ControllerApiError).message }
+        );
+        await delay(waitMs);
+      }
+    }
     const expiresAt = Date.parse(response.expires_at);
     if (Number.isNaN(expiresAt))
       throw new ControllerApiError(
@@ -342,6 +395,41 @@ export class ControllerClient {
       etag: response.headers.get('ETag'),
       assignment: await parsed(response, assignmentSchema),
     };
+  }
+
+  /**
+   * The `owner/name` of the repository an agent on this controller works in,
+   * as Core answers it while issuing the agent's repository token (the token
+   * is not kept: the agent's unit asks for its own).
+   */
+  async repositoryName(agentId: string): Promise<string> {
+    const response = await this.request(`${this.deps.server}/hosted/github-credential`, {
+      method: 'POST',
+      headers: { 'X-Switch-Agent-Id': agentId, [PROTOCOL_HEADER]: String(PROTOCOL_VERSION) },
+    });
+    return (await parsed(response, repositoryCredentialSchema)).repository;
+  }
+
+  /** The sealed login envelope for a provider, or null when the owner has none. */
+  async providerCredential(provider: Provider): Promise<unknown> {
+    const response = await this.request(
+      `${this.controllerPath}/provider-credentials/${encodeURIComponent(provider)}`,
+      { method: 'GET' },
+      (status) => status === 200 || status === 404
+    );
+    if (response.status === 404) {
+      const error = await failure(response);
+      if (error.code === 'unexpected_response')
+        throw new ControllerApiError(
+          404,
+          'not_supported',
+          'The server has no provider-credentials route; it cannot serve sealed logins.',
+          false,
+          null
+        );
+      return null;
+    }
+    return response.json();
   }
 
   async putStatus(report: StatusReport): Promise<StatusResponse> {

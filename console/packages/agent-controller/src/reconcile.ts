@@ -1,9 +1,12 @@
+import { hostedSkillsSchema } from '@switch-console/agent-providers';
+import { z } from 'zod';
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { isSafeSegment } from './paths';
 import { type AgentObservation, type AgentRuntime, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
+  type AgentDefinition,
   type Assignment,
   isProvider,
   type Provider,
@@ -33,6 +36,10 @@ export type Action =
   | { kind: 'invalid'; agentId: string; revision: number; detail: string; stop: boolean }
   | { kind: 'hold'; agentId: string; why: string };
 
+function launchSkills(skills: AgentDefinition['skills']) {
+  return z.union([z.tuple([]), hostedSkillsSchema]).safeParse(skills);
+}
+
 /** Why an assigned agent cannot be applied on this machine as defined, or null when it can. */
 export function definitionProblem(entry: AgentAssignment): string | null {
   if (!isSafeSegment(entry.agent_id))
@@ -46,6 +53,8 @@ export function definitionProblem(entry: AgentAssignment): string | null {
   if (advancedProblem) return advancedProblem;
   if (entry.definition.isolation === 'unknown')
     return 'This controller does not know the isolation this agent asks for.';
+  const skillsProblem = launchSkills(entry.definition.skills).error;
+  if (skillsProblem) return `The agent's skills are not valid: ${skillsProblem.message}`;
   if (entry.definition.directory === null && !isSafeSegment(entry.definition.name))
     return `The agent name '${entry.definition.name}' cannot be used as a workspace directory name; set a directory.`;
   return null;
@@ -253,11 +262,27 @@ export async function startAgent(
       (observation.configured !== null &&
         (observation.configured.provider !== provider || observation.configured.cwd !== cwd));
     const restart = action.restart || replaceIdentity;
+    const isolation = definition.isolation === 'isolated' ? 'isolated' : 'shared';
+    const skills = launchSkills(definition.skills);
+    if (!skills.success)
+      throw new ReasonedError('definition_invalid', `Invalid skills: ${skills.error.message}`);
+    const repository = definition.repository ?? null;
+    if (isolation === 'shared' && (skills.data.length > 0 || repository !== null))
+      deps.log.warn(
+        'A shared agent host installs no skills and clones no repository; only an isolated one does',
+        {
+          agentId,
+          skills: skills.data.map((skill) => skill.slug),
+          repository: repository !== null,
+        }
+      );
     await deps.runtime.launch(agentId, template, {
-      isolation: definition.isolation === 'isolated' ? 'isolated' : 'shared',
+      isolation,
       restart,
       replaceIdentity,
       clearTakenOver: action.clearTakenOver,
+      skills: skills.data,
+      repository,
     });
     deps.store.recordApplied(agentId, entry.revision, now);
     if (action.relaunch && (restart || !observation.alive))
@@ -329,7 +354,18 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
       observations.set(entry.agent_id, emptyObservation());
       continue;
     }
-    observations.set(entry.agent_id, await deps.runtime.observe(entry.agent_id));
+    try {
+      observations.set(entry.agent_id, await deps.runtime.observe(entry.agent_id));
+    } catch (error) {
+      deps.log.warn('Could not observe agent state; treating as empty', {
+        agentId: entry.agent_id,
+        error: errorMessage(error),
+      });
+      observations.set(entry.agent_id, {
+        ...emptyObservation(),
+        failure: errorMessage(error),
+      });
+    }
     if (entry.desired_state !== 'running') continue;
     try {
       if (await deps.ensureCredentials(entry.agent_id)) credentialsChanged.add(entry.agent_id);

@@ -128,10 +128,34 @@
     }
   },
   {
+    "event": "provider.credential_changed",
+    "data": {
+      "provider": "claude",
+      "revision": 2
+    }
+  },
+  {
     "event": "agent.detached",
     "data": {
       "agent_id": "00000000-0000-4000-8000-0000000000a1",
       "reason": "unassigned"
+    }
+  },
+  {
+    "event": "agent.control",
+    "data": {
+      "relay_id": "00000000-0000-4000-8000-0000000000f2",
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "message": {
+        "list": true
+      },
+      "deadline_ms": 1767225630000
+    }
+  },
+  {
+    "event": "agent.control_cancel",
+    "data": {
+      "relay_id": "00000000-0000-4000-8000-0000000000f2"
     }
   },
   {

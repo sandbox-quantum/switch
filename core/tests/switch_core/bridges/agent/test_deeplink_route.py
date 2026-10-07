@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, _is_public_path
 from switch_core.bridges.agent.deeplink import router
+from switch_core.web_page import LOGO_SVG
 
 
 def _client() -> TestClient:
@@ -63,6 +64,13 @@ class TestDeeplinkHandoff:
         assert "Opening Switch Console" in resp.text
         assert "Switch Console is open" in resp.text
         assert "Open manually" in resp.text
+
+    def test_page_uses_the_shared_switch_shell(self) -> None:
+        resp = _client().get("/deeplink/session", params={"room": "r"})
+
+        assert LOGO_SVG in resp.text
+        assert 'id="logo"' in resp.text
+        assert 'id="check" hidden' in resp.text
 
     def test_a_manual_link_survives_without_javascript(self) -> None:
         resp = _client().get("/deeplink/session", params={"room": "r"})

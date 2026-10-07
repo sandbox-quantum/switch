@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Agent, AgentDefinition
+from switch_core.db.models import Agent, AgentController, AgentDefinition
 
 
 class AgentDefinitionStore:
@@ -48,6 +48,26 @@ class AgentDefinitionStore:
             )
         )
         return result.scalar_one_or_none()
+
+    async def on_cloud_controller(
+        self, session: AsyncSession, tenant_id: str, agent_id: str
+    ) -> bool:
+        """Whether the agent is placed on an ec2 controller, a Switch cloud
+        machine's, which makes it a cloud agent."""
+        placed = await session.scalar(
+            select(AgentDefinition.agent_id)
+            .join(
+                AgentController,
+                (AgentController.tenant_id == AgentDefinition.tenant_id)
+                & (AgentController.id == AgentDefinition.controller_id),
+            )
+            .where(
+                AgentDefinition.tenant_id == tenant_id,
+                AgentDefinition.agent_id == agent_id,
+                AgentController.kind == "ec2",
+            )
+        )
+        return placed is not None
 
     async def list_for_owner(
         self, session: AsyncSession, tenant_id: str, owner_id: str

@@ -6,6 +6,7 @@ import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
 import { type AgentAssignment, statusReportSchema } from './schemas';
 import {
+  FixedProviderLocator,
   mapAgentProcess,
   PathProviderLocator,
   PROVIDER_TTL_MS,
@@ -35,6 +36,7 @@ function entry(overrides: Partial<AgentAssignment> = {}): AgentAssignment {
       auto_approve: false,
       directory: null,
       isolation: 'shared',
+      skills: [],
     },
     ...overrides,
   };
@@ -191,12 +193,12 @@ describe('providerStatusFrom', () => {
   });
 
   it('maps a missing CLI and each readiness answer', () => {
-    expect(providerStatusFrom('claude', null, null, at)).toMatchObject({
+    expect(providerStatusFrom('claude', null, null, at, 'local')).toMatchObject({
       installed: false,
       auth: 'unknown',
       reason: 'provider_not_installed',
     });
-    expect(providerStatusFrom('claude', located, readiness('authenticated'), at)).toEqual({
+    expect(providerStatusFrom('claude', located, readiness('authenticated'), at, 'local')).toEqual({
       provider: 'claude',
       installed: true,
       version: '2.0.0',
@@ -204,18 +206,25 @@ describe('providerStatusFrom', () => {
       auth_source: 'local',
       checked_at: at,
     });
-    expect(providerStatusFrom('claude', located, readiness('unauthenticated'), at)).toMatchObject({
+    expect(
+      providerStatusFrom('claude', located, readiness('authenticated'), at, 'sealed')
+    ).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(
+      providerStatusFrom('claude', located, readiness('unauthenticated'), at, 'local')
+    ).toMatchObject({
       auth: 'missing',
       reason: 'provider_login_missing',
     });
-    expect(providerStatusFrom('claude', located, readiness('unconfigured'), at)).toMatchObject({
+    expect(
+      providerStatusFrom('claude', located, readiness('unconfigured'), at, 'local')
+    ).toMatchObject({
       auth: 'missing',
     });
-    expect(providerStatusFrom('claude', located, readiness('unknown'), at)).toMatchObject({
+    expect(providerStatusFrom('claude', located, readiness('unknown'), at, 'local')).toMatchObject({
       auth: 'unknown',
       auth_source: null,
     });
-    expect(providerStatusFrom('claude', located, null, at)).toMatchObject({
+    expect(providerStatusFrom('claude', located, null, at, 'local')).toMatchObject({
       auth: 'unknown',
       reason: 'internal',
     });
@@ -308,6 +317,7 @@ describe('StatusCollector', () => {
       workspacesDir: join(dir, 'workspaces'),
       version: '0.1.0',
       now: () => clock,
+      log: silentLogger,
     });
     store.recordApplied('agent-1', 2, '2026-01-01T11:00:00Z');
     store.recordRestart('agent-1', NOW - 60_000);
@@ -324,7 +334,11 @@ describe('StatusCollector', () => {
       since: '2026-01-01T11:30:00Z',
       sessions: { active: 2, ids: ['session-a', 'session-b'] },
       restarts_10m: 1,
+      oom_kills: 0,
     });
+    expect(first.activity).toEqual([
+      { agent_id: 'agent-1', busy: true, sessions: 2, last_activity_at: null },
+    ]);
     expect(first.agents[0]!.directory).toBeNull();
     expect(first.machine.sessions_running).toBe(2);
     expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
@@ -358,5 +372,100 @@ describe('StatusCollector', () => {
       since: new Date(clock).toISOString(),
     });
     expect(statusFingerprint(third)).not.toBe(statusFingerprint(resolved));
+    expect(third.activity[0]!.busy).toBe(false);
+
+    runtime.agents.set(
+      'agent-1',
+      observed({
+        alive: true,
+        health: health('connected'),
+        activity: { busy: false, lastActivityAt: '2026-01-01T11:00:00Z' },
+        unit: { restarts10m: 2, oomKills: 1 },
+      })
+    );
+    const unit = await collector.collect(assignment);
+    expect(unit.agents[0]).toMatchObject({ restarts_10m: 3, oom_kills: 1 });
+    expect(unit.activity).toEqual([
+      { agent_id: 'agent-1', busy: false, sessions: 2, last_activity_at: '2026-01-01T11:00:00Z' },
+    ]);
+  });
+
+  it('reports one agent as failed when observe() throws, without blocking others', async () => {
+    const runtime = new FakeRuntime();
+    const providers = new ProviderStatuses({
+      locator: new FakeLocator(),
+      runtime,
+      probeCwd: dir,
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    await providers.check('claude');
+    const collector = new StatusCollector({
+      store,
+      runtime,
+      providers,
+      attached: () => false,
+      dataDir: dir,
+      workspacesDir: join(dir, 'workspaces'),
+      version: '0.1.0',
+      now: () => NOW,
+      log: silentLogger,
+    });
+    store.recordApplied('agent-1', 1, '2026-01-01T11:00:00Z');
+    store.recordApplied('agent-2', 1, '2026-01-01T11:00:00Z');
+    runtime.agents.set('agent-1', observed({ alive: true, health: health('connected') }));
+    runtime.agents.set('agent-2', observed({ alive: true, health: health('connected') }));
+    runtime.observeFailures.set(
+      'agent-1',
+      new Error('health.json is a symbolic link; it is not followed.')
+    );
+    const assignment = {
+      revision: 1,
+      agents: [entry({ agent_id: 'agent-1' }), entry({ agent_id: 'agent-2' })],
+    };
+    const report = await collector.collect(assignment);
+    expect(report.agents).toHaveLength(2);
+    expect(report.agents[0]).toMatchObject({
+      agent_id: 'agent-1',
+      process: 'failed',
+      reason: 'internal',
+    });
+    expect(report.agents[0]!.detail).toContain('symbolic link');
+    expect(report.agents[1]).toMatchObject({
+      agent_id: 'agent-2',
+      process: 'running',
+      attached: false,
+    });
+  });
+});
+
+describe('FixedProviderLocator', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'controller-fixed-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('reads each CLI at its configured path, and reports sealed logins', async () => {
+    const script = join(dir, 'cursor-agent');
+    writeFileSync(script, '#!/bin/sh\necho "2026.01.15-abc"\n');
+    chmodSync(script, 0o755);
+    const missing = join(dir, 'missing');
+    const locator = new FixedProviderLocator({
+      claude: missing,
+      codex: missing,
+      opencode: missing,
+      antigravity: missing,
+      cursor: script,
+    });
+    expect(locator.authSource).toBe('sealed');
+    expect(await locator.locate('cursor')).toEqual({ path: script, version: '2026.01.15-abc' });
+    expect(await locator.locate('claude')).toBeNull();
+  });
+
+  it('reports a provider the image did not install as absent', async () => {
+    const locator = new FixedProviderLocator({ claude: join(dir, 'claude') });
+    expect(await locator.locate('codex')).toBeNull();
   });
 });

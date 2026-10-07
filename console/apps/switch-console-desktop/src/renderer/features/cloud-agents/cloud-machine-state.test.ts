@@ -14,6 +14,7 @@ const sleepingMachine: CloudMachine = {
   error_code: null,
   retain_until: null,
   heartbeat_at: '2026-01-01T00:00:00Z',
+  controller_id: null,
   disk: { total_bytes: 214748364800, available_bytes: 204010946560 },
   memory: { total_bytes: 17179869184, available_bytes: 12884901888 },
   agents: ['req-0000000000000001'],

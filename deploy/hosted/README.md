@@ -19,10 +19,10 @@ workers never join that cluster.
 - `controller/`: Python CLI/service using boto3, SQLite durable desired/observed
   state and an exclusive reconciliation lock. Create/start/stop/delete requests
   are local operator actions, not an unauthenticated web API.
-- `worker/`: root-owned AMI launcher. It validates the exact attached EBS volume,
-  retrieves one scoped Secrets Manager document, prepares tmpfs credential files
-  and starts the runtime as an unprivileged account. Retained boot identity prevents
-  old process IDs from being treated as ownership evidence after a reboot.
+- `vm/`: the machine image's root boot step and units. It validates the exact
+  attached EBS volume, retrieves one scoped Secrets Manager document, writes the
+  controller's configuration and credential to tmpfs, and runs each agent as an
+  unprivileged account under the shared agent controller.
 - `terraform/`: a separate worker VPC, private worker subnet, NAT egress, no inbound
   worker access, restricted worker roles, and an IRSA role for the controller.
 - `chart/`: a digest-pinned controller image, one replica with Recreate rollout,
@@ -32,7 +32,6 @@ Stop/start preserves the disk and saved sessions. Automatic replacement requires
 confirmed termination of the old VM, a detached disk, and matching assignment
 identity. The new worker accepts only that exact predecessor. Recovery attempts
 are bounded. Cross-AZ migration and arbitrary disk adoption remain disabled.
-See [worker image upgrades](worker/README.md) for the explicit operator workflow.
 
 ## GitHub App credential preparation
 
@@ -110,10 +109,11 @@ public repository.
 3. Create one assignment secret per machine slot outside Terraform. Keep the
    secret ARN stable. Do not put a value in it. The controller writes the bundle
    itself:
-   `{"version":2,"machineId","assignment":{…},"machineCapability","apiEndpoint"}`.
-   The bundle holds the machine and slot identity, the data volume ID, an opaque
-   machine credential and the Switch API endpoint, and nothing else. The worker
-   refuses to start until the bundle matches its attached data volume.
+   `{"version":3,"machineId","assignment":{…},"apiEndpoint","controller":{"id","credential"},"kms":{…}}`.
+   The bundle holds the machine and slot identity, the data volume ID, the Switch
+   API endpoint, the agent controller's ID and credential, and the login-key
+   grant the machine uses to open sealed provider logins. The machine refuses to
+   start until the bundle matches its attached data volume.
 4. Configure Terraform in the **private deployment overlay**, selecting the worker
    AMI/AZ, CIDRs, allowed instance types, controller namespace/service account and
    the per-slot secret/KMS references in `machine_slots`. Review its plan before
@@ -149,12 +149,23 @@ supported-environment change.
 The chart accepts a non-secret `controllerConfig` map with:
 
 - `installation_id`, `region`, `availability_zone`, `subnet_id`, `security_group_ids`
-- `image_id`, `root_device_name`, `allowed_instance_types`
+- `image_id`: the controller AMI. It must carry the tag
+  `switch:capabilities=controller-v1`; the controller refuses to launch from an
+  image without it. Changing `image_id` moves each running machine onto the new
+  image at its next start, on the same data disk.
+- `root_device_name`, `allowed_instance_types`
 - `max_machines`: 1–100, and no more than the number of machine slots. It caps
   both the machines that are not deleted and the active EC2 instances.
 - `root_volume_gib`, `data_volume_gib`, `poll_interval_seconds`
-- `machine_slots`: slot ID to `{instance_profile_arn, assignment_secret_arn}`.
-  Copy it from the Terraform output `machine_slots`.
+- `machine_slots`: slot ID to `{instance_profile_arn, assignment_secret_arn,
+  role_arn}`. Copy it from the Terraform output `machine_slots`. `role_arn` is the
+  role behind the slot's instance profile; the controller grants it Decrypt on
+  the provider-login key. Every slot needs one.
+- `login_kms_key_arn`: the full ARN of the provider-login KMS key, in the
+  controller's region.
+
+Every key is required and no other key is accepted. Terraform's
+`ec2:RunInstances` grant must allow `image_id`.
 
 The instance type of a new machine comes from `instance_type` in the controller's
 `gateway.json` (see [Enable Console launches](#enable-console-launches)). It must
@@ -264,8 +275,9 @@ and create the agents again. Do these steps in order.
    - `gateway.json`: set `instance_type`, for example `c7i.2xlarge`.
    - Set `HOSTED_DISK_RETENTION_DAYS` and `HOSTED_IDLE_STOP_MINUTES` if you do
      not want the defaults.
-7. Build and roll out the new worker AMI. Set `image_id` in `controller.json` and
-   `worker_image_id` in the Terraform overlay to the new AMI, and apply Terraform.
+7. Build and roll out the new controller AMI. Set `image_id` in `controller.json`
+   and `controller_image_id` in the Terraform overlay to the new AMI, and apply
+   Terraform.
 8. Upgrade Core. Its database migration refuses to run while any cloud agent is
    not removed, and names this section. Then upgrade the controller. It refuses
    to start while its database holds per-agent rows that are not deleted, and
@@ -292,8 +304,7 @@ fresh empty database must not be used to guess ownership of existing workers.
 
 ### GitHub authentication slice
 
-The optional worker secret fields described in [the worker contract](worker/README.md#optional-github-credential-delivery)
-provide a personal GitHub.com token to Git HTTPS and GitHub CLI without storing
+The optional GitHub credential delivery provides a personal GitHub.com token to Git HTTPS and GitHub CLI without storing
 it in a workspace/config or passing it as a command argument. Bootstrap checks
 the token before starting the provider. Repository permission checks and actual
 clone/build/push/PR operations remain the coding task's responsibility; managed onboarding uses the renewable installation-token flow described above.
@@ -337,32 +348,9 @@ previous connection intact. Back up and rotate the server encryption key with th
 same care as other encrypted credentials. Removal deletes the database record;
 revocation at Anthropic and database-backup retention are separate concerns.
 
-Worker assignment bundles contain no provider credential. Managed runtimes fetch
-current credentials from the authenticated worker
-API. Revocation denies further credential and control requests and stops the
-affected workers. Reconnect the provider, then use Retry to start them again.
-
 Codex, Cursor, OpenCode and Antigravity use the same owner-scoped connection API
-under their provider IDs. Enable `HOSTED_PROVIDER_VERIFICATION_ENABLED` (Helm:
-`switchCore.hostedProviderVerificationEnabled`) after deploying the verification
-API, controller IAM policy, and a worker image with `--verify-credential` support.
-This requires a hosted controller. With the setting off, credentials keep the
-existing configured-until-worker-check behavior.
-
-With verification enabled, saving a credential queues a durable connection check.
-Console polls its status and shows **Checking connection**. A temporary worker
-uses the native provider adapter to send one fixed model request in an empty
-workspace. It has no repository, agent assignment, instance profile, or retained
-data volume. Its encrypted root volume is deleted on termination. The controller
-allows at most two checks at a time. Each worker schedules its own shutdown after
-eight minutes; the controller also terminates checks past their ten-minute deadline.
-Checks and cleanup continue when Console closes.
-
-The connection becomes verified only after the model replies and the controller
-observes instance termination. Refreshed subscription credentials are saved with
-the result. Failed checks preserve an existing verified credential and show a retry
-action. Job credentials and bootstrap tokens are cleared when the job finishes.
-Test each provider with its intended account before deployment acceptance.
+under their provider IDs. Test each provider with its intended account before
+deployment acceptance.
 
 ### GitHub App connections
 
@@ -403,9 +391,7 @@ again when an agent is started or addressed, or when the user creates an agent.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `HOSTED_AGENTS_PER_OWNER` | 3 | Cloud agents per user. They share the user's machine. |
-| `HOSTED_SESSIONS_PER_AGENT` | 8 | Sessions per agent. |
-| `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine stops. 0 disables. Maximum 1440. |
+| `HOSTED_IDLE_STOP_MINUTES` | 1440 | Idle minutes before a machine stops (24 hours). 0 disables. Maximum 1440. |
 | `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a data disk is kept after its last agent is removed. 1–90. |
 | `HOSTED_LAUNCH_CAPACITY` | 0 | Maximum live machines. No more than the number of machine slots. 0 disables creation. |
 

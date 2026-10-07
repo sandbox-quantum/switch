@@ -164,7 +164,7 @@ async def test_a_revoke_is_effective_immediately(harness: Harness) -> None:
     assert await act_as(mw, controller, agent_id) == (200, None)
     assert (
         harness.controller_auth_cache.controller(
-            TENANT_ZERO_ID, controller.controller_id
+            TENANT_ZERO_ID, controller.controller_id, controller.credential_id
         )
         is not None
     )
@@ -178,7 +178,7 @@ async def test_a_revoke_is_effective_immediately(harness: Harness) -> None:
 
     assert (
         harness.controller_auth_cache.controller(
-            TENANT_ZERO_ID, controller.controller_id
+            TENANT_ZERO_ID, controller.controller_id, controller.credential_id
         )
         is None
     )

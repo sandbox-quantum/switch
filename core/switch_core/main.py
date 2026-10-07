@@ -119,7 +119,6 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.media_store import MediaStore
@@ -557,7 +556,6 @@ async def run(config: SwitchConfig) -> None:
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
         external_user_store=external_user_store,
-        hosted_launch_store=HostedLaunchStore(),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
@@ -852,6 +850,11 @@ async def run(config: SwitchConfig) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
             )
+            management_reload_task = (
+                asyncio.create_task(management.reload_loop())
+                if management is not None
+                else None
+            )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -867,6 +870,8 @@ async def run(config: SwitchConfig) -> None:
                 sweep_task.cancel()
                 session_activity_task.cancel()
                 connection_sweep_task.cancel()
+                if management_reload_task is not None:
+                    management_reload_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 await message_listener.stop()

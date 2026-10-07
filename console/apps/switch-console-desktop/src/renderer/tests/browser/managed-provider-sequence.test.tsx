@@ -109,3 +109,34 @@ it('names Claude Code when it is chosen after another provider', async () => {
   expect(el.textContent).toContain('Claude Code connected');
   expect(second.textContent).toBe('Continue to GitHub');
 });
+
+it('asks to reconnect a login the cloud controller can no longer use, and does not continue', async () => {
+  switchServers.getClaudeConnection.mockResolvedValueOnce({
+    status: 'reconnect_required',
+    kind: 'setup-token',
+    verified_at: '2026-01-01T00:00:00Z',
+  });
+  const el = await render(['claude', 'cursor']);
+
+  await vi.waitFor(() => expect(el.textContent).toContain('Reconnect Claude Code'));
+  const buttons = () => [...el.querySelectorAll('button')].map((b) => b.textContent);
+  expect(buttons()).toContain('Reconnect');
+  expect(buttons().some((label) => label?.startsWith('Continue to'))).toBe(false);
+});
+
+it('offers Reconnect, not Continue, for another provider', async () => {
+  switchServers.getCloudProviderConnection.mockResolvedValueOnce({
+    status: 'reconnect_required',
+    kind: 'api-key',
+    verified_at: '2026-01-01T00:00:00Z',
+  } as never);
+  const el = await render(['cursor']);
+
+  await vi.waitFor(() =>
+    expect([...el.querySelectorAll('button')].map((b) => b.textContent)).toContain('Reconnect')
+  );
+  const next = [...el.querySelectorAll('button')].find((b) =>
+    b.textContent?.startsWith('Continue to')
+  );
+  expect(next?.disabled).toBe(true);
+});

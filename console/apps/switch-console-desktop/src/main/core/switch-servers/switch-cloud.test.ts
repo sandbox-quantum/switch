@@ -1,14 +1,96 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud';
+import {
+  isHiddenSwitchCloudServer,
+  requireSwitchCloudEnabled,
+  requireSwitchCloudEndpoint,
+  switchCloudEnabled,
+  switchCloudEndpoint,
+} from './switch-cloud';
 
 afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+function enableWith(run: string | undefined, build: string | undefined) {
+  vi.stubEnv('SWITCH_CLOUD_ENABLED', run);
+  vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_ENABLED', build);
+}
+
 function runWith(value: string | undefined) {
+  enableWith('true', undefined);
   vi.stubEnv('SWITCH_CLOUD_URL', value);
   vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', undefined);
 }
+
+describe('switchCloudEnabled', () => {
+  it('is off when nothing turns it on', () => {
+    enableWith(undefined, undefined);
+    expect(switchCloudEnabled()).toBe(false);
+  });
+
+  it('treats a blank value as unset', () => {
+    enableWith('  ', undefined);
+    expect(switchCloudEnabled()).toBe(false);
+  });
+
+  it('is on only for exactly true', () => {
+    enableWith('true', undefined);
+    expect(switchCloudEnabled()).toBe(true);
+    enableWith('false', undefined);
+    expect(switchCloudEnabled()).toBe(false);
+  });
+
+  it('falls back to the build-time value', () => {
+    enableWith(undefined, 'true');
+    expect(switchCloudEnabled()).toBe(true);
+  });
+
+  it('prefers the run-time value over the build-time one', () => {
+    enableWith('false', 'true');
+    expect(switchCloudEnabled()).toBe(false);
+    enableWith('true', 'false');
+    expect(switchCloudEnabled()).toBe(true);
+  });
+
+  it('raises on a value that is not true or false', () => {
+    enableWith('TRUE', undefined);
+    expect(() => switchCloudEnabled()).toThrow('SWITCH_CLOUD_ENABLED must be "true" or "false"');
+    enableWith(undefined, '1');
+    expect(() => switchCloudEnabled()).toThrow(
+      'MAIN_VITE_SWITCH_CLOUD_ENABLED must be "true" or "false"'
+    );
+  });
+
+  it('refuses Cloud work when off', () => {
+    enableWith('false', undefined);
+    expect(() => requireSwitchCloudEnabled()).toThrow('Switch Cloud is turned off');
+    enableWith('true', undefined);
+    expect(() => requireSwitchCloudEnabled()).not.toThrow();
+  });
+});
+
+describe('isHiddenSwitchCloudServer', () => {
+  const cloud = { gatewayUrl: 'https://cloud.example.com' };
+  const other = { gatewayUrl: 'https://switch.example.org' };
+
+  it('hides the Cloud server when Switch Cloud is off', () => {
+    runWith('https://cloud.example.com');
+    enableWith(undefined, undefined);
+    expect(isHiddenSwitchCloudServer(cloud)).toBe(true);
+    expect(isHiddenSwitchCloudServer(other)).toBe(false);
+  });
+
+  it('hides nothing when Switch Cloud is on', () => {
+    runWith('https://cloud.example.com');
+    expect(isHiddenSwitchCloudServer(cloud)).toBe(false);
+  });
+
+  it('hides nothing when no Cloud URL is named', () => {
+    runWith(undefined);
+    enableWith('false', undefined);
+    expect(isHiddenSwitchCloudServer(cloud)).toBe(false);
+  });
+});
 
 describe('switchCloudEndpoint', () => {
   it('is null when nothing names a Cloud', () => {
@@ -27,12 +109,14 @@ describe('switchCloudEndpoint', () => {
   });
 
   it('falls back to the build-time value', () => {
+    enableWith('true', undefined);
     vi.stubEnv('SWITCH_CLOUD_URL', undefined);
     vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', 'https://built.example.com');
     expect(switchCloudEndpoint()).toEqual({ url: 'https://built.example.com' });
   });
 
   it('prefers the run-time value over the build-time one', () => {
+    enableWith('true', undefined);
     vi.stubEnv('SWITCH_CLOUD_URL', 'https://run.example.com');
     vi.stubEnv('MAIN_VITE_SWITCH_CLOUD_URL', 'https://built.example.com');
     expect(switchCloudEndpoint()).toEqual({ url: 'https://run.example.com' });
@@ -68,7 +152,21 @@ describe('switchCloudEndpoint', () => {
   });
 });
 
+describe('switchCloudEndpoint when Switch Cloud is off', () => {
+  it('is null even when a Cloud URL is named', () => {
+    runWith('https://cloud.example.com');
+    enableWith(undefined, undefined);
+    expect(switchCloudEndpoint()).toBeNull();
+  });
+});
+
 describe('requireSwitchCloudEndpoint', () => {
+  it('raises when Switch Cloud is off', () => {
+    runWith('https://cloud.example.com');
+    enableWith('false', undefined);
+    expect(() => requireSwitchCloudEndpoint()).toThrow('Switch Cloud is turned off');
+  });
+
   it('raises when nothing names a Cloud', () => {
     runWith(undefined);
     expect(() => requireSwitchCloudEndpoint()).toThrow('Switch Cloud is not configured');

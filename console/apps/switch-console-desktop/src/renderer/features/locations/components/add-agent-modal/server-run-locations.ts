@@ -22,9 +22,30 @@ export type RunLocationOption = {
   disabled: boolean;
 };
 
-/** The server's machines as Run location entries. Offline machines are listed, but cannot be picked. */
+/** The controller kind of an owner's Switch cloud machine. */
+const CLOUD_MACHINE_KIND = 'ec2';
+
+/**
+ * The owner's Switch cloud machine: their `ec2` controller, which "Switch
+ * cloud" places a new agent on as a managed agent. Null when they have none
+ * yet, and "Switch cloud" ensures their cloud machine first.
+ */
+export function switchCloudMachine(machines: OwnedMachine[] | null): OwnedMachine | null {
+  return (
+    machines?.find(
+      (machine) => machine.kind === CLOUD_MACHINE_KIND && machine.state !== 'revoked'
+    ) ?? null
+  );
+}
+
+/**
+ * The server's machines as Run location entries. Offline machines are listed,
+ * but cannot be picked. A Switch cloud machine is not among them: it is the
+ * "Switch cloud" entry.
+ */
 export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption[] {
-  return [...machines]
+  return machines
+    .filter((machine) => machine.kind !== CLOUD_MACHINE_KIND)
     .sort(
       (a, b) =>
         Number(b.local?.kind === 'this-computer') - Number(a.local?.kind === 'this-computer')
@@ -84,31 +105,40 @@ export function machineFor(runLocation: string, machines: OwnedMachine[]): Owned
 }
 
 /**
- * Whether a run location runs the agent in Switch cloud. On a Switch Cloud
- * server that is everything but one of the owner's machines: it offers neither
- * this computer nor SSH hosts except as machines.
- */
-export function isCloudRunLocation(runLocation: string, managedCloud: boolean): boolean {
-  return runLocation === 'cloud' || (managedCloud && machineIdOf(runLocation) === null);
-}
-
-/**
  * The run location to move to once the server's machines are known, or null to
- * stay. A machine the server no longer lists falls back to the default; off
- * Switch Cloud, this computer or an SSH host that is a machine is picked as it.
+ * stay. A machine the server no longer lists falls back to this computer;
+ * this computer or an SSH host that is a machine is picked as it.
  */
 export function reconciledRunLocation(
   runLocation: string,
-  machines: OwnedMachine[] | null,
-  managedCloud: boolean
+  machines: OwnedMachine[] | null
 ): string | null {
   if (runLocation === 'cloud') return null;
   const id = machineIdOf(runLocation);
   if (id !== null) {
     if (machines?.some((machine) => machine.id === id)) return null;
-    return managedCloud ? 'cloud' : 'local';
+    return 'local';
   }
-  if (!machines || managedCloud) return null;
+  if (!machines) return null;
   const enrolled = machineFor(runLocation, machines);
   return enrolled ? machineRunLocation(enrolled.id) : null;
+}
+
+/**
+ * Create a "Switch cloud" agent as a managed agent on the owner's ec2
+ * controller. With no Switch cloud machine yet, it ensures their cloud machine
+ * first, which links the controller the agent is placed on.
+ */
+export async function addSwitchCloudAgent<T>(
+  cloudMachine: OwnedMachine | null,
+  ensureCloudMachine: () => Promise<{ controller_id: string | null }>,
+  addManagedAgent: (machineId: string) => Promise<T>
+): Promise<T> {
+  if (cloudMachine) return addManagedAgent(cloudMachine.id);
+  const ensured = await ensureCloudMachine();
+  if (!ensured.controller_id)
+    throw new Error(
+      'Your Switch cloud machine does not run the agent controller, so the agent cannot be placed on it.'
+    );
+  return addManagedAgent(ensured.controller_id);
 }

@@ -150,8 +150,13 @@ _SNAPSHOT_COUNTS = (
     "tenant_count",
     "tenant_failed_count",
     "user_count",
+    "user_internal_count",
+    # Switch accounts, not chat identities — see `chat_identity_*` for those.
     "user_active_1d",
     "user_active_7d",
+    "chat_identity_count",
+    "chat_identity_active_1d",
+    "chat_identity_active_7d",
     # `room_count` is the headline: rooms a *person* made. The other two keep
     # agent scratch rooms and adopted channels out of it.
     "room_count",

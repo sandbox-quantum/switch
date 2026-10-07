@@ -12,6 +12,14 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { GitHubConnection, GitHubFlow } from '@shared/core/switch-servers/github-connection';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
+
+/** Core's refusal when the saved GitHub authorization expired or was revoked. */
+export function gitHubReconnectMessage(error: unknown): string | null {
+  if (!(error instanceof RpcError) || error.stringField('code') !== 'github_reconnect_required')
+    return null;
+  return error.stringField('detail') ?? error.message;
+}
 
 export function ManagedGitHubStep({
   serverId,
@@ -32,15 +40,20 @@ export function ManagedGitHubStep({
   const [busy, setBusy] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reconnect, setReconnect] = useState(false);
   const [watching, setWatching] = useState<{ baseline: string; expiresAt: number } | null>(null);
   useCloseGuard(busy || flowId !== null);
   const load = useCallback(async () => {
     setBusy(true);
     setError(null);
+    setReconnect(false);
     try {
       setConnection(await rpc.switchServers.getGitHubConnection(serverId));
     } catch (cause) {
-      setError(failureText(cause, 'Could not load GitHub access.'));
+      setConnection(null);
+      const reconnectMessage = gitHubReconnectMessage(cause);
+      setReconnect(reconnectMessage !== null);
+      setError(reconnectMessage ?? failureText(cause, 'Could not load GitHub access.'));
     } finally {
       setBusy(false);
     }
@@ -133,7 +146,13 @@ export function ManagedGitHubStep({
   return (
     <>
       <DialogHeader showCloseButton={!busy && !flowId}>
-        <DialogTitle>{connected && !flowId ? 'GitHub connected' : 'Connect GitHub'}</DialogTitle>
+        <DialogTitle>
+          {connected && !flowId
+            ? 'GitHub connected'
+            : reconnect
+              ? 'Reconnect GitHub'
+              : 'Connect GitHub'}
+        </DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-5 pt-0">
         {flowId ? (
@@ -265,7 +284,7 @@ export function ManagedGitHubStep({
             {error}
           </p>
         )}
-        {!connection && !busy && (
+        {!connection && !busy && !reconnect && (
           <Button variant="outline" onClick={() => void load()}>
             Retry
           </Button>
@@ -355,7 +374,8 @@ export function ManagedGitHubStep({
                   })
                 }
               >
-                Connect GitHub <ExternalLink className="size-4" />
+                {reconnect ? 'Reconnect GitHub' : 'Connect GitHub'}{' '}
+                <ExternalLink className="size-4" />
               </Button>
             )}
           </>

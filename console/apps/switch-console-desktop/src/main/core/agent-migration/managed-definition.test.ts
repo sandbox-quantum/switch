@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   buildManagedDefinition,
   type DefinitionSource,
-  definitionBody,
   MAX_INSTRUCTIONS_BYTES,
 } from './managed-definition';
 
@@ -16,7 +15,6 @@ const SOURCE: DefinitionSource = {
   stoppedByHand: false,
   shellSetup: false,
   chosenBinary: null,
-  subagentDefinition: null,
 };
 
 describe('the managed definition of a Console agent', () => {
@@ -123,27 +121,6 @@ describe('the managed definition of a Console agent', () => {
     ]);
   });
 
-  it('gives a subagent its definition’s prompt after its parent’s instructions, and only the parent’s model', () => {
-    const built = buildManagedDefinition({
-      ...SOURCE,
-      name: 'reviewer',
-      specialization: {
-        model: 'opus',
-        effort: 'low',
-        tools: 'Bash',
-        instructions: 'Parent instructions.',
-      },
-      providerDefinition: { description: 'builder', prompt: 'Parent instructions.' },
-      subagentDefinition: { name: 'reviewer', body: 'You review code.' },
-    });
-    expect(built.definition).toMatchObject({
-      model: 'opus',
-      advanced_config: { effort: 'low' },
-      instructions: 'Parent instructions.\n\nYou review code.',
-    });
-    expect(built.notCarried).toEqual([expect.stringContaining('reviewer’s definition file')]);
-  });
-
   it('refuses instructions longer than Switch takes', () => {
     expect(() =>
       buildManagedDefinition({
@@ -151,14 +128,5 @@ describe('the managed definition of a Console agent', () => {
         specialization: { instructions: 'x'.repeat(MAX_INSTRUCTIONS_BYTES + 1) },
       })
     ).toThrow(/KiB/);
-  });
-});
-
-describe('a definition file’s body', () => {
-  it('is what follows the front matter', () => {
-    expect(definitionBody('---\nname: reviewer\ntools: Read\n---\n\nYou review code.\n')).toBe(
-      'You review code.'
-    );
-    expect(definitionBody('No front matter.')).toBe('No front matter.');
   });
 });

@@ -79,6 +79,23 @@ export {
   watchFlagsSchema,
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
+export {
+  controlledEnvironment,
+  HOSTED_WORKSPACE_FILE,
+  type HostedWorkspace,
+  hostedWorkspaceSchema,
+  UNIT_AGENT_CREDENTIAL,
+  UNIT_PROVIDER_CREDENTIAL,
+} from './host/hosted-bootstrap';
+export { githubLaunchEnvironment } from './host/hosted-github';
+export { type HostedSkills, hostedSkillsSchema } from './host/hosted-skills';
+export {
+  applyHostedProvider,
+  type HostedCredential,
+  hostedCredentialSchema,
+} from './host/hosted-provider';
+export { dirMode, fileMode, SHARED_GROUP_ENV, sharedGroupEnabled } from './host/host-permissions';
+export { OBSOLETE_BUNDLE_EXIT_CODE } from './host/exit-codes';
 export { controllerConnectionId } from './host/connection-id';
 export { EXECUTION_INHERIT_ENV } from './host/agent-env';
 export {
@@ -102,6 +119,18 @@ export type { SharedHostConfig } from './host/shared-config';
 export { providerReadinessSchema } from './host/provider-readiness';
 export type { ProviderReadiness } from './host/provider-readiness';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
+export {
+  type ControlContext,
+  type ControlMessage,
+  controlMessageSchema,
+  ControlPeer,
+  type ControlPush,
+  controllerEnsureConfigSchema,
+  ensureThroughWatcher,
+  handleControlMessage,
+  serveControl,
+} from './host/control';
+export { AttachmentTransfers, ControlError } from './host/attachment-transfers';
 export {
   CloudRelayClient,
   CloudRelayClosedError,

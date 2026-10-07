@@ -1,13 +1,17 @@
 /**
- * A cloud session's header says what its launch is doing while the worker
- * cannot be asked: the session's last reported status is stale then, so a
- * sleeping launch must not read as ready.
+ * A cloud session's header says what its agent is doing while it cannot be
+ * asked: the session's last reported status is stale then, so an agent on a
+ * sleeping machine must not read as ready.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { CloudAgent, CloudSessions } from '@shared/core/cloud-agents/cloud-agents';
+import type {
+  CloudAgent,
+  CloudMachine,
+  CloudSessions,
+} from '@shared/core/cloud-agents/cloud-agents';
 
 const sdkHost = vi.hoisted(() => ({
   cloudAgents: vi.fn(),
@@ -34,17 +38,27 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: { workspacesNotSignedIn: [], roomNameById: () => null },
 }));
 
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { servers: [], statusFor: () => null, isConnected: () => true },
+}));
+
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
   useParams: () => ({
-    params: { agentKey: 'cloud:server:launch', sessionId: 'session-demo', name: 'reviewer' },
+    params: { agentKey: 'cloud:server:agent=agent', sessionId: 'session-demo', name: 'reviewer' },
   }),
 }));
 
+import { runInAction } from 'mobx';
 import { cloudSessionView } from '@renderer/features/cloud-agents/cloud-session-view';
 import {
   SessionHeaderOutlet,
   SessionHeaderSlotsProvider,
 } from '@renderer/features/sessions/session-header-slots';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
+
+runInAction(() => {
+  switchCloudFeature.enabled = true;
+});
 
 const snapshot = {
   contractVersion: 1,
@@ -78,29 +92,40 @@ const snapshot = {
 
 function agent(overrides: Partial<CloudAgent>): CloudAgent {
   return {
-    key: 'cloud:server:launch',
-    launch: {
-      request_id: '00000000-0000-4000-8000-000000000001',
-      name: 'reviewer',
-      provider: 'claude',
-      state: 'ready',
-      desired_state: 'running',
-      revision: 4,
-      agent_id: 'agent',
-      error: null,
-      error_code: null,
-      sleeping: false,
-      machine_id: null,
-      process_state: null,
-      process_restarts: 0,
-      oom_kills: 0,
-    },
+    key: 'cloud:server:agent=agent',
+    agentId: 'agent',
+    name: 'reviewer',
+    provider: 'claude',
     machine: null,
+    controller: {
+      controllerId: 'cloud-controller',
+      desiredState: 'running',
+      process: 'running',
+      detail: null,
+    },
     sessions: null,
     problem: null,
     ...overrides,
   };
 }
+
+const sleepingMachine: CloudMachine = {
+  machine_id: 'machine',
+  state: 'stopped',
+  desired_state: 'stopped',
+  stop_reason: 'idle',
+  sleeping: true,
+  revision: 2,
+  instance_type: null,
+  error: null,
+  error_code: null,
+  retain_until: null,
+  heartbeat_at: null,
+  controller_id: 'cloud-controller',
+  disk: null,
+  memory: null,
+  agents: [],
+};
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -145,14 +170,14 @@ async function headerStatus(
   return container.querySelector('[data-testid="header"] [role="status"]')?.textContent;
 }
 
-it('reads ready while the worker answers', async () => {
+it('reads ready while the agent answers', async () => {
   expect(await headerStatus(agent({}), { sessions: [], problem: null }, snapshot)).toBe('ready');
 });
 
-it('reads sleeping, not ready, while the launch is asleep', async () => {
+it('reads sleeping, not ready, while its machine is asleep', async () => {
   const status = await headerStatus(
     agent({
-      launch: { ...agent({}).launch, sleeping: true, state: 'stopped', desired_state: 'running' },
+      machine: sleepingMachine,
       sessions: null,
       problem: {
         code: 'worker_sleeping',
@@ -166,7 +191,7 @@ it('reads sleeping, not ready, while the launch is asleep', async () => {
   expect(status).toBe('sleeping');
 });
 
-it('reads unreachable when the relay refuses the worker', async () => {
+it('reads unreachable when the relay refuses the agent', async () => {
   const status = await headerStatus(
     agent({}),
     {
@@ -192,9 +217,9 @@ it('still says a stopped session is stopped', async () => {
   expect(status).toBe('stopped');
 });
 
-it('opens a session on a sleeping machine whose worker cannot be read, and wakes it on send', async () => {
+it('opens a session on a sleeping machine whose agent cannot be read, and wakes it on send', async () => {
   const asleep = agent({
-    launch: { ...agent({}).launch, sleeping: true, state: 'stopped' },
+    machine: sleepingMachine,
     problem: {
       code: 'worker_sleeping',
       message: 'The cloud machine is asleep.',
@@ -232,6 +257,6 @@ it('opens a session on a sleeping machine whose worker cannot be read, and wakes
   const send = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Send')!;
   expect(send.disabled).toBe(false);
   await act(async () => send.click());
-  expect(sdkHost.cloudWake).toHaveBeenCalledWith('cloud:server:launch');
+  expect(sdkHost.cloudWake).toHaveBeenCalledWith('cloud:server:agent=agent');
   expect(container.textContent).toContain('Waking… about 1–2 min.');
 });

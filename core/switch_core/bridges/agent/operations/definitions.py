@@ -44,11 +44,6 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
-from switch_core.bridges.agent.protocol.hosted_workers import (
-    HOSTED_WORKER_ONLY_MESSAGE,
-    CodedPermissionError,
-    hosted_launch_of,
-)
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
@@ -292,12 +287,6 @@ async def connect_to_room(
         bridge: CollaborationBridge | None = None
         if room_model.bridge_id:
             bridge = await session.get(CollaborationBridge, room_model.bridge_id)
-
-    if hosted_launch_of(agent.metadata_) is not None:
-        key = session_key()
-        caller_connection = protocol.connections.get(key) if key else None
-        if caller_connection is None or caller_connection.worker is None:
-            raise CodedPermissionError("hosted_worker_only", HOSTED_WORKER_ONLY_MESSAGE)
 
     profile = IntegrationProfile(**agent.integration_profile)
     instructions = build_room_instructions(
@@ -2180,8 +2169,8 @@ async def update_agent_detail(
             even their other agents, you included), "owner_and_owner_agents"
             (your owner and any agent they own) or "anyone".
 
-    A managed agent (one `list_managed_agents` shows) only, and only with the
-    "can manage agents" capability:
+    A managed agent (one `list_managed_agents` shows) only, never yourself,
+    and only with the "can manage agents" capability:
         provider: "claude", "codex", "opencode", "antigravity" or "cursor".
         model: The model to run; "" for the provider's default.
         advanced_config: The provider's advanced settings, replacing the
@@ -2199,6 +2188,9 @@ async def update_agent_detail(
         desired_state: "running" or "stopped".
     The machine must be online with the provider installed and logged in;
     otherwise nothing is changed and the error gives a reason code to relay.
+    Changes reach the agent's running sessions on their own, with no reset:
+    a session mid-turn picks them up when the turn ends, and a running
+    conversation is told its new instructions.
 
     Returns:
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
@@ -2237,7 +2229,12 @@ async def update_agent_detail(
             )
         permitted = await permitted_to_manage()
         managed = await port.update_managed_agent(
-            permitted.tenant_id, permitted.owner.id, agent_id, changes, protocol
+            permitted.tenant_id,
+            permitted.owner.id,
+            caller_id,
+            agent_id,
+            changes,
+            protocol,
         )
     elif port is not None:
         permission = await management_permission()

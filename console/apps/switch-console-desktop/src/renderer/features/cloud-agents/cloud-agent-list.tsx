@@ -3,6 +3,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Cloud, MessageSquare, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { restartsOnSend } from '@renderer/features/sessions/components/transcript/session-state';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -11,6 +13,7 @@ import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { type CloudAgent, cloudMachineReady } from '@shared/core/cloud-agents/cloud-agents';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { SidebarMenuButton } from '../sidebar/sidebar-primitives';
 import { cloudAgentState } from './cloud-agent-state';
 import { cloudOperationAttempts, startAttemptKey } from './cloud-operation-attempts';
@@ -43,7 +46,7 @@ function isMachineProblem(agent: CloudAgent): boolean {
 function machineProblems(agents: CloudAgent[]): CloudAgent[] {
   const byMachine = new Map<string, CloudAgent>();
   for (const agent of agents.filter(isMachineProblem)) {
-    const machineId = agent.machine?.machine_id ?? agent.launch.machine_id ?? '';
+    const machineId = agent.machine?.machine_id ?? '';
     const shown = byMachine.get(machineId);
     if (!shown || (agent.problem!.wakeAvailable && !shown.problem!.wakeAvailable))
       byMachine.set(machineId, agent);
@@ -52,16 +55,18 @@ function machineProblems(agents: CloudAgent[]): CloudAgent[] {
 }
 
 /**
- * The active server's cloud agents under the local and SSH ones: each launch,
- * and beneath it the sessions its worker reports. A machine whose state keeps
- * its agents' workers from being asked says so once, above them; a launch
- * whose worker cannot be asked for its own reason says why, above the sessions
- * last read from it. A worker is asked for its sessions only while its row is
- * expanded or one of its sessions is open.
+ * The active server's cloud agents under the local and SSH ones: each agent,
+ * and beneath it the sessions its machine reports. A machine whose state keeps
+ * its agents from being asked says so once, above them; an agent that cannot
+ * be asked for its own reason says why, above the sessions last read from it.
+ * An agent is asked for its sessions only while its row is expanded or one of
+ * its sessions is open. Each is labelled as its managed agent is, by display
+ * name when it has one.
  */
 export const CloudAgentList = observer(function CloudAgentList() {
   const serverId = switchServersStore.activeServerId;
   const agents = useCloudAgents(serverId);
+  const managed = useManagedAgents(serverId);
   const queryClient = useQueryClient();
   useEffect(() => {
     const onFocus = () => void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
@@ -82,11 +87,20 @@ export const CloudAgentList = observer(function CloudAgentList() {
         <CloudMachineProblem key={agent.key} agent={agent} />
       ))}
       {agents.data.map((agent) => (
-        <CloudAgentRow key={agent.key} listed={agent} />
+        <CloudAgentRow
+          key={agent.key}
+          listed={agent}
+          label={cloudAgentLabel(agent, managed.data ?? null)}
+        />
       ))}
     </div>
   );
 });
+
+function cloudAgentLabel(agent: CloudAgent, managed: ManagedAgentView[] | null): string {
+  const view = managed?.find((each) => each.agentId === agent.agentId);
+  return view ? managedAgentLabel(view) : agent.name;
+}
 
 function CloudMachineProblem({ agent }: { agent: CloudAgent }) {
   const action = useCloudProblemAction(agent, true);
@@ -100,7 +114,13 @@ function CloudMachineProblem({ agent }: { agent: CloudAgent }) {
   );
 }
 
-const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: CloudAgent }) {
+const CloudAgentRow = observer(function CloudAgentRow({
+  listed,
+  label: name,
+}: {
+  listed: CloudAgent;
+  label: string;
+}) {
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
   const { params } = useParams('cloudSession');
@@ -121,7 +141,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
     navigate('cloudSession', {
       agentKey: agent.key,
       sessionId,
-      name: `${agent.launch.name} · Session ${sessionId.slice(0, 8)}`,
+      name: `${name} · Session ${sessionId.slice(0, 8)}`,
     });
   const start = async () => {
     setStartError(null);
@@ -142,9 +162,9 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
           <ChevronRight className={`size-3 shrink-0 ${expanded ? 'rotate-90' : ''}`} />
           <Cloud className="size-3.5 shrink-0" />
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate">{agent.launch.name}</span>
+            <span className="truncate">{name}</span>
             {!sidebarStore.hideProviderMark && (
-              <AgentIcon id={agent.launch.provider} size={12} className="h-3 w-3 shrink-0" />
+              <AgentIcon id={agent.provider} size={12} className="h-3 w-3 shrink-0" />
             )}
           </span>
           {label && (
@@ -154,7 +174,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
         {!agent.problem && (
           <button
             type="button"
-            aria-label={`New session on ${agent.launch.name}`}
+            aria-label={`New session on ${name}`}
             title="New session"
             className="rounded p-1 text-foreground-muted hover:text-foreground disabled:opacity-50"
             disabled={attempt?.status === 'pending'}
@@ -201,7 +221,7 @@ const CloudAgentRow = observer(function CloudAgentRow({ listed }: { listed: Clou
                 navigate('cloudSession', {
                   agentKey: agent.key,
                   sessionId: session.sessionId,
-                  name: `${agent.launch.name} · ${cloudSessionName(session)}`,
+                  name: `${name} · ${cloudSessionName(session)}`,
                 })
               }
             >

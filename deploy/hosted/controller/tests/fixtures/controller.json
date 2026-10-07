@@ -13,10 +13,12 @@
   "machine_slots": {
     "slot-a": {
       "instance_profile_arn": "arn:aws:iam::123456789012:instance-profile/test-worker",
-      "assignment_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-slot"
+      "assignment_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-slot",
+      "role_arn": "arn:aws:iam::123456789012:role/test-worker"
     }
   },
   "state_db_path": "/var/lib/switch-hosted/state.db",
   "lock_path": "/var/lib/switch-hosted/controller.lock",
-  "poll_interval_seconds": 1
+  "poll_interval_seconds": 1,
+  "login_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-4000-8000-0000000000aa"
 }

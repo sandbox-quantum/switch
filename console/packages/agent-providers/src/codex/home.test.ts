@@ -1,4 +1,14 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
@@ -91,4 +101,56 @@ it('links the user’s own Codex skills into a session home that has no skills f
     auth: 'copy-once',
   });
   expect(await readFile(join(home, 'skills', '.system', 'SKILL.md'), 'utf8')).toBe('system skill');
+});
+
+it('has every session of a shared login refresh the one login file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
+  roots.push(root);
+  const sourceHome = join(root, 'source');
+  await mkdir(sourceHome);
+  await writeFile(join(sourceHome, 'auth.json'), 'fixture-login');
+  const input = {
+    root: join(root, 'sessions'),
+    sessionId: 'first',
+    sourceHome,
+    config: '',
+    auth: 'shared' as const,
+  };
+  const first = await prepareCodexSessionHome(input);
+  const second = await prepareCodexSessionHome({ ...input, sessionId: 'second' });
+  await writeFile(join(first, 'auth.json'), 'rotated-by-first');
+  expect(await readFile(join(sourceHome, 'auth.json'), 'utf8')).toBe('rotated-by-first');
+  expect(await readFile(join(second, 'auth.json'), 'utf8')).toBe('rotated-by-first');
+  await writeFile(join(sourceHome, 'auth.json'), 'reconnected-login');
+  expect(await readFile(join(first, 'auth.json'), 'utf8')).toBe('reconnected-login');
+});
+
+it('replaces a session’s own copy of a shared login with a link to it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
+  roots.push(root);
+  const sourceHome = join(root, 'source');
+  await mkdir(sourceHome);
+  await writeFile(join(sourceHome, 'auth.json'), 'fixture-login');
+  const input = { root: join(root, 'sessions'), sessionId: 'session', sourceHome, config: '' };
+  const home = await prepareCodexSessionHome({ ...input, auth: 'copy-once' });
+  await writeFile(join(home, '.switch-auth-source'), 'old-fingerprint');
+  await prepareCodexSessionHome({ ...input, auth: 'shared' });
+  expect(await readlink(join(home, 'auth.json'))).toBe(join(sourceHome, 'auth.json'));
+  expect((await readdir(home)).filter((name) => name !== 'skills')).toEqual([
+    'auth.json',
+    'config.toml',
+  ]);
+});
+
+it('links no login when the host has no login file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
+  roots.push(root);
+  const home = await prepareCodexSessionHome({
+    root,
+    sessionId: 'session',
+    sourceHome: join(root, 'missing'),
+    config: '',
+    auth: 'shared',
+  });
+  await expect(lstat(join(home, 'auth.json'))).rejects.toMatchObject({ code: 'ENOENT' });
 });

@@ -209,7 +209,6 @@ def test_serve_lists_core_machines_once_per_poll(tmp_path, config_path):
     request = Mock(return_value={"machines": []})
     with (
         patch("switch_hosted_controller.cli.boto3"),
-        patch("switch_hosted_controller.cli.VerificationWorkers"),
         patch("switch_hosted_controller.cli._touch_health"),
         patch("switch_hosted_controller.cli.signal.signal"),
         patch("switch_hosted_controller.cli.threading.Event", OneIteration),

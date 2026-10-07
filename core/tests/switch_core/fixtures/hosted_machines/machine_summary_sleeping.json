@@ -18,6 +18,7 @@
     "total_bytes": 17179869184,
     "available_bytes": 12884901888
   },
+  "controller_id": null,
   "agents": [
     "3f1c2b4a-0000-4000-8000-0000000000c1"
   ]

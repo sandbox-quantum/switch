@@ -10,12 +10,13 @@ import pytest
 from test_controller import (
     CORE_FIXTURES,
     FIXTURE_SECRET_ARN,
+    KEY_ARN,
     MACHINE_ID,
-    WORKER_TESTDATA,
     config,
     fixture_config,
     insert_machine,
 )
+from test_kms_grants import CONTEXT, FakeKms
 
 from switch_hosted_controller.config import ConfigError, ControllerConfig
 from switch_hosted_controller.gateway import (
@@ -25,12 +26,13 @@ from switch_hosted_controller.gateway import (
     GatewayError,
     bundle_token,
 )
+from switch_hosted_controller.kms_grants import KmsGrants
 from switch_hosted_controller.model import DesiredState, ObservedState
 from switch_hosted_controller.store import CapacityError, MachineStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 VOLUME_ID = "vol-0123456789abcdef0"
-CAPABILITY = "SYNTHETIC-MACHINE-CAPABILITY-0123456789"
+CREDENTIAL = "swcc_SYNTHETIC-CONTROLLER-CREDENTIAL-0001"
 OTHER_MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000002"
 
 
@@ -56,8 +58,10 @@ def prepared_machine(**overrides) -> dict:
         "generation": 1,
         "revision": 1,
         "bundle_revision": 1,
-        "machine_capability": CAPABILITY,
         "api_endpoint": "https://switch.example.test/agent-api",
+        "runtime": "controller",
+        "controller": {"id": CONTEXT["switch:controller_id"], "credential": CREDENTIAL},
+        "kms": {"key_arn": KEY_ARN, "region": "us-east-1", "context": dict(CONTEXT)},
         **overrides,
     }
 
@@ -68,6 +72,8 @@ def make_gateway(cfg, store, secrets=None, instance_type="m6i.large") -> Gateway
         cfg,
         store,
         secrets if secrets is not None else Mock(),
+        Mock(),
+        KmsGrants(FakeKms(), cfg.login_kms_key_arn, store),
     )
 
 
@@ -136,7 +142,7 @@ def test_launch_retry_reuses_the_slot_and_row(tmp_path):
     token = str(uuid5(NAMESPACE_URL, f"{MACHINE_ID}:1"))
     assert store.get(MACHINE_ID).bundle_token == token
     assert json.loads(saved[token]) == {
-        "version": 2,
+        "version": 3,
         "machineId": MACHINE_ID,
         "assignment": {
             "installationId": cfg.installation_id,
@@ -144,22 +150,15 @@ def test_launch_retry_reuses_the_slot_and_row(tmp_path):
             "generation": 1,
             "dataVolumeId": VOLUME_ID,
         },
-        "machineCapability": CAPABILITY,
         "apiEndpoint": "https://switch.example.test/agent-api",
+        "controller": {"id": CONTEXT["switch:controller_id"], "credential": CREDENTIAL},
+        "kms": {
+            "keyArn": KEY_ARN,
+            "region": "us-east-1",
+            "grantTokens": [store.grant("slot-1", 1).grant_token],
+            "context": CONTEXT,
+        },
     }
-    store.close()
-
-
-@pytest.mark.parametrize("capability", [None, "", "short", "has space in it 0123", 7])
-def test_bundle_refuses_a_missing_or_malformed_capability(tmp_path, capability):
-    cfg = config(tmp_path)
-    store = open_store(cfg)
-    machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
-    prepared = prepared_machine(machine_capability=capability)
-    if capability is None:
-        del prepared["machine_capability"]
-    with pytest.raises(ConfigError, match="capability"):
-        make_gateway(cfg, store).bundle(prepared, machine)
     store.close()
 
 
@@ -169,22 +168,28 @@ def test_bundle_refuses_an_invalid_api_endpoint(tmp_path, endpoint):
     store = open_store(cfg)
     machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
     with pytest.raises(ConfigError, match="API endpoint"):
-        make_gateway(cfg, store).bundle(prepared_machine(api_endpoint=endpoint), machine)
+        make_gateway(cfg, store).bundle_v3(
+            prepared_machine(api_endpoint=endpoint), machine, cfg.image_id
+        )
     store.close()
 
 
-def test_machine_without_a_capability_writes_no_bundle(tmp_path):
+@pytest.mark.parametrize("runtime", [None, "worker"])
+def test_machine_prepared_for_another_runtime_writes_no_bundle(tmp_path, runtime):
     cfg = config(tmp_path)
     store = open_store(cfg)
     gateway = make_gateway(cfg, store)
     prepared = prepared_machine()
-    del prepared["machine_capability"]
+    if runtime is None:
+        del prepared["runtime"]
+    else:
+        prepared["runtime"] = runtime
     gateway.request = Mock(return_value=prepared)
     gateway.secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
     core = CoreMachine.parse(core_machine())
     gateway.sync_machine(core)
     store.record_volume(MACHINE_ID, VOLUME_ID, cfg.availability_zone)
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError, match="runtime other than controller"):
         gateway.sync_machine(core)
     gateway.secrets.put_secret_value.assert_not_called()
     assert store.get(MACHINE_ID).bundle_token is None
@@ -335,14 +340,14 @@ def synced_from_core(tmp_path) -> tuple[MachineStore, Gateway, dict]:
     secrets = Mock()
     secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
     gateway = make_gateway(cfg, store, secrets, instance_type="c7i.2xlarge")
-    gateway.request = routed([listed], core_fixture("prepare_response.json"))
+    gateway.request = routed([listed], core_fixture("prepare_controller_response.json"))
     gateway.sync_machines(gateway.machines())
     return store, gateway, listed
 
 
 def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
     store, gateway, listed = synced_from_core(tmp_path)
-    prepared = core_fixture("prepare_response.json")
+    prepared = core_fixture("prepare_controller_response.json")
     core = CoreMachine.parse(listed)
     assert (core.machine_id, core.slot_id, core.desired_state) == (
         listed["machine_id"],
@@ -361,7 +366,7 @@ def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
     assert (put["SecretId"], put["ClientRequestToken"]) == (FIXTURE_SECRET_ARN, token)
     bundle = json.loads(put["SecretString"])
     assert bundle == {
-        "version": 2,
+        "version": 3,
         "machineId": prepared["machine_id"],
         "assignment": {
             "installationId": "inst-test",
@@ -369,10 +374,15 @@ def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
             "generation": prepared["generation"],
             "dataVolumeId": listed["data_volume_id"],
         },
-        "machineCapability": prepared["machine_capability"],
         "apiEndpoint": prepared["api_endpoint"],
+        "controller": prepared["controller"],
+        "kms": {
+            "keyArn": prepared["kms"]["key_arn"],
+            "region": prepared["kms"]["region"],
+            "grantTokens": [store.grant("slot-a", 1).grant_token],
+            "context": prepared["kms"]["context"],
+        },
     }
-    assert bundle == json.loads((WORKER_TESTDATA / "bundle.json").read_text())
     store.close()
 
 

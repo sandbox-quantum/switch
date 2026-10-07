@@ -1,5 +1,6 @@
-import type { OpenAgentStream } from '@switch-console/agent-providers';
-import { AgentHub } from './agent-hub';
+import { join } from 'node:path';
+import { CONTROL_FILE, type OpenAgentStream } from '@switch-console/agent-providers';
+import { AgentHub, type ControlRegistry } from './agent-hub';
 import { AccessTokens, ControllerApiError, ControllerClient, type Fetch, isRevoked } from './api';
 import { ConfigurationError } from './errors';
 import { errorMessage, type Logger } from './log';
@@ -7,11 +8,18 @@ import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
 import { DEFAULT_RELAY_TIMING, LocalRelay, RELAY_TOKEN_PREFIX, type RelayTiming } from './relay';
+import {
+  DEFAULT_RELAY_CONTROL_TIMING,
+  RelayControl,
+  type RelayControlTiming,
+} from './relay-control';
 import { UpstreamForwarder } from './relay-forward';
 import type { AgentRuntime } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
+  PROVIDERS,
+  type Provider,
   type StatusReport,
   statusReportSchema,
 } from './schemas';
@@ -42,6 +50,7 @@ export type ControllerTiming = {
    */
   streamMaxBackoffMs: number;
   relay: RelayTiming;
+  control: RelayControlTiming;
   /** The most events held per agent while its agent host is not taking them. */
   eventBufferLimit: number;
 };
@@ -56,6 +65,7 @@ export const DEFAULT_TIMING: ControllerTiming = {
   streamInitialBackoffMs: 1_000,
   streamMaxBackoffMs: 8_000,
   relay: DEFAULT_RELAY_TIMING,
+  control: DEFAULT_RELAY_CONTROL_TIMING,
   eventBufferLimit: 5_000,
 };
 
@@ -64,9 +74,23 @@ export type ControllerDeps = {
   secrets: SecretStore;
   /**
    * Builds how agents run here, given the stream each agent's agent host hears
-   * its events on and the folder agents with no directory of their own work in.
+   * its events on, the folder agents with no directory of their own work in,
+   * where an agent host running in this process registers to answer
+   * relayed control messages, and the client the controller calls Switch with.
    */
-  runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
+  runtime: (
+    openStream: (agentId: string) => OpenAgentStream,
+    workspaces: string,
+    control: ControlRegistry,
+    client: ControllerClient
+  ) => AgentRuntime;
+  /**
+   * Fetches a provider login Switch seals for this machine again, on
+   * `provider.credential_changed`; null where logins are not sealed by Switch.
+   */
+  sealedLoginChanged: ((provider: Provider) => Promise<void>) | null;
+  /** The one port the relay may listen on, where agents are configured with it; null to choose freely. */
+  pinnedRelayPort: number | null;
   locator: ProviderLocator;
   fetch: Fetch;
   log: Logger;
@@ -217,6 +241,7 @@ export async function runController(
   /** Switch refused the credential at startup and has not accepted it since. */
   let credentialRefused = false;
   let reporter: StatusReporter | null = null;
+  let relayControl: RelayControl | null = null;
 
   const hub = new AgentHub({
     log,
@@ -224,11 +249,15 @@ export async function runController(
     onCursor: (agentId, cursor) =>
       store.saveCursor(agentId, cursor, new Date(deps.now()).toISOString()),
     onChange: () => reporter?.request(),
+    onControlPush: (agentId, push) => relayControl?.push(agentId, push),
+    onControlChange: (agentId) => relayControl?.transportChanged(agentId),
   });
   const workspaces = deps.workspacesFor(identity.server);
   const runtime = deps.runtime(
     (agentId) => (streamDeps) => hub.open(agentId, streamDeps),
-    workspaces
+    workspaces,
+    hub,
+    client
   );
   const relay = new LocalRelay({
     log,
@@ -258,6 +287,26 @@ export async function runController(
   const isolated = new Set<string>();
   const placed = new Set<string>();
   const delivery = (agentId: string) => (isolated.has(agentId) ? relay : hub);
+  const controlPath = `${identity.server}/v1/management/controllers/${encodeURIComponent(identity.controllerId)}`;
+  relayControl = new RelayControl({
+    post: async (path, body) => {
+      try {
+        const response = await client.request(`${controlPath}${path}`, { method: 'POST', body });
+        const text = await response.text();
+        return text ? (JSON.parse(text) as unknown) : null;
+      } catch (error) {
+        if (isRevoked(error)) void revoke();
+        throw error;
+      }
+    },
+    placement: (agentId) =>
+      isolated.has(agentId) ? 'isolated' : placed.has(agentId) ? 'shared' : null,
+    hub,
+    controlFile: (agentId) => join(runtime.watcherRoot(agentId), CONTROL_FILE),
+    log,
+    now: deps.now,
+    timing: timing.control,
+  });
   /** Sends each agent's events the way its definition asks, moving its cursor when that changes. */
   const placeAgents = (held: Assignment) => {
     const cursors = store.cursors();
@@ -272,13 +321,16 @@ export async function runController(
       } else {
         isolated.delete(agentId);
         relay.forgetStreams(agentId);
+        relayControl?.transportChanged(agentId);
       }
       const cursor = cursors.get(agentId);
       if (cursor !== undefined) delivery(agentId).setCursor(agentId, cursor);
     }
   };
   if (assignment) placeAgents(assignment);
-  const port = await relay.start(store.relayPort());
+  const port = await (deps.pinnedRelayPort === null
+    ? relay.start(store.relayPort(), false)
+    : relay.start(deps.pinnedRelayPort, true));
   store.saveRelayPort(port);
   log.info('Relay listening for this machine’s agents', { endpoint: relay.endpoint });
 
@@ -294,6 +346,7 @@ export async function runController(
       for (const agentId of agentIds) {
         if (!isSafeSegment(agentId)) continue;
         relay.unregister(agentId);
+        relayControl?.forget(agentId);
         try {
           await runtime.stop(agentId, { wait: false });
           hub.forget(agentId);
@@ -339,6 +392,7 @@ export async function runController(
     workspacesDir: workspaces,
     version: deps.version,
     now: deps.now,
+    log,
   });
   const reconcileDeps: ReconcileDeps = {
     store,
@@ -347,6 +401,9 @@ export async function runController(
     forgetAgent: (agentId) => {
       relay.unregister(agentId);
       hub.forget(agentId);
+      placed.delete(agentId);
+      isolated.delete(agentId);
+      relayControl?.forget(agentId);
     },
     binaryPath: (provider) => providers.binaryPath(provider),
     now: deps.now,
@@ -498,10 +555,39 @@ export async function runController(
       case 'operation.pending':
         void runOperations();
         return;
+      case 'agent.control':
+        relayControl?.handle(frame.data);
+        return;
+      case 'agent.control_cancel':
+        relayControl?.cancel(frame.data);
+        return;
       case 'credential.revoked':
         await revoke();
         return;
+      case 'provider.credential_changed':
+        loginChanged(frame.data.provider, frame.data.revision);
+        return;
     }
+  };
+
+  const loginChanged = (provider: string, revision: number): void => {
+    if (!deps.sealedLoginChanged) {
+      log.warn(
+        'Switch says a sealed provider login changed, but this controller is not given sealed logins',
+        { provider, revision }
+      );
+      return;
+    }
+    if (!(PROVIDERS as readonly string[]).includes(provider)) {
+      log.warn('Switch says a login changed for a provider this controller does not know', {
+        provider,
+        revision,
+      });
+      return;
+    }
+    void deps
+      .sealedLoginChanged(provider as Provider)
+      .catch((error) => failed(`Fetching the changed ${provider} login`, error));
   };
 
   /** Switch's verdict on the credential, asked before any cached agent starts. */
@@ -536,6 +622,7 @@ export async function runController(
       await queue.drain();
       await reporter.idle();
     } finally {
+      relayControl.close();
       await runtime.close();
       await relay.close();
     }
@@ -614,6 +701,7 @@ export async function runController(
       await queue.drain();
       await reporter.idle();
     } finally {
+      relayControl.close();
       await runtime.close();
       await relay.close();
     }

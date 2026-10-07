@@ -1,8 +1,9 @@
-"""The /events endpoint serves both transports off one path (CHOO-1857).
+"""Opening an agent connection, and the /events endpoint.
 
-`Accept: text/event-stream` opens a connection and streams; anything else gets
-the long poll. Both read the same buffer, so the two cannot diverge while they
-coexist — but the dispatch itself is easy to break silently, hence these.
+The WebSocket and the event stream both open through `_open_connection`,
+which these drive directly: validation, protocol ranges, declarations, room
+claims and session reporting. `/events` with `Accept: text/event-stream` opens
+the event stream an old client still asks for; anything else long polls.
 """
 
 from __future__ import annotations
@@ -16,7 +17,11 @@ from fastapi import HTTPException
 from starlette.responses import StreamingResponse
 
 from switch_core.bridges.agent.api import session_reporter
-from switch_core.bridges.agent.api.handlers import _resolve_start_cursor, poll_events
+from switch_core.bridges.agent.api.handlers import (
+    _open_connection,
+    _resolve_start_cursor,
+    poll_events,
+)
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
@@ -77,7 +82,6 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
         "agent_id": AGENT_ID,
         "agent": _agent(),
         "protocol": protocol,
-        "config": None,
         "timeout": 0,
         "accept": None,
         "connection_id": None,
@@ -90,10 +94,30 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
         "client": None,
         "client_version": None,
         "rooms": None,
-        "last_event_id": None,
     }
     params.update(kw)
-    return await poll_events(**params)
+    if params.pop("accept") != "text/event-stream":
+        return await poll_events(**params, accept=None)
+    # What used to open the stream now opens the connection the WebSocket
+    # carries; the rules are the same ones.
+    conn, _frames = await _open_connection(
+        agent=params["agent"],
+        protocol=params["protocol"],
+        connection_id=params["connection_id"],
+        scope=params["scope"],
+        event_filter=params["event_filter"],
+        start_from=params["start_from"],
+        spawn_capable=params["spawn_capable"],
+        declaration=ClientDeclaration(
+            speaks=params["protocol_version"],
+            accepts=params["protocol_accepts"],
+            artifact=params["client"],
+            version=params["client_version"],
+        ),
+        rooms=params["rooms"],
+        expected_generation=params.get("expected_generation"),
+    )
+    return conn
 
 
 async def test_without_the_sse_accept_header_it_long_polls() -> None:
@@ -104,10 +128,17 @@ async def test_without_the_sse_accept_header_it_long_polls() -> None:
     assert resp.status_code == 204
 
 
-async def test_with_the_sse_accept_header_it_opens_a_connection() -> None:
+async def test_with_the_sse_accept_header_it_opens_the_event_stream() -> None:
+    """How a runtime built before the WebSocket connects, kept for a
+    compatibility window."""
     protocol = _Protocol()
-    resp = await _call(
-        protocol, accept="text/event-stream", connection_id="c1", scope="all"
+    resp = await poll_events(
+        agent_id=AGENT_ID,
+        agent=_agent(),
+        protocol=protocol,  # type: ignore[arg-type]
+        accept="text/event-stream",
+        connection_id="c1",
+        scope="all",
     )
 
     assert isinstance(resp, StreamingResponse)
@@ -120,6 +151,19 @@ async def test_with_the_sse_accept_header_it_opens_a_connection() -> None:
     conn = protocol.connections.get("c1")
     assert conn is not None
     assert conn.scope == "all"
+    assert conn.stream_transport == "sse"
+
+
+async def test_opening_registers_the_connection() -> None:
+    protocol = _Protocol()
+    conn = await _call(
+        protocol, accept="text/event-stream", connection_id="c1", scope="all"
+    )
+
+    assert protocol.connections.get("c1") is conn
+    assert conn.scope == "all"
+    assert conn.stream_attached
+    assert conn.stream_transport == "websocket"
 
 
 async def test_streaming_without_a_connection_id_is_refused() -> None:
@@ -278,7 +322,7 @@ async def test_an_older_client_inside_the_server_range_is_accepted() -> None:
 def test_head_means_only_what_happens_next() -> None:
     protocol = _Protocol()
     protocol.event_buffer.enqueue(AGENT_ID, "room", _event())
-    assert _resolve_start_cursor(protocol, AGENT_ID, "head", None) == 1
+    assert _resolve_start_cursor(protocol, AGENT_ID, "head") == 1
 
 
 def test_last_event_id_wins_over_start_from() -> None:
@@ -288,13 +332,13 @@ def test_last_event_id_wins_over_start_from() -> None:
 
 def test_explicit_start_from_is_honoured() -> None:
     protocol = _Protocol()
-    assert _resolve_start_cursor(protocol, AGENT_ID, "17", None) == 17
+    assert _resolve_start_cursor(protocol, AGENT_ID, "17") == 17
 
 
 def test_a_nonsense_cursor_is_refused_rather_than_guessed() -> None:
     protocol = _Protocol()
     with pytest.raises(HTTPException) as excinfo:
-        _resolve_start_cursor(protocol, AGENT_ID, "banana", None)
+        _resolve_start_cursor(protocol, AGENT_ID, "banana")
     assert excinfo.value.status_code == 400
 
 
@@ -341,14 +385,13 @@ class TestDeclaringARoomAtOpenTakesOver:
         )
         protocol.connections.claim_room(incumbent, "room-1")
 
-        resp = await _call(
+        await _call(
             protocol,
             accept="text/event-stream",
             connection_id="supervisor",
             rooms="room-1",
         )
 
-        assert isinstance(resp, StreamingResponse)
         claimant = protocol.connections.claimant_of(AGENT_ID, "room-1")
         assert claimant is not None
         assert claimant.id == "supervisor"
@@ -367,12 +410,19 @@ async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
             entered.set()
             await release.wait()
 
+    async def open_stream() -> Any:
+        return await poll_events(
+            agent_id=AGENT_ID,
+            agent=_agent(),
+            protocol=protocol,  # type: ignore[arg-type]
+            accept="text/event-stream",
+            connection_id="c1",
+        )
+
     monkeypatch.setattr(protocol, "record_client_declaration", record)
-    first = asyncio.create_task(
-        _call(protocol, accept="text/event-stream", connection_id="c1")
-    )
+    first = asyncio.create_task(open_stream())
     await entered.wait()
-    newer = await _call(protocol, accept="text/event-stream", connection_id="c1")
+    newer = await open_stream()
     await anext(newer.body_iterator)
     release.set()
     older = await first
@@ -411,6 +461,8 @@ class TestOpeningAStreamReportsASession:
             service_name="switch-core",
             version="1.0.0",
             environment=None,
+            telemetry_environment="prod",
+            telemetry_internal=False,
         )
         protocol = _Protocol()
         protocol.sessions = SessionReporter(service, protocol.connections)

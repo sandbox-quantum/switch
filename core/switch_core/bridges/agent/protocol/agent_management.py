@@ -136,10 +136,13 @@ class AgentManagementPort(Protocol):
         self,
         tenant_id: str,
         owner_id: str,
+        caller_agent_id: str,
         agent_id: str,
         changes: ManagedAgentChanges,
         protocol: AgentCore,
     ) -> dict[str, Any]:
         """Change a managed agent's definition, machine or desired state, as
-        the owner's gateway PATCH would; returns it as `managed_agent` does."""
+        the owner's gateway PATCH would; returns it as `managed_agent` does.
+        Refused when `caller_agent_id` is `agent_id`: an agent never changes
+        its own definition, which would let it widen its own permissions."""
         ...

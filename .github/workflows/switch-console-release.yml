@@ -68,6 +68,7 @@ jobs:
       manifest: ${{ steps.resolve.outputs.manifest }}
       artifact_prefix: ${{ steps.resolve.outputs.artifact_prefix }}
       vite_build: ${{ steps.resolve.outputs.vite_build }}
+      vite_release: ${{ steps.resolve.outputs.vite_release }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -124,6 +125,13 @@ jobs:
               version="$pkg_version"
               ;;
           esac
+          # A tagged build is a published release; a workflow_dispatch test build
+          # is not. The app reports its usage to production's Amplitude project
+          # (or staging's, for a canary) only when this says it is a release.
+          case "$GITHUB_REF" in
+            refs/tags/*) vite_release=1 ;;
+            *) vite_release= ;;
+          esac
           if [ "$channel" = canary ]; then
             builder_config=electron-builder.canary.config.ts
             manifest=canary
@@ -142,6 +150,7 @@ jobs:
             echo "manifest=$manifest"
             echo "artifact_prefix=$artifact_prefix"
             echo "vite_build=$vite_build"
+            echo "vite_release=$vite_release"
           } | tee -a "$GITHUB_OUTPUT"
 
   # Creates the (assetless) Release up front so the platform jobs can run
@@ -273,6 +282,7 @@ jobs:
         # Root recursive build (topological): packages/** then the desktop app.
         env:
           VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
+          VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
           # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
           MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
         run: pnpm run build
@@ -566,6 +576,7 @@ jobs:
       - name: Build workspace packages + app
         env:
           VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
+          VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
           # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
           MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
         run: pnpm run build
@@ -677,6 +688,7 @@ jobs:
       - name: Build workspace packages + app
         env:
           VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
+          VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
           # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
           MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
         run: pnpm run build

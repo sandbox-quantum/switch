@@ -78,6 +78,11 @@ _ALLOWED_MODULES = {
     # tenants, then read each one's definitions under its own policy, the same
     # boot-style fan-out `main` does.
     "switch_core.management.bindings",
+    # The same fan-out, repeated while Core runs, to pick up placements and
+    # sealed logins written by a process of its own (the hosted-to-controller
+    # migration): enumerate the tenants, then read each one's sealed logins
+    # under its own policy.
+    "switch_core.management.reload",
     # The gateway's JWT subject resolves to its membership, and
     # `tenant_members` is scoped, so nothing else can answer it. In the
     # authentication module itself rather than on an injected store: a store

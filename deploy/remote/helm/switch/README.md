@@ -184,3 +184,27 @@ required keys are listed above the `secrets:` block in `values.yaml`.
 
 Bridge credentials are **not** among them. Those are entered in the gateway and
 stored in the database.
+
+## Agent management
+
+Managed agents, and the agent controllers that run them on users' machines, are
+off by default. To turn them on:
+
+```yaml
+switchCore:
+  agentManagement:
+    enabled: true
+secrets:
+  controllerTokenSecret: "<openssl rand -hex 32>"
+```
+
+With `secrets.existingSecret`, put the token secret in that Secret as
+`CONTROLLER_TOKEN_SECRET` instead. The chart sets `AGENT_MANAGEMENT_ENABLED`,
+`CONTROLLER_TOKEN_SECRET` and `CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core
+and its migration Job, so enabling it is one rollout. Controllers enroll and
+connect under `/v1`, which `ingress.agentApiPaths` routes to switch-core by default.
+
+A deployment that set these variables with `kubectl set env` should remove them
+before the first upgrade that renders them (`kubectl set env deployment/<release>-switch-core
+AGENT_MANAGEMENT_ENABLED- CONTROLLER_TOKEN_SECRET-`). Otherwise Helm merges its
+`valueFrom` into the live `value` and the API server rejects the Deployment.

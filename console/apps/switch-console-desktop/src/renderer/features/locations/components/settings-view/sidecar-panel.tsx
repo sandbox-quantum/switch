@@ -37,7 +37,7 @@ export const SidecarPanel = observer(function SidecarPanel() {
   return (
     <section className="flex flex-col gap-4">
       <SectionLabel>Room watcher</SectionLabel>
-      <ManagedAgentSection agentId={agent.id} />
+      <ManagedAgentSection agentId={agent.id} onReturned={null} />
       <ConsoleWatcher agentId={agent.id} />
     </section>
   );

@@ -12,6 +12,7 @@ import {
 import { z } from 'zod';
 import type { PlacementMap, SessionPlacements } from './placements';
 import type { AskHandler, Caller } from './session-channel';
+import type { HostStartSource } from './session-start';
 import { sharedConfigSchema } from './shared-config';
 
 /**
@@ -305,10 +306,19 @@ export const watcherHealthSchema = z.object({
 });
 export type WatcherHealth = z.infer<typeof watcherHealthSchema>;
 
+/** A session of the watcher's agent to start, or to run again, under the agent's current definition. */
+export type WatcherEnsure = {
+  sessionId: string;
+  resuming: boolean;
+  restart: boolean;
+  startSource: HostStartSource | null;
+};
+
 /** What a running watcher answers for, through its control. */
 export type WatcherHandlers = {
   place: (sessionId: string, roomId: string) => Promise<PlaceOutcome>;
   forget: (sessionId: string) => Promise<void>;
+  ensure: (input: WatcherEnsure) => Promise<{ created: boolean }>;
 };
 
 /**
@@ -351,6 +361,19 @@ export class WatcherControl {
     if (!this.handlers)
       return Promise.reject(new Error("The agent's room watcher is not running."));
     return this.handlers.forget(sessionId);
+  }
+
+  /**
+   * Start one of the agent's sessions, or run it again, built from the
+   * watcher's own configuration rather than from the caller's. Refused when no
+   * watcher is running.
+   */
+  ensure(input: WatcherEnsure): Promise<{ created: boolean }> {
+    if (!this.handlers)
+      return Promise.reject(
+        new Error("The agent's room watcher is not running, so it cannot start a session.")
+      );
+    return this.handlers.ensure(input);
   }
 
   /** Move a room's messages to this session. Refused when no watcher is running. */

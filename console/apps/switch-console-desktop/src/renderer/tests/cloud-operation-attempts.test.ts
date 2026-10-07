@@ -1,24 +1,18 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 
 const server = vi.hoisted(() => ({
-  operations: new Map<string, { sessionId: string; action: string }>(),
   sessions: new Set<string>(),
-  restarts: 0,
   loseNextResponse: false,
   failNext: false,
 }));
 
 const cloudSessionOperation = vi.hoisted(() =>
-  vi.fn(async (_agentKey: string, sessionId: string, operationId: string, action: string) => {
+  vi.fn(async (_agentKey: string, sessionId: string, action: string) => {
     if (server.failNext) {
       server.failNext = false;
       return { state: 'failed', message: 'session limit', code: null };
     }
-    if (!server.operations.has(operationId)) {
-      server.operations.set(operationId, { sessionId, action });
-      if (action === 'start') server.sessions.add(sessionId);
-      else server.restarts += 1;
-    }
+    if (action === 'start') server.sessions.add(sessionId);
     if (server.loseNextResponse) {
       server.loseNextResponse = false;
       return { state: 'unknown', message: 'The server did not confirm the session.' };
@@ -32,12 +26,10 @@ vi.mock('@renderer/lib/ipc', () => ({ rpc: { sdkHost: { cloudSessionOperation } 
 const { cloudOperationAttempts, restartAttemptKey, startAttemptKey } =
   await import('@renderer/features/cloud-agents/cloud-operation-attempts');
 
-const agentKey = 'cloud:server:launch';
+const agentKey = 'cloud:server:agent=agent';
 
 beforeEach(() => {
-  server.operations.clear();
   server.sessions.clear();
-  server.restarts = 0;
   server.loseNextResponse = false;
   server.failNext = false;
   cloudSessionOperation.mockClear();
@@ -58,12 +50,11 @@ it('asks for the same session again after a lost start response, so one session 
   expect(second).toEqual({ sessionId: first?.sessionId, outcome: { state: 'applied' } });
   const [a, b] = cloudSessionOperation.mock.calls;
   expect(b).toEqual(a);
-  expect(a[2]).toBe(a[1]);
   expect(server.sessions.size).toBe(1);
   expect(cloudOperationAttempts.get(key)).toBeUndefined();
 });
 
-it('asks for the same restart again after a lost response, so it restarts once', async () => {
+it('asks to restart the same session again after a lost response', async () => {
   const key = restartAttemptKey(agentKey, 'session');
   server.loseNextResponse = true;
   expect(
@@ -74,7 +65,7 @@ it('asks for the same restart again after a lost response, so it restarts once',
   ).toBe('applied');
   const [a, b] = cloudSessionOperation.mock.calls;
   expect(b).toEqual(a);
-  expect(server.restarts).toBe(1);
+  expect(a).toEqual([agentKey, 'session', 'restart']);
   expect(cloudOperationAttempts.get(key)).toBeUndefined();
 });
 
@@ -83,7 +74,7 @@ it('treats a call that never answered as unknown and keeps the attempt', async (
   cloudSessionOperation.mockRejectedValueOnce(new Error('IPC channel closed'));
   const first = await cloudOperationAttempts.run(key, agentKey, 'start', null);
   expect(first?.outcome.state).toBe('unknown');
-  expect(cloudOperationAttempts.get(key)?.operationId).toBe(first?.sessionId);
+  expect(cloudOperationAttempts.get(key)?.sessionId).toBe(first?.sessionId);
 });
 
 it('ignores a second ask while the first is in flight', async () => {
@@ -94,16 +85,16 @@ it('ignores a second ask while the first is in flight', async () => {
   expect(cloudSessionOperation).toHaveBeenCalledTimes(1);
 });
 
-it('uses a fresh id after a definite failure', async () => {
-  const key = restartAttemptKey(agentKey, 'session');
+it('starts a fresh session after a definite failure', async () => {
+  const key = startAttemptKey(agentKey);
   server.failNext = true;
-  expect((await cloudOperationAttempts.run(key, agentKey, 'restart', 'session'))?.outcome).toEqual({
+  expect((await cloudOperationAttempts.run(key, agentKey, 'start', null))?.outcome).toEqual({
     state: 'failed',
     message: 'session limit',
     code: null,
   });
   expect(cloudOperationAttempts.get(key)).toBeUndefined();
-  await cloudOperationAttempts.run(key, agentKey, 'restart', 'session');
+  await cloudOperationAttempts.run(key, agentKey, 'start', null);
   const [a, b] = cloudSessionOperation.mock.calls;
-  expect(b[2]).not.toBe(a[2]);
+  expect(b[1]).not.toBe(a[1]);
 });
