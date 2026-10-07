@@ -57,6 +57,7 @@ import {
   type MigrationManagementPort,
   type TargetLookup,
 } from './agent-migration-service';
+import { deleteFiles, readFiles, stopWatchers } from './host-batch';
 import {
   credentialsStashKey,
   deleteManagedAgentRecord,
@@ -401,6 +402,35 @@ const machine: MigrationMachinePort = {
     if (agent.sshHost) return;
     await stopLocalSessionsOf(agent.switchAgentId!);
   },
+  stopConsoleWatchers: async (agents) => {
+    const outcomes = new Map<string, string | null>();
+    const first = agents[0];
+    if (!first) return outcomes;
+    if (!first.sshHost) {
+      for (const agent of agents)
+        try {
+          await machine.stopConsoleWatcher(agent);
+          outcomes.set(agent.id, null);
+        } catch (error) {
+          outcomes.set(agent.id, error instanceof Error ? error.message : String(error));
+        }
+      return outcomes;
+    }
+    for (const agent of agents) autoSessionWatcher.forgetRetries(agent.id);
+    const stopped = await stopWatchers(
+      machineScript(first),
+      agents.map((agent) => agent.switchAgentId!),
+      { waitMs: 20_000, killWaitMs: 5_000 }
+    );
+    for (const agent of agents)
+      outcomes.set(
+        agent.id,
+        agent.switchAgentId! in stopped
+          ? (stopped[agent.switchAgentId!] ?? null)
+          : 'The host did not report on its watcher.'
+      );
+    return outcomes;
+  },
   startConsoleWatcher: async (agent) => {
     await autoSessionWatcher.bringUp(agent.id, 'explicit');
   },
@@ -409,6 +439,32 @@ const machine: MigrationMachinePort = {
 
 const credentialsLog = { warn: (...input: unknown[]) => log.warn('agent-migration:', ...input) };
 
+/**
+ * Keeps the token of an agent's credentials file in the encrypted secrets
+ * store, refusing a file that is incomplete or names another agent. The
+ * caller removes the file once this returns.
+ */
+async function keepCredentials(
+  agent: MigrationAgent,
+  identity: { slug: string; switchAgentId: string },
+  raw: string
+): Promise<void> {
+  const relPath = agentSettingsRelativePath(identity.slug);
+  const parsed = parseSwitchAgentCredentials(raw, credentialsLog);
+  if (!parsed)
+    throw new Error(
+      `${relPath} does not hold complete Switch credentials, so it is left as it is.`
+    );
+  if (parsed.agentId !== identity.switchAgentId)
+    throw new Error(
+      `${relPath} names Switch agent ${parsed.agentId}, not ${identity.switchAgentId}; it is left as it is.`
+    );
+  await encryptedAppSecretsStore.setSecret(
+    credentialsStashKey(agent.id, identity.switchAgentId),
+    JSON.stringify({ endpoint: parsed.apiEndpoint, token: parsed.token })
+  );
+}
+
 const credentials: MigrationCredentialsPort = {
   stash: async (agent, identity) => {
     const relPath = agentSettingsRelativePath(identity.slug);
@@ -416,24 +472,47 @@ const credentials: MigrationCredentialsPort = {
     try {
       const raw = await workdir.fs.read(relPath);
       if (raw === null) return false;
-      const parsed = parseSwitchAgentCredentials(raw, credentialsLog);
-      if (!parsed)
-        throw new Error(
-          `${relPath} does not hold complete Switch credentials, so it is left as it is.`
-        );
-      if (parsed.agentId !== identity.switchAgentId)
-        throw new Error(
-          `${relPath} names Switch agent ${parsed.agentId}, not ${identity.switchAgentId}; it is left as it is.`
-        );
-      await encryptedAppSecretsStore.setSecret(
-        credentialsStashKey(agent.id, identity.switchAgentId),
-        JSON.stringify({ endpoint: parsed.apiEndpoint, token: parsed.token })
-      );
+      await keepCredentials(agent, identity, raw);
       await workdir.fs.delete(relPath);
       return true;
     } finally {
       workdir.close();
     }
+  },
+  stashMany: async (items) => {
+    const outcomes = new Map<string, boolean | Error>();
+    const first = items[0];
+    if (!first) return outcomes;
+    if (!first.agent.sshHost) {
+      for (const { agent, identity } of items)
+        try {
+          outcomes.set(agent.id, await credentials.stash(agent, identity));
+        } catch (error) {
+          outcomes.set(agent.id, error instanceof Error ? error : new Error(String(error)));
+        }
+      return outcomes;
+    }
+    const run = machineScript(first.agent);
+    const pathOf = (item: (typeof items)[number]) =>
+      posix.join(item.agent.dir, agentSettingsRelativePath(item.identity.slug));
+    const files = await readFiles(run, items.map(pathOf));
+    const kept: string[] = [];
+    for (const item of items) {
+      const raw = files[pathOf(item)] ?? null;
+      if (raw === null) {
+        outcomes.set(item.agent.id, false);
+        continue;
+      }
+      try {
+        await keepCredentials(item.agent, item.identity, raw);
+        kept.push(pathOf(item));
+        outcomes.set(item.agent.id, true);
+      } catch (error) {
+        outcomes.set(item.agent.id, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    if (kept.length) await deleteFiles(run, kept);
+    return outcomes;
   },
   restore: async (agent, identity) => {
     const key = credentialsStashKey(agent.id, identity.switchAgentId);
