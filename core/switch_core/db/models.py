@@ -2392,6 +2392,37 @@ class TelemetrySnapshotWatermark(Base):
     )
 
 
+# ── Switch-core processes ────────────────────────────────────────────────────
+
+
+class SwitchCoreProcess(Base):
+    """A running switch-core process's lease (`management/process_lease.py`).
+
+    Each process holding controller sockets claims a row at startup, renews
+    `beat_at` every few seconds, and sets `stopped_at` as it shuts down. A
+    controller connection whose holding process's lease is stale, stopped or
+    gone reads as offline, which is how a process that died without writing
+    its connections' closings is noticed. One write per process per renewal,
+    however many machines it holds.
+
+    Not tenant-scoped: a process serves every tenant. Rows long stale are
+    pruned by the live processes.
+    """
+
+    __tablename__ = "switch_core_processes"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    beat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    stopped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── Feature flags ────────────────────────────────────────────────────────────
 
 
@@ -3084,6 +3115,17 @@ class AgentController(TenantScoped, Base):
     `status_seq` its sequence number: a report with a sequence at or below it is
     ignored. `assignment_revision` bumps on every change to the set of agents
     the controller should run, and is what its ETag carries.
+
+    The `connection_*`, `connected_at` and `disconnect*` columns are the
+    controller's socket as the switch-core process holding it last recorded it
+    (`management/connection_ledger.py`): which connection, which process holds
+    it (`connection_process_id`, a `switch_core_processes` row), when its
+    socket attached, and when and why it went. Only transitions are written,
+    never heartbeats; a process that dies without writing the closing is
+    caught by its lease in `switch_core_processes` going stale. They describe
+    the current connection, or the last one once it has closed; a new one
+    replaces them. Every replica reads them, so whether the machine is
+    connected does not depend on which process holds its socket.
     """
 
     __tablename__ = "agent_controllers"
@@ -3123,6 +3165,19 @@ class AgentController(TenantScoped, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Not a foreign key: a lease row is pruned once long stale, and a
+    # connection naming a process with no lease reads as lost.
+    connection_process_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    disconnected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # `socket_closed`, `heartbeat_lapsed`, `taken_over`, `revoked` or
+    # `server_shutdown`.
+    disconnect_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

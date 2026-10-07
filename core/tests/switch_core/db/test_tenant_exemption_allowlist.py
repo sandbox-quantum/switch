@@ -175,6 +175,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # Its own reads are the per-tenant fan-out above; this is the one global
     # read beside them, the deployment's user count.
     "switch_core.telemetry.snapshot",
+    # This process's lease in `switch_core_processes`, a table with no tenant
+    # and no policy (`rls_ddl.GLOBAL_TABLES`): a process serves every tenant,
+    # so its lease belongs to none. It touches only that table.
+    "switch_core.management.process_lease",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

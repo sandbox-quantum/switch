@@ -5,6 +5,7 @@ import {
   enrollCommand,
   fetchManagementAvailable,
   managementError,
+  shellQuote,
 } from "./management";
 
 function respond(status: number, body: unknown) {
@@ -106,8 +107,29 @@ describe("createManagedAgent", () => {
 
 describe("enrollCommand", () => {
   it("names the server and the code", () => {
-    expect(enrollCommand("https://switch.example.com", "swce_example")).toBe(
-      "switch-agent-controller enroll --server https://switch.example.com --code swce_example",
+    expect(
+      enrollCommand("https://switch.example.com", "swce_example", { name: "", description: " " }),
+    ).toBe("switch-agent-controller enroll --server https://switch.example.com --code swce_example");
+  });
+
+  it("adds the name and description, quoted for the shell", () => {
+    expect(
+      enrollCommand("https://switch.example.com", "swce_example", {
+        name: " build-box ",
+        description: "Bob's box: $HOME `x` \"y\"",
+      }),
+    ).toBe(
+      "switch-agent-controller enroll --server https://switch.example.com --code swce_example" +
+        " --name build-box --description 'Bob'\\''s box: $HOME `x` \"y\"'",
     );
+  });
+});
+
+describe("shellQuote", () => {
+  it("leaves plain words alone and single-quotes the rest", () => {
+    expect(shellQuote("swce_a-b.c")).toBe("swce_a-b.c");
+    expect(shellQuote("two words")).toBe("'two words'");
+    expect(shellQuote("it's")).toBe("'it'\\''s'");
+    expect(shellQuote("")).toBe("''");
   });
 });

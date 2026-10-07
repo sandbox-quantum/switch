@@ -102,6 +102,8 @@ export class FakeCore {
   readonly results = new Map<string, OperationResult>();
   readonly opens: Record<string, AgentCursor>[] = [];
   readonly beats: Record<string, number>[] = [];
+  /** The machine's name and description, as `PATCH .../controllers/{id}` changes them. */
+  info: { name: string; description: string | null } = { name: 'laptop', description: null };
   /** Answers the next request to a path with this, once. */
   readonly scripted: { method: string; path: string; status: number; body: unknown }[] = [];
   /** What `GET .../media` sends, in these chunks; `waitBetween` holds back all but the first. */
@@ -397,6 +399,12 @@ export class FakeCore {
         heartbeat_interval_s: this.heartbeatIntervalS,
         agents: this.bound(),
       });
+    }
+    if (method === 'PATCH' && url.pathname === base) {
+      const change = body as { name?: string; description?: string | null };
+      if (change.name !== undefined) this.info.name = change.name;
+      if (change.description !== undefined) this.info.description = change.description;
+      return this.json(res, 200, { id: this.controllerId, ...this.info, state: 'online' });
     }
     if (method === 'GET' && url.pathname === `${base}/assignment`) {
       const etag = `"${this.assignment.revision}"`;

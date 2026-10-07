@@ -28,6 +28,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.management import controller_routes
 from switch_core.management.schemas import (
     ControllerConnectionRequest,
+    ControllerInfoRequest,
     EnrollRequest,
     OperationResultRequest,
     StatusReport,
@@ -97,6 +98,7 @@ class TestRequestFixturesParse:
         ControllerConnectionRequest.model_validate(
             _fixture("controller_connection_request.json")
         )
+        ControllerInfoRequest.model_validate(_fixture("controller_info_request.json"))
 
 
 class TestEnrollmentAndTokens:
@@ -241,6 +243,23 @@ class TestControllerMessages:
             )
         assert refused.status_code == 401
         assert refused.json() == _fixture("error_response.json")
+
+
+class TestTheControllersOwnInfo:
+    async def test_set_info(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(
+                client, controller, 1, providers=[provider("claude")], agents=[]
+            )
+            updated = await client.patch(
+                f"/v1/management/controllers/{controller.controller_id}",
+                json=_fixture("controller_info_request.json"),
+                headers=controller.headers,
+            )
+        assert updated.status_code == 200, updated.text
+        assert_same_shape(updated.json(), _fixture("controller_info_response.json"))
 
 
 class TestTheControllerConnection:

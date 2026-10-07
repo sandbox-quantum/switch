@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AddMachineDialog from "./AddMachineDialog";
 
@@ -34,6 +34,33 @@ describe("AddMachineDialog", () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByText(new RegExp(window.location.origin))).toBeNull();
+  });
+
+  it("puts the optional name and description into the command, quoted", async () => {
+    issue("https://switch-api.example.test");
+    render(<AddMachineDialog open onClose={() => {}} />);
+    const base =
+      "switch-agent-controller enroll --server https://switch-api.example.test --code swce_example";
+    await screen.findByText(base);
+    fireEvent.change(screen.getByLabelText("Name (optional)"), { target: { value: " build-box " } });
+    fireEvent.change(screen.getByLabelText("Description (optional)"), {
+      target: { value: "Bob's box in the office" },
+    });
+    expect(
+      screen.getByText(`${base} --name build-box --description 'Bob'\\''s box in the office'`),
+    ).toBeTruthy();
+  });
+
+  it("shows no command for a name or description that is too long", async () => {
+    issue("https://switch-api.example.test");
+    render(<AddMachineDialog open onClose={() => {}} />);
+    await screen.findByText(/--code swce_example/);
+    fireEvent.change(screen.getByLabelText("Description (optional)"), {
+      target: { value: "x".repeat(501) },
+    });
+    expect(screen.getByText("At most 500 characters.")).toBeTruthy();
+    expect(screen.queryByText(/--code swce_example/)).toBeNull();
+    expect(screen.getByText("swce_example")).toBeTruthy();
   });
 
   it("says what to configure instead of showing a command that cannot work", async () => {

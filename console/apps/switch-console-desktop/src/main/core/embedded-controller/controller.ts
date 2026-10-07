@@ -30,6 +30,9 @@ export const embeddedControllerController = createRPCController({
 
   dismissRemoved: (serverId: string): Promise<void> => embeddedControllerService.dismiss(serverId),
 
+  /** Enrolls this computer again when the server no longer knows the machine it was. */
+  enrollAgain: (serverId: string): Promise<void> => embeddedControllerService.enrollAgain(serverId),
+
   /**
    * Where this computer's controller puts a managed agent that names no
    * directory, `~` for the home directory; null for a name that cannot be a

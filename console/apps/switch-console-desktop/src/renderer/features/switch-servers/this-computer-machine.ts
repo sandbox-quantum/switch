@@ -26,7 +26,21 @@ function clock(iso: string): string {
 /** How long after starting a controller that has not reached Switch reads as connecting, not disconnected. */
 export const CONNECTING_GRACE_MS = 60_000;
 
+/** What the card says when Switch does not list the machine this computer is enrolled as. */
+function unknownStatus(overview: EmbeddedControllerOverview): MachineStatus {
+  const why =
+    'Switch no longer knows this computer as a machine (its data was reset or restored, or the machine was deleted), so its controller cannot sign in. Enroll it again.';
+  return {
+    label: 'Unknown to Switch',
+    tone: 'error',
+    detail: overview.movedAgents.length
+      ? `${why} ${overview.movedAgents.join(', ')}, moved here from this Console, then need Stop managing, and can be moved again.`
+      : why,
+  };
+}
+
 export function machineStatus(overview: EmbeddedControllerOverview, nowMs: number): MachineStatus {
+  if (unknownToServer(overview)) return unknownStatus(overview);
   const { phase, remote } = overview;
   switch (phase.kind) {
     case 'off':
@@ -93,10 +107,7 @@ export function machineStatus(overview: EmbeddedControllerOverview, nowMs: numbe
       return {
         label: 'Disconnected',
         tone: 'warn',
-        detail:
-          state === null
-            ? 'Switch does not list this computer’s controller.'
-            : 'The controller is running but has not reached Switch recently. It keeps trying.',
+        detail: 'The controller is running but has not reached Switch recently. It keeps trying.',
       };
     }
   }
@@ -164,4 +175,14 @@ export function machineStateKey(overview: EmbeddedControllerOverview): string {
     overview.enrollment?.controllerId ?? null,
     overview.movedAgents,
   ]);
+}
+
+/** Switch answered, and does not list the machine this computer is enrolled as. */
+export function unknownToServer(overview: EmbeddedControllerOverview): boolean {
+  return (
+    overview.enrollment !== null &&
+    overview.remote?.kind === 'ok' &&
+    overview.remote.controller === null &&
+    (overview.phase.kind === 'running' || overview.phase.kind === 'restarting')
+  );
 }

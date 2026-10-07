@@ -308,6 +308,35 @@ describe('the host as a machine afterwards', () => {
   });
 });
 
+describe('enrolling a host again that Switch no longer knows', () => {
+  it('wipes the old controller on the host, without a revoke, and enrolls it afresh', async () => {
+    const base = deps();
+    const service = new HostControllerService({
+      ...base,
+      management: {
+        ...base.management,
+        read: async () => ({ kind: 'ok', controller: null, agents: [] }),
+      },
+    });
+    await service.enable(HOST, SERVER, WORKSPACE);
+    calls = [];
+    host.enroll = { ok: true, controllerId: 'controller-8' };
+    await service.enrollAgain(HOST, SERVER);
+    expect(calls.slice(0, 2)).toEqual(['stop', 'forget']);
+    expect(calls).not.toContain('revoke');
+    expect(calls).toContain('code');
+    expect(records.get(`${HOST}|${SERVER}`)?.controllerId).toBe('controller-8');
+  });
+
+  it('refuses while Switch still lists the host', async () => {
+    const service = new HostControllerService(deps());
+    await service.enable(HOST, SERVER, WORKSPACE);
+    calls = [];
+    await expect(service.enrollAgain(HOST, SERVER)).rejects.toThrow(/still lists build/);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe('removing the host as a machine', () => {
   it('revokes the controller first, then stops it and clears it from the host', async () => {
     const service = new HostControllerService(deps());

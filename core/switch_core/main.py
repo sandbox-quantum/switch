@@ -32,6 +32,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
@@ -144,7 +145,7 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.logging_config import configure_logging
-from switch_core.management.wiring import create_management
+from switch_core.management.wiring import Management, create_management
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
     Observability,
@@ -256,6 +257,32 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
                 )
         except Exception:
             logger.exception("AgentConnection sweep failed")
+
+
+# Under `_FORCED_EXIT_GRACE_SECONDS`, and first in the teardown: what it
+# writes is what lets every other process see this one's machines go offline
+# now rather than when its lease lapses.
+_MANAGEMENT_STOP_SECONDS = 1.0
+
+
+async def _stop_management(management: Management) -> None:
+    """Record the controller sockets that went and mark this process's lease
+    stopped. Never raises: if it fails, the lease lapses on its own."""
+    try:
+        async with asyncio.timeout(_MANAGEMENT_STOP_SECONDS):
+            await management.stop()
+    except TimeoutError:
+        logger.warning(
+            "Gave up recording controller disconnections after %.1fs; their "
+            "machines read offline once this process's lease lapses.",
+            _MANAGEMENT_STOP_SECONDS,
+        )
+    except Exception:
+        logger.warning(
+            "Recording controller disconnections at shutdown failed; their "
+            "machines read offline once this process's lease lapses.",
+            exc_info=True,
+        )
 
 
 # The innermost of three nested budgets: under
@@ -823,6 +850,7 @@ async def run(config: SwitchConfig) -> None:
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
+        await management.start()
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
@@ -875,6 +903,11 @@ async def run(config: SwitchConfig) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
             )
+            management_task = (
+                asyncio.create_task(management.run())
+                if management is not None
+                else None
+            )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -892,6 +925,10 @@ async def run(config: SwitchConfig) -> None:
                 connection_sweep_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
+                if management is not None:
+                    assert management_task is not None
+                    management_task.cancel()
+                    await _stop_management(management)
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 # Before the operational flush, and bounded: the whole
@@ -982,6 +1019,7 @@ async def run(config: SwitchConfig) -> None:
             lambda: asyncio.create_task(
                 _shutdown(
                     server,
+                    connections.controllers,
                     client_lifecycle,
                     collab_lifecycle,
                     connector_lifecycle,
@@ -1429,6 +1467,7 @@ async def _bootstrap_key_tenant(
 
 async def _shutdown(
     server: uvicorn.Server,
+    controllers: ControllerPresence,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
@@ -1437,6 +1476,9 @@ async def _shutdown(
     discord_gateway_task: asyncio.Task[None] | None,
 ) -> None:
     logger.info("Shutting down...")
+    # Before uvicorn closes the sockets, so the controllers' are recorded as
+    # closed by the server.
+    controllers.begin_shutdown()
     server.should_exit = True
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()

@@ -199,6 +199,7 @@ def build_harness(
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,
         clock=clock,
+        process_id=str(uuid.uuid4()),
     )
 
     async def _session() -> AsyncIterator[AsyncSession]:
@@ -312,6 +313,8 @@ class EnrolledController:
     credential: str
     access_token: str
     owner: User
+    # To connect the controller as a running one is connected.
+    harness: Harness
 
     @property
     def headers(self) -> dict[str, str]:
@@ -344,6 +347,7 @@ async def enroll_console(
         credential=body["credential"],
         access_token=token.json()["access_token"],
         owner=owner,
+        harness=harness,
     )
 
 
@@ -355,6 +359,23 @@ async def report_status(
     providers: list[dict[str, Any]] | None = None,
     agents: list[dict[str, Any]] | None = None,
 ) -> httpx.Response:
+    """Report status as a running controller does: one whose socket is
+    attached, connected first unless it already is."""
+    await ensure_connected(client, controller)
+    return await report_status_only(
+        client, controller, seq, providers=providers, agents=agents
+    )
+
+
+async def report_status_only(
+    client: httpx.AsyncClient,
+    controller: EnrolledController,
+    seq: int,
+    *,
+    providers: list[dict[str, Any]] | None = None,
+    agents: list[dict[str, Any]] | None = None,
+) -> httpx.Response:
+    """Report status without opening a connection."""
     return await client.put(
         f"/v1/management/controllers/{controller.controller_id}/status",
         json=status_report(seq, providers=providers, agents=agents),
@@ -494,6 +515,38 @@ async def open_connection(
     )
     assert response.status_code == 201, response.text
     return dict(response.json())
+
+
+async def connect(
+    client: httpx.AsyncClient, controller: EnrolledController
+) -> dict[str, Any]:
+    """Connect the controller as its socket would, and record it: the
+    connection opened, its socket attached, this process's lease claimed and
+    the transition written. Returns the open's response."""
+    harness = controller.harness
+    opened = await open_connection(client, controller)
+    presence = harness.protocol.connections.controllers
+    conn = presence.current_connection(controller.controller_id)
+    assert conn is not None
+    presence.attach_stream(conn)
+    await harness.management.start()
+    await harness.management.ledger.flush_all()
+    return opened
+
+
+async def ensure_connected(
+    client: httpx.AsyncClient, controller: EnrolledController
+) -> None:
+    """Connect the controller unless its socket is already attached, and
+    record it either way."""
+    harness = controller.harness
+    presence = harness.protocol.connections.controllers
+    conn = presence.current_connection(controller.controller_id)
+    if conn is None or not conn.stream_attached:
+        await connect(client, controller)
+        return
+    await harness.management.start()
+    await harness.management.ledger.flush_all()
 
 
 async def open_stream(

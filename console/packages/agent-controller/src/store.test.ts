@@ -96,6 +96,21 @@ describe('ControllerStore', () => {
     store.close();
   });
 
+  it('records a new name for the identity and keeps the rest', () => {
+    const store = ControllerStore.open(path);
+    expect(() => store.saveName('renamed')).toThrow(/no identity/);
+    const identity = {
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    };
+    store.saveIdentity(identity);
+    store.saveName('renamed');
+    expect(store.identity()).toEqual({ ...identity, name: 'renamed' });
+    store.close();
+  });
+
   it('caches the assignment with its ETag', () => {
     const store = ControllerStore.open(path);
     expect(store.cachedAssignment()).toEqual({ kind: 'none' });

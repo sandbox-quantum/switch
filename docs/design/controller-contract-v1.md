@@ -43,8 +43,17 @@ POST /v1/management/controllers/{id}/token           auth: none (credential in b
   → 200 { access_token: string, expires_at: Time }    // about 1h. Claims: controller_id, owner_id, tenant_id
 
 POST /v1/management/controllers/{id}/credential/rotate   → 200 { credential: string }
+PATCH /v1/management/controllers/{id}                     auth: the controller's access token
+  { name?: string, description?: string | null }     // either or both; null or blank clears the description
+  → 200 Controller                                   // the machine as its owner's list shows it
+  → 422 validation_error                             // name blank or > 200 chars, description > 500, nothing given
 DELETE /v1/management/controllers/{id}                    auth: owner (user). Revokes it, and every agent on it stops
 ```
+
+The `PATCH` is the controller renaming its own machine
+(`switch-agent-controller set-info`), with the limits and effects of the
+owner's own change in the gateway. A server that predates it answers `404` or
+`405` without an error envelope.
 
 ```ts
 type Platform = { os: "macos" | "linux" | "windows"; arch: "arm64" | "x64"; os_version: string }
@@ -238,6 +247,16 @@ WS /v1/controllers/{id}/connection/ws?connection_id=…&generation=…
   close 1012                                          // the server is restarting: reconnect within a second
 ```
 
+**Connection transitions are recorded.** Whichever server process holds the
+socket records, once each, when it attached and when and why it went
+(`socket_closed`, `server_shutdown`, `heartbeat_lapsed`, `taken_over`,
+`revoked`) on the controller's row. Pongs are not recorded. A controller
+shutting down needs to say nothing: its socket closing is recorded at once,
+and so is a dropped one, which reattaching records as connected again. Every
+process reads the machine's state from that record and the holding process's
+lease (§8, Machine state), so it does not depend on which process holds the
+socket.
+
 **Attachment is automatic.** Core attaches the agents currently bound to this controller (§7), and attaches or detaches them as bindings change. There's no per-agent subscribe call.
 
 **Core knows only whether an agent is connected.** A controller-backed agent is connected while its controller's socket is attached and answering pings, its owner has it `running`, and the controller is not revoked. Core does not know where the agent's sessions are, or whether one is running: the open and the pong carry no session map, and a body that still sends `placements` is refused with `422 validation_error` (the one exception to ignoring unknown fields, so a controller still reporting sessions is noticed rather than silently dropped). When a connected agent is addressed, Core delivers the message and posts nothing; if a session has to start, the agent's host posts "Starting a session…" itself. When it is not connected, Core tells the room why: stopped by its owner, its machine removed, or its machine offline.
@@ -289,13 +308,21 @@ After acting, send status.
 - To move it, Management first unbinds it from A at revision r+1, and waits for A to report it stopped, or for A to go stale.
 - Then it binds the agent to B at revision r+2. B refuses to start a revision older than one it has already applied.
 
-**Staleness.** No status for 3 × `report_within_s` makes a controller `unknown`, and so are its agents. Management then:
-- shows them as unknown,
+**Machine state.** Read from the recorded connection (§6), not from the status report:
+- `online`: its socket is attached, and the server process holding it is alive (its lease renewed within 15 s, and not stopped).
+- `offline`: it has connected before, and its socket went (closed, a lapsed heartbeat, a takeover not replaced, the server shutting down), or the server process holding it stopped or died. A controller that stops shows offline at once when its socket closes, within about 8 s when its heartbeat lapses with the socket still open, and within 15 s when the process holding its socket died.
+- `unknown`: no connection has ever been recorded for it.
+- `revoked`: its credential is gone.
+
+While it is not online Management:
+- shows it, and its agents, as offline or unknown,
 - refuses new placements on that controller,
 - may reassign its agents only if their definition allows it. Cloud agents stay put.
 
-**Placement checks.** Before binding, Management checks the target's last status. It refuses with a reason if:
-- the controller is `unknown`,
+The status report carries the details (providers, disk, sessions, agents) and is what placement reads them from.
+
+**Placement checks.** Before binding, Management checks the target. It refuses with a reason if:
+- the controller is not `online`, or its last status is older than 3 × `report_within_s`,
 - the provider is not installed, or its login is not `ok`,
 - there's no session capacity, or the disk is nearly full.
 
@@ -334,7 +361,7 @@ The personal agent relays that reason to the user as is.
 | `crash_loop` | status | 5 restarts in 10 minutes, stopped retrying |
 | `out_of_memory` | status | Killed by the memory limit |
 | `disk_full` / `capacity_exceeded` | status, placement | No disk / no session slots |
-| `controller_offline` | placement | Target is `unknown` |
+| `controller_offline` | placement | Target is not `online`, or its last status is stale |
 | `internal` | any | Server or controller bug, with `retryable` set honestly |
 
 ---

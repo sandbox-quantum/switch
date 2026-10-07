@@ -65,6 +65,7 @@ from switch_core.management.errors import ManagementError, ManagementRoute, erro
 from switch_core.management.schemas import (
     MAX_STATUS_BYTES,
     ControllerConnectionRequest,
+    ControllerInfoRequest,
     DefinitionV1,
     EnrollRequest,
     OperationResultRequest,
@@ -208,6 +209,22 @@ async def exchange_token(
 
 
 # ── Controller access token ───────────────────────────────────────────────────
+
+
+@router.patch("/v1/management/controllers/{controller_id}")
+async def update_controller_info(
+    body: ControllerInfoRequest,
+    principal: PathController,
+    management: Management,
+    session: Session,
+) -> dict[str, Any]:
+    """Rename this machine and/or change its description, as its owner can
+    in the gateway. Returns the machine as the owner's list shows it."""
+    return await management.update_own_controller(
+        session,
+        principal,
+        {key: getattr(body, key) for key in body.model_fields_set},
+    )
 
 
 @router.post("/v1/management/controllers/{controller_id}/credential/rotate")

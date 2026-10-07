@@ -110,6 +110,21 @@ export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 
 export const credentialRotateResponseSchema = z.object({ credential: id });
 
+/** Renaming this machine, or changing its description: either or both; `description: null` clears it. */
+export const controllerInfoRequestSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().max(500).nullable().optional(),
+});
+export type ControllerInfoChange = z.infer<typeof controllerInfoRequestSchema>;
+
+/** The machine as its owner's list shows it, after the change; only what the controller reads. */
+export const controllerInfoResponseSchema = z.object({
+  id,
+  name: z.string().min(1),
+  description: z.string().nullable(),
+});
+export type ControllerInfo = z.infer<typeof controllerInfoResponseSchema>;
+
 // §2 Assignment (v1 definition)
 
 export const agentDefinitionSchema = z.object({

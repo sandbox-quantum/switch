@@ -49,6 +49,8 @@ node packages/agent-controller/dist/cli.mjs enroll \
 
 node packages/agent-controller/dist/cli.mjs run [--data-dir <dir>]
 node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
+node packages/agent-controller/dist/cli.mjs set-info [--name <name>] \
+  [--description <text>] [--data-dir <dir>]
 ```
 
 - `--server` is the agent bridge URL, and it must be `https`. Plain `http` is
@@ -59,6 +61,13 @@ node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
   characters). Its owner sees it in the gateway's Machines page, where both the
   name and the description can be changed later, and so do the agents allowed
   to manage agents for that owner.
+- `set-info` changes the machine's name and/or description on the server after
+  enrollment, with this controller's own credential, and records the new name
+  in the data directory. Give `--name`, `--description` or both; `--description ""`
+  clears the description. The limits are enrollment's (a name of at most 200
+  characters, not blank). It needs the credential in the data directory, so a
+  controller whose credential is handed over with `--credential-stdin` is
+  renamed in the gateway instead. It can run while `run` does.
 - `status` reads only local state. It makes no network call.
 - Logging goes to stderr. Set the level with `SWITCH_CONTROLLER_LOG_LEVEL`
   (`debug`, `info`, `warn`, `error`; the default is `info`).
@@ -78,7 +87,8 @@ node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
   a newer controller wrote; a shared-host bundle that is missing, not a file
   or unreadable; an unsupported platform (Windows); a data directory that
   holds no identity, or no credential (revoked earlier and wiped, or never
-  enrolled); and with `--credential-stdin`, a credential that does not arrive
+  enrolled); `set-info` with nothing to change, or a name or description past
+  the limits; and with `--credential-stdin`, a credential that does not arrive
   (stdin is a terminal, closes empty, holds more than one token, cannot be
   read, or stays open past 10 s). The reason is the last line on stderr,
   prefixed `switch-agent-controller: `. Once the controller is running,

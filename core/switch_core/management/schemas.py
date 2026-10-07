@@ -15,13 +15,14 @@ same files.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from switch_core.db.models import Agent, AgentController, AgentControllerOperation
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
+from switch_core.management.process_lease import ProcessLeases
 
 Provider = Literal["claude", "codex", "opencode", "antigravity", "cursor"]
 ControllerKind = Literal["console", "daemon", "ec2"]
@@ -344,7 +345,7 @@ class ConsoleControllerRequest(_GatewayBody):
         return _controller_description(value)
 
 
-class UpdateControllerRequest(_GatewayBody):
+class _ControllerDetailsChange(BaseModel):
     """Rename a machine or change its description. Either or both; a key left
     out is left as it is, and `description: null` (or blank) clears it — read
     `model_fields_set`, not the value."""
@@ -369,10 +370,22 @@ class UpdateControllerRequest(_GatewayBody):
         return _controller_description(value)
 
     @model_validator(mode="after")
-    def _changes_something(self) -> UpdateControllerRequest:
+    def _changes_something(self) -> Self:
         if not self.model_fields_set:
             raise ValueError("give a name, a description, or both")
         return self
+
+
+class UpdateControllerRequest(_ControllerDetailsChange):
+    """The owner's change, through the gateway."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ControllerInfoRequest(_ControllerDetailsChange):
+    """The controller's own change (`switch-agent-controller set-info`)."""
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class CreateManagedAgentRequest(_GatewayBody):
@@ -481,7 +494,32 @@ def workspaces_dir_of(controller: AgentController) -> str | None:
     return directory if isinstance(directory, str) and directory else None
 
 
-def controller_view(controller: AgentController, state: str) -> dict[str, Any]:
+def connection_view(
+    controller: AgentController, leases: ProcessLeases
+) -> dict[str, Any] | None:
+    """The controller's connection as last recorded: the current one, or the
+    last one once its socket went. None when none was ever recorded.
+
+    A connection the row shows open whose holding process is no longer
+    alive is shown as ended when and why that process stopped holding it:
+    `server_shutdown` at its lease's `stopped_at`, or `server_lost` after its
+    last renewal (when unknown once the lease is pruned)."""
+    if controller.connected_at is None:
+        return None
+    disconnected_at = controller.disconnected_at
+    reason = controller.disconnect_reason
+    if disconnected_at is None and not leases.holds(controller.connection_process_id):
+        disconnected_at, reason = leases.ended(controller.connection_process_id)
+    return {
+        "connected_at": wire_time(controller.connected_at),
+        "disconnected_at": wire_time_or_none(disconnected_at),
+        "disconnect_reason": reason,
+    }
+
+
+def controller_view(
+    controller: AgentController, state: str, leases: ProcessLeases
+) -> dict[str, Any]:
     return {
         "id": controller.id,
         "name": controller.name,
@@ -491,6 +529,7 @@ def controller_view(controller: AgentController, state: str) -> dict[str, Any]:
         "version": controller.version,
         "state": state,
         "last_seen_at": wire_time_or_none(controller.last_seen_at),
+        "connection": connection_view(controller, leases),
         "status": controller.status,
         "assignment_revision": controller.assignment_revision,
         "workspaces_dir": workspaces_dir_of(controller),

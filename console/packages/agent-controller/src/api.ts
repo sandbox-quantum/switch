@@ -7,7 +7,10 @@ import {
   type Assignment,
   assignmentSchema,
   type ControllerConnection,
+  type ControllerInfo,
+  type ControllerInfoChange,
   controllerConnectionResponseSchema,
+  controllerInfoResponseSchema,
   credentialRotateResponseSchema,
   type EnrollRequest,
   type EnrollResponse,
@@ -350,6 +353,31 @@ export class ControllerClient {
       }
       throw error;
     }
+  }
+
+  /** Renames this machine and/or changes its description, as its owner can in the gateway. */
+  async updateInfo(change: ControllerInfoChange): Promise<ControllerInfo> {
+    let response: Response;
+    try {
+      response = await this.request(this.controllerPath, { method: 'PATCH', body: change });
+    } catch (error) {
+      // A server from before this route answers with the framework's own
+      // refusal, which carries no Switch error envelope.
+      if (
+        error instanceof ControllerApiError &&
+        (error.status === 404 || error.status === 405) &&
+        error.code === 'unexpected_response'
+      )
+        throw new ControllerApiError(
+          error.status,
+          'not_supported',
+          "This Switch server cannot rename a machine from its controller. Change the name and description in the gateway's Machines page instead.",
+          false,
+          null
+        );
+      throw error;
+    }
+    return parsed(response, controllerInfoResponseSchema);
   }
 
   async rotateCredential(): Promise<string> {

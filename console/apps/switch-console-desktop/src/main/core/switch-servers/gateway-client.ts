@@ -2610,7 +2610,7 @@ export type ManagementController = {
   /** What its owner says the machine is for; null when none was given. */
   description: string | null;
   kind: string;
-  state: 'online' | 'unknown' | 'revoked';
+  state: 'online' | 'offline' | 'unknown' | 'revoked';
   lastSeenAt: string | null;
   revokedAt: string | null;
   /** Each provider as the controller last reported it; empty before it has reported. */
@@ -2667,7 +2667,7 @@ type ManagementControllerJson = {
   name: string;
   description: string | null;
   kind: string;
-  state: 'online' | 'unknown' | 'revoked';
+  state: 'online' | 'offline' | 'unknown' | 'revoked';
   last_seen_at: string | null;
   revoked_at: string | null;
   status?: unknown;

@@ -56,7 +56,7 @@ export type EmbeddedControllerRemote =
       controller: {
         name: string;
         description: string | null;
-        state: 'online' | 'unknown' | 'revoked';
+        state: 'online' | 'offline' | 'unknown' | 'revoked';
         lastSeenAt: string | null;
       } | null;
       agents: PlacedManagedAgent[];
