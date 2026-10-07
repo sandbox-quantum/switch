@@ -27,6 +27,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
@@ -216,6 +217,10 @@ def get_usage_store() -> UsageStore:
 
 def get_budget_store() -> BudgetStore:
     return _state["budget_store"]  # type: ignore[no-any-return]
+
+
+def get_retention_store() -> RetentionStore:
+    return RetentionStore()
 
 
 def get_connector_lifecycle() -> ServerSideConnectorLifecycleService:

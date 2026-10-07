@@ -1083,6 +1083,57 @@ export interface CreateInvitationInput {
   uses_remaining: number;
 }
 
+// ── Data retention ─────────────────────────────────────────────────────────
+
+export const MAX_MESSAGE_RETENTION_DAYS = 3650;
+
+export interface RetentionPolicy {
+  // Null means messages are kept forever.
+  message_retention_days: number | null;
+  updated_at: string | null;
+  updated_by_user_id: string | null;
+}
+
+export interface RetentionPreview {
+  message_retention_days: number;
+  messages_to_delete: number;
+}
+
+export async function fetchRetentionPolicy(tenantId: string): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "GET",
+  );
+}
+
+export async function previewRetentionPolicy(
+  tenantId: string,
+  days: number,
+): Promise<RetentionPreview> {
+  return jsonRequest<RetentionPreview>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention/preview?days=${days}`,
+    "GET",
+  );
+}
+
+export async function setRetentionPolicy(
+  tenantId: string,
+  days: number,
+): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "PUT",
+    { message_retention_days: days },
+  );
+}
+
+export async function clearRetentionPolicy(tenantId: string): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "DELETE",
+  );
+}
+
 export async function fetchInvitations(tenantId: string): Promise<Invitation[]> {
   return jsonRequest<Invitation[]>(
     `/tenants/${encodeURIComponent(tenantId)}/invitations`,

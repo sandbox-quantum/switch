@@ -21,6 +21,7 @@ from switch_core.clients.client_lifecycle_service import (
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
+    MAX_MESSAGE_RETENTION_DAYS,
     GitHubIssuedToken,
     Invitation,
     ProviderConnection,
@@ -47,6 +48,7 @@ from switch_core.db.stores.join_domain_store import (
     JoinDomainNotFound,
     JoinDomainStore,
 )
+from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.stores.tenant_store import TenantSlugTaken
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -78,6 +80,7 @@ from switch_core.gateway.dependencies import (
     get_invite_mailer,
     get_join_domain_store,
     get_protocol,
+    get_retention_store,
     get_session,
     get_session_factory,
     get_system_session,
@@ -110,6 +113,9 @@ from switch_core.gateway.schemas import (
     JoinDomainsResponse,
     MemberDetail,
     MemberUpdateRequest,
+    RetentionPolicyRequest,
+    RetentionPolicyResponse,
+    RetentionPreviewResponse,
     SessionUserResponse,
     TenantCreateRequest,
     TenantMembershipResponse,
@@ -806,6 +812,119 @@ async def delete_budget(
         raise HTTPException(status_code=404, detail="Budget not found") from exc
     await session.commit()
     return Response(status_code=204)
+
+
+def _retention_response(
+    days: int | None, updated_at: datetime | None, updated_by: str | None
+) -> RetentionPolicyResponse:
+    return RetentionPolicyResponse(
+        message_retention_days=days,
+        updated_at=updated_at,
+        updated_by_user_id=updated_by,
+    )
+
+
+@router.get("/tenants/{tenant_id}/retention")
+async def get_retention_policy(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> RetentionPolicyResponse:
+    """How long the bound tenant keeps room messages. `owner`/`admin` only."""
+    _require_bound_tenant(tenant_id)
+    policy = await retention_store.get_policy(session)
+    if policy is None:
+        return _retention_response(None, None, None)
+    return _retention_response(
+        policy.message_retention_days, policy.updated_at, policy.updated_by_user_id
+    )
+
+
+@router.get("/tenants/{tenant_id}/retention/preview")
+async def preview_retention_policy(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+    days: Annotated[int, Query(ge=1, le=MAX_MESSAGE_RETENTION_DAYS)],
+) -> RetentionPreviewResponse:
+    """How many messages a window of `days` would delete if it applied now,
+    so the change can be confirmed before it is made. `owner`/`admin` only."""
+    _require_bound_tenant(tenant_id)
+    count = await retention_store.count_messages_before(
+        session, datetime.now(UTC) - timedelta(days=days)
+    )
+    return RetentionPreviewResponse(
+        message_retention_days=days, messages_to_delete=count
+    )
+
+
+@router.put("/tenants/{tenant_id}/retention")
+async def set_retention_policy(
+    tenant_id: str,
+    body: RetentionPolicyRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+) -> RetentionPolicyResponse:
+    """Delete the bound tenant's room messages once they are older than
+    `message_retention_days`. `owner`/`admin` only.
+
+    Takes effect at the next hourly retention pass, not in this request.
+    """
+    _require_bound_tenant(tenant_id)
+    previous = await retention_store.get_policy(session)
+    previous_days = None if previous is None else previous.message_retention_days
+    policy = await retention_store.set_policy(
+        session, message_retention_days=body.message_retention_days, user_id=user.id
+    )
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.RETENTION_POLICY_SET,
+        target_type="tenant",
+        target_id=tenant_id,
+        details={
+            "message_retention_days": body.message_retention_days,
+            "previous_message_retention_days": previous_days,
+        },
+    )
+    await session.commit()
+    return _retention_response(
+        policy.message_retention_days, policy.updated_at, policy.updated_by_user_id
+    )
+
+
+@router.delete("/tenants/{tenant_id}/retention")
+async def clear_retention_policy(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+) -> RetentionPolicyResponse:
+    """Keep the bound tenant's messages forever. `owner`/`admin` only.
+
+    Messages already deleted stay deleted. Clearing a policy that is not set
+    succeeds and records nothing.
+    """
+    _require_bound_tenant(tenant_id)
+    previous = await retention_store.get_policy(session)
+    if previous is not None:
+        previous_days = previous.message_retention_days
+        await retention_store.clear_policy(session)
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user.id,
+            action=AuditAction.RETENTION_POLICY_CLEARED,
+            target_type="tenant",
+            target_id=tenant_id,
+            details={"previous_message_retention_days": previous_days},
+        )
+        await session.commit()
+    return _retention_response(None, None, None)
 
 
 @router.get("/tenants/{tenant_id}/invitations")

@@ -61,6 +61,10 @@ _ALLOWED_MODULES = {
     # old activity lines in every tenant: enumerate, then bind each tenant and
     # work under its own policy, the same shape as the runtime-state sweep.
     "switch_core.session_activity.maintenance",
+    # Data retention deletes what each workspace no longer keeps, hourly:
+    # enumerate, then bind each tenant and work under its own policy, the same
+    # shape as session-activity upkeep.
+    "switch_core.retention.service",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.

@@ -3,6 +3,7 @@ import { useAuth } from "../../data/AuthContext";
 import { ownsTenant } from "../../data/sessionState";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
+import RetentionSection from "./RetentionSection";
 
 export default function WorkspacePage() {
   const { session, canAdminTenant } = useAuth();
@@ -36,6 +37,7 @@ export default function WorkspacePage() {
             Ask a workspace owner or admin to invite someone.
           </Alert>
         )}
+        {canAdminTenant && <RetentionSection tenantId={tenant.id} />}
       </Stack>
     </Box>
   );

@@ -1260,6 +1260,12 @@ class Room(TenantScoped, Base):
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The highest live `seq` retention has deleted from this room. Numbering
+    # continues above it, so a room emptied by retention never hands out a
+    # position a cursor has already passed. See `MessageStore._next_seq`.
+    seq_floor: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
 
 
 # ── Room Groups ─────────────────────────────────────────────────────────────────
@@ -2307,6 +2313,12 @@ class BridgeMessageMap(TenantScoped, Base):
     __tablename__ = "bridge_message_map"
     __table_args__ = (
         Index("ix_bridge_message_map_tenant_id", "tenant_id"),
+        # Retention forgets the mappings of the messages it deletes, by event id.
+        Index(
+            "ix_bridge_message_map_tenant_event",
+            "tenant_id",
+            "transport_event_id",
+        ),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
         ForeignKeyConstraint(
@@ -2421,11 +2433,11 @@ class FeatureFlag(Base):
 class Message(TenantScoped, Base):
     """A message as it was sent into a room.
 
-    Written alongside the send to the message bus, which remains the source of
-    truth for history until the read path moves here. Rows are therefore a
-    parallel record, not yet an authoritative one: a write that fails after a
-    successful send leaves a gap, by design, so that a database problem cannot
-    make messaging less reliable.
+    This table is the message bus: a send is an insert here, and `seq` is the
+    position every delivery cursor reads from. It is also the room's history,
+    and the only copy Switch keeps, so deleting a row (data retention, erasing
+    a person) deletes the message for every reader. `rooms.seq_floor` keeps
+    numbering intact when the deleted rows were a room's newest.
 
     Every participant in a room is a Switch-owned client, so recording each
     send captures the whole room exactly once — including messages a human
@@ -2504,6 +2516,9 @@ class MessageAttachment(TenantScoped, Base):
     __tablename__ = "message_attachments"
     __table_args__ = (
         Index("ix_message_attachments_tenant_id", "tenant_id"),
+        # The file sweep asks, for every stored file, whether any attachment
+        # still names it.
+        Index("ix_message_attachments_tenant_uri", "tenant_id", "uri"),
         Index("ix_message_attachments_message", "message_id"),
         ForeignKeyConstraint(
             ["tenant_id", "message_id"],
@@ -3048,6 +3063,45 @@ class UsageBudget(TenantScoped, Base):
     period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ── Data retention ────────────────────────────────────────────────────────────
+
+#: The longest message-retention window a workspace may set, ten years.
+MAX_MESSAGE_RETENTION_DAYS = 3650
+
+
+class TenantRetentionPolicy(TenantScoped, Base):
+    """How long a workspace keeps its room messages.
+
+    At most one row per tenant. No row means messages are kept forever, which
+    is every workspace's starting point: deletion is something an owner or
+    admin turns on, never something a deployment does to them by default.
+
+    With a row, messages older than `message_retention_days` are deleted from
+    every room in the workspace, archived rooms included, along with their
+    attachments (`retention/service.py`).
+    """
+
+    __tablename__ = "tenant_retention_policies"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id"),
+        CheckConstraint(
+            f"message_retention_days >= 1 AND message_retention_days <= {MAX_MESSAGE_RETENTION_DAYS}",
+            name="ck_tenant_retention_policies_days",
+        ),
+    )
+
+    message_retention_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 

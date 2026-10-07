@@ -17,6 +17,7 @@ from switch_core.bridges.collaboration.models import BridgeInstallLink
 from switch_core.db.models import (
     MAX_BUDGET_AMOUNT,
     MAX_BUDGET_PERIOD_HOURS,
+    MAX_MESSAGE_RETENTION_DAYS,
     UsageMetric,
 )
 
@@ -1463,3 +1464,26 @@ class BudgetResponse(BaseModel):
     spent: int
     resets_at: datetime
     exhausted: bool
+
+
+# ── Data retention ──────────────────────────────────────────────────────────
+
+
+class RetentionPolicyRequest(BaseModel):
+    message_retention_days: int = Field(ge=1, le=MAX_MESSAGE_RETENTION_DAYS)
+
+
+class RetentionPolicyResponse(BaseModel):
+    """The workspace's retention policy. `message_retention_days` null means
+    messages are kept forever."""
+
+    message_retention_days: int | None
+    updated_at: datetime | None
+    updated_by_user_id: str | None
+
+
+class RetentionPreviewResponse(BaseModel):
+    """What a window would delete if it applied now."""
+
+    message_retention_days: int
+    messages_to_delete: int

@@ -1,10 +1,10 @@
 from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Message, MessageAttachment
+from switch_core.db.models import Message, MessageAttachment, Room, require_tenant_id
 
 
 class MessageStore:
@@ -119,12 +119,7 @@ class MessageStore:
             text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"),
             {"room_id": room_id},
         )
-        result = await session.execute(
-            select(func.coalesce(func.max(Message.seq), 0)).where(
-                Message.room_id == room_id
-            )
-        )
-        return int(result.scalar_one()) + 1
+        return await self._head(session, room_id) + 1
 
     async def head_seq(self, session: AsyncSession, room_id: str) -> int:
         """The room's current position, or 0 when nothing has been sent.
@@ -133,12 +128,70 @@ class MessageStore:
         rather than everything. Reconstructed history is numbered below zero,
         so an empty live log answers 0 whatever has been backfilled into it.
         """
-        result = await session.execute(
-            select(func.coalesce(func.max(Message.seq), 0)).where(
-                Message.room_id == room_id
-            )
+        return max(await self._head(session, room_id), 0)
+
+    async def _head(self, session: AsyncSession, room_id: str) -> int:
+        """The highest position the room has ever used.
+
+        Usually its newest row, but retention may have deleted that row, and a
+        cursor that read it is still past it. `rooms.seq_floor` remembers the
+        highest live position retention removed; both are read in one
+        statement, so a deletion committing between them cannot be half-seen.
+        """
+        newest = (
+            select(func.coalesce(func.max(Message.seq), 0))
+            .where(Message.room_id == room_id)
+            .scalar_subquery()
         )
-        return max(int(result.scalar_one()), 0)
+        floor = (
+            select(func.coalesce(func.max(Room.seq_floor), 0))
+            .where(Room.id == room_id)
+            .scalar_subquery()
+        )
+        result = await session.execute(select(func.greatest(newest, floor)))
+        return int(result.scalar_one())
+
+    async def delete_sent_before(
+        self, session: AsyncSession, cutoff: datetime, *, limit: int
+    ) -> list[str]:
+        """Delete up to `limit` of the bound tenant's oldest messages sent before
+        `cutoff`, with their attachments. Returns their transport event ids.
+
+        Each room's `seq_floor` is raised to the highest live position deleted
+        from it, in the same transaction, so `_next_seq` never reissues one.
+        The bytes behind the attachments are not touched: a blob may be quoted
+        by a message that is kept, so `RetentionStore.delete_unreferenced_media` finds
+        the ones nothing points at any more.
+        """
+        rows = (
+            await session.execute(
+                select(
+                    Message.id, Message.room_id, Message.seq, Message.transport_event_id
+                )
+                .where(
+                    Message.tenant_id == require_tenant_id(),
+                    Message.sent_at < cutoff,
+                )
+                .order_by(Message.sent_at)
+                .limit(limit)
+            )
+        ).all()
+        if not rows:
+            return []
+        floors: dict[str, int] = {}
+        for row in rows:
+            floors[row.room_id] = max(floors.get(row.room_id, 0), row.seq)
+        for room_id, seq in floors.items():
+            if seq > 0:
+                await session.execute(
+                    update(Room)
+                    .where(Room.id == room_id)
+                    .values(seq_floor=func.greatest(Room.seq_floor, seq))
+                )
+        await session.execute(
+            delete(Message).where(Message.id.in_([r.id for r in rows]))
+        )
+        return [row.transport_event_id for row in rows]
 
     async def get_by_transport_event_id(
         self, session: AsyncSession, transport_event_id: str
