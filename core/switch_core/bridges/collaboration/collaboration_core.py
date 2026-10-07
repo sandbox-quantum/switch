@@ -2362,7 +2362,6 @@ class CollaborationCore:
             self._human_actors.pop(external_user_id, None)
             self._names_known_good.discard(external_user_id)
             self._human_user_ids.discard(transport_user_id)
-        self._human_actor_locks.pop(external_user_id, None)
 
     async def _create_human_actor(
         self, external_user_id: str, external_username: str

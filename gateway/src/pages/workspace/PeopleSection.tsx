@@ -8,7 +8,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type Erasure, type Person, fetchErasures, fetchPeople } from "../../data/api";
 import { formatDate, titleCase } from "../../theme/hootFormat";
@@ -54,14 +54,18 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
   );
   const { refetch: refetchErasures } = erasures;
   const { refetch: refetchPeople } = people;
+  // Only the requests are polled; the people list is re-read once, after the
+  // last running request has finished, so the erased are gone from it.
   useEffect(() => {
     if (!active) return;
-    const timer = window.setInterval(() => {
-      void refetchErasures();
-      void refetchPeople();
-    }, POLL_MS);
+    const timer = window.setInterval(() => void refetchErasures(), POLL_MS);
     return () => window.clearInterval(timer);
-  }, [active, refetchErasures, refetchPeople]);
+  }, [active, refetchErasures]);
+  const wasActive = useRef(false);
+  useEffect(() => {
+    if (wasActive.current && !active) void refetchPeople();
+    wasActive.current = active;
+  }, [active, refetchPeople]);
 
   const rows = useMemo<PersonRow[]>(() => {
     const needle = search.trim().toLowerCase();
@@ -110,7 +114,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
   );
 
   const queued = async () => {
-    await Promise.all([refetchErasures(), refetchPeople()]);
+    await refetchErasures();
   };
 
   return (

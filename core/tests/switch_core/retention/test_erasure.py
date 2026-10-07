@@ -9,7 +9,7 @@ other people's messages, files those still quote, and other identities stay.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -25,6 +25,8 @@ from switch_core.db.models import (
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
+    HostedLaunch,
+    HostedWakeMailbox,
     MediaBlob,
     Message,
     MessageAttachment,
@@ -263,7 +265,9 @@ class TestErasing:
 
         erasure_id = await _queue(session_factory, [ana_id])
         clients, bridges = _Clients(), _Bridges()
-        await ErasureService(session_factory, clients, bridges).work_once()
+        await ErasureService(session_factory, clients, bridges).work_once(
+            datetime.now(UTC)
+        )
 
         async with session_factory() as session:
             events = set(
@@ -342,7 +346,9 @@ class TestErasing:
             ids = [on_slack.id, on_other.id]
 
         erasure_id = await _queue(session_factory, ids)
-        await ErasureService(session_factory, _Clients(), _Bridges()).work_once()
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once(
+            datetime.now(UTC)
+        )
 
         async with session_factory() as session:
             assert await session.scalar(select(func.count()).select_from(Message)) == 0
@@ -366,23 +372,44 @@ class TestErasing:
             session_factory, _Clients(fail_on_stop=True), _Bridges()
         )
 
-        with pytest.raises(RuntimeError):
-            await service.work_once()
+        finished = await service.work_once(datetime.now(UTC))
 
         async with session_factory() as session:
-            erasure = await session.get(PersonErasure, erasure_id)
             still_there = await session.get(ExternalUser, person_id)
-        assert erasure is not None
-        assert erasure.state == "failed"
-        assert erasure.error == "RuntimeError: client would not stop"
+        assert finished is not None and finished.id == erasure_id
+        assert finished.state == "failed"
+        assert finished.error == "RuntimeError: client would not stop"
         assert still_there is not None
-        assert await service.work_once() is None
+        assert await service.work_once(datetime.now(UTC)) is None
+        await _queue(session_factory, [person_id])
 
-    async def test_a_request_left_running_by_a_restart_is_finished(
+    async def test_a_failure_after_the_identity_is_gone_does_not_fail_the_request(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        class _BrokenBridges(_Bridges):
+            async def forget_human(self, *args: str) -> None:
+                raise RuntimeError("bridge unreachable")
+
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            await session.commit()
+            person_id = person.id
+        await _queue(session_factory, [person_id])
+
+        finished = await ErasureService(
+            session_factory, _Clients(), _BrokenBridges()
+        ).work_once(datetime.now(UTC))
+
+        assert finished is not None
+        assert (finished.state, finished.identities_erased) == ("done", 1)
+
+    async def test_a_request_left_running_by_a_dead_process_is_finished(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
             person = await _person(session, await _bridge(session), "ana")
+            room = await _room(session, "r")
+            await _say(session, room, await _client_of(session, person), "$a")
             await session.commit()
             person_id = person.id
         erasure_id = await _queue(session_factory, [person_id])
@@ -390,13 +417,128 @@ class TestErasing:
             erasure = await session.get(PersonErasure, erasure_id)
             assert erasure is not None
             erasure.state = "running"
+            erasure.messages_deleted = 7
             await session.commit()
+        service = ErasureService(session_factory, _Clients(), _Bridges())
 
-        await ErasureService(session_factory, _Clients(), _Bridges()).work_once()
+        assert await service.work_once(datetime.now(UTC)) is None
+        finished = await service.work_once(datetime.now(UTC) + timedelta(minutes=11))
+
+        assert finished is not None
+        assert (finished.state, finished.messages_deleted) == ("done", 8)
+
+    async def test_their_words_on_approvals_go_and_their_choice_stays(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            client = await _client_of(session, person)
+            agent = await _agent(session)
+            session.add(
+                ApprovalRequest(
+                    agent_id=agent.id,
+                    session_id="s",
+                    request_id="q",
+                    turn_id="t",
+                    kind="questions",
+                    title="t",
+                    options=[],
+                    questions=[],
+                    state="answered",
+                    answered_by=client.transport_user_id,
+                    answers=[
+                        {
+                            "question_id": "q1",
+                            "selected_option_ids": ["yes"],
+                            "custom_text": "my home address is ...",
+                        }
+                    ],
+                )
+            )
+            await session.commit()
+            person_id = person.id
+        await _queue(session_factory, [person_id])
+
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once(
+            datetime.now(UTC)
+        )
 
         async with session_factory() as session:
-            erasure = await session.get(PersonErasure, erasure_id)
-        assert erasure is not None and erasure.state == "done"
+            row = (await session.execute(select(ApprovalRequest))).scalar_one()
+        assert row.answered_by == ERASED_ANSWERER
+        assert row.answers == [{"question_id": "q1", "selected_option_ids": ["yes"]}]
+
+    async def test_their_name_leaves_direct_rooms_and_hosted_copies_go(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            client = await _client_of(session, person)
+            dm = Room(
+                transport_room_id=f"!dm-{uuid.uuid4().hex[:8]}:test",
+                name="Acme Slack: ana / helper",
+                description="Acme Slack DM — ana / helper",
+                channel_type="direct",
+            )
+            channel = Room(
+                transport_room_id=f"!ch-{uuid.uuid4().hex[:8]}:test",
+                name="Acme Slack: ana-fans",
+                description="channel",
+                channel_type="channel_public",
+            )
+            session.add_all([dm, channel])
+            await session.flush()
+            session.add_all(
+                [
+                    ClientRoom(client_id=client.id, room_id=dm.id),
+                    ClientRoom(client_id=client.id, room_id=channel.id),
+                ]
+            )
+            message = await _say(session, dm, client, "$to-hosted")
+            owner = User(name="launch-owner", email="lo@example.invalid", role="user")
+            session.add(owner)
+            await session.flush()
+            launch = HostedLaunch(
+                id=f"launch-{uuid.uuid4().hex[:8]}",
+                owner_id=owner.id,
+                name="helper",
+                spec={},
+                state="ready",
+                agent_id=str(uuid.uuid4()),
+            )
+            session.add(launch)
+            await session.flush()
+            session.add(
+                HostedWakeMailbox(
+                    agent_id=launch.agent_id,
+                    room_id=dm.id,
+                    message_id=message.transport_event_id,
+                    launch_id=launch.id,
+                    event={"body": "hello"},
+                    addressed_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                )
+            )
+            await session.commit()
+            person_id, dm_id, channel_id = person.id, dm.id, channel.id
+        await _queue(session_factory, [person_id])
+
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once(
+            datetime.now(UTC)
+        )
+
+        async with session_factory() as session:
+            dm_after = await session.get(Room, dm_id)
+            channel_after = await session.get(Room, channel_id)
+            mailbox = await session.scalar(
+                select(func.count()).select_from(HostedWakeMailbox)
+            )
+        assert dm_after is not None and channel_after is not None
+        assert dm_after.name == "Acme Slack: erased person / helper"
+        assert dm_after.description == "Acme Slack DM — erased person / helper"
+        assert channel_after.name == "Acme Slack: ana-fans"
+        assert mailbox == 0
 
 
 class TestQueue:

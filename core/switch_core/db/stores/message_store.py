@@ -1,4 +1,5 @@
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import (
@@ -17,6 +18,13 @@ from switch_core.db.id_lists import any_of
 from switch_core.db.models import Message, MessageAttachment, Room, require_tenant_id
 from switch_core.db.notify_ddl import SET_WRITER_ANNOUNCES
 from switch_core.db.raw import RawStatement
+
+
+@dataclass(frozen=True)
+class DeletedMessages:
+    event_ids: list[str]
+    #: The files the deleted messages carried. Others may still quote them.
+    uris: set[str]
 
 
 class MessageStore:
@@ -216,49 +224,38 @@ class MessageStore:
 
         See `_delete_where` for what else changes and what does not.
         """
-        return await self._delete_where(session, Message.sent_at < cutoff, limit=limit)
+        deleted = await self._delete_where(
+            session, Message.sent_at < cutoff, limit=limit
+        )
+        return deleted.event_ids
 
     async def delete_sent_by(
         self, session: AsyncSession, *, transport_user_id: str, limit: int
-    ) -> list[str]:
+    ) -> DeletedMessages:
         """Delete up to `limit` of the messages one participant sent in the bound
-        tenant, with their attachments. Returns their transport event ids.
+        tenant, with their attachments.
 
         Matched on `sender_id`, the participant's transport id, rather than
         `sender_client_id`: every row has the first, while the second is null
-        on reconstructed history and on rows older than the column. See
-        `_delete_where` for the rest.
+        on reconstructed history, on rows older than the column, and on rows
+        whose client has been deleted. See `_delete_where` for the rest.
         """
         return await self._delete_where(
             session, Message.sender_id == transport_user_id, limit=limit
         )
 
-    async def attachment_uris_sent_by(
-        self, session: AsyncSession, *, transport_user_id: str
-    ) -> set[str]:
-        """The files on every message one participant sent in the bound tenant."""
-        result = await session.execute(
-            select(MessageAttachment.uri)
-            .join(Message, Message.id == MessageAttachment.message_id)
-            .where(
-                Message.tenant_id == require_tenant_id(),
-                Message.sender_id == transport_user_id,
-            )
-            .distinct()
-        )
-        return set(result.scalars())
-
     async def _delete_where(
         self, session: AsyncSession, condition: ColumnElement[bool], *, limit: int
-    ) -> list[str]:
+    ) -> DeletedMessages:
         """Delete up to `limit` of the bound tenant's oldest messages matching
-        `condition`, with their attachments. Returns their transport event ids.
+        `condition`, with their attachments.
 
         Each room's `seq_floor` is raised to the highest live position deleted
         from it, in the same transaction, so `_next_seq` never reissues one.
         The bytes behind the attachments are not touched: a blob may be quoted
-        by a message that is kept, so `RetentionStore.delete_unreferenced_media`
-        finds the ones nothing points at any more.
+        by a message that is kept. The result names them, and
+        `RetentionStore.delete_unreferenced_media` finds the ones nothing
+        points at any more.
         """
         rows = (
             await session.execute(
@@ -271,7 +268,17 @@ class MessageStore:
             )
         ).all()
         if not rows:
-            return []
+            return DeletedMessages(event_ids=[], uris=set())
+        message_ids = [r.id for r in rows]
+        uris = set(
+            (
+                await session.execute(
+                    select(MessageAttachment.uri).where(
+                        MessageAttachment.message_id.in_(message_ids)
+                    )
+                )
+            ).scalars()
+        )
         floors: dict[str, int] = {}
         for row in rows:
             floors[row.room_id] = max(floors.get(row.room_id, 0), row.seq)
@@ -282,10 +289,10 @@ class MessageStore:
                     .where(Room.id == room_id)
                     .values(seq_floor=func.greatest(Room.seq_floor, seq))
                 )
-        await session.execute(
-            delete(Message).where(Message.id.in_([r.id for r in rows]))
+        await session.execute(delete(Message).where(Message.id.in_(message_ids)))
+        return DeletedMessages(
+            event_ids=[row.transport_event_id for row in rows], uris=uris
         )
-        return [row.transport_event_id for row in rows]
 
     async def head_seqs(
         self,

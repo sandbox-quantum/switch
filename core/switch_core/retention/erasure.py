@@ -4,17 +4,20 @@ A workspace owner queues a request naming one or more platform identities
 (`ErasureStore.queue`). `erasure_loop` works the queue: for each identity it
 
 1. deletes every message the identity sent, in every room, archived ones
-   included, in batches with their attachments and bridge post mappings;
+   included, in batches with their attachments, bridge post mappings and the
+   copies held for hosted agents;
 2. stops the client that stood in for them in rooms;
-3. in one transaction, deletes anything they sent meanwhile, replaces their
-   name on approval answers, and deletes their identity row (its claims go by
-   cascade), their room memberships and their client;
+3. in one transaction, scrubs their name and words from approval answers and
+   their name from direct rooms' names, deletes their identity row (its
+   claims go by cascade), their room memberships and their client, and then
+   anything they sent meanwhile;
 4. tells the running bridge to forget them, so writing again provisions a
    new identity;
 5. deletes the stored files that only their messages carried.
 
-Every step is safe to repeat, so a request interrupted by a restart is simply
-worked again. Kept: what other people wrote, including quotes and mentions of
+Every step is safe to repeat, and a request is claimed before it is worked,
+so one interrupted by a restart is resumed by the next pass and two processes
+never work the same one. Kept: what other people wrote, including quotes and mentions of
 them; copies on the chat platforms; their Switch account and membership,
 which have their own actions. `docs/design/data-retention.md` covers why.
 """
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -68,147 +72,140 @@ class ErasureService:
         self._messages = MessageStore()
         self._retention = RetentionStore()
 
-    async def work_once(self) -> PersonErasure | None:
-        """Work the bound tenant's oldest pending request to its end, if any."""
+    async def work_once(self, now: datetime) -> PersonErasure | None:
+        """Claim the bound tenant's oldest pending request and work it to its
+        end. Returns it as finished, done or failed, or None if there was none.
+
+        A failure before an identity's rows are deleted marks the request
+        failed, with the error, and leaves that identity in place to be queued
+        again. Counts are added in the transaction that did the work, so a
+        request resumed after a restart reports everything it deleted.
+        """
         tenant_id = require_tenant_id()
-        async with tenant_session(self._sessions, tenant_id) as db:
-            erasure = await self._erasures.next_pending(db)
+        async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+            erasure = await self._erasures.claim_next(db, now)
         if erasure is None:
             return None
 
-        messages = files = identities = 0
+        error: str | None = None
         try:
-            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                await self._erasures.mark(
-                    db,
-                    erasure.id,
-                    state="running",
-                    messages_deleted=erasure.messages_deleted,
-                    files_deleted=erasure.files_deleted,
-                    identities_erased=erasure.identities_erased,
-                    error=None,
-                )
-            messages, files, identities = (
-                erasure.messages_deleted,
-                erasure.files_deleted,
-                erasure.identities_erased,
-            )
             async with tenant_session(self._sessions, tenant_id) as db:
-                people = await self._erasures.list_people(db, erasure.external_user_ids)
-            for person in people:
-                deleted, removed_files = await self._erase(tenant_id, person)
-                messages += deleted
-                files += removed_files
-                identities += 1
-                async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                    await self._erasures.mark(
-                        db,
-                        erasure.id,
-                        state="running",
-                        messages_deleted=messages,
-                        files_deleted=files,
-                        identities_erased=identities,
-                        error=None,
-                    )
-        except Exception as exc:
-            logger.exception(
-                "Erasure %s in tenant %s failed after %d message(s)",
-                erasure.id,
-                tenant_id,
-                messages,
-            )
-            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                await self._erasures.mark(
-                    db,
-                    erasure.id,
-                    state="failed",
-                    messages_deleted=messages,
-                    files_deleted=files,
-                    identities_erased=identities,
-                    error=f"{type(exc).__name__}: {exc}",
+                people = await self._erasures.people_with_ids(
+                    db, erasure.external_user_ids
                 )
-            raise
+            for person in people:
+                await self._erase(tenant_id, erasure.id, person)
+        except Exception as exc:
+            logger.exception("Erasure %s in tenant %s failed", erasure.id, tenant_id)
+            error = f"{type(exc).__name__}: {exc}"
 
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-            await self._erasures.mark(
-                db,
-                erasure.id,
-                state="done",
-                messages_deleted=messages,
-                files_deleted=files,
-                identities_erased=identities,
-                error=None,
+            finished = await self._erasures.finish(db, erasure.id, error=error)
+            if error is None:
+                await record_audit_event(
+                    db,
+                    tenant_id=tenant_id,
+                    actor_user_id=finished.requested_by_user_id,
+                    action=AuditAction.PERSON_ERASURE_COMPLETED,
+                    target_type="person_erasure",
+                    target_id=finished.id,
+                    details={
+                        "messages_deleted": finished.messages_deleted,
+                        "files_deleted": finished.files_deleted,
+                        "identities_erased": finished.identities_erased,
+                    },
+                )
+        if error is None:
+            logger.info(
+                "Erasure %s in tenant %s done: %d identities, %d messages, %d files",
+                finished.id,
+                tenant_id,
+                finished.identities_erased,
+                finished.messages_deleted,
+                finished.files_deleted,
             )
-            await record_audit_event(
-                db,
-                tenant_id=tenant_id,
-                actor_user_id=erasure.requested_by_user_id,
-                action=AuditAction.PERSON_ERASURE_COMPLETED,
-                target_type="person_erasure",
-                target_id=erasure.id,
-                details={
-                    "messages_deleted": messages,
-                    "files_deleted": files,
-                    "identities_erased": identities,
-                },
-            )
-        logger.info(
-            "Erasure %s in tenant %s done: %d identities, %d messages, %d files",
-            erasure.id,
-            tenant_id,
-            identities,
-            messages,
-            files,
-        )
-        return erasure
+        return finished
 
-    async def _erase(self, tenant_id: str, person: Person) -> tuple[int, int]:
-        async with tenant_session(self._sessions, tenant_id) as db:
-            uris = await self._messages.attachment_uris_sent_by(
-                db, transport_user_id=person.transport_user_id
-            )
-        deleted = 0
+    async def _erase(self, tenant_id: str, erasure_id: str, person: Person) -> None:
+        uris: set[str] = set()
         while True:
             async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                event_ids = await self._messages.delete_sent_by(
-                    db, transport_user_id=person.transport_user_id, limit=MESSAGE_BATCH
-                )
-                await self._retention.delete_bridge_mappings(db, event_ids)
-            deleted += len(event_ids)
-            if len(event_ids) < MESSAGE_BATCH:
+                count = await self._delete_batch(db, erasure_id, person, uris)
+            if count < MESSAGE_BATCH:
                 break
 
+        # Stopping the client ends its delivery but not, by itself, a send
+        # already under way. The final transaction deletes the client before
+        # it looks for messages a last time: the delete waits for any insert
+        # naming the client to commit, and once it has committed no insert can
+        # name it, so nothing they send outlives this transaction.
         await self._clients.stop(person.client_id)
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-            while True:
-                event_ids = await self._messages.delete_sent_by(
-                    db, transport_user_id=person.transport_user_id, limit=MESSAGE_BATCH
-                )
-                await self._retention.delete_bridge_mappings(db, event_ids)
-                deleted += len(event_ids)
-                if len(event_ids) < MESSAGE_BATCH:
-                    break
             await self._erasures.scrub_approval_answers(db, person.transport_user_id)
+            await self._erasures.scrub_direct_rooms(db, person)
             await self._erasures.delete_identity(db, person.external_user_id)
             await self._clients.delete_record(db, person.client_id)
-        await self._bridges.forget_human(
-            person.bridge_id, person.external_user_id, person.transport_user_id
-        )
+            while (
+                await self._delete_batch(db, erasure_id, person, uris) == MESSAGE_BATCH
+            ):
+                pass
+            await self._erasures.add_progress(
+                db, erasure_id, messages=0, files=0, identities=1
+            )
 
-        async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-            files = await self._erasures.delete_unreferenced_media(db, uris)
-        return deleted, files
+        # The identity is gone from here on, so a failure below cannot be put
+        # right by queueing it again; it is logged rather than failing the
+        # request. Files missed here are taken by the hourly sweep a day later.
+        try:
+            await self._bridges.forget_human(
+                person.bridge_id, person.external_user_id, person.transport_user_id
+            )
+        except Exception:
+            logger.warning(
+                "Erasure %s: the bridge could not forget identity %s; it does "
+                "when it next restarts",
+                erasure_id,
+                person.external_user_id,
+                exc_info=True,
+            )
+        try:
+            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+                files = await self._erasures.delete_unreferenced_media(db, uris)
+                await self._erasures.add_progress(
+                    db, erasure_id, messages=0, files=files, identities=0
+                )
+        except Exception:
+            logger.warning(
+                "Erasure %s: could not delete the files of identity %s; the "
+                "hourly sweep deletes them a day later",
+                erasure_id,
+                person.external_user_id,
+                exc_info=True,
+            )
+
+    async def _delete_batch(
+        self, db: AsyncSession, erasure_id: str, person: Person, uris: set[str]
+    ) -> int:
+        deleted = await self._messages.delete_sent_by(
+            db, transport_user_id=person.transport_user_id, limit=MESSAGE_BATCH
+        )
+        await self._retention.delete_bridge_mappings(db, deleted.event_ids)
+        await self._erasures.delete_hosted_copies(db, deleted.event_ids)
+        await self._erasures.add_progress(
+            db, erasure_id, messages=len(deleted.event_ids), files=0, identities=0
+        )
+        uris |= deleted.uris
+        return len(deleted.event_ids)
 
 
 async def erase_once(service: ErasureService, tenant_ids: list[str]) -> None:
     for tenant_id in tenant_ids:
         with tenant_scope(tenant_id):
             try:
-                while await service.work_once() is not None:
+                while await service.work_once(datetime.now(UTC)) is not None:
                     pass
             except Exception:
-                # Recorded on the request as failed; one tenant's failure must
-                # not stop the others' erasures.
+                # One tenant's failure must not stop the others' erasures.
                 logger.exception("Erasure upkeep failed for tenant %s", tenant_id)
 
 

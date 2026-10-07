@@ -15,8 +15,10 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { type Person, eraseIdentities } from "../../data/api";
 
-/** The identities that are probably the same person as `person`: every one
- * claimed by a member who also claims `person`. */
+/** Identities that may be the same person as `person`: every one claimed by
+ * a member who also claims `person`. Only a hint, offered unticked: claims are
+ * self-asserted and several members may claim one account, so a shared claimant
+ * does not prove a shared person. */
 export function relatedIdentities(person: Person, people: Person[]): Person[] {
   const claimants = new Set(person.claimed_by.map((c) => c.user_id));
   if (claimants.size === 0) return [];
@@ -49,11 +51,15 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Reset only when a different person is chosen. The list behind `people` is
+  // refreshed while other erasures run, and resetting on every refresh would
+  // undo what the owner ticked or typed just before they confirm.
+  const personId = person?.external_user_id;
   useEffect(() => {
-    setIncluded(new Set(related.map((p) => p.external_user_id)));
+    setIncluded(new Set());
     setTyped("");
     setError(null);
-  }, [person, related]);
+  }, [personId]);
 
   if (!person) return null;
 
@@ -104,7 +110,8 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
           {related.length > 0 && (
             <Stack spacing={0.5}>
               <Typography variant="subtitle2">
-                Also claimed by {person.claimed_by.map((c) => c.name).join(", ")}:
+                Possibly the same person, claimed by{" "}
+                {person.claimed_by.map((c) => c.name).join(", ")}. Tick any to erase too:
               </Typography>
               {related.map((other) => (
                 <FormControlLabel

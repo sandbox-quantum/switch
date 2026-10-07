@@ -25,26 +25,30 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 
+#: A stored file no attachment names and no live hosted-cutover import is
+#: waiting to carry, for a `media_blobs` row aliased `b`. Shared with erasing a
+#: person, which deletes files by the same rule without the age condition.
+UNREFERENCED_BLOB = """
+    NOT EXISTS (
+        SELECT 1 FROM message_attachments a
+        WHERE a.tenant_id = b.tenant_id AND a.uri = b.uri)
+    AND NOT EXISTS (
+        SELECT 1 FROM hosted_cutover_items i
+        JOIN hosted_launches l ON l.tenant_id = i.tenant_id AND l.id = i.launch_id
+          AND l.state NOT IN ('deleting', 'deleted')
+        CROSS JOIN LATERAL jsonb_array_elements(
+            COALESCE(i.payload->'payload'->'attachments', '[]'::jsonb)) f
+        WHERE i.tenant_id = b.tenant_id AND i.disposition = 'import'
+          AND f->>'mxc' = b.uri)
+"""
+
 # A blob is written before the message that carries it, in a separate
-# transaction, and a hosted cutover may hold one for an import it has not
-# queued yet. Both are referenced by something other than an attachment row,
-# so a blob is only a candidate once it has had time to gain one, and is
-# never one while a live import names it.
-_UNREFERENCED_BLOBS = """
+# transaction, so it is only a candidate once it has had time to gain one.
+_UNREFERENCED_BLOBS = f"""
     SELECT b.id FROM media_blobs b
     WHERE b.tenant_id = :tenant_id
       AND b.created_at < :created_before
-      AND NOT EXISTS (
-          SELECT 1 FROM message_attachments a
-          WHERE a.tenant_id = b.tenant_id AND a.uri = b.uri)
-      AND NOT EXISTS (
-          SELECT 1 FROM hosted_cutover_items i
-          JOIN hosted_launches l ON l.tenant_id = i.tenant_id AND l.id = i.launch_id
-            AND l.state NOT IN ('deleting', 'deleted')
-          CROSS JOIN LATERAL jsonb_array_elements(
-              COALESCE(i.payload->'payload'->'attachments', '[]'::jsonb)) f
-          WHERE i.tenant_id = b.tenant_id AND i.disposition = 'import'
-            AND f->>'mxc' = b.uri)
+      AND {UNREFERENCED_BLOB}
     ORDER BY b.created_at
     LIMIT :limit
 """

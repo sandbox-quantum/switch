@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import (
@@ -32,19 +32,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.db.models import (
     ApprovalRequest,
     Client,
+    ClientRoom,
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
+    HostedCutoverItem,
+    HostedWakeMailbox,
     Message,
     PersonErasure,
+    Room,
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.retention_store import UNREFERENCED_BLOB
 
 #: What `answered_by` reads once the person who answered has been erased.
 ERASED_ANSWERER = "erased"
+#: What stands in for an erased person's name in a direct room's name.
+ERASED_NAME = "erased person"
 
 ACTIVE_STATES = ("queued", "running")
+#: A `running` request whose progress has not moved for this long is taken to
+#: belong to a process that died, and is resumed. Progress is recorded after
+#: every batch, so a live one never looks this old.
+STALE_RUNNING = timedelta(minutes=10)
 
 
 class ErasureAlreadyQueued(Exception):
@@ -81,47 +92,62 @@ def _rowcount(result: Result[Any]) -> int:
 
 
 class ErasureStore:
-    async def list_people(
-        self,
-        session: AsyncSession,
-        external_user_ids: Collection[str] | None = None,
+    async def list_people(self, session: AsyncSession) -> list[Person]:
+        """Every platform identity in the bound tenant."""
+        return await self._people(
+            session, ExternalUser.tenant_id == require_tenant_id()
+        )
+
+    async def people_with_ids(
+        self, session: AsyncSession, external_user_ids: Collection[str]
     ) -> list[Person]:
-        """Every platform identity in the bound tenant, or the ones named."""
+        """The named identities that are in the bound tenant."""
+        return await self._people(
+            session,
+            (ExternalUser.tenant_id == require_tenant_id())
+            & ExternalUser.id.in_(list(external_user_ids)),
+        )
+
+    async def _people(self, session: AsyncSession, condition: Any) -> list[Person]:
         tenant_id = require_tenant_id()
-        counts = (
-            select(Message.sender_id, func.count().label("n"))
-            .where(Message.tenant_id == tenant_id)
-            .group_by(Message.sender_id)
-            .subquery()
+        # Correlated, so each identity's count is one lookup on
+        # `ix_messages_tenant_sender` rather than a count of the whole tenant.
+        message_count = (
+            select(func.count())
+            .select_from(Message)
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.sender_id == Client.transport_user_id,
+            )
+            .correlate(Client)
+            .scalar_subquery()
         )
-        query = (
-            select(
-                ExternalUser.id,
-                ExternalUser.external_username,
-                ExternalUser.bridge_id,
-                CollaborationBridge.type,
-                CollaborationBridge.display_name,
-                Client.id,
-                Client.transport_user_id,
-                func.coalesce(counts.c.n, 0),
+        rows = (
+            await session.execute(
+                select(
+                    ExternalUser.id,
+                    ExternalUser.external_username,
+                    ExternalUser.bridge_id,
+                    CollaborationBridge.type,
+                    CollaborationBridge.display_name,
+                    Client.id,
+                    Client.transport_user_id,
+                    message_count,
+                )
+                .join(
+                    CollaborationBridge,
+                    (CollaborationBridge.tenant_id == ExternalUser.tenant_id)
+                    & (CollaborationBridge.id == ExternalUser.bridge_id),
+                )
+                .join(
+                    Client,
+                    (Client.tenant_id == ExternalUser.tenant_id)
+                    & (Client.id == ExternalUser.client_id),
+                )
+                .where(condition)
+                .order_by(func.lower(ExternalUser.external_username), ExternalUser.id)
             )
-            .join(
-                CollaborationBridge,
-                (CollaborationBridge.tenant_id == ExternalUser.tenant_id)
-                & (CollaborationBridge.id == ExternalUser.bridge_id),
-            )
-            .join(
-                Client,
-                (Client.tenant_id == ExternalUser.tenant_id)
-                & (Client.id == ExternalUser.client_id),
-            )
-            .outerjoin(counts, counts.c.sender_id == Client.transport_user_id)
-            .where(ExternalUser.tenant_id == tenant_id)
-            .order_by(func.lower(ExternalUser.external_username), ExternalUser.id)
-        )
-        if external_user_ids is not None:
-            query = query.where(ExternalUser.id.in_(list(external_user_ids)))
-        rows = (await session.execute(query)).all()
+        ).all()
 
         claims: dict[str, list[Claimant]] = {}
         if rows:
@@ -164,14 +190,21 @@ class ErasureStore:
         Locks the tenant's erasure queue for the transaction, so two owners
         asking at once cannot both pass the "nothing already queued" check.
         """
+        tenant_id = require_tenant_id()
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext('person_erasures:' || :t))"),
-            {"t": require_tenant_id()},
+            {"t": tenant_id},
         )
-        known = {
-            p.external_user_id
-            for p in await self.list_people(session, external_user_ids)
-        }
+        known = set(
+            (
+                await session.execute(
+                    select(ExternalUser.id).where(
+                        ExternalUser.tenant_id == tenant_id,
+                        ExternalUser.id.in_(external_user_ids),
+                    )
+                )
+            ).scalars()
+        )
         unknown = set(external_user_ids) - known
         if unknown:
             raise UnknownIdentity(", ".join(sorted(unknown)))
@@ -179,7 +212,7 @@ class ErasureStore:
             select(func.count())
             .select_from(PersonErasure)
             .where(
-                PersonErasure.tenant_id == require_tenant_id(),
+                PersonErasure.tenant_id == tenant_id,
                 PersonErasure.state.in_(ACTIVE_STATES),
                 PersonErasure.external_user_ids.op("?|")(
                     cast_(array(external_user_ids), ARRAY(Text))
@@ -209,33 +242,49 @@ class ErasureStore:
         )
         return list(result.scalars())
 
-    async def next_pending(self, session: AsyncSession) -> PersonErasure | None:
-        """The oldest request still to finish. A `running` one is resumed: the
-        work is safe to repeat, and one left running by a restart is otherwise
-        never finished."""
-        result = await session.execute(
-            select(PersonErasure)
+    async def claim_next(
+        self, session: AsyncSession, now: datetime
+    ) -> PersonErasure | None:
+        """Claim the oldest request to work: a queued one, or a running one whose
+        process stopped recording progress. Marks it running in the same
+        statement, and skips a row another process holds, so two processes
+        overlapping in a deploy cannot both work one request."""
+        tenant_id = require_tenant_id()
+        candidate = (
+            select(PersonErasure.id)
             .where(
-                PersonErasure.tenant_id == require_tenant_id(),
-                PersonErasure.state.in_(ACTIVE_STATES),
+                PersonErasure.tenant_id == tenant_id,
+                (PersonErasure.state == "queued")
+                | (
+                    (PersonErasure.state == "running")
+                    & (PersonErasure.updated_at < now - STALE_RUNNING)
+                ),
             )
             .order_by(PersonErasure.created_at)
             .limit(1)
+            .with_for_update(skip_locked=True)
+            .scalar_subquery()
+        )
+        result = await session.execute(
+            update(PersonErasure)
+            .where(PersonErasure.tenant_id == tenant_id, PersonErasure.id == candidate)
+            .values(state="running", updated_at=now, error=None)
+            .returning(PersonErasure),
+            execution_options={"populate_existing": True},
         )
         return result.scalar_one_or_none()
 
-    async def mark(
+    async def add_progress(
         self,
         session: AsyncSession,
         erasure_id: str,
         *,
-        state: str,
-        messages_deleted: int,
-        files_deleted: int,
-        identities_erased: int,
-        error: str | None,
+        messages: int,
+        files: int,
+        identities: int,
     ) -> None:
-        finished = state in ("done", "failed")
+        """Add to the request's counts, in the transaction that did the work, so
+        a resumed request neither loses nor double-counts what was done."""
         await session.execute(
             update(PersonErasure)
             .where(
@@ -243,28 +292,106 @@ class ErasureStore:
                 PersonErasure.id == erasure_id,
             )
             .values(
-                state=state,
-                messages_deleted=messages_deleted,
-                files_deleted=files_deleted,
-                identities_erased=identities_erased,
+                messages_deleted=PersonErasure.messages_deleted + messages,
+                files_deleted=PersonErasure.files_deleted + files,
+                identities_erased=PersonErasure.identities_erased + identities,
+                updated_at=func.now(),
+            )
+        )
+
+    async def finish(
+        self, session: AsyncSession, erasure_id: str, *, error: str | None
+    ) -> PersonErasure:
+        """Mark the request done, or failed with `error`."""
+        result = await session.execute(
+            update(PersonErasure)
+            .where(
+                PersonErasure.tenant_id == require_tenant_id(),
+                PersonErasure.id == erasure_id,
+            )
+            .values(
+                state="failed" if error is not None else "done",
                 error=error,
-                completed_at=datetime.now(UTC) if finished else None,
+                completed_at=datetime.now(UTC),
+            )
+            .returning(PersonErasure),
+            execution_options={"populate_existing": True},
+        )
+        return result.scalar_one()
+
+    async def delete_hosted_copies(
+        self, session: AsyncSession, transport_event_ids: Collection[str]
+    ) -> None:
+        """Delete the copies of these (deleted) messages held for hosted agents:
+        deliveries not yet admitted, and items a cutover would import."""
+        if not transport_event_ids:
+            return
+        ids = list(transport_event_ids)
+        await session.execute(
+            delete(HostedWakeMailbox).where(
+                HostedWakeMailbox.tenant_id == require_tenant_id(),
+                HostedWakeMailbox.message_id.in_(ids),
+            )
+        )
+        await session.execute(
+            delete(HostedCutoverItem).where(
+                HostedCutoverItem.tenant_id == require_tenant_id(),
+                HostedCutoverItem.message_id.in_(ids),
             )
         )
 
     async def scrub_approval_answers(
         self, session: AsyncSession, transport_user_id: str
     ) -> int:
-        """Replace this participant's name on every approval answer they gave."""
+        """Replace this participant's name on every approval answer they gave,
+        and drop the words they typed into it. Which options they picked is
+        kept: it is the agent's record of what it was told to do."""
         result = await session.execute(
             update(ApprovalRequest)
             .where(
                 ApprovalRequest.tenant_id == require_tenant_id(),
                 ApprovalRequest.answered_by == transport_user_id,
             )
-            .values(answered_by=ERASED_ANSWERER)
+            .values(
+                answered_by=ERASED_ANSWERER,
+                answers=text(
+                    "(SELECT jsonb_agg(a - 'custom_text') "
+                    "FROM jsonb_array_elements(answers) a)"
+                ),
+            )
         )
         return _rowcount(result)
+
+    async def scrub_direct_rooms(self, session: AsyncSession, person: Person) -> int:
+        """Take this person's name out of the direct rooms they were in.
+
+        A direct room is named after the person and the agent when the bridge
+        adopts it. Must run while their room memberships still stand.
+        """
+        rooms = (
+            await session.execute(
+                select(Room)
+                .join(
+                    ClientRoom,
+                    (ClientRoom.tenant_id == Room.tenant_id)
+                    & (ClientRoom.room_id == Room.id),
+                )
+                .where(
+                    Room.tenant_id == require_tenant_id(),
+                    Room.channel_type == "direct",
+                    ClientRoom.client_id == person.client_id,
+                )
+            )
+        ).scalars()
+        scrubbed = 0
+        for room in rooms:
+            name = room.name.replace(person.username, ERASED_NAME)
+            description = room.description.replace(person.username, ERASED_NAME)
+            if (name, description) != (room.name, room.description):
+                room.name, room.description = name, description
+                scrubbed += 1
+        await session.flush()
+        return scrubbed
 
     async def delete_identity(
         self, session: AsyncSession, external_user_id: str
@@ -282,7 +409,7 @@ class ErasureStore:
     async def delete_unreferenced_media(
         self, session: AsyncSession, uris: Collection[str]
     ) -> int:
-        """Delete the stored files among `uris` that no attachment refers to now.
+        """Delete the stored files among `uris` that nothing refers to now.
 
         Unlike the hourly sweep this has no grace period: these files are known
         to have been attached to the erased person's messages, so none is an
@@ -292,12 +419,10 @@ class ErasureStore:
             return 0
         result = await session.execute(
             text(
-                """
+                f"""
                 DELETE FROM media_blobs b
                 WHERE b.tenant_id = :t AND b.uri = ANY(:uris)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM message_attachments a
-                      WHERE a.tenant_id = b.tenant_id AND a.uri = b.uri)
+                  AND {UNREFERENCED_BLOB}
                 """
             ),
             {"t": require_tenant_id(), "uris": list(uris)},

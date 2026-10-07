@@ -53,7 +53,7 @@ describe("EraseDialog", () => {
     vi.unstubAllGlobals();
   });
 
-  it("erases only once the name is typed, with the related identities included", async () => {
+  it("erases only once the name is typed, and only the person unless more are ticked", async () => {
     const fetchMock = vi.fn(
       async () => new Response(JSON.stringify({ id: "e1", state: "queued" }), { status: 202 }),
     );
@@ -69,7 +69,7 @@ describe("EraseDialog", () => {
       />,
     );
 
-    expect(screen.getByText(/15 messages they sent/)).toBeTruthy();
+    expect(screen.getByText(/10 messages they sent/)).toBeTruthy();
     const erase = screen.getByRole("button", { name: "Erase" });
     expect(erase.hasAttribute("disabled")).toBe(true);
     fireEvent.change(screen.getByLabelText("Type ana to confirm"), { target: { value: "Ana" } });
@@ -79,29 +79,23 @@ describe("EraseDialog", () => {
 
     await waitFor(() => expect(onQueued).toHaveBeenCalled());
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a", "b"] });
+    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a"] });
   });
 
-  it("leaves out a related identity that is unticked", async () => {
+  it("keeps what was ticked and typed when the people list refreshes", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
-    render(
-      <EraseDialog
-        tenantId="t1"
-        person={ana}
-        people={[ana, anaElsewhere]}
-        onClose={() => {}}
-        onQueued={() => {}}
-      />,
-    );
+    const props = { tenantId: "t1", person: ana, onClose: () => {}, onQueued: () => {} };
+    const { rerender } = render(<EraseDialog {...props} people={[ana, anaElsewhere]} />);
 
     fireEvent.click(screen.getByLabelText(/ana.b on Bridge b/));
-    expect(screen.getByText(/10 messages they sent/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Type ana to confirm"), { target: { value: "ana" } });
-    fireEvent.click(screen.getByRole("button", { name: "Erase" }));
+    rerender(<EraseDialog {...props} people={[{ ...ana }, { ...anaElsewhere }]} />);
 
+    expect(screen.getByText(/15 messages they sent/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Erase" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a"] });
+    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a", "b"] });
   });
 });

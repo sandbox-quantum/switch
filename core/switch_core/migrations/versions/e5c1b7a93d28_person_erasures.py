@@ -4,6 +4,14 @@
 works through the queued ones. ``ix_messages_tenant_sender`` serves
 finding and counting a person's messages, which nothing indexed before.
 
+**Not `CONCURRENTLY`**, for the reason ``b8f2d0c41e57`` gives: building it
+holds a lock on ``messages``, blocking sends, until the migration commits. A
+deployment with a large ``messages`` table should build it by hand first, and
+this becomes a no-op:
+
+    CREATE INDEX CONCURRENTLY ix_messages_tenant_sender
+        ON messages (tenant_id, sender_id);
+
 The row-level-security DDL is a verbatim copy of ``switch_core/db/rls_ddl.py``
 as it stood when this migration was written, copied rather than imported for
 the reason ``265ed188ad6f`` gives.
@@ -38,10 +46,10 @@ _CREATE_POLICY = (
 
 
 def upgrade() -> None:
-    op.create_index(
-        "ix_messages_tenant_sender",
-        "messages",
-        ["tenant_id", "sender_id"],
+    # `IF NOT EXISTS` so building it concurrently ahead of time works.
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_messages_tenant_sender "
+        "ON messages (tenant_id, sender_id)"
     )
     op.create_table(
         "person_erasures",
@@ -102,4 +110,4 @@ def downgrade() -> None:
     op.execute(f'DROP POLICY IF EXISTS {POLICY_NAME} ON "person_erasures"')
     op.drop_index("ix_person_erasures_tenant_id", table_name="person_erasures")
     op.drop_table("person_erasures")
-    op.drop_index("ix_messages_tenant_sender", table_name="messages")
+    op.execute("DROP INDEX IF EXISTS ix_messages_tenant_sender")
