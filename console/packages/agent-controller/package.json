@@ -21,7 +21,8 @@
     "lint": "sh -c 'root=$(cd ../.. && pwd); cd \"$root/apps/switch-console-desktop\" && pnpm exec oxlint --config .oxlintrc.json \"$root/packages/agent-controller\"'",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "typecheck": "tsgo --noEmit -p tsconfig.json"
+    "typecheck": "tsgo --noEmit -p tsconfig.json",
+    "package": "node scripts/package.mjs"
   },
   "dependencies": {
     "@switch-console/agent-providers": "workspace:*",
@@ -34,6 +35,7 @@
     "@types/node": "^24.13.3",
     "@types/ws": "^8.18.2",
     "@typescript/native-preview": "7.0.0-dev.20260609.1",
+    "esbuild": "0.25.12",
     "tsdown": "^0.22.2",
     "vitest": "^5.0.1"
   },

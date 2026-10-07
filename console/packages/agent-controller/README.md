@@ -30,27 +30,52 @@ relay accepts.
 
 - macOS or Linux. The shared host needs POSIX process control.
 - Node 22.13 or later. The store uses the built-in `node:sqlite`.
-- The workspace packages built, so the shared-host bundle exists:
-  `pnpm install && pnpm -r --filter './packages/**' run build` from `console/`.
 - Each provider CLI the agents use, installed on `PATH` and signed in as the user
   the controller runs as (`claude`, `codex`, `opencode`, `agent`/`cursor-agent`,
-  `antigravity-acp`).
-- A Switch server with `AGENT_MANAGEMENT_ENABLED=true`.
+  `antigravity-acp`), or its API key in the `--env-file` the controller runs with.
+- A Switch server with `AGENT_MANAGEMENT_ENABLED=true`. Behind a proxy or ingress,
+  `/v1` must reach switch-core (the Helm chart routes it).
+
+## Install
+
+Each `switch-agent-controller-v*` release on GitHub carries one npm package, the CLI
+and the shared-host bundle it runs agents with, with no dependencies. The gateway's
+Machines page shows the one command that installs it, enrolls the machine and starts
+it as a service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sandbox-quantum/switch/main/console/packages/agent-controller/install.sh \
+  | sh -s -- --server https://switch.example.com --code <code>
+```
+
+Without `--server` and `--code`, `install.sh` only installs. It installs with
+`npm install --global`, so npm's global prefix must be writable by the user
+(`npm config set prefix ~/.local` otherwise). The package can also be installed
+directly: `npm install --global <the release's .tgz URL>`.
+
+From a checkout, build the workspace packages
+(`pnpm install && pnpm -r --filter './packages/**' run build` from `console/`) and
+run `node packages/agent-controller/dist/cli.mjs`; `pnpm --filter
+@switch-console/agent-controller run package` builds the release package into
+`dist-package/`.
 
 ## Enroll and run
 
 Create a one-time enrollment code in Switch. It is valid for 10 minutes. Then:
 
 ```bash
-node packages/agent-controller/dist/cli.mjs enroll \
+switch-agent-controller enroll \
   --server https://switch.example.com \
   --code <code> \
-  [--name build-box] [--description "The build box in the office"] [--data-dir <dir>]
+  [--name build-box] [--description "The build box in the office"] [--data-dir <dir>] \
+  [--secret-store keychain|secret-service|file]
 
-node packages/agent-controller/dist/cli.mjs run [--data-dir <dir>]
-node packages/agent-controller/dist/cli.mjs status [--data-dir <dir>]
-node packages/agent-controller/dist/cli.mjs set-info [--name <name>] \
-  [--description <text>] [--data-dir <dir>]
+switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
+switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
+switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
+switch-agent-controller doctor [--data-dir <dir>]
+switch-agent-controller update [--check]
 ```
 
 - `--server` is the agent bridge URL, and it must be `https`. Plain `http` is
@@ -107,7 +132,71 @@ revision or an explicit restart. The other agents are not affected. An agent hos
 running as a separate process by an earlier version of the controller is stopped
 before this one starts its own.
 
-To run it as a service, have your init system run `run` and restart it on exit code
+### As a service
+
+`install-service` runs the controller as a service of the user who runs it: a
+systemd user unit on Linux (`~/.config/systemd/user/switch-agent-controller.service`,
+log with `journalctl --user -u switch-agent-controller`) or a launchd agent on macOS
+(`~/Library/LaunchAgents/com.switch.agent-controller.plist`, logging to
+`controller.log` in the data directory). It starts at once and at each login. On
+Linux it also starts at boot and survives logout only with lingering on
+(`sudo loginctl enable-linger <user>`), which it says when it is off. The service
+keeps the `PATH` of the shell that installed it, so the provider CLIs found then are
+found by the service. A data directory other than the default gets a service name
+with a hash of its path, so two controllers on one account each get their own.
+`uninstall-service` stops and removes it and keeps the enrollment.
+
+On Linux without a systemd user manager (some containers and minimal VMs),
+`install-service` refuses. Run `run` under your own supervisor instead, with the
+restart rules below.
+
+### Environment for the agents
+
+`--env-file <path>` (on `run` and `install-service`) reads `NAME=value` lines,
+as systemd's `EnvironmentFile=` does for the common cases (comments, blank lines,
+`export `, single or double quotes), into the environment the agents inherit:
+
+```bash
+# Claude Code on Vertex AI, signed in with `gcloud auth application-default login`
+CLAUDE_CODE_USE_VERTEX=1
+ANTHROPIC_VERTEX_PROJECT_ID=my-project
+CLOUD_ML_REGION=us-east5
+```
+
+Sessions inherit only the provider variables Switch knows (API keys, base URLs,
+model overrides, and the Vertex AI, Bedrock and Google Cloud settings), plus the
+basics a CLI needs. The file is read once at start; restart the service after
+changing it.
+
+### The controller credential
+
+`enroll --secret-store` says where the controller credential is kept, and the data
+directory remembers it:
+
+- `keychain`, the default on macOS: the login keychain, through `security`. The
+  launchd agent runs in the user's session and can read it.
+- `secret-service`: the desktop keyring on Linux (GNOME Keyring, KWallet), through
+  `secret-tool`. Choose it only where the keyring is unlocked whenever the controller
+  starts, which a service started at boot usually is not.
+- `file`, the default on Linux: a file only the user can read, in the data directory.
+
+### Updates
+
+`update` installs the newest release with npm and restarts the service if it runs;
+`update --check` only says whether there is one. `run` logs a warning when a newer
+release exists, and `doctor` shows it.
+
+### Checking a machine
+
+`doctor` checks what a machine needs to run agents and says what to do where it
+falls short: Node, the platform, enrollment, the credential, the server (exchanging
+the credential, so a proxy that does not send `/v1` to switch-core shows up),
+the shared-host bundle, each provider CLI on `PATH` and its sign-in, the service,
+and updates. It exits 1 when a check fails.
+
+### Running under your own supervisor
+
+To run it under another supervisor, have it run `run` and restart it on exit code
 `1` only. Do not restart it on `2`, because it would fail the same way until its
 configuration is fixed, nor on `3`, because a revoked controller must be enrolled
 again, nor on `4`, because two instances would take the stream from each other in
@@ -283,8 +372,7 @@ session hosts it launches with `process.execPath` run as Node too.
   agent host is not connected, is dropped with a warning in the log. Switch keeps no
   copy to send again.
 - Only enrollment by one-time code, or adoption of an identity a parent process
-  enrolled (see "Run by a parent process"). There is no EC2 machine secret, and
-  the controller itself has no OS keychain backend.
+  enrolled (see "Run by a parent process"). There is no EC2 machine secret.
 - No session limit is enforced. `sessions_max` is reported as `0`.
 - OOM kills are not detected. `oom_kills` is always `0`.
 - `restarts_10m` counts the relaunches reconciling made, not the restarts after a
@@ -308,7 +396,7 @@ It holds:
 | Path | What |
 |---|---|
 | `controller.db` | SQLite: identity, cached assignment, per-agent applied revision and local failures, restart times, each agent's stream cursor, the relay's port, status seq. Everything except the identity can be rebuilt from the server. |
-| `secrets/controller-credential` | The controller credential (see below). Absent when the credential is handed over with `--credential-stdin`. |
+| `secrets/controller-credential` | The controller credential, with the `file` secret store (see below). Absent with a keychain store, or when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
 | `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
 
@@ -323,9 +411,9 @@ Sessions an agent host starts keep their state where the shared host puts it
 
 ## The file secret store
 
-Run on its own, v1 keeps the controller credential in a plaintext file. The file has mode 0600 and
-sits in a 0700 directory. No OS keychain backend exists yet, and the controller logs
-a warning saying so every time it starts. Anyone who can read this user's files, or
+With the `file` secret store (the default on Linux), the controller credential is a
+plaintext file. The file has mode 0600 and sits in a 0700 directory, and the
+controller logs a warning saying so every time it starts. Anyone who can read this user's files, or
 a backup of them, can act as this controller until it is revoked. If the file is
 ever readable by other users, the controller refuses to use it. In that case, revoke
 the controller in Switch and enroll it again.

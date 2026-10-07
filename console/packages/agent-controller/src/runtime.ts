@@ -115,6 +115,22 @@ export interface AgentRuntime extends AgentRunner {
 /** How long an agent host asked to stop is given; each session host is allowed 20 s of it. */
 export const STOP_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 90_000;
+
+/** Asks a provider's CLI, through the shared-host bundle's `--probe`, whether it is signed in. */
+export async function probeProvider(
+  bundlePath: string,
+  provider: Provider,
+  binaryPath: string,
+  cwd: string
+): Promise<ProviderReadiness> {
+  const { stdout } = await execute(
+    process.execPath,
+    [bundlePath, '--probe', provider, cwd, binaryPath],
+    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env: process.env }
+  );
+  const line = stdout.trim().split('\n').at(-1) ?? '';
+  return providerReadinessSchema.parse(JSON.parse(line));
+}
 /** Failures an agent host is started again after, within `CRASH_WINDOW_MS`. */
 const MAX_CRASHES = 3;
 const CRASH_WINDOW_MS = 10 * 60 * 1000;
@@ -535,14 +551,8 @@ export class InProcessRuntime implements AgentRuntime {
     }
   }
 
-  async probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
-    const { stdout } = await execute(
-      process.execPath,
-      [this.deps.bundlePath, '--probe', provider, cwd, binaryPath],
-      { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env: process.env }
-    );
-    const line = stdout.trim().split('\n').at(-1) ?? '';
-    return providerReadinessSchema.parse(JSON.parse(line));
+  probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
+    return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd);
   }
 
   private async writeFlags(root: string, flags: WatchFlags): Promise<void> {

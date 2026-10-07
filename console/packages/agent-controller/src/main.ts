@@ -1,4 +1,7 @@
+import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
+import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import packageJson from '../package.json' with { type: 'json' };
 import {
@@ -6,11 +9,14 @@ import {
   ControllerApiError,
   ControllerClient,
   enroll,
+  exchangeToken,
   normalizeServerUrl,
   nodeWebSocket,
 } from './api';
 import { DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
+import { formatChecks, runDoctor } from './doctor';
+import { readEnvFile } from './env-file';
 import { ConfigurationError, UsageError } from './errors';
 import {
   EXIT_CONFIGURATION,
@@ -24,8 +30,8 @@ import {
   adoptIdentity,
   CREDENTIAL_STDIN_TIMEOUT_MS,
   readCredential,
+  defaultSharedHostBundle,
   resolveSharedHostBundle,
-  workspaceSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage } from './log';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
@@ -35,12 +41,29 @@ import {
   emptyObservation,
   InProcessRuntime,
   observeOnDisk,
+  probeProvider,
 } from './runtime';
 import { AgentRuntimes } from './runtimes';
 import type { ControllerInfoChange } from './schemas';
-import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
+import {
+  CONTROLLER_CREDENTIAL,
+  defaultSecretStoreKind,
+  isSecretStoreKind,
+  MemorySecretStore,
+  runCommand as runSecretCommand,
+  SECRET_STORE_KINDS,
+  secretStoreFor,
+} from './secrets';
+import {
+  installService,
+  LAUNCHD_FINAL_EXIT_CODES,
+  restartService,
+  serviceState,
+  uninstallService,
+} from './service';
 import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
 import { ControllerStore } from './store';
+import { isNewer, latestRelease, releasesRepository } from './update';
 
 export const VERSION: string = packageJson.version;
 
@@ -71,6 +94,28 @@ Commands:
       clears the description. The same limits as at enrollment.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
+  install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
+      Run this controller as a service of this user: a systemd user unit on
+      Linux, a launchd agent on macOS. It starts now and again at each login
+      (at boot too, on Linux with lingering on), and restarts after an error
+      that may pass. It keeps the PATH of the shell that installed it.
+  uninstall-service [--data-dir <dir>]
+      Stop the service and remove it. The enrollment and data are kept.
+  doctor [--data-dir <dir>] [--shared-host-bundle <path>]
+      Check this machine can run agents: Node, enrollment, the credential, the
+      server, the provider CLIs and their sign-in, the service, and updates.
+  update [--check] [--data-dir <dir>]
+      Install the newest release with npm, and restart the service if it runs.
+      --check only says whether there is one.
+
+run --env-file and install-service --env-file read NAME=value lines (as for
+systemd's EnvironmentFile) into the agents' environment: provider API keys, or
+Vertex AI and Bedrock settings such as CLAUDE_CODE_USE_VERTEX,
+ANTHROPIC_VERTEX_PROJECT_ID and CLOUD_ML_REGION.
+enroll --secret-store keychain|secret-service|file says where the controller
+credential is kept: the macOS keychain by default on a Mac, owner-only files
+by default elsewhere. secret-service (the desktop keyring) needs an unlocked
+keyring whenever the controller starts.
 
 The data directory defaults to SWITCH_CONTROLLER_DATA_DIR, then the OS default.
 The shared host bundle defaults to SWITCH_CONTROLLER_SHARED_HOST_BUNDLE, then
@@ -81,18 +126,26 @@ Exit codes: 0 stopped, 1 error that may pass, 2 configuration error,
 `;
 
 function bundlePath(flag: string | undefined): string {
-  return resolveSharedHostBundle(flag, process.env, workspaceSharedHostBundle);
+  return resolveSharedHostBundle(flag, process.env, defaultSharedHostBundle);
 }
 
 async function openState(dataDirFlag: string | undefined) {
   const dataDir = resolveDataDir(dataDirFlag);
   await ensureDataDir(dataDir);
   const layout = dataLayout(dataDir);
+  const store = ControllerStore.open(layout.database);
+  const recorded = store.secretStoreKind() ?? 'file';
+  if (!isSecretStoreKind(recorded)) {
+    store.close();
+    throw new ConfigurationError(
+      `${dataDir} keeps its credential in '${recorded}', which this version does not know. Update switch-agent-controller.`
+    );
+  }
   return {
     dataDir,
     layout,
-    store: ControllerStore.open(layout.database),
-    secrets: new FileSecretStore(layout.secrets),
+    store,
+    secrets: secretStoreFor(recorded, { dir: layout.secrets, dataDir }, runSecretCommand),
   };
 }
 
@@ -105,17 +158,22 @@ async function enrollCommand(args: string[]): Promise<number> {
       name: { type: 'string' },
       description: { type: 'string' },
       'data-dir': { type: 'string' },
+      'secret-store': { type: 'string' },
     },
     strict: true,
   });
   if (!values.server) throw new UsageError('enroll needs --server <agent-bridge-url>.');
+  const secretStore = values['secret-store'] ?? defaultSecretStoreKind(process.platform);
+  if (!isSecretStoreKind(secretStore))
+    throw new UsageError(`--secret-store must be one of ${SECRET_STORE_KINDS.join(', ')}.`);
   if (!values.code) throw new UsageError('enroll needs --code <code>.');
   const server = normalizeServerUrl(values.server);
   const name = values.name ?? hostname();
   const description = values.description?.trim() || undefined;
   if (description !== undefined && description.length > MAX_DESCRIPTION)
     throw new UsageError(`--description must be at most ${MAX_DESCRIPTION} characters.`);
-  const { dataDir, store, secrets } = await openState(values['data-dir']);
+  const { dataDir, layout, store } = await openState(values['data-dir']);
+  const secrets = secretStoreFor(secretStore, { dir: layout.secrets, dataDir }, runSecretCommand);
   try {
     const existing = store.identity();
     if (existing && !store.revokedAt())
@@ -133,6 +191,7 @@ async function enrollCommand(args: string[]): Promise<number> {
       },
     });
     await secrets.set(CONTROLLER_CREDENTIAL, enrolled.credential);
+    store.saveSecretStoreKind(secretStore);
     store.saveIdentity({
       controllerId: enrolled.controller_id,
       server,
@@ -140,9 +199,10 @@ async function enrollCommand(args: string[]): Promise<number> {
       enrolledAt: new Date().toISOString(),
     });
     process.stdout.write(
-      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nStart it with: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
+      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
     );
-    process.stderr.write(`Warning: ${secrets.startupWarning()}\n`);
+    const warning = secrets.startupWarning();
+    if (warning) process.stderr.write(`Warning: ${warning}\n`);
     return EXIT_OK;
   } finally {
     store.close();
@@ -235,10 +295,15 @@ async function runCommand(args: string[]): Promise<number> {
       server: { type: 'string' },
       name: { type: 'string' },
       'credential-stdin': { type: 'boolean' },
+      'env-file': { type: 'string' },
+      launchd: { type: 'boolean' },
     },
     strict: true,
   });
   assertSupportedPlatform(process.platform);
+  // Before anything reads the environment: the agents inherit it.
+  const fromFile = values['env-file'] ? await readEnvFile(resolve(values['env-file'])) : {};
+  Object.assign(process.env, fromFile);
   const controllerId = values['controller-id'];
   if ((controllerId === undefined) !== (values.server === undefined))
     throw new UsageError('--controller-id and --server adopt an identity together; pass both.');
@@ -263,6 +328,13 @@ async function runCommand(args: string[]): Promise<number> {
     stop.abort();
   };
   for (const signal of SIGNALS) process.once(signal, onSignal);
+  if (Object.keys(fromFile).length)
+    log.info("Read the agents' environment from a file", {
+      file: values['env-file'],
+      names: Object.keys(fromFile),
+    });
+  // A controller a parent runs is updated with the parent.
+  if (credential === null) void announceUpdate(log);
   try {
     if (controllerId !== undefined && values.server !== undefined) {
       const previousServer = store.identity()?.server;
@@ -393,18 +465,179 @@ async function statusCommand(args: string[]): Promise<number> {
   }
 }
 
+/** Logs that a newer release exists; a check that fails says so at debug and changes nothing. */
+async function announceUpdate(log: ReturnType<typeof createLogger>): Promise<void> {
+  try {
+    const latest = await latestRelease(fetch, releasesRepository(process.env));
+    if (latest && isNewer(latest.version, VERSION))
+      log.warn(
+        `switch-agent-controller ${latest.version} is available (this is ${VERSION}). Install it with: switch-agent-controller update`
+      );
+  } catch (error) {
+    log.debug('Could not check for a newer release', { error: errorMessage(error) });
+  }
+}
+
+/** The CLI file this process runs, through any npm bin link, as a service names it. */
+function cliPath(): string {
+  const entry = process.argv[1];
+  if (!entry) throw new ConfigurationError('Cannot tell which file this CLI runs from.');
+  return realpathSync(entry);
+}
+
+async function installServiceCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      'data-dir': { type: 'string' },
+      'env-file': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+    },
+    strict: true,
+  });
+  assertSupportedPlatform(process.platform);
+  const envFile = values['env-file'] ? resolve(values['env-file']) : null;
+  // Read now, so a broken file fails here rather than in the service.
+  if (envFile) await readEnvFile(envFile);
+  const sharedHostBundle = values['shared-host-bundle']
+    ? bundlePath(values['shared-host-bundle'])
+    : null;
+  const { dataDir, store } = await openState(values['data-dir']);
+  try {
+    if (!store.identity())
+      throw new ConfigurationError(
+        `${dataDir} is not enrolled. Enroll first: switch-agent-controller enroll --server <url> --code <code>`
+      );
+  } finally {
+    store.close();
+  }
+  const report = await installService(
+    {
+      node: process.execPath,
+      cli: cliPath(),
+      dataDir,
+      envFile,
+      sharedHostBundle,
+      path: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    },
+    runSecretCommand
+  );
+  process.stdout.write([`Installed and started: ${report.file}`, ...report.notes, ''].join('\n'));
+  return EXIT_OK;
+}
+
+async function uninstallServiceCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: { 'data-dir': { type: 'string' } },
+    strict: true,
+  });
+  const removed = await uninstallService(resolveDataDir(values['data-dir']), runSecretCommand);
+  process.stdout.write(
+    removed ? 'Stopped and removed the service.\n' : 'No service was installed.\n'
+  );
+  return EXIT_OK;
+}
+
+async function doctorCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    strict: true,
+  });
+  const { dataDir, store, secrets } = await openState(values['data-dir']);
+  const locator = new PathProviderLocator(process.env.PATH);
+  try {
+    const checks = await runDoctor({
+      version: VERSION,
+      nodeVersion: process.version,
+      platform: process.platform,
+      dataDir,
+      identity: store.identity(),
+      revokedAt: store.revokedAt(),
+      secrets,
+      bundle: () => bundlePath(values['shared-host-bundle']),
+      exchange: (server, controllerId, credential) =>
+        exchangeToken(fetch, server, controllerId, credential),
+      locate: (provider) => locator.locate(provider),
+      probe: (bundle, provider, binary) => probeProvider(bundle, provider, binary, dataDir),
+      service: () => serviceState(dataDir, runSecretCommand),
+      latest: () => latestRelease(fetch, releasesRepository(process.env)),
+    });
+    process.stdout.write(`${formatChecks(checks)}\n`);
+    return checks.some((check) => check.status === 'fail') ? 1 : EXIT_OK;
+  } finally {
+    store.close();
+  }
+}
+
+async function updateCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: { check: { type: 'boolean' }, 'data-dir': { type: 'string' } },
+    strict: true,
+  });
+  const latest = await latestRelease(fetch, releasesRepository(process.env));
+  if (!latest) {
+    process.stdout.write('No switch-agent-controller release is published yet.\n');
+    return 1;
+  }
+  if (!isNewer(latest.version, VERSION)) {
+    process.stdout.write(`This is the latest release, ${VERSION}.\n`);
+    return EXIT_OK;
+  }
+  if (values.check) {
+    process.stdout.write(
+      `${latest.version} is available (this is ${VERSION}). Install it with: switch-agent-controller update\n`
+    );
+    return EXIT_OK;
+  }
+  process.stdout.write(`Installing ${latest.version} from ${latest.packageUrl}\n`);
+  const code = await new Promise<number | null>((done, fail) => {
+    const child = spawn('npm', ['install', '--global', latest.packageUrl], { stdio: 'inherit' });
+    child.once('error', fail);
+    child.once('exit', done);
+  });
+  if (code !== 0)
+    throw new Error(
+      `npm install exited with ${code}. If npm needs root to install globally, point it at a folder of yours (npm config set prefix ~/.local) and install again.`
+    );
+  const dataDir = resolveDataDir(values['data-dir']);
+  if ((await serviceState(dataDir, runSecretCommand)) === 'running') {
+    await restartService(dataDir, runSecretCommand);
+    process.stdout.write(`Installed ${latest.version} and restarted the service.\n`);
+  } else process.stdout.write(`Installed ${latest.version}.\n`);
+  return EXIT_OK;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   try {
     switch (command) {
       case 'enroll':
         return await enrollCommand(rest);
-      case 'run':
-        return await runCommand(rest);
+      case 'run': {
+        const code = await runCommand(rest).catch((error: unknown) => {
+          reportFailure(error);
+          return exitCodeFor(error);
+        });
+        // launchd cannot spare exit codes from a restart; the reason is logged above.
+        return rest.includes('--launchd') && LAUNCHD_FINAL_EXIT_CODES.includes(code)
+          ? EXIT_OK
+          : code;
+      }
       case 'set-info':
         return await setInfoCommand(rest);
       case 'status':
         return await statusCommand(rest);
+      case 'install-service':
+        return await installServiceCommand(rest);
+      case 'uninstall-service':
+        return await uninstallServiceCommand(rest);
+      case 'doctor':
+        return await doctorCommand(rest);
+      case 'update':
+        return await updateCommand(rest);
       case undefined:
       case '-h':
       case '--help':
@@ -418,12 +651,16 @@ export async function main(argv: string[]): Promise<number> {
         throw new UsageError(`Unknown command '${command}'.`);
     }
   } catch (error) {
-    // The last line is the reason: a parent that supervises this process shows it.
-    if (error instanceof UsageError || isParseArgsError(error))
-      process.stderr.write(`${USAGE}\nswitch-agent-controller: ${errorMessage(error)}\n`);
-    else if (error instanceof ControllerApiError)
-      process.stderr.write(`switch-agent-controller: ${error.code}: ${error.message}\n`);
-    else process.stderr.write(`switch-agent-controller: ${errorMessage(error)}\n`);
+    reportFailure(error);
     return exitCodeFor(error);
   }
+}
+
+/** The last line is the reason: a parent that supervises this process shows it. */
+function reportFailure(error: unknown): void {
+  if (error instanceof UsageError || isParseArgsError(error))
+    process.stderr.write(`${USAGE}\nswitch-agent-controller: ${errorMessage(error)}\n`);
+  else if (error instanceof ControllerApiError)
+    process.stderr.write(`switch-agent-controller: ${error.code}: ${error.message}\n`);
+  else process.stderr.write(`switch-agent-controller: ${errorMessage(error)}\n`);
 }

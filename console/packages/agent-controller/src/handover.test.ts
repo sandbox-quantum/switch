@@ -174,7 +174,7 @@ describe('resolveSharedHostBundle', () => {
     };
     expect(() => resolveSharedHostBundle(undefined, {}, unresolvable)).toThrow(ConfigurationError);
     expect(() => resolveSharedHostBundle(undefined, {}, unresolvable)).toThrow(
-      /none could be found in the workspace: Cannot find package/
+      /none is installed beside the CLI or built in the workspace: Cannot find package/
     );
   });
 
