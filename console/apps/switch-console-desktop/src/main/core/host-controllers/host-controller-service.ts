@@ -274,6 +274,12 @@ export class HostControllerService {
     });
   }
 
+  /** Whether the host's controller runs an older bundle than this Console carries. */
+  async outdated(record: HostControllerRecord): Promise<boolean> {
+    const local = await this.deps.bundles.controller();
+    return posix.basename(record.bundle) !== `agent-controller-${local.hash}.mjs`;
+  }
+
   /** Starts the controller again, on this build's bundle; its agents keep running meanwhile. */
   async restart(sshHost: string, serverId: string): Promise<void> {
     await this.exclusive(sshHost, serverId, async () => {
@@ -366,7 +372,7 @@ export class HostControllerService {
           ? `Switch could not be asked about ${sshHost}: ${remote.message}`
           : 'This server no longer has agent management turned on.'
       );
-    if (remote.controller)
+    if (remote.controller && remote.controller.state !== 'revoked')
       throw new Error(
         `Switch still lists ${sshHost} as a machine. Turn it off and on again instead.`
       );

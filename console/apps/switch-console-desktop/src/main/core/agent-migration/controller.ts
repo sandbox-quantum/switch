@@ -1,5 +1,6 @@
 import type {
   AgentRunner,
+  MigrationOverview,
   MigrationProblem,
   NewAgentMachine,
 } from '@shared/core/agent-migration/agent-migration';
@@ -15,6 +16,12 @@ export const agentMigrationController = createRPCController({
 
   /** Why the agents the automatic move could not move did not. */
   getProblems: (): MigrationProblem[] => agentMigrationService.migrationProblems(),
+
+  /** Where the automatic move stands, per machine and server, from what its passes found. */
+  getOverview: (): Promise<MigrationOverview> => agentMigrationService.overview(),
+
+  /** Runs a pass of the automatic move now rather than at the next minute. */
+  runNow: (): Promise<void> => agentMigrationService.migrateEverything(),
 
   /** Runs the automatic move again now, asking Switch afresh about the agent. */
   retry: (agentId: string): Promise<void> => {
