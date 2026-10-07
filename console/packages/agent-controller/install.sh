@@ -10,8 +10,13 @@
 #   --server <url> --code <code>   Enroll with a one-time code from the Machines page.
 #   --name <name>                  The machine's name in Switch (default: the host name).
 #   --description <text>           What the machine is for, shown on the Machines page.
+#   --data-dir <dir>               Keep the controller's state here rather than in the default folder.
 #   --no-service                   Enroll, but do not install the service.
 #   --version <x.y.z>              Install this release rather than the newest.
+#
+# It installs where npm installs global packages. When this user cannot write
+# there (Node from the system's packages installs into /usr), it installs into
+# ~/.local instead, without changing npm's settings.
 #
 # SWITCH_CONTROLLER_RELEASES_REPOSITORY (owner/name) installs from a fork's releases.
 set -eu
@@ -28,6 +33,7 @@ SERVER=""
 CODE=""
 NAME=""
 DESCRIPTION=""
+DATA_DIR=""
 SERVICE=1
 VERSION=""
 while [ $# -gt 0 ]; do
@@ -36,6 +42,7 @@ while [ $# -gt 0 ]; do
     --code) [ $# -ge 2 ] || fail "--code needs a code."; CODE="$2"; shift 2 ;;
     --name) [ $# -ge 2 ] || fail "--name needs a name."; NAME="$2"; shift 2 ;;
     --description) [ $# -ge 2 ] || fail "--description needs a text."; DESCRIPTION="$2"; shift 2 ;;
+    --data-dir) [ $# -ge 2 ] || fail "--data-dir needs a folder."; DATA_DIR="$2"; shift 2 ;;
     --no-service) SERVICE=0; shift ;;
     --version) [ $# -ge 2 ] || fail "--version needs x.y.z."; VERSION="$2"; shift 2 ;;
     *) fail "Unknown option '$1'." ;;
@@ -87,14 +94,28 @@ fi
 
 PREFIX="$(npm config get prefix)"
 if [ ! -w "$PREFIX" ] && [ ! -w "$PREFIX/lib/node_modules" ]; then
-  fail "npm installs global packages into $PREFIX, which this user cannot write. Point npm at a folder of yours, then run this again:
-  npm config set prefix \"\$HOME/.local\"   (and make sure \$HOME/.local/bin is on your PATH)"
+  echo "npm installs global packages into $PREFIX, which this user cannot write; installing into $HOME/.local instead."
+  PREFIX="$HOME/.local"
+  mkdir -p "$PREFIX"
 fi
 
 echo "Installing $URL"
-npm install --global "$URL"
+npm install --global --prefix "$PREFIX" "$URL"
 BIN="$PREFIX/bin/switch-agent-controller"
 [ -x "$BIN" ] || fail "npm did not install $BIN."
+case ":$PATH:" in
+  *":$PREFIX/bin:"*) ON_PATH=1 ;;
+  *) ON_PATH=0 ;;
+esac
+
+# The service runs the controller by its full path; this is only for typing it.
+path_note() {
+  if [ "$ON_PATH" = 0 ]; then
+    echo
+    echo "$PREFIX/bin is not on your PATH, so the switch-agent-controller command is not found by name. Add it with:"
+    echo "  export PATH=\"$PREFIX/bin:\$PATH\""
+  fi
+}
 
 if [ -z "$SERVER" ]; then
   echo
@@ -102,15 +123,18 @@ if [ -z "$SERVER" ]; then
   echo "  switch-agent-controller enroll --server <Switch API URL> --code <code>"
   echo "  switch-agent-controller install-service"
   echo "Check this machine with: switch-agent-controller doctor"
+  path_note
   exit 0
 fi
 
 set -- enroll --server "$SERVER" --code "$CODE"
 if [ -n "$NAME" ]; then set -- "$@" --name "$NAME"; fi
 if [ -n "$DESCRIPTION" ]; then set -- "$@" --description "$DESCRIPTION"; fi
+if [ -n "$DATA_DIR" ]; then set -- "$@" --data-dir "$DATA_DIR"; fi
 "$BIN" "$@"
 if [ "$SERVICE" = 1 ]; then
-  "$BIN" install-service
+  if [ -n "$DATA_DIR" ]; then "$BIN" install-service --data-dir "$DATA_DIR"; else "$BIN" install-service; fi
 fi
 echo
-"$BIN" doctor
+if [ -n "$DATA_DIR" ]; then "$BIN" doctor --data-dir "$DATA_DIR"; else "$BIN" doctor; fi
+path_note
