@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, Result, delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
@@ -60,20 +61,29 @@ class RetentionStore:
     async def set_policy(
         self, session: AsyncSession, *, message_retention_days: int, user_id: str
     ) -> TenantRetentionPolicy:
-        policy = await self.get_policy(session)
-        if policy is None:
-            policy = TenantRetentionPolicy(
+        """Set the window, creating the policy or replacing it in one statement,
+        so two people saving a first policy at once do not collide."""
+        statement = (
+            insert(TenantRetentionPolicy)
+            .values(
                 tenant_id=require_tenant_id(),
                 message_retention_days=message_retention_days,
                 updated_by_user_id=user_id,
             )
-            session.add(policy)
-        else:
-            policy.message_retention_days = message_retention_days
-            policy.updated_by_user_id = user_id
-        await session.flush()
-        await session.refresh(policy)
-        return policy
+            .on_conflict_do_update(
+                index_elements=[TenantRetentionPolicy.tenant_id],
+                set_={
+                    "message_retention_days": message_retention_days,
+                    "updated_by_user_id": user_id,
+                    "updated_at": func.now(),
+                },
+            )
+            .returning(TenantRetentionPolicy)
+        )
+        result = await session.execute(
+            statement, execution_options={"populate_existing": True}
+        )
+        return result.scalar_one()
 
     async def clear_policy(self, session: AsyncSession) -> bool:
         """Remove the policy, so messages are kept forever. Whether there was one."""

@@ -7,7 +7,23 @@ so nothing changes for existing tenants when this runs.
 ``rooms.seq_floor`` records the highest live ``seq`` retention has deleted
 from a room, so numbering continues above it when a room's newest messages
 are among those deleted. It starts at 0, which changes nothing for a room
-retention has never touched.
+retention has never touched. A downgrade drops it, so a room retention has
+emptied numbers from 1 again afterwards; cursors past that point then skip
+new messages until they are reset.
+
+Two indexes serve retention's hourly pass, which runs for every tenant:
+``ix_message_attachments_tenant_uri`` answers "does any attachment still name
+this file" for the file sweep, and ``ix_bridge_message_map_tenant_event``
+finds the platform mappings of deleted messages.
+
+**Not `CONCURRENTLY`**, for the reason ``b8f2d0c41e57`` gives: each holds a
+lock on its table until the migration commits. A deployment with large
+tables can build them by hand first, and this becomes a no-op for them:
+
+    CREATE INDEX CONCURRENTLY ix_message_attachments_tenant_uri
+        ON message_attachments (tenant_id, uri);
+    CREATE INDEX CONCURRENTLY ix_bridge_message_map_tenant_event
+        ON bridge_message_map (tenant_id, transport_event_id);
 
 The row-level-security DDL is a verbatim copy of ``switch_core/db/rls_ddl.py``
 as it stood when this migration was written, copied rather than imported for
@@ -41,7 +57,20 @@ _CREATE_POLICY = (
 )
 
 
+_INDEXES = (
+    ("ix_message_attachments_tenant_uri", "message_attachments", "tenant_id, uri"),
+    (
+        "ix_bridge_message_map_tenant_event",
+        "bridge_message_map",
+        "tenant_id, transport_event_id",
+    ),
+)
+
+
 def upgrade() -> None:
+    # `IF NOT EXISTS` so building them concurrently ahead of time works.
+    for name, table, columns in _INDEXES:
+        op.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})")
     op.add_column(
         "rooms",
         sa.Column(
@@ -76,6 +105,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    for name, _, _ in _INDEXES:
+        op.execute(f"DROP INDEX IF EXISTS {name}")
     op.execute(f'DROP POLICY IF EXISTS {POLICY_NAME} ON "tenant_retention_policies"')
     op.drop_table("tenant_retention_policies")
     op.drop_column("rooms", "seq_floor")

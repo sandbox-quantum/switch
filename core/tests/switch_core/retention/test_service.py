@@ -8,9 +8,11 @@ that one workspace's window never reaches another's rows.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -34,10 +36,12 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.retention_store import RetentionStore
+from switch_core.retention import service as retention_service
 from switch_core.retention.service import RetentionService
 from switch_core.tenant_context import tenant_scope
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+BUDGET = timedelta(minutes=5)
 OTHER_TENANT = "retention-other-tenant"
 
 
@@ -134,7 +138,7 @@ class TestMessages:
             await _message(session, room, "$ancient", age_days=3000)
             await session.commit()
 
-        result = await RetentionService(session_factory).apply(NOW)
+        result = await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             assert await _event_ids(session) == {"$ancient"}
@@ -152,7 +156,7 @@ class TestMessages:
             await session.commit()
         await _set_policy(session_factory, 30, TENANT_ZERO_ID)
 
-        result = await RetentionService(session_factory).apply(NOW)
+        result = await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             assert await _event_ids(session) == {"$new-active"}
@@ -194,7 +198,7 @@ class TestMessages:
             await session.commit()
         await _set_policy(session_factory, 30, TENANT_ZERO_ID)
 
-        await RetentionService(session_factory).apply(NOW)
+        await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             attachments = await session.scalar(
@@ -225,9 +229,9 @@ class TestMessages:
         await _set_policy(session_factory, 30, OTHER_TENANT)
 
         with tenant_scope(OTHER_TENANT):
-            await RetentionService(session_factory).apply(NOW)
+            await RetentionService(session_factory).apply(NOW, BUDGET)
         with tenant_scope(TENANT_ZERO_ID):
-            await RetentionService(session_factory).apply(NOW)
+            await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             assert await _event_ids(session) == {"$zero-old"}
@@ -246,7 +250,7 @@ class TestNumbering:
             head_before = await store.head_seq(session, room.id)
         await _set_policy(session_factory, 30, TENANT_ZERO_ID)
 
-        await RetentionService(session_factory).apply(NOW)
+        await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             head_after = await store.head_seq(session, room.id)
@@ -278,7 +282,7 @@ class TestNumbering:
             await session.commit()
         await _set_policy(session_factory, 30, TENANT_ZERO_ID)
 
-        await RetentionService(session_factory).apply(NOW)
+        await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             refreshed = await session.get(Room, room.id)
@@ -305,7 +309,7 @@ class TestMedia:
             await _blob(session, "switch-media://just-uploaded", age_days=0.1)
             await session.commit()
 
-        result = await RetentionService(session_factory).apply(NOW)
+        result = await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             uris = set((await session.execute(select(MediaBlob.uri))).scalars())
@@ -327,13 +331,13 @@ class TestMedia:
             await session.commit()
         await _set_policy(session_factory, 30, TENANT_ZERO_ID)
 
-        await RetentionService(session_factory).apply(NOW)
+        await RetentionService(session_factory).apply(NOW, BUDGET)
         async with session_factory() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(MediaBlob)) == 1
             )
 
-        await RetentionService(session_factory).apply(NOW + timedelta(days=21))
+        await RetentionService(session_factory).apply(NOW + timedelta(days=21), BUDGET)
         async with session_factory() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(MediaBlob)) == 0
@@ -398,7 +402,7 @@ class TestLeftovers:
                 )
             await session.commit()
 
-        result = await RetentionService(session_factory).apply(NOW)
+        result = await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             left = set(
@@ -437,7 +441,7 @@ class TestLeftovers:
                 )
             await session.commit()
 
-        result = await RetentionService(session_factory).apply(NOW)
+        result = await RetentionService(session_factory).apply(NOW, BUDGET)
 
         async with session_factory() as session:
             hashes = set(
@@ -449,3 +453,67 @@ class TestLeftovers:
         assert hashes == {"expired-recent", "live"}
         assert states == 1
         assert (result.invitations, result.install_states) == (2, 1)
+
+
+class TestPass:
+    async def test_a_failing_step_does_not_stop_the_others(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            await _blob(session, "switch-media://orphan", age_days=10)
+            await session.commit()
+        await _set_policy(session_factory, 30, TENANT_ZERO_ID)
+
+        async def broken(*args: object, **kwargs: object) -> list[str]:
+            raise RuntimeError("deleting messages is broken")
+
+        monkeypatch.setattr(MessageStore, "delete_sent_before", broken)
+        result = await RetentionService(session_factory).apply(NOW, BUDGET)
+
+        assert result.failed == ("messages",)
+        assert result.media == 1
+
+    async def test_a_pass_out_of_time_stops_after_a_batch_and_says_so(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(retention_service, "MESSAGE_BATCH", 2)
+        async with session_factory() as session:
+            room = await _room(session, "backlog")
+            for index in range(5):
+                await _message(session, room, f"$old{index}", age_days=60)
+            await session.commit()
+        await _set_policy(session_factory, 30, TENANT_ZERO_ID)
+
+        first = await RetentionService(session_factory).apply(NOW, timedelta(0))
+        rest = await RetentionService(session_factory).apply(NOW, BUDGET)
+
+        assert (first.messages, first.backlog) == (2, True)
+        assert (rest.messages, rest.backlog) == (3, False)
+
+
+class TestPolicy:
+    async def test_two_first_saves_at_once_both_succeed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            user = await _user(session, "racer")
+            await session.commit()
+            user_id = user.id
+
+        async def save(days: int) -> None:
+            async with session_factory() as session:
+                await RetentionStore().set_policy(
+                    session, message_retention_days=days, user_id=user_id
+                )
+                await session.commit()
+
+        await asyncio.gather(save(30), save(90))
+
+        async with session_factory() as session:
+            policy = await RetentionStore().get_policy(session)
+        assert policy is not None
+        assert policy.message_retention_days in (30, 90)

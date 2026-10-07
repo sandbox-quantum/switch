@@ -2462,6 +2462,12 @@ class BridgeMessageMap(TenantScoped, Base):
     __tablename__ = "bridge_message_map"
     __table_args__ = (
         Index("ix_bridge_message_map_tenant_id", "tenant_id"),
+        # Retention forgets the mappings of the messages it deletes, by event id.
+        Index(
+            "ix_bridge_message_map_tenant_event",
+            "tenant_id",
+            "transport_event_id",
+        ),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
         ForeignKeyConstraint(
@@ -2708,11 +2714,11 @@ class TrustSettings(Base):
 class Message(TenantScoped, Base):
     """A message as it was sent into a room.
 
-    Written alongside the send to the message bus, which remains the source of
-    truth for history until the read path moves here. Rows are therefore a
-    parallel record, not yet an authoritative one: a write that fails after a
-    successful send leaves a gap, by design, so that a database problem cannot
-    make messaging less reliable.
+    This table is the message bus: a send is an insert here, and `seq` is the
+    position every delivery cursor reads from. It is also the room's history,
+    and the only copy Switch keeps, so deleting a row (data retention, erasing
+    a person) deletes the message for every reader. `rooms.seq_floor` keeps
+    numbering intact when the deleted rows were a room's newest.
 
     Every participant in a room is a Switch-owned client, so recording each
     send captures the whole room exactly once — including messages a human
@@ -2823,6 +2829,9 @@ class MessageAttachment(TenantScoped, Base):
     __tablename__ = "message_attachments"
     __table_args__ = (
         Index("ix_message_attachments_tenant_id", "tenant_id"),
+        # The file sweep asks, for every stored file, whether any attachment
+        # still names it.
+        Index("ix_message_attachments_tenant_uri", "tenant_id", "uri"),
         Index("ix_message_attachments_message", "message_id"),
         ForeignKeyConstraint(
             ["tenant_id", "message_id"],

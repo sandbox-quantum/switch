@@ -211,6 +211,7 @@ from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
+from switch_core.retention.service import retention_loop
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
@@ -1521,6 +1522,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if management is not None
                 else None
             )
+            data_retention_task = asyncio.create_task(retention_loop(session_factory))
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -1542,6 +1544,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 router.close()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
+                data_retention_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()

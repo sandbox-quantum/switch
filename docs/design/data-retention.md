@@ -25,13 +25,17 @@ which chat-platform post carried each message.
 - **Audit.** Setting and clearing the window are recorded as
   `retention_policy.set` and `retention_policy.cleared`, with the previous and
   new values.
-- **Enforcement.** A pass runs hourly per workspace, inside the
-  session-activity maintenance loop (`session_activity/maintenance.py` calls
-  `retention/service.py`). A change therefore takes effect within the hour, not
-  in the request that made it. Deletion runs in batches of 1000 messages, each
-  in its own transaction, and stops at 50 batches per pass. A larger backlog,
-  such as the first pass after a short window is set on an old workspace, is
-  finished by the passes after it. Hitting the limit logs a warning.
+- **Enforcement.** A pass runs at startup and then hourly, as a background
+  task of its own (`retention_loop` in `retention/service.py`). It is kept out
+  of the session-activity upkeep loop, which expires approval requests every
+  few seconds, so a long pass cannot hold up what unblocks a stuck session. A
+  change therefore takes effect within the hour, not in the request that made
+  it. Deletion runs in batches of 1000 messages, each in its own transaction,
+  and each workspace gets two minutes per pass. A larger backlog, such as the
+  first pass after a short window is set on an old workspace, is finished by
+  the passes after it, and running out of time logs a warning. Messages, files
+  and leftover records are separate steps: one failing is logged and does not
+  skip the others.
 
 ### Message numbering survives deletion
 
@@ -50,6 +54,16 @@ Other effects of deleting old messages, all already handled:
 - Unread counts come from an in-memory buffer, not from the table.
 - Posting a new reply into a thread whose root was deleted is refused with
   "thread_id not found". That is a visible failure, not a silent one.
+
+One effect is not signalled. A message an agent has not yet received (its
+cursor is behind it) and that ages out is simply never delivered, with no
+"history lost" notice. In practice this needs an agent to be days behind a
+room. A window shorter than the longest an agent may be offline is a choice
+the workspace makes with that trade-off.
+
+A downgrade past this migration drops `seq_floor`, so a room retention has
+emptied numbers from 1 again, and cursors past that point skip new messages
+until they are reset.
 
 ### Orphaned files are swept
 

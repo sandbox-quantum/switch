@@ -41,6 +41,18 @@ describe("describeRetention", () => {
 });
 
 describe("RetentionSection", () => {
+  it("shows no setting at all when the policy cannot be read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "boom" }), { status: 500 })),
+    );
+    render(<RetentionSection tenantId="t1" />);
+
+    await screen.findByText("boom");
+    expect(screen.queryByText(/kept forever/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();

@@ -71,6 +71,10 @@ _ALLOWED_MODULES = {
     # workspace: enumerate, then read each one's connections under its own
     # policy, the same shape as service-token upkeep above.
     "switch_core.gateway.connector_apps",
+    # Data retention deletes what each workspace no longer keeps, hourly:
+    # enumerate, then bind each tenant and work under its own policy, the same
+    # shape as session-activity upkeep.
+    "switch_core.retention.service",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time.
     "switch_core.bridges.agent.protocol.agent_core",

@@ -120,13 +120,14 @@ export default function RetentionSection({ tenantId }: { tenantId: string }) {
       )}
       {loading ? (
         <CircularProgress />
-      ) : (
+      ) : error ? null : (
         <Paper variant="outlined" sx={{ p: 2 }}>
           <Stack spacing={2}>
             <Typography variant="body2" sx={{ color: "text.secondary" }}>
               {describeRetention(current)} This applies to every room in the workspace,
-              archived rooms included. Attachments are deleted with their messages. Copies
-              already posted to Slack or other connected chat apps are not affected.
+              archived rooms included. A message&apos;s files are deleted about a day after the
+              last message using them. Copies already posted to Slack or other connected chat
+              apps are not affected.
             </Typography>
             <RadioGroup
               value={mode}
@@ -191,7 +192,7 @@ export default function RetentionSection({ tenantId }: { tenantId: string }) {
           <DialogContentText>
             {confirm?.count === 0
               ? "No messages are old enough to be deleted yet."
-              : `${confirm?.count.toLocaleString()} ${confirm?.count === 1 ? "message" : "messages"} and their attachments will be permanently deleted within the next hour.`}{" "}
+              : `${confirm?.count.toLocaleString()} ${confirm?.count === 1 ? "message" : "messages"} will be permanently deleted over the coming hours, starting within the hour. Their files follow about a day later.`}{" "}
             From then on, messages are deleted as they pass {confirm?.days} days old. Deleted
             messages cannot be recovered.
           </DialogContentText>
