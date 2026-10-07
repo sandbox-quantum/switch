@@ -12,7 +12,7 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/users", "Users"],
 ];
 
-const DOCS_URL = "https://docs.flintai.dev/flintai/switch/getting-started";
+const DOCS_URL = "https://docs.switchagents.ai/switch-rooms/getting-started";
 
 export default function TopBar() {
   const { pathname } = useLocation();
