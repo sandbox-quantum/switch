@@ -31,6 +31,7 @@ from switch_core.bridges.agent.dependencies import (
     get_session_factory as get_worker_session_factory,
 )
 from switch_core.bridges.agent.protocol.agent_connections import (
+    PROTOCOL_VERSION,
     AgentConnection,
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -330,7 +331,7 @@ def attach_worker(
         delivery_filter="all",
         spawn_capable=True,
         cursor=0,
-        declaration=ClientDeclaration(speaks=7, accepts=1),
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION, accepts=1),
         expected_generation=None,
     )
     service.connections.bind_worker(
@@ -1460,7 +1461,7 @@ async def test_operation_claim_is_refused_to_a_non_worker(controller_app):
         delivery_filter="all",
         spawn_capable=True,
         cursor=0,
-        declaration=ClientDeclaration(speaks=7, accepts=1),
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION, accepts=1),
         expected_generation=None,
     )
     refused = await client.post(

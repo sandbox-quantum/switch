@@ -28,7 +28,11 @@ if (args[0] === '--probe') {
 }
 `;
 
-const RELAY = { endpoint: 'http://127.0.0.1:43210', token: 'swlr_relay-token-placeholder' };
+const RELAY = {
+  endpoint: 'http://127.0.0.1:43210',
+  token: 'swlr_relay-token-placeholder',
+  hub: 'ws://127.0.0.1:43210/hub',
+};
 const LAUNCH = {
   isolation: 'shared' as const,
   restart: false,
@@ -128,10 +132,7 @@ async function fakeWatcher(root: string): Promise<ChildProcess> {
 
 describe('InProcessRuntime', () => {
   it('writes credentials the shared host reads, owner-only, outside the working directory', async () => {
-    await runtime.writeCredentials('agent-1', {
-      endpoint: 'http://127.0.0.1:43210',
-      token: 'swlr_relay-token-placeholder',
-    });
+    await runtime.writeCredentials('agent-1', RELAY);
     const path = runtime.credentialsPath('agent-1');
     expect(path).toBe(join(dir, 'data', 'agents', 'agent-1', 'credentials.json'));
     expect(statSync(path).mode & 0o777).toBe(0o600);
@@ -140,11 +141,9 @@ describe('InProcessRuntime', () => {
       SWITCH_API_ENDPOINT: 'http://127.0.0.1:43210',
       SWITCH_API_TOKEN: 'swlr_relay-token-placeholder',
       SWITCH_AGENT_ID: 'agent-1',
+      SWITCH_AGENT_HUB: 'ws://127.0.0.1:43210/hub',
     });
-    expect(await runtime.readCredentials('agent-1')).toEqual({
-      endpoint: 'http://127.0.0.1:43210',
-      token: 'swlr_relay-token-placeholder',
-    });
+    expect(await runtime.readCredentials('agent-1')).toEqual(RELAY);
     await runtime.deleteCredentials('agent-1');
     await runtime.deleteCredentials('agent-1');
     expect(await runtime.readCredentials('agent-1')).toBeNull();

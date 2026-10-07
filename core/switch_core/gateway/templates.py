@@ -417,6 +417,8 @@ async def patch_template(
             require_manage(principal, locked.owner_id)
 
     if req.content is not None:
+        # Not held across linting (up to 1 MiB of YAML); the update re-checks under lock.
+        await session.commit()
         _require_within_size_limit(req.content, config)
         _require_storable(req.content)
     try:

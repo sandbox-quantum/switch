@@ -72,6 +72,8 @@ async def worker_session(
                 raise HTTPException(
                     403, "Connection check owner is no longer a member."
                 )
+            # Not held while the route reads the worker's body, at the worker's pace.
+            await session.commit()
             yield session
 
 

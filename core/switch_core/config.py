@@ -506,6 +506,16 @@ class SwitchConfig(BaseSettings):
     # `report_within_s`; a controller that has not reported for three of these
     # is shown as unknown and refused new placements.
     controller_status_interval_seconds: int = 60
+    # Share one read of a room's new messages between every client in it
+    # (`transport/room_cache.py`). Without it, a room of N agents reads each
+    # new page N times, which is what exhausted the pool in a restart burst.
+    # The limits bound memory, not correctness: anything outside them is read
+    # from the database, as every client did before the cache.
+    room_delivery_cache_max_bytes: int = 64 * 1024 * 1024
+    room_delivery_cache_max_rooms: int = 5000
+    # At least one delivery page (200), or a fill could not be held.
+    room_delivery_cache_max_rows_per_room: int = 1000
+    room_delivery_cache_max_age_seconds: float = 300.0
 
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such

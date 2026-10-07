@@ -11,7 +11,6 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
     LAUNCH_SUPERSEDED,
     PROTOCOL_VERSION,
-    ROOM_RELEASED_PROTOCOL_REVISION,
     AgentConnection,
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -102,12 +101,10 @@ def test_displacing_a_sibling_on_the_same_connection_releases_nothing() -> None:
     assert conn.released_rooms == {}
 
 
-@pytest.mark.parametrize("speaks", [ROOM_RELEASED_PROTOCOL_REVISION - 1, None])
-def test_a_client_that_cannot_take_the_frame_is_not_sent_it(speaks: int | None) -> None:
-    """A client from before the frame, or one that declared no revision, gets
-    only what every client takes."""
+def test_a_client_that_cannot_take_the_frame_is_not_sent_it() -> None:
+    """A client that declared no revision gets only what every client takes."""
     registry = AgentConnectionRegistry()
-    loser = _open(registry, "loser", speaks=speaks, scope="single")
+    loser = _open(registry, "loser", speaks=None, scope="single")
     winner = _open(registry, "winner", speaks=PROTOCOL_VERSION, scope="all")
     registry.claim_room(loser, ROOM_A)
 
@@ -251,9 +248,7 @@ def test_a_closed_hosted_worker_leaves_no_session_in_its_rooms() -> None:
     waking notice, and no unavailable reply after an explicit Stop.
     """
     registry = AgentConnectionRegistry()
-    worker = _open(
-        registry, "worker", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
-    )
+    worker = _open(registry, "worker", speaks=PROTOCOL_VERSION, scope="all")
     registry.bind_worker(worker, WorkerBinding("launch-1", 1, "boot-a", "i-a"), {})
     registry.replace_placements(worker, {"session-1": ROOM_A})
     assert agents_present_in([AGENT], ROOM_A, registry) == {AGENT}
@@ -266,9 +261,7 @@ def test_a_closed_hosted_worker_leaves_no_session_in_its_rooms() -> None:
 
 def test_closing_a_worker_keeps_placements_made_elsewhere() -> None:
     registry = AgentConnectionRegistry()
-    worker = _open(
-        registry, "worker", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
-    )
+    worker = _open(registry, "worker", speaks=PROTOCOL_VERSION, scope="all")
     registry.bind_worker(worker, WorkerBinding("launch-1", 1, "boot-a", "i-a"), {})
     registry.replace_placements(worker, {"session-1": ROOM_A})
     registry.place_session(AGENT, "session-2", ROOM_B, "mcp-transport")
@@ -280,7 +273,7 @@ def test_closing_a_worker_keeps_placements_made_elsewhere() -> None:
 
 def test_closing_a_local_connection_keeps_its_placements() -> None:
     registry = AgentConnectionRegistry()
-    conn = _open(registry, "local", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all")
+    conn = _open(registry, "local", speaks=PROTOCOL_VERSION, scope="all")
     registry.replace_placements(conn, {"session-1": ROOM_A})
 
     registry.close(conn.id, HEARTBEAT_LAPSED)

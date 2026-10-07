@@ -324,18 +324,6 @@ async def update_bridge(
             ),
         )
 
-    if payload.agent_greetings_enabled is not None:
-        bridge = await bridge_store.set_agent_greetings_enabled(
-            session, bridge_id, payload.agent_greetings_enabled
-        )
-    if payload.channel_creation_enabled is not None:
-        bridge = await bridge_store.set_channel_creation_enabled(
-            session, bridge_id, payload.channel_creation_enabled
-        )
-    if payload.preconfigured is not None:
-        bridge = await bridge_store.set_preconfigured(
-            session, bridge_id, payload.preconfigured
-        )
     if payload.connection_config is not None:
         current = bridge.connection_config or {}
         merged = {**current, **payload.connection_config}
@@ -347,6 +335,9 @@ async def update_bridge(
                 status_code=422,
                 detail="event_delivery cannot be changed on an existing connection.",
             )
+        # Not held across the platform's credential check; nothing is written
+        # until it passes, so a refused edit still changes nothing.
+        await session.commit()
         try:
             await collab_lifecycle.check_edited_connection_config(
                 bridge_id=bridge_id, bridge_type=bridge.type, connection_config=merged
@@ -366,6 +357,20 @@ async def update_bridge(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (BridgeClaimConflict, BridgeCredentialError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if payload.agent_greetings_enabled is not None:
+        bridge = await bridge_store.set_agent_greetings_enabled(
+            session, bridge_id, payload.agent_greetings_enabled
+        )
+    if payload.channel_creation_enabled is not None:
+        bridge = await bridge_store.set_channel_creation_enabled(
+            session, bridge_id, payload.channel_creation_enabled
+        )
+    if payload.preconfigured is not None:
+        bridge = await bridge_store.set_preconfigured(
+            session, bridge_id, payload.preconfigured
+        )
+    if payload.connection_config is not None:
         bridge = await bridge_store.merge_connection_config(
             session, bridge_id, dict(payload.connection_config)
         )
@@ -497,6 +502,8 @@ async def search_bridge_directory(
         u.external_user_id: u
         for u in await external_user_store.get_by_bridge(session, bridge_id)
     }
+    # Not held across the platform search below.
+    await session.commit()
 
     source: Literal["directory", "known"] = "directory"
     note: str | None = None
@@ -682,6 +689,8 @@ async def claim_bridge_identity(
         # the account exists. Provisioning mints a human actor, so taking the
         # request's word for it would let any signed-in user conjure accounts
         # for people who do not exist.
+        # Not held across the directory search or provisioning's own session.
+        await session.commit()
         await _require_directory_account(
             collab_lifecycle,
             bridge_id=bridge_id,
@@ -844,6 +853,8 @@ async def delete_bridge(
         "display_name": bridge.display_name,
         "rooms_deleted": len(rooms),
     }
+    # Not held across the deletes, which open their own sessions and call Matrix.
+    await session.commit()
     for room in rooms:
         await room_service.delete_room(room.id)
 

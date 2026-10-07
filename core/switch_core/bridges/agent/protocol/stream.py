@@ -2,9 +2,8 @@
 
 Turns a connection plus the event buffer into a sequence of frames: catch-up
 from the client's cursor, then live delivery as events are appended. The client
-never asks again; it opens once and reads. `api/handlers.py` sends them over
-the WebSocket, or, for a client built before it, as a Server-Sent Events
-stream: both encode the same frames from the same loop, so they cannot drift.
+never asks again; it opens once and reads. The WebSocket in
+`api/handlers.py` sends them.
 
 Every event carries its sequence number, so a client that reconnects names the
 last one it processed and resumes exactly where it stopped. Gaps are reported
@@ -15,10 +14,9 @@ never see a stream that looks complete.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -67,9 +65,7 @@ class Frame:
 
 
 # Not a message: the loop's signal that it waited a keepalive interval with
-# nothing to send. The WebSocket has its own ping and drops it; the event
-# stream writes a comment, which only stops proxies dropping an idle
-# connection. Liveness comes from the client's beat, never from this.
+# nothing to send. The WebSocket has its own ping and drops it.
 KEEPALIVE = Frame("keepalive", {})
 
 
@@ -84,35 +80,6 @@ def encode_ws(frame: Frame) -> dict[str, Any]:
     if frame.seq is not None:
         message["id"] = frame.seq
     return message
-
-
-def encode_sse(frame: Frame) -> bytes:
-    """A frame as a Server-Sent Event. `id` is the event's sequence number,
-    which a reconnecting client sends back as `Last-Event-ID`."""
-    if frame is KEEPALIVE:
-        return b": keepalive\n\n"
-    lines = []
-    if frame.seq is not None:
-        lines.append(f"id: {frame.seq}")
-    lines.append(f"event: {frame.event}")
-    lines.append(f"data: {json.dumps(frame.data, separators=(',', ':'))}")
-    return ("\n".join(lines) + "\n\n").encode()
-
-
-async def sse_stream(frames: AsyncGenerator[Frame]) -> AsyncIterator[bytes]:
-    """The connection's frames as a `text/event-stream` body.
-
-    Kept for clients built before the WebSocket (agent-protocol revision 7 and
-    older), for a compatibility window: it goes once no client still connects
-    over it.
-    """
-    try:
-        async for frame in frames:
-            yield encode_sse(frame)
-    finally:
-        # Closed here, so the stream detaches from its connection when the
-        # client goes rather than when the generator is garbage collected.
-        await frames.aclose()
 
 
 def _connection_state(conn: AgentConnection) -> dict[str, Any]:

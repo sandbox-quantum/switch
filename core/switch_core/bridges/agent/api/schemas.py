@@ -138,27 +138,6 @@ class ConnectionPlacementsRequest(BaseModel):
     generation: int | None = None
 
 
-class ConnectionBeatRequest(BaseModel):
-    """The heartbeat of a connection held over the event stream (CHOO-1857).
-
-    Kept for clients built before the WebSocket, whose socket carries the
-    heartbeat itself, for a compatibility window. Proves the client is alive
-    *and* consuming, and reports how far it has read so the event buffer knows
-    what has been seen.
-    """
-
-    connection_id: str
-    cursor: int = 0
-    #: The incarnation of the connection this client is attached to, as the
-    #: server told it on `connection_state`. Fences the tick: a client that has
-    #: been displaced still holds the id and the token, and is otherwise
-    #: indistinguishable from the one that replaced it. Null is accepted only
-    #: while the connection's holder is a client built before the fence existed
-    #: (unknown, not current); from a holder that declares the revision which
-    #: carries it, a tick without one is refused.
-    generation: int | None = None
-
-
 class StatusRequest(BaseModel):
     room_id: str
     presence: Literal["online", "offline"] | None = None

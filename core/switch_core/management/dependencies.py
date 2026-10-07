@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import HTTPConnection
 
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.management import reason_codes
@@ -45,7 +45,7 @@ def get_management_session_factory() -> async_sessionmaker[AsyncSession]:
     return _state["session_factory"]  # type: ignore[no-any-return]
 
 
-def get_controller_principal(request: Request) -> ControllerPrincipal:
+def get_controller_principal(request: HTTPConnection) -> ControllerPrincipal:
     """The controller the bearer middleware authenticated."""
     principal = request.scope.get("controller")
     if not isinstance(principal, ControllerPrincipal):

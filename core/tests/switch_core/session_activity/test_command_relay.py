@@ -8,7 +8,6 @@ from fastapi import FastAPI
 
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
-    SESSION_COMMAND_PROTOCOL_REVISION,
     AgentConnectionRegistry,
     ClientDeclaration,
 )
@@ -119,12 +118,10 @@ async def test_switch_does_not_answer_where_an_agents_sessions_are(
 
 async def test_a_worker_only_command_skips_every_connection_but_the_worker() -> None:
     registry = AgentConnectionRegistry()
-    plain, plain_stream = _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
+    plain, plain_stream = _watcher(registry, speaks=PROTOCOL_VERSION)
     plain.stream_attached = True
     assert registry.relay_session_command(AGENT, FRAME, worker_only=True) is False
-    worker, worker_stream = _watcher(
-        registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION, scope="single"
-    )
+    worker, worker_stream = _watcher(registry, speaks=PROTOCOL_VERSION, scope="single")
     worker.stream_attached = True
     registry.bind_worker(
         worker, WorkerBinding("launch-1", 1, "boot-a", "instance-a"), {}

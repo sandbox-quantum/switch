@@ -151,7 +151,12 @@ from switch_core.observability.bootstrap import (
     RuntimeProbes,
     start_observability,
 )
-from switch_core.observability.pool import install_pool_watermark, pool_stats
+from switch_core.observability.pool import (
+    WaitTimedQueuePool,
+    install_hold_timer,
+    install_pool_watermark,
+    pool_stats,
+)
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
@@ -169,6 +174,7 @@ from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -396,7 +402,7 @@ async def run(config: SwitchConfig) -> None:
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
     encrypted_json.configure(config.keyring)
-    engine = create_engine_from_config(config)
+    engine = create_engine_from_config(config, poolclass=WaitTimedQueuePool)
     tenants_isolated = await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
     # Wired here rather than inside the engine factory, so the database layer
@@ -408,6 +414,7 @@ async def run(config: SwitchConfig) -> None:
     # not change how queries execute.
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
+    install_hold_timer(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -531,6 +538,18 @@ async def run(config: SwitchConfig) -> None:
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = AgentConnectionRegistry()
 
+    # One shared read per room for every client in this process.
+    room_cache = RoomDeliveryCache(
+        session_factory=session_factory,
+        message_store=message_store,
+        limits=RoomCacheLimits(
+            max_bytes=config.room_delivery_cache_max_bytes,
+            max_rooms=config.room_delivery_cache_max_rooms,
+            max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
+            max_age_seconds=config.room_delivery_cache_max_age_seconds,
+        ),
+    )
+
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
         client_store=client_store,
@@ -543,6 +562,7 @@ async def run(config: SwitchConfig) -> None:
         listener=message_listener,
         invites=invites,
         ephemeral=ephemeral,
+        room_cache=room_cache,
     )
     client_factory.register(
         "agent",
@@ -608,6 +628,7 @@ async def run(config: SwitchConfig) -> None:
         resource_service=resource_service,
         session_factory=session_factory,
         telemetry=telemetry,
+        room_cache=room_cache,
     )
     collab_lifecycle._room_service = room_service
 
@@ -817,8 +838,9 @@ async def run(config: SwitchConfig) -> None:
         consumers_running=client_lifecycle.running_count,
         connectors_running=connector_lifecycle.running_count,
         connectors_configured=connector_lifecycle.expected_count,
-        agents_connected=lambda: len(connections.live_agent_ids()),
+        agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
+        room_cache_stats=room_cache.stats,
     )
 
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
@@ -841,6 +863,7 @@ async def run(config: SwitchConfig) -> None:
                 version=switch_core_version(),
                 session_factory=session_factory,
                 probes=probes,
+                db_server_engine=lambda: create_unpooled_engine(config),
             )
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))

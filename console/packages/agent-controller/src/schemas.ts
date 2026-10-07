@@ -11,7 +11,7 @@ import { z } from 'zod';
  * known enum is read as `unknown` rather than failing the whole message.
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -295,14 +295,12 @@ export const controllerConnectionResponseSchema = z.object({
 });
 export type ControllerConnection = z.infer<typeof controllerConnectionResponseSchema>;
 
-export const controllerBeatRequestSchema = z.object({
-  connection_id: id,
-  generation: z.number().int(),
+/** The controller's answer to each `ping`: its beat, with how far each agent's host has read. */
+export const controllerPongSchema = z.object({
+  type: z.literal('pong'),
   cursors: z.record(z.string().min(1), sequence),
 });
-export type ControllerBeatRequest = z.infer<typeof controllerBeatRequestSchema>;
-
-export const controllerBeatResponseSchema = z.object({ agents: z.array(id) });
+export type ControllerPong = z.infer<typeof controllerPongSchema>;
 
 /** The stream's first frame. */
 export const connectionStateSchema = z.object({

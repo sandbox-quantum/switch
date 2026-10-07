@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from switch_core.bridges.agent.api import handlers
 from switch_core.bridges.agent.api.handlers import (
+    _open_connection,
     connection_placements,
     connection_socket,
     poll_events,
@@ -36,11 +37,14 @@ from switch_core.bridges.agent.dependencies import get_config as get_worker_conf
 from switch_core.bridges.agent.dependencies import get_protocol as get_worker_protocol
 from switch_core.bridges.agent.dependencies import get_session as get_worker_session
 from switch_core.bridges.agent.protocol.agent_connections import (
+    PROTOCOL_VERSION,
     TAKEN_OVER,
     AgentConnectionRegistry,
+    ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.hosted_workers import ConsoleView
+from switch_core.bridges.agent.protocol.stream import KEEPALIVE
 from switch_core.db.models import (
     Agent,
     Client,
@@ -272,26 +276,29 @@ async def _open(
     capability: str | None,
     connection_id: str | None = None,
     boot_id: str = "boot-a",
-    speaks: int = 7,
+    speaks: int = PROTOCOL_VERSION,
     state_version: int | None = 1,
     expected_generation: int | None = None,
 ) -> Any:
-    return await poll_events(
-        agent.id,
-        agent,
-        service,
-        service.config,
-        accept="text/event-stream",
+    """Open the worker's connection as the socket does, and hand back its frames."""
+    _conn, frames = await _open_connection(
+        agent=agent,
+        protocol=service,
+        config=service.config,
         connection_id=connection_id or str(uuid4()),
         scope="all",
+        event_filter="all",
+        start_from="head",
         spawn_capable=True,
-        protocol_version=speaks,
+        declaration=ClientDeclaration(speaks=speaks),
+        rooms=None,
         expected_generation=expected_generation,
         worker_capability=capability,
         host_boot_id=boot_id,
         host_instance_id="instance-a",
         worker_state_version=state_version,
     )
+    return frames
 
 
 async def _refusal(coro) -> tuple[int, str]:
@@ -301,19 +308,14 @@ async def _refusal(coro) -> tuple[int, str]:
     return caught.value.status_code, detail["code"] if isinstance(detail, dict) else ""
 
 
-async def _first_frames(response, count: int) -> list[tuple[str, dict]]:
-    frames = []
-    iterator = response.body_iterator
-    while len(frames) < count:
-        chunk = await asyncio.wait_for(anext(iterator), timeout=2)
-        text = chunk.decode() if isinstance(chunk, bytes) else chunk
-        if text.startswith(":"):
+async def _first_frames(frames, count: int) -> list[tuple[str, dict]]:
+    received = []
+    while len(received) < count:
+        frame = await asyncio.wait_for(anext(frames), timeout=2)
+        if frame is KEEPALIVE:
             continue
-        fields = dict(
-            line.split(": ", 1) for line in text.strip().splitlines() if ": " in line
-        )
-        frames.append((fields["event"], json.loads(fields["data"])))
-    return frames
+        received.append((frame.event, frame.data))
+    return received
 
 
 async def _bump(factory, request_id: str) -> None:
@@ -446,7 +448,7 @@ async def test_local_console_cannot_take_over_hosted_stream(worker_app):
 
 async def _poll(service, agent: Agent) -> Any:
     return await poll_events(
-        agent.id, agent, service, service.config, timeout=0, accept="application/json"
+        agent.id, agent, service, timeout=0, accept="application/json"
     )
 
 
@@ -1293,7 +1295,7 @@ async def _open_socket(
     *,
     capability: str | None,
     connection_id: str | None = None,
-    speaks: int = 7,
+    speaks: int = PROTOCOL_VERSION,
     state_version: int | None = 1,
 ) -> tuple[_Socket, asyncio.Task[None]]:
     socket = _Socket()
@@ -1360,7 +1362,7 @@ async def test_a_worker_over_the_socket_is_sent_its_frames(worker_app, monkeypat
         assert (state, attached) == ("connection_state", "worker_attached")
         assert set(data) == WORKER_ATTACHED_FIELDS
         conn = service.connections.get(conn_id)
-        assert conn.worker is not None and conn.stream_transport == "websocket"
+        assert conn.worker is not None and conn.stream_attached
 
         assert service.connections.ring_worker(agent_id, "wake", {"entries": []})
         assert (await socket.frames(3))[2] == ("wake", {"entries": []})

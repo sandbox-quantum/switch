@@ -3,8 +3,9 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { type AgentBridgeEvent, SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
+import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent-runtime/hosted';
+import { openHubStream } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type ControllerDeps, type ControllerExit, runController } from './controller';
 import { ConfigurationError } from './errors';
@@ -69,6 +70,7 @@ function deps(server = core.url): ControllerDeps {
     runtime: runtime.build,
     locator: new FakeLocator(),
     fetch,
+    openWebSocket: core.openWebSocket,
     log: silentLogger,
     dataDir: dir,
     workspacesFor: () => join(dir, 'workspaces'),
@@ -83,7 +85,6 @@ function deps(server = core.url): ControllerDeps {
       streamIdleMs: 2_000,
       streamInitialBackoffMs: 10,
       streamMaxBackoffMs: 50,
-      relay: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
       eventBufferLimit: 100,
     },
   };
@@ -243,7 +244,7 @@ describe('runController', () => {
     await expect(fetch(`${credentials.endpoint}/version`)).rejects.toThrow();
   }, 20_000);
 
-  it('serves an isolated agent its events as its own stream through the relay, and moves it in-process when that changes', async () => {
+  it('serves an isolated agent its events on the hub over the relay, and moves it in-process when that changes', async () => {
     const isolatedAgent = agent(1);
     isolatedAgent.definition.isolation = 'isolated';
     core.setAssignment({ revision: 1, agents: [isolatedAgent] });
@@ -254,13 +255,12 @@ describe('runController', () => {
     const events: AgentBridgeEvent[] = [];
     const own = new AbortController();
     watchers.push(own);
-    new SwitchEventStream({
+    openHubStream(credentials.hub)({
       creds: { agentId: 'agent-1', apiEndpoint: credentials.endpoint, token: credentials.token },
       connectionId: 'isolated-host',
       worker: null,
       scope: 'all',
       filter: 'addressed',
-      spawnCapable: true,
       rooms: [],
       onEvent: (event) => void events.push(event),
       onGap: () => {},
@@ -273,7 +273,7 @@ describe('runController', () => {
       'the isolated host attached'
     );
     core.pushEvent('agent-1', 1, addressed(1));
-    await waitFor(() => events.length === 1, 'the event on its own stream');
+    await waitFor(() => events.length === 1, 'the event on the hub');
     await waitFor(() => store.cursors().get('agent-1') === 1, 'its cursor confirmed');
 
     core.setAssignment({ revision: 2, agents: [agent(2)] });
@@ -328,6 +328,36 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   }, 20_000);
 
+  it('restarts an agent host whose credentials predate the hub, so it comes back on the hub', async () => {
+    const port = await freePort();
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    store.saveRelayPort(port);
+    store.saveAssignment(core.assignment, '"1"', '2026-01-01T00:00:00Z');
+    store.recordApplied('agent-1', 1, '2026-01-01T00:00:00Z');
+    await runtime.launch('agent-1', runtimeTemplate(), {
+      isolation: 'isolated',
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    // As a controller from before the hub wrote them: the relay and a token, no hub.
+    await runtime.writeCredentials('agent-1', {
+      endpoint: `http://127.0.0.1:${port}`,
+      token: 'swlr_old',
+      hub: '',
+    });
+    runtime.calls.length = 0;
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'a restart');
+    expect(runtime.launches('agent-1')[0]!.options.restart).toBe(true);
+    expect(runtime.credentials.get('agent-1')).toMatchObject({
+      endpoint: `http://127.0.0.1:${port}`,
+      hub: `ws://127.0.0.1:${port}/hub`,
+    });
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
   it('points a watcher at the relay’s new port, and restarts it, when its old one is taken', async () => {
     const port = await freePort();
     const blocker = createServer();
@@ -346,6 +376,7 @@ describe('runController', () => {
     await runtime.writeCredentials('agent-1', {
       endpoint: `http://127.0.0.1:${port}`,
       token: 'swlr_old',
+      hub: `ws://127.0.0.1:${port}/hub`,
     });
     runtime.calls.length = 0;
     running = runController(deps(), stop.signal);
@@ -445,6 +476,7 @@ describe('runController', () => {
     await runtime.writeCredentials('agent-1', {
       endpoint: 'http://127.0.0.1:1',
       token: 'swlr_k',
+      hub: 'ws://127.0.0.1:1/hub',
     });
     runtime.calls.length = 0;
     await core.stop();

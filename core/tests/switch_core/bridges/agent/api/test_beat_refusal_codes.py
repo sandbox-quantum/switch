@@ -11,14 +11,11 @@ winner's; it did not stop the loser from coming back.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 
-from switch_core.bridges.agent.api.handlers import _record_beat, connection_beat
-from switch_core.bridges.agent.api.schemas import ConnectionBeatRequest
+from switch_core.bridges.agent.api.handlers import _record_beat
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
     AgentConnectionRegistry,
@@ -82,74 +79,3 @@ def test_a_tick_with_no_stream_is_refused_as_something_to_reopen() -> None:
     # Recoverable, and distinct from the takeover: this client still holds the
     # connection and only has to reconnect.
     assert caught.value.code == "no_stream"
-
-
-# ── Over HTTP, for a client on the event stream ─────────────────────────────
-#
-# A client built before the WebSocket beats with `POST /connection/beat`, kept
-# with the event stream for a compatibility window. Its refusals are the same
-# ones, answered as HTTP with the code beside the prose.
-
-
-async def _post_beat(protocol: _Protocol, generation: int | None) -> Any:
-    return await connection_beat(
-        AGENT_ID,
-        ConnectionBeatRequest(connection_id=CONN_ID, cursor=0, generation=generation),
-        SimpleNamespace(id=AGENT_ID),  # type: ignore[arg-type]
-        protocol,  # type: ignore[arg-type]
-    )
-
-
-async def test_a_superseded_beat_is_answered_409_taken_over() -> None:
-    protocol = _Protocol()
-    displaced = _open(protocol).stream_generation
-    _open(protocol)
-
-    with pytest.raises(HTTPException) as caught:
-        await _post_beat(protocol, displaced)
-
-    assert caught.value.status_code == 409
-    assert caught.value.detail["code"] == "taken_over"  # type: ignore[index]
-    message = caught.value.detail["message"]  # type: ignore[index]
-    assert str(displaced) in message and str(displaced + 1) in message
-
-
-async def test_a_beat_with_no_stream_is_answered_409_no_stream() -> None:
-    protocol = _Protocol()
-    conn = _open(protocol)
-    protocol.connections.detach_stream(conn, conn.stream_generation)
-
-    with pytest.raises(HTTPException) as caught:
-        await _post_beat(protocol, conn.stream_generation)
-
-    assert caught.value.status_code == 409
-    assert caught.value.detail["code"] == "no_stream"  # type: ignore[index]
-
-
-async def test_an_unfenced_beat_from_a_fenced_holder_is_refused_on_its_own_code() -> (
-    None
-):
-    protocol = _Protocol()
-    _open(protocol)
-
-    with pytest.raises(HTTPException) as caught:
-        await _post_beat(protocol, None)
-
-    assert caught.value.status_code == 409
-    assert caught.value.detail["code"] == "unfenced"  # type: ignore[index]
-
-
-async def test_a_beat_for_an_unknown_connection_is_answered_404() -> None:
-    protocol = _Protocol()
-
-    with pytest.raises(HTTPException) as caught:
-        await _post_beat(protocol, None)
-
-    assert caught.value.status_code == 404
-
-
-async def test_a_client_that_cannot_be_fenced_still_beats() -> None:
-    protocol = _Protocol()
-    _open(protocol, speaks=None)
-
-    assert (await _post_beat(protocol, None))["ok"] is True
