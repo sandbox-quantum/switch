@@ -195,7 +195,8 @@ contracts:
     # window, so `accepts` stays at 1 on both sides. switch-core serves either
     # transport, and agent-runtime prefers the socket and falls back to the
     # stream and its beat against a server with no socket. Both go, and
-    # `accepts` rises to 8, once no client still connects over the stream.
+    # `accepts` rises to 8, once `switch.agents.connected{transport:sse}` stays
+    # at zero.
     artifacts:
       switch-core: { speaks: 8, accepts: 1 }
       agent-runtime: { speaks: 8, accepts: 1 }

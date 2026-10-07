@@ -361,7 +361,7 @@ class TestAssignment:
 
 
 class TestStatus:
-    async def test_a_report_makes_the_controller_online_until_it_goes_stale(
+    async def test_a_connected_controller_is_online_however_old_its_report(
         self, harness: Harness
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -379,7 +379,7 @@ class TestStatus:
         assert response.json() == {"assignment_revision": 0, "report_within_s": 60}
         assert online.json()[0]["state"] == "online"
         assert online.json()[0]["status"]["seq"] == 5
-        assert stale.json()[0]["state"] == "unknown"
+        assert stale.json()[0]["state"] == "online"
 
     async def test_an_older_seq_is_ignored_but_answered(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -440,18 +440,18 @@ class TestStatus:
             response = await client.put(
                 f"/v1/management/controllers/{controller.controller_id}/status",
                 json=fixture("status_request.json"),
-                headers={**controller.headers, "Switch-Controller-Protocol": "2"},
+                headers={**controller.headers, "Switch-Controller-Protocol": "1"},
             )
             accepted = await client.put(
                 f"/v1/management/controllers/{controller.controller_id}/status",
                 json=fixture("status_request.json"),
-                headers={**controller.headers, "Switch-Controller-Protocol": "1"},
+                headers={**controller.headers, "Switch-Controller-Protocol": "2"},
             )
         assert response.status_code == 426
         assert response.json()["error"]["code"] == "protocol_unsupported"
-        assert response.headers["Switch-Controller-Protocol-Accepts"] == "1-1"
+        assert response.headers["Switch-Controller-Protocol-Accepts"] == "2-2"
         assert accepted.status_code == 200
-        assert accepted.headers["Switch-Controller-Protocol-Accepts"] == "1-1"
+        assert accepted.headers["Switch-Controller-Protocol-Accepts"] == "2-2"
 
 
 async def _placed_agent(
@@ -788,6 +788,75 @@ class TestPlacementBindsTheAgentInCore:
         binding = restarted.binding(agent_id)
         assert binding is not None and binding.controller_name == "workstation"
         assert restarted.is_revoked(controller.controller_id)
+
+
+class TestTheControllersOwnInfo:
+    async def test_the_controller_renames_and_describes_itself(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner, name="laptop")
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            path = f"/v1/management/controllers/{controller.controller_id}"
+            renamed = await client.patch(
+                path,
+                json={"name": " build box ", "description": " Under the desk "},
+                headers=controller.headers,
+            )
+            cleared = await client.patch(
+                path, json={"description": "  "}, headers=controller.headers
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert renamed.status_code == 200, renamed.text
+        assert (renamed.json()["name"], renamed.json()["description"]) == (
+            "build box",
+            "Under the desk",
+        )
+        assert renamed.json()["state"] == "online"
+        assert cleared.json()["name"] == "build box"
+        assert cleared.json()["description"] is None
+        [stored] = listed.json()
+        assert (stored["name"], stored["description"]) == ("build box", None)
+        binding = harness.protocol.connections.controllers.binding(
+            created.json()["agent_id"]
+        )
+        assert binding is not None and binding.controller_name == "build box"
+
+    async def test_the_owners_limits_hold_and_only_its_own_machine(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            mine = await enroll_console(harness, client, owner, name="mine")
+            theirs = await enroll_console(harness, client, owner, name="theirs")
+            path = f"/v1/management/controllers/{mine.controller_id}"
+            refused = [
+                await client.patch(path, json=body, headers=mine.headers)
+                for body in (
+                    {},
+                    {"name": "   "},
+                    {"name": None},
+                    {"name": "x" * 201},
+                    {"description": "x" * 501},
+                )
+            ]
+            other = await client.patch(
+                f"/v1/management/controllers/{theirs.controller_id}",
+                json={"name": "taken"},
+                headers=mine.headers,
+            )
+            anonymous = await client.patch(path, json={"name": "nobody"})
+        assert [(r.status_code, r.json()["error"]["code"]) for r in refused] == [
+            (422, "validation_error")
+        ] * 5
+        assert (other.status_code, other.json()["error"]["code"]) == (403, "forbidden")
+        assert anonymous.status_code == 401
 
 
 def test_bearer_helper() -> None:

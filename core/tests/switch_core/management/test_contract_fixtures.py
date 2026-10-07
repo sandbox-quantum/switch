@@ -25,9 +25,10 @@ from switch_core.bridges.agent.commands import room_control_frame
 from switch_core.bridges.agent.protocol.event_buffer import Reader
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.management import controller_routes
 from switch_core.management.schemas import (
-    ControllerBeatRequest,
     ControllerConnectionRequest,
+    ControllerInfoRequest,
     EnrollRequest,
     OperationResultRequest,
     StatusReport,
@@ -38,6 +39,7 @@ from tests.switch_core.management.harness import (
     Harness,
     add_member,
     add_room,
+    beat,
     build_harness,
     cookies_for,
     create_managed_agent,
@@ -96,7 +98,7 @@ class TestRequestFixturesParse:
         ControllerConnectionRequest.model_validate(
             _fixture("controller_connection_request.json")
         )
-        ControllerBeatRequest.model_validate(_fixture("controller_beat_request.json"))
+        ControllerInfoRequest.model_validate(_fixture("controller_info_request.json"))
 
 
 class TestEnrollmentAndTokens:
@@ -243,6 +245,23 @@ class TestControllerMessages:
         assert refused.json() == _fixture("error_response.json")
 
 
+class TestTheControllersOwnInfo:
+    async def test_set_info(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(
+                client, controller, 1, providers=[provider("claude")], agents=[]
+            )
+            updated = await client.patch(
+                f"/v1/management/controllers/{controller.controller_id}",
+                json=_fixture("controller_info_request.json"),
+                headers=controller.headers,
+            )
+        assert updated.status_code == 200, updated.text
+        assert_same_shape(updated.json(), _fixture("controller_info_response.json"))
+
+
 class TestTheControllerConnection:
     async def test_open_and_beat(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -259,16 +278,15 @@ class TestTheControllerConnection:
             )
             stream = await open_stream(harness, controller, opened.json())
             await take(stream, 2)
-            beat_body = _fixture("controller_beat_request.json")
-            beat_body.update(
+            pong = _fixture("controller_pong.json")
+            beaten = beat(
+                harness,
+                controller,
                 connection_id=opened.json()["connection_id"],
                 generation=opened.json()["generation"],
-                cursors={agent_id: 0},
-            )
-            beat = await client.post(
-                f"/v1/controllers/{controller.controller_id}/connection/beat",
-                json=beat_body,
-                headers=controller.headers,
+                cursors=controller_routes._cursors_of(
+                    {**pong, "cursors": {agent_id: 0}}
+                ),
             )
             present = harness.protocol.connections.controllers.live_rooms(agent_id)
             await stream.aclose()
@@ -277,14 +295,11 @@ class TestTheControllerConnection:
         assert_same_shape(
             opened.json(), _fixture("controller_connection_response.json")
         )
-        assert beat.status_code == 200, beat.text
-        assert_same_shape(beat.json(), _fixture("controller_beat_response.json"))
+        assert beaten.status_code == 200, beaten.text
         assert harness.protocol.connections.controllers.live_rooms(agent_id) == set()
         assert present == {room_id}
 
-    async def test_placements_are_refused_on_open_and_beat(
-        self, harness: Harness
-    ) -> None:
+    async def test_placements_are_refused_on_open(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner)
@@ -292,36 +307,15 @@ class TestTheControllerConnection:
             room_id = await add_room(harness.session_factory, agent_id)
             body = _fixture("controller_connection_request.json")
             body["cursors"] = {agent_id: 0}
-            refused_open = await client.post(
+            refused = await client.post(
                 f"/v1/controllers/{controller.controller_id}/connection",
                 json={**body, "placements": {agent_id: [room_id]}},
                 headers=controller.headers,
             )
-            opened = await client.post(
-                f"/v1/controllers/{controller.controller_id}/connection",
-                json=body,
-                headers=controller.headers,
-            )
-            stream = await open_stream(harness, controller, opened.json())
-            await take(stream, 2)
-            beat_body = _fixture("controller_beat_request.json")
-            beat_body.update(
-                connection_id=opened.json()["connection_id"],
-                generation=opened.json()["generation"],
-                cursors={agent_id: 0},
-                placements={agent_id: [room_id]},
-            )
-            refused_beat = await client.post(
-                f"/v1/controllers/{controller.controller_id}/connection/beat",
-                json=beat_body,
-                headers=controller.headers,
-            )
-            await stream.aclose()
 
-        for refused in (refused_open, refused_beat):
-            assert refused.status_code == 422, refused.text
-            assert refused.json()["error"]["code"] == "validation_error"
-            assert "placements" in refused.json()["error"]["message"]
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["code"] == "validation_error"
+        assert "placements" in refused.json()["error"]["message"]
 
 
 class _Outcomes:

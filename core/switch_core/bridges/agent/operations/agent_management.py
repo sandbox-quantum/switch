@@ -123,8 +123,9 @@ async def list_machines() -> list[dict[str, Any]]:
         A list of machines, each {id, name, description, kind, state,
         last_seen_at, providers, agents_running}.
         `kind` is "console" (Switch Console's own machine), "daemon" (a
-        headless controller) or "ec2". `state` is "online" (reporting now) or
-        "unknown" (has not reported recently: asleep, off or disconnected).
+        headless controller) or "ec2". `state` is "online" (connected to Switch
+        now), "offline" (was connected, and is not now: stopped, asleep, off
+        or disconnected) or "unknown" (has never connected).
         `providers` lists the agent CLIs the machine last reported, each
         {provider, installed, version, auth}, `auth` being "ok", "missing",
         "expired" or "unknown". `agents_running` counts the managed agents
@@ -260,7 +261,7 @@ async def list_managed_agents() -> list[dict[str, Any]]:
         `directory` is the working directory the definition names (null only
         when its machine has not said where it keeps workspaces).
         `machine` is {id, name, state} (null when the agent is not placed on
-        a machine), `state` being "online", "unknown" or "revoked".
+        a machine), `state` being "online", "offline", "unknown" or "revoked".
         `desired_state` is what your owner wants: "running" or "stopped".
         `actual` is what the machine last reported for the agent,
         {process, reason, detail, applied_revision, since, directory}, or

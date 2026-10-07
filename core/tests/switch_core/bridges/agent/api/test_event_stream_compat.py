@@ -34,6 +34,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
 AGENT_ID = "agent-1"
 ROOM = "room-a"
@@ -201,6 +202,63 @@ async def test_closing_the_stream_detaches_it_and_keeps_the_connection() -> None
     conn = protocol.connections.get("c1")
     assert conn is not None
     assert not conn.stream_attached
+    assert protocol.connections.live_agents_by_transport() == {
+        ("detached", "agent-runtime"): 1
+    }
+
+
+async def test_a_stream_attached_over_sse_is_reported_as_sse() -> None:
+    protocol = _Protocol()
+    stream = _Reader((await _open(protocol)).body_iterator)
+    await stream.frame()
+
+    assert protocol.connections.live_agents_by_transport() == {
+        ("sse", "agent-runtime"): 1
+    }
+    await stream.close()
+
+
+async def test_a_client_that_moves_to_the_socket_is_reported_on_the_socket() -> None:
+    """The transport is the last attach's: an upgraded Console reattaching the
+    same connection over the socket stops counting as an old client."""
+    protocol = _Protocol()
+    stream = _Reader((await _open(protocol)).body_iterator)
+    await stream.frame()
+
+    protocol.connections.open(
+        agent_id=AGENT_ID,
+        connection_id="c1",
+        scope="single",
+        delivery_filter="all",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=8, accepts=1, artifact="agent-runtime"),
+        expected_generation=None,
+        transport="websocket",
+    )
+
+    assert protocol.connections.live_agents_by_transport() == {
+        ("websocket", "agent-runtime"): 1
+    }
+    await stream.close()
+
+
+async def test_a_refused_stream_is_counted_like_a_refused_socket() -> None:
+    registry = MetricsRegistry()
+    install(registry)
+    try:
+        with pytest.raises(HTTPException) as caught:
+            await _open(_Protocol(), protocol_version=99, protocol_accepts=99)
+    finally:
+        uninstall()
+
+    assert caught.value.status_code == 409
+    refused = next(
+        p for p in registry.collect() if p.name == "switch.agent.connections_refused"
+    )
+    assert [(dict(p.attributes), p.value) for p in refused.numbers] == [
+        ({"reason": "protocol"}, 1.0)
+    ]
 
 
 # ── The declared ranges still meet ──────────────────────────────────────────

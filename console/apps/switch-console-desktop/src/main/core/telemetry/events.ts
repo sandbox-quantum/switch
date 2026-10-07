@@ -581,8 +581,11 @@ export type TelemetryEventMap = {
    */
   telemetry_consent_changed: {
     source: 'first_run' | 'settings';
-    /** This launch's kind, so a new install agreeing at first run is one filter. */
-    install_kind: TelemetryInstallKind;
+    /**
+     * This launch's kind, so a new install agreeing at first run is one filter;
+     * `unknown` when the launch could not be recorded.
+     */
+    install_kind: TelemetryInstallKind | 'unknown';
   };
 };
 

@@ -12,11 +12,18 @@ import {
   DialogTitle,
   IconButton,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
 import { useEffect, useState } from "react";
-import { createEnrollmentCode, type EnrollmentCode, enrollCommand } from "../../data/management";
+import {
+  createEnrollmentCode,
+  type EnrollmentCode,
+  enrollCommand,
+  MAX_MACHINE_DESCRIPTION,
+  MAX_MACHINE_NAME,
+} from "../../data/management";
 import { MONO_SX, formatDate } from "../../theme/hootFormat";
 
 function CopyBlock({ text, label }: { text: string; label: string }) {
@@ -48,7 +55,8 @@ function CopyBlock({ text, label }: { text: string; label: string }) {
 /**
  * Issues a one-time enrollment code and shows the command that enrolls a
  * machine's agents controller with it. The code is shown once: closing the
- * dialog discards it, and a new open issues a new one.
+ * dialog discards it, and a new open issues a new one. The optional name and
+ * description go into the command, so the machine enrolls with them.
  */
 export default function AddMachineDialog({
   open,
@@ -59,12 +67,23 @@ export default function AddMachineDialog({
 }) {
   const [enrollment, setEnrollment] = useState<EnrollmentCode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  const nameError =
+    name.trim().length > MAX_MACHINE_NAME ? `At most ${MAX_MACHINE_NAME} characters.` : null;
+  const descriptionError =
+    description.trim().length > MAX_MACHINE_DESCRIPTION
+      ? `At most ${MAX_MACHINE_DESCRIPTION} characters.`
+      : null;
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setEnrollment(null);
     setError(null);
+    setName("");
+    setDescription("");
     createEnrollmentCode()
       .then((issued) => {
         if (!cancelled) setEnrollment(issued);
@@ -90,14 +109,36 @@ export default function AddMachineDialog({
         {!error && !enrollment && <CircularProgress size={24} />}
         {enrollment && (
           <Stack spacing={2}>
+            <Stack spacing={2}>
+              <TextField
+                label="Name (optional)"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                error={nameError !== null}
+                helperText={nameError ?? "Defaults to the machine's host name."}
+                size="small"
+                fullWidth
+              />
+              <TextField
+                label="Description (optional)"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                error={descriptionError !== null}
+                helperText={descriptionError ?? "What the machine is for, e.g. the build box in the office."}
+                size="small"
+                fullWidth
+              />
+            </Stack>
             <Box>
               <Typography variant="subtitle2" gutterBottom>
                 Enrollment command
               </Typography>
-              {enrollment.server_url ? (
+              {enrollment.server_url && (nameError || descriptionError) ? (
+                <Alert severity="warning">Shorten the name or description to see the command.</Alert>
+              ) : enrollment.server_url ? (
                 <>
                   <CopyBlock
-                    text={enrollCommand(enrollment.server_url, enrollment.code)}
+                    text={enrollCommand(enrollment.server_url, enrollment.code, { name, description })}
                     label="Copy command"
                   />
                   <Typography variant="caption" color="text.secondary">

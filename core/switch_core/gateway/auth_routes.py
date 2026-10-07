@@ -24,12 +24,12 @@ from switch_core.gateway.auth import (
     describe_session_state,
     get_authenticated_session,
     get_current_user,
-    hash_password,
+    hash_password_off_loop,
     initial_tenant_claim,
     list_tenant_memberships,
     require_admin,
     set_session_cookie,
-    verify_password,
+    verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
     get_bridge_store,
@@ -125,11 +125,12 @@ async def login(
         raise HTTPException(status_code=403, detail="Password login is disabled")
 
     user = await user_store.get_by_email(session, req.email)
-    if user is None or not verify_password(req.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    # Ends the read so its connection goes back to the pool before the
-    # membership lookup takes one: a request holds one connection at a time.
+    # One connection at a time, and none held across bcrypt.
     await session.commit()
+    if user is None or not await verify_password_off_loop(
+        req.password, user.password_hash
+    ):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
 
     set_session_cookie(
         response,
@@ -163,6 +164,30 @@ async def _prewarm(
     return SignupMachine(status="starting", reason=None)
 
 
+async def _refuse_signup(
+    session: AsyncSession, user_store: UserStore, email: str, config: SwitchConfig
+) -> None:
+    """Raise if this sign-up must be refused: the hourly cap is reached, or the
+    email is taken. Rolls back before raising, so a refusal never leaves the
+    transaction, or an advisory lock taken in it, open."""
+    created, retry_after = await user_store.created_in_last_hour(session)
+    if created >= config.gateway_signup_max_per_hour:
+        logger.warning(
+            "Refused sign-up: %d users created in the last hour (cap %d)",
+            created,
+            config.gateway_signup_max_per_hour,
+        )
+        await session.rollback()
+        raise HTTPException(
+            status_code=429,
+            detail="Too many sign-ups on this server in the last hour. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    if await user_store.get_by_email(session, email) is not None:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+
 @router.post("/auth/signup", status_code=201)
 async def signup(
     req: SignupRequest,
@@ -185,31 +210,22 @@ async def signup(
         )
 
     with tenant_scope(TENANT_ZERO_ID):
+        # Checked before the hash so a refusal stays cheap, and again under the
+        # lock after it; neither the lock nor a connection is held across bcrypt.
+        await _refuse_signup(session, user_store, req.email, config)
+        await session.rollback()
+        password_hash = await hash_password_off_loop(req.password)
+
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": "gateway-signup"},
         )
-        created, retry_after = await user_store.created_in_last_hour(session)
-        if created >= config.gateway_signup_max_per_hour:
-            logger.warning(
-                "Refused sign-up: %d users created in the last hour (cap %d)",
-                created,
-                config.gateway_signup_max_per_hour,
-            )
-            await session.rollback()
-            raise HTTPException(
-                status_code=429,
-                detail="Too many sign-ups on this server in the last hour. Try again later.",
-                headers={"Retry-After": str(retry_after)},
-            )
-        if await user_store.get_by_email(session, req.email) is not None:
-            await session.rollback()
-            raise HTTPException(status_code=409, detail="Email already registered")
+        await _refuse_signup(session, user_store, req.email, config)
         user = User(
             name=req.display_name or req.email.split("@")[0],
             email=req.email,
             role="user",
-            password_hash=hash_password(req.password),
+            password_hash=password_hash,
         )
         try:
             async with session.begin_nested():
@@ -355,10 +371,10 @@ async def change_password(
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, bool]:
-    if not verify_password(req.current_password, user.password_hash):
+    if not await verify_password_off_loop(req.current_password, user.password_hash):
         raise HTTPException(status_code=403, detail="Current password is incorrect")
 
-    user.password_hash = hash_password(req.new_password)
+    user.password_hash = await hash_password_off_loop(req.new_password)
     await session.commit()
     return {"ok": True}
 
@@ -392,12 +408,15 @@ async def create_user(
     existing = await user_store.get_by_email(session, req.email)
     if existing is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
+    # Not held across bcrypt.
+    await session.commit()
+    password_hash = await hash_password_off_loop(req.password)
 
     user = User(
         name=req.name,
         email=req.email,
         role=req.role,
-        password_hash=hash_password(req.password),
+        password_hash=password_hash,
     )
     await user_store.create(session, user)
     await session.commit()

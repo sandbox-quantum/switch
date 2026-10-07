@@ -32,12 +32,12 @@ export function switchConsoleReleaseApiUrl(version: string): string {
  * question at hand; {@link SWITCH_CONSOLE_DOCS_URL} is the entry point for a
  * bare "Docs" affordance that is not about anything in particular.
  */
-const SWITCH_DOCS_BASE = 'https://docs.flintai.dev/flintai/switch';
+const SWITCH_DOCS_BASE = 'https://docs.switchagents.ai/switch-rooms';
 
 export const SWITCH_CONSOLE_DOCS_URL = `${SWITCH_DOCS_BASE}/getting-started`;
 export const SWITCH_DOCS_REMOTE_HOSTING_URL = `${SWITCH_DOCS_BASE}/deploy/host-remotely`;
 export const SWITCH_DOCS_MESSAGING_APPS_URL = `${SWITCH_DOCS_BASE}/deploy/messaging-apps`;
-export const SWITCH_DOCS_ROOMS_URL = `${SWITCH_DOCS_BASE}/using/rooms-and-agents`;
+export const SWITCH_DOCS_ROOMS_URL = `${SWITCH_DOCS_BASE}/using/work-in-a-room`;
 
 export const SWITCH_CONSOLE_ISSUES_URL = `${SWITCH_CONSOLE_REPO_URL}/issues`;
 export const SWITCH_CONSOLE_ISSUES_NEW_URL = `${SWITCH_CONSOLE_REPO_URL}/issues/new/choose`;

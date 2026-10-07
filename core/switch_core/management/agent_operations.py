@@ -29,7 +29,8 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.management import reason_codes
 from switch_core.management.advanced_config import provider_fields
 from switch_core.management.errors import ManagementError
-from switch_core.management.placement import provider_auth
+from switch_core.management.placement import is_revoked, provider_auth
+from switch_core.management.process_lease import ProcessLeases
 from switch_core.management.schemas import (
     CreateManagedAgentRequest,
     DefinitionV1,
@@ -65,9 +66,9 @@ def _placement_sentence(code: str, machine: str, provider: str) -> str | None:
             f"machine '{machine}' has been removed from Switch; pick another machine"
         ),
         reason_codes.CONTROLLER_OFFLINE: (
-            f"machine '{machine}' has not reported recently (it may be asleep, "
-            "off or disconnected); your owner needs to bring it back online, or "
-            "pick another machine"
+            f"machine '{machine}' is not connected to Switch or has not reported "
+            "recently (it may be asleep, off or disconnected); your owner needs "
+            "to bring it back online, or pick another machine"
         ),
         reason_codes.PROVIDER_NOT_INSTALLED: (
             f"{provider} is not installed on machine '{machine}'; your owner "
@@ -136,9 +137,10 @@ class ManagementAgentOperations:
             controllers = await self._service.controllers.list_for_owner(
                 session, tenant_id, owner_id
             )
+            leases = await self._service.leases(session)
         machines = []
         for controller in controllers:
-            state = self._service.state_of(controller)
+            state = self._service.state_of(controller, leases)
             if state == "revoked":
                 continue
             machines.append(
@@ -180,11 +182,7 @@ class ManagementAgentOperations:
         by_id = next((c for c in controllers if c.id == machine), None)
         if by_id is not None:
             return by_id
-        named = [
-            c
-            for c in controllers
-            if c.name == machine and self._service.state_of(c) != "revoked"
-        ]
+        named = [c for c in controllers if c.name == machine and not is_revoked(c)]
         if len(named) == 1:
             return named[0]
         if not named:
@@ -193,8 +191,9 @@ class ManagementAgentOperations:
                 f"{nothing_done}: your owner has no machine with the id or "
                 f"name '{machine}'. list_machines shows the machines you can use.",
             )
+        leases = await self._service.leases(session)
         candidates = "; ".join(
-            _machine_line(c, self._service.state_of(c)) for c in named
+            _machine_line(c, self._service.state_of(c, leases)) for c in named
         )
         raise AgentManagementRefused(
             reason_codes.VALIDATION_ERROR,
@@ -259,6 +258,7 @@ class ManagementAgentOperations:
         row: AgentDefinitionRow,
         agent: Agent,
         controller: AgentController | None,
+        leases: ProcessLeases,
     ) -> dict[str, Any]:
         status = agent_status_from(controller, agent.id)
         return {
@@ -275,7 +275,7 @@ class ManagementAgentOperations:
             else {
                 "id": controller.id,
                 "name": controller.name,
-                "state": self._service.state_of(controller),
+                "state": self._service.state_of(controller, leases),
             },
             "desired_state": row.desired_state,
             "actual": None
@@ -304,11 +304,13 @@ class ManagementAgentOperations:
             rows = await self._service.definitions.list_for_owner(
                 session, tenant_id, owner_id
             )
+            leases = await self._service.leases(session)
         return [
             self._managed_entry(
                 row,
                 agent,
                 controllers.get(row.controller_id) if row.controller_id else None,
+                leases,
             )
             for row, agent in rows
         ]
@@ -335,7 +337,9 @@ class ManagementAgentOperations:
             if row.controller_id is not None
             else None
         )
-        return self._managed_entry(row, agent, controller)
+        return self._managed_entry(
+            row, agent, controller, await self._service.leases(session)
+        )
 
     async def update_managed_agent(
         self,

@@ -65,6 +65,15 @@ export {
   openSwitchStream,
   runAgentHost,
 } from './host/agent-host';
+export {
+  HUB_CLOSE,
+  HUB_PATH,
+  HUB_PROTOCOL,
+  type HubClientMessage,
+  hubClientMessageSchema,
+  type HubServerMessage,
+  openHubStream,
+} from './host/hub-stream';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
 export {
   recordWatcherHealth,

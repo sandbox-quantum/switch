@@ -666,8 +666,9 @@ tools exist, and only there — if they are not in your tool list, this server
 does not manage agents, so say so rather than looking for another way.
 
 - **`list_machines`** — your owner's machines: `id`, `name`, `description`,
-  `state` (`online` or `unknown`), the providers each has (`installed`,
-  `auth`) and how many agents it is running. Removed machines are left out.
+  `state` (`online`, `offline`, or `unknown` if it never connected), the
+  providers each has (`installed`, `auth`) and how many agents it is running.
+  Removed machines are left out.
 - **`get_advanced_config`** — the advanced settings a provider's agents can
   carry (the "Advanced configuration" Switch Console shows): each field's
   `key`, `label`, `type` (`text`, `textarea`, `number`, `boolean`, `list` of

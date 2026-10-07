@@ -11,7 +11,7 @@ import { z } from 'zod';
  * known enum is read as `unknown` rather than failing the whole message.
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -109,6 +109,21 @@ export const tokenResponseSchema = z.object({ access_token: id, expires_at: time
 export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 
 export const credentialRotateResponseSchema = z.object({ credential: id });
+
+/** Renaming this machine, or changing its description: either or both; `description: null` clears it. */
+export const controllerInfoRequestSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().max(500).nullable().optional(),
+});
+export type ControllerInfoChange = z.infer<typeof controllerInfoRequestSchema>;
+
+/** The machine as its owner's list shows it, after the change; only what the controller reads. */
+export const controllerInfoResponseSchema = z.object({
+  id,
+  name: z.string().min(1),
+  description: z.string().nullable(),
+});
+export type ControllerInfo = z.infer<typeof controllerInfoResponseSchema>;
 
 // §2 Assignment (v1 definition)
 
@@ -295,14 +310,12 @@ export const controllerConnectionResponseSchema = z.object({
 });
 export type ControllerConnection = z.infer<typeof controllerConnectionResponseSchema>;
 
-export const controllerBeatRequestSchema = z.object({
-  connection_id: id,
-  generation: z.number().int(),
+/** The controller's answer to each `ping`: its beat, with how far each agent's host has read. */
+export const controllerPongSchema = z.object({
+  type: z.literal('pong'),
   cursors: z.record(z.string().min(1), sequence),
 });
-export type ControllerBeatRequest = z.infer<typeof controllerBeatRequestSchema>;
-
-export const controllerBeatResponseSchema = z.object({ agents: z.array(id) });
+export type ControllerPong = z.infer<typeof controllerPongSchema>;
 
 /** The stream's first frame. */
 export const connectionStateSchema = z.object({

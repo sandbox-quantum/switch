@@ -6,7 +6,7 @@ of that. **The write is the send.** A send is an INSERT, numbered per room
 under an advisory lock (`MessageStore.create`); the `messages_notify` trigger
 announces it on commit (`db/notify_ddl.py`); one `MessageListener` wakes the
 transports watching that room (`messages/notify.py`); and each transport reads
-the rows after its own cursor, `_DELIVERY_PAGE` at a time. There is no second
+the rows after its own cursor, `DELIVERY_PAGE` at a time. There is no second
 store to agree with. Switch used to run on a Matrix homeserver; the
 `matrix_*` column names are what is left of it, kept as stable ids.
 
@@ -40,7 +40,6 @@ from switch_core.db.models import (
     ClientRoom,
     MediaBlob,
     Message,
-    MessageAttachment,
     UsageMetric,
 )
 from switch_core.db.session_scope import tenant_session
@@ -60,6 +59,7 @@ from switch_core.transport.content import media_content, message_content
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.port import Handler, TransportHandlers
+from switch_core.transport.room_cache import DELIVERY_PAGE
 from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import (
     DownloadResult,
@@ -83,13 +83,12 @@ if TYPE_CHECKING:
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.db.stores.usage_store import UsageStore
     from switch_core.messages.notify import MessageListener
+    from switch_core.transport.room_cache import RoomDeliveryCache
+    from switch_core.transport.stored import DeliveryAttachments, DeliveryRow
+
+    DeliveryPage = tuple[list[tuple[DeliveryRow, DeliveryAttachments]], bool]
 
 logger = logging.getLogger(__name__)
-
-# How many rows one wake-up reads at a time. A page rather than everything
-# outstanding, so a room that moved a long way while a handler was busy is
-# delivered in bounded steps instead of one unbounded read.
-_DELIVERY_PAGE = 200
 
 # What makes an `m.room.message` a file rather than text.
 _MEDIA_MSGTYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
@@ -175,6 +174,7 @@ class PostgresTransport:
         listener: MessageListener,
         invites: InviteBus,
         ephemeral: EphemeralBus,
+        room_cache: RoomDeliveryCache,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
@@ -204,6 +204,11 @@ class PostgresTransport:
         self._listener = listener
         self._invites = invites
         self._ephemeral = ephemeral
+        # Shared with every other transport in the process.
+        self._room_cache = room_cache
+        # When this client was last woken for each room, on the cache's clock.
+        # A shared read only counts for this client if it started after this.
+        self._woken: dict[str, int] = {}
         self._handlers = TransportHandlers()
         # Per-room delivery position, and the transport-side id to hand back
         # to a handler. Both are keyed by the Switch room id, which is what
@@ -435,13 +440,13 @@ class PostgresTransport:
             # already undone the claim and there is nothing subscribed to undo.
             return
         self._cursors[room_id] = seq
+        self._room_cache.attach(self.tenant_id, room_id, self)
         self._listener.subscribe(room_id, self._on_room_advanced)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
         if from_seq is not None:
             # The announcement for anything already written went out before
             # this subscription existed, so nothing will wake the loop for it.
-            self._pending.add(room_id)
-            self._wake.set()
+            self._mark_pending(room_id)
 
     def _unwatch(self, transport_room_id: str) -> None:
         """Stop delivering one room. Not watching it is success.
@@ -469,6 +474,9 @@ class PostgresTransport:
         # A wake-up already queued for this room would otherwise be drained
         # after the subscription was dropped.
         self._pending.discard(room_id)
+        self._woken.pop(room_id, None)
+        # The last member out takes the room's cached rows with it.
+        self._room_cache.detach(self.tenant_id, room_id, self)
 
     def _unwatch_all(self) -> None:
         """Drop every room, through the same path a single removal takes."""
@@ -496,6 +504,15 @@ class PostgresTransport:
         """
         if room_id not in self._watching:
             return
+        self._mark_pending(room_id)
+
+    def _mark_pending(self, room_id: str) -> None:
+        """Queue a room for this client's loop, remembering when.
+
+        The tick is taken here, after the commit that caused the wake, so a
+        shared read that started later is known to have seen it.
+        """
+        self._woken[room_id] = self._room_cache.tick()
         self._pending.add(room_id)
         self._wake.set()
 
@@ -516,6 +533,11 @@ class PostgresTransport:
         Every delivery is a suspension point, so the subscription is re-read
         per row. A removal landing mid-page has to stop the rows it has not
         reached, and must not be undone by a cursor write after it.
+
+        A page comes from the room's one shared read when the cache can vouch
+        for it from this cursor, and from this client's own read when it
+        cannot. Only the read is shared: the rows are still handed over here,
+        one at a time, under the same checks.
         """
         transport_room_id = self._watching.get(room_id)
         if transport_room_id is None:
@@ -527,6 +549,10 @@ class PostgresTransport:
         # row; the map only ever held this value, and two sources for one fact
         # is how they come to disagree.
         tenant_id = self.tenant_id
+        # Taken once per pass: a wake landing during it queues another pass,
+        # which takes the newer one. A room queued without a wake time (no
+        # path does that today) gets "now", which only ever costs a read.
+        woken_at = self._woken.get(room_id) or self._room_cache.tick()
         # Bound for the read *and* the delivery below: a handler (posting to a
         # bridge, gating a command) opens its own sessions rather than reusing
         # this one, and those still need the room's tenant. The contextvar
@@ -537,33 +563,72 @@ class PostgresTransport:
                 cursor = self._cursors.get(room_id)
                 if cursor is None or room_id not in self._watching:
                     return
-                async with tenant_session(self._session_factory, tenant_id) as session:
-                    rows = await self._message_store.list_for_room(
-                        session,
-                        room_id,
-                        after_seq=cursor,
-                        limit=_DELIVERY_PAGE,
-                    )
-                    attachments = await self._message_store.attachments_for(
-                        session, [row.id for row in rows]
-                    )
+                rows, done = await self._read_shared_page(
+                    room_id, tenant_id, cursor, woken_at
+                )
+                if self._cursors.get(room_id) != cursor:
+                    # Removed and put back while waiting on the room's
+                    # shared read: these rows are from the old
+                    # subscription's position, not the new one's.
+                    continue
                 if not rows:
                     return
-                for row in rows:
+                for row, attachments in rows:
                     if room_id not in self._watching:
                         return
                     self._cursors[room_id] = row.seq
-                    await self._deliver(
-                        transport_room_id, row, attachments.get(row.id, [])
-                    )
-                if len(rows) < _DELIVERY_PAGE:
+                    await self._deliver(transport_room_id, row, attachments)
+                if done:
                     return
+
+    async def _read_page(
+        self, room_id: str, tenant_id: str, cursor: int
+    ) -> DeliveryPage:
+        """This client's own read of the next page, for when the room's
+        shared read cannot serve it. `done` when the page came back short."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows = await self._message_store.list_for_room(
+                session,
+                room_id,
+                after_seq=cursor,
+                limit=DELIVERY_PAGE,
+            )
+            attachments = await self._message_store.attachments_for(
+                session, [row.id for row in rows]
+            )
+        page: list[tuple[DeliveryRow, DeliveryAttachments]] = [
+            (row, attachments.get(row.id, [])) for row in rows
+        ]
+        return page, len(rows) < DELIVERY_PAGE
+
+    async def _read_shared_page(
+        self, room_id: str, tenant_id: str, cursor: int, woken_at: int
+    ) -> DeliveryPage:
+        """The next page from the room's shared read, or this client's own
+        when the cache cannot vouch for it (cursor behind what it holds,
+        entry dropped while waiting).
+
+        The key is this client's tenant and a room it resolved under that
+        tenant, which is what makes a hit as good as the read it replaces.
+        """
+        page = await self._room_cache.read(
+            tenant_id,
+            room_id,
+            after_seq=cursor,
+            woken_at=woken_at,
+            limit=DELIVERY_PAGE,
+        )
+        if page is None:
+            if room_id not in self._watching:
+                return [], True
+            return await self._read_page(room_id, tenant_id, cursor)
+        return [(row, row.attachments) for row in page.rows], page.done
 
     async def _deliver(
         self,
         transport_room_id: str,
-        row: Message,
-        attachments: list[MessageAttachment],
+        row: DeliveryRow,
+        attachments: DeliveryAttachments,
     ) -> None:
         room = RoomRef(room_id=transport_room_id)
         event = to_inbound(row, attachments, transport_room_id=transport_room_id)

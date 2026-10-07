@@ -103,8 +103,8 @@ async def sse_stream(frames: AsyncGenerator[Frame]) -> AsyncIterator[bytes]:
     """The connection's frames as a `text/event-stream` body.
 
     Kept for clients built before the WebSocket (agent-protocol revision 7 and
-    older), for a compatibility window: it goes once no client still connects
-    over it.
+    older), for a compatibility window: it goes once
+    `switch.agents.connected{transport:sse}` stays at zero.
     """
     try:
         async for frame in frames:
