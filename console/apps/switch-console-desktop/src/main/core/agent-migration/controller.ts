@@ -1,8 +1,6 @@
 import type {
-  AgentMigrationState,
-  MoveAllProgress,
-  MoveAllResult,
-  MoveToManagedResult,
+  AgentRunner,
+  MigrationProblem,
   NewAgentMachine,
 } from '@shared/core/agent-migration/agent-migration';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -10,31 +8,19 @@ import { agentMigrationService } from './agent-migration';
 import { newManagedAgentService } from './new-managed-agent';
 import type { AddManagedAgentParams, AddManagedAgentResult } from './new-managed-agent-service';
 
-/** "Move to managed" and "Stop managing" for the agents Console runs, and new agents created managed. */
+/** The automatic move of the agents Console runs onto controllers, and new agents created managed. */
 export const agentMigrationController = createRPCController({
-  getState: (agentId: string): Promise<AgentMigrationState> => agentMigrationService.state(agentId),
+  /** Who runs the agent: this Console, or a controller it was moved onto. */
+  getRunner: (agentId: string): Promise<AgentRunner> => agentMigrationService.runner(agentId),
 
-  moveToManaged: (agentId: string): Promise<MoveToManagedResult> =>
-    agentMigrationService.moveToManaged(agentId),
+  /** Why the agents the automatic move could not move did not. */
+  getProblems: (): MigrationProblem[] => agentMigrationService.migrationProblems(),
 
-  stopManaging: (agentId: string): Promise<void> => agentMigrationService.stopManaging(agentId),
-
-  /** Moves every agent of a workspace that can move, on this computer and on every SSH host. */
-  moveAllInWorkspace: (scope: { serverId: string; workspaceId: string }): Promise<MoveAllResult> =>
-    agentMigrationService.moveAll({ kind: 'workspace', ...scope }),
-
-  stopManagingAllInWorkspace: (scope: {
-    serverId: string;
-    workspaceId: string;
-  }): Promise<MoveAllResult> =>
-    agentMigrationService.stopManagingAll({ kind: 'workspace', ...scope }),
-
-  /** How far moving every agent of a workspace has got. */
-  moveAllProgressInWorkspace: (scope: {
-    serverId: string;
-    workspaceId: string;
-  }): Promise<MoveAllProgress> =>
-    agentMigrationService.moveAllProgress({ kind: 'workspace', ...scope }),
+  /** Runs the automatic move again now, asking Switch afresh about the agent. */
+  retry: (agentId: string): Promise<void> => {
+    agentMigrationService.recheck(agentId);
+    return agentMigrationService.migrateEverything();
+  },
 
   /** Whether a new agent on this machine (an SSH host, or this computer) runs as a managed agent. */
   newAgentMachine: (params: {

@@ -10,6 +10,7 @@ import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
+import { startAutoMigration, stopAutoMigration } from './core/agent-migration/agent-migration';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
 import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migration-ready';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
@@ -251,6 +252,8 @@ void app.whenReady().then(async () => {
     } catch (e) {
       log.error('Failed to start the embedded agents controllers at startup:', e);
     }
+    // After the controllers: moving an agent onto this computer's controller needs it running.
+    startAutoMigration();
   });
 
   // A laptop waking from sleep usually has stale (frozen) SSH sockets to remote
@@ -285,6 +288,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   logAppExit('before-quit');
   controlService.dispose();
+  stopAutoMigration();
   stopResourceSampler();
   localServerService.dispose();
   remoteServerService.dispose();

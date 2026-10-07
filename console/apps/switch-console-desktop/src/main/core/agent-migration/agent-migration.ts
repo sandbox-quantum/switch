@@ -551,4 +551,32 @@ export const agentMigrationService = new AgentMigrationService({
   pollMs: 2_000,
   controllerStopWaitMs: 60_000,
   machineReadyWaitMs: 180_000,
+  unmanageableRecheckMs: 15 * 60_000,
 });
+
+const AUTO_MIGRATION_INTERVAL_MS = 60_000;
+let autoMigrationTimer: NodeJS.Timeout | null = null;
+
+function migrateEverythingLogged(): void {
+  agentMigrationService.migrateEverything().catch((error: unknown) => {
+    log.error('The automatic move to managed agents failed', {
+      event: 'agent_migration',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
+/**
+ * Moves every agent that can be managed onto a controller, now and then every
+ * minute, so agents created, linked or brought online later move too.
+ */
+export function startAutoMigration(): void {
+  if (autoMigrationTimer) return;
+  migrateEverythingLogged();
+  autoMigrationTimer = setInterval(migrateEverythingLogged, AUTO_MIGRATION_INTERVAL_MS);
+}
+
+export function stopAutoMigration(): void {
+  if (autoMigrationTimer) clearInterval(autoMigrationTimer);
+  autoMigrationTimer = null;
+}
