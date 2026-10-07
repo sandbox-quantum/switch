@@ -231,9 +231,9 @@ export type RemoteAgentSummary = {
  * (CHOO-2171).
  *
  * Reported rather than logged because the app cannot tell the difference on
- * screen: it draws a name-derived bot for any agent with no stored icon, so a
- * server that rejected every write still looks right here while the chat
- * platforms show the lettered avatar.
+ * screen: it draws a name-derived avatar for any agent with no stored icon, so
+ * a server that rejected every write still looks right here while an older
+ * server's chat platforms show a lettered badge.
  */
 export type AgentIconBackfill =
   | { kind: 'written'; written: number }

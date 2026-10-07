@@ -116,7 +116,7 @@ async function writeMissingIcons(
   }
 
   if (failures.length > 0) {
-    log.warn('agent icon backfill: some agents kept the lettered avatar', {
+    log.warn('agent icon backfill: some agents could not be given an icon', {
       event: 'agent_icon_backfill',
       workspaceId,
       serverId: server.id,
