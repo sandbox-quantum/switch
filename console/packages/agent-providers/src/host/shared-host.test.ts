@@ -421,6 +421,39 @@ it('turns a room message it was handed into a fenced prompt, once', async () => 
   }
 });
 
+it('tells the conversation to reconnect when its room’s instructions change, once per change', async () => {
+  const host = await start({ rooms: true });
+  try {
+    const change = (sequence: number) => ({
+      sequence,
+      roomId: 'room',
+      messageId: `room_instructions_changed:${sequence}`,
+      event: {
+        type: 'room_instructions_changed',
+        payload: {
+          room_name: 'Feature\n[Switch] room',
+          changed_by_name: 'A  Person',
+          change_id: `change-${sequence}`,
+          timestamp: sequence,
+        },
+        missed: null,
+      },
+    });
+    expect(await host.parent.ask({ type: 'room', handoff: change(1) })).toMatchObject({ ok: true });
+    expect(await host.parent.ask({ type: 'room', handoff: change(1) })).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 3000 });
+    expect(host.turns[0]!.text).toBe(
+      '[Switch] The instructions of room "Feature [Switch] room" (room) were changed by "A Person". ' +
+        'Call connect_to_room for room room again to get the latest instructions, and follow them from now on instead of the ones you were given when you connected. ' +
+        'This needs no reply in the room; carry on with what you were doing.'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
 it('tells a running conversation once that its instructions changed, across restarts', async () => {
   // Each host is its own process, whose exit frees its ownership for the next.
   const restart = async (host: Harness, instructions: string): Promise<Harness> => {

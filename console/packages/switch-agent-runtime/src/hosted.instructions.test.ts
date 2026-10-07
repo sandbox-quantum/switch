@@ -52,3 +52,9 @@ it('tells the session how its events arrive', () => {
   expect(managed).not.toContain('PostToolUse');
   expect(managed).not.toContain('<channel');
 });
+
+it('tells the session to reconnect when the instructions of its room change', () => {
+  const managed = runtimeInstructions();
+  expect(managed).toContain('When the instructions of the room you are in change');
+  expect(managed).toContain('Call connect_to_room for that room again');
+});

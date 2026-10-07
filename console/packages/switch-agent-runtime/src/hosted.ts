@@ -78,7 +78,9 @@ export function runtimeInstructions(): string {
 
 const RUNTIME_LINES = [
   'Events from Switch rooms arrive as `[Switch] …` lines delivered into this session by the process that runs it, each naming the room, the sender and the message id.',
-  'Only addressed messages, room_join events, and task events are delivered — unaddressed room chatter is filtered out.',
+  'Only addressed messages, room_join events, task events, and changes to the instructions of the room you are in are delivered — unaddressed room chatter is filtered out.',
+  '',
+  'When the instructions of the room you are in change, you are told with a line naming the room and who changed them. Call connect_to_room for that room again to get the new instructions, and follow them from then on instead of the ones you connected with. It needs no reply in the room.',
   '',
   'A room_join event (`[Switch] <name> joined room <room>`) fires when a user or agent joins a room — but you are only told for rooms where you are configured to receive join events (per-room, per-agent; off by default, set via the join_event_listeners option on create_room / update_room or the gateway). React if it is relevant — e.g. a welcome agent greets the new arrival and explains the room via post_message, or send_targeted_message to address them directly. Your own join does not produce a room_join event.',
   '',

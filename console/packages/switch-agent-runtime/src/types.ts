@@ -68,10 +68,24 @@ export interface TaskPayload {
   reason?: string | null;
 }
 
+/** A room's instructions were changed; the session attending it reconnects to read them. */
+export interface RoomInstructionsChangedPayload {
+  room_name: string;
+  changed_by_name: string;
+  /** Unique per change, so two identical edits are two events. */
+  change_id: string;
+  timestamp: number;
+}
+
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload | TaskPayload;
+  payload:
+    | MessagePayload
+    | CommandPayload
+    | RoomJoinPayload
+    | RoomInstructionsChangedPayload
+    | TaskPayload;
   /**
    * The event's position in the agent's buffer. Present on the push transport,
    * absent on the legacy poll.

@@ -5,6 +5,13 @@ import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
 
+const INSTRUCTIONS_CHANGED = 'room_instructions_changed';
+
+/** Whether a room input is a change to the room's instructions rather than something said in it. */
+export function isRoomInstructionsChange(input: { messageId: string }): boolean {
+  return input.messageId.startsWith(`${INSTRUCTIONS_CHANGED}:`);
+}
+
 export function roomInputId(event: AgentBridgeEvent): string | null {
   if (event.type === 'message')
     return 'addressed' in event.payload &&
@@ -17,7 +24,12 @@ export function roomInputId(event: AgentBridgeEvent): string | null {
     (!('listening' in event.payload) || event.payload.listening !== true)
   )
     return null;
-  if (event.type !== 'room_join' && !event.type.startsWith('task_')) return null;
+  if (
+    event.type !== 'room_join' &&
+    event.type !== INSTRUCTIONS_CHANGED &&
+    !event.type.startsWith('task_')
+  )
+    return null;
   const sorted = (value: unknown): unknown =>
     Array.isArray(value)
       ? value.map(sorted)

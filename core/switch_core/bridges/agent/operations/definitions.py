@@ -2300,7 +2300,9 @@ async def update_room(
         name: New room name, or None to leave unchanged.
         description: New room description, or None to leave unchanged.
         instructions: New room-specific instructions, or None to leave
-            unchanged.
+            unchanged. When they differ from the current ones, the session
+            each member agent has attending the room is told to reconnect to
+            it to read them.
         admin_mode: New admin-mode flag, or None to leave unchanged.
         join_event_listeners: Partial map of agent name → whether that agent
             should receive `room_join` events in this room. Only the named

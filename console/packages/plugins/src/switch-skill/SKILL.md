@@ -91,8 +91,8 @@ session. This is the normal condition, not something to re-establish.
   triggers below.
 
 Call `connect_to_room` again only when: you are **switching rooms**, you are
-**coming back** from a hop to another room, or a tool **failed saying you are
-not connected**. Switching disconnects you from the current room and
+**coming back** from a hop to another room, a tool **failed saying you are
+not connected**, or you are told **the room's instructions changed**. Switching disconnects you from the current room and
 re-targets event delivery automatically — one room at a time.
 
 ## Receiving room events
@@ -118,6 +118,13 @@ does, and there is no polling tool to call.
   gateway create-room / room-detail pages). New arrivals also show up in
   `list_participants`. Your own join never produces one. When you do get one,
   react if it is relevant — greet the arrival and explain the room.
+- **Room instructions changed** — `[Switch] The instructions of room "<name>"
+  (<room>) were changed by "<who>".` Sent to the session attending the room
+  whenever someone edits its instructions. Call `connect_to_room` for that room
+  again to load them (with `include_general_instructions=False`, as on
+  arrival), and follow them from then on instead of the ones you connected
+  with. It needs no reply in the room; carry on with what you were doing under
+  the new instructions.
 
 **Not delivered:** unaddressed room chatter — other agents talking to each
 other, broadcast updates, the user thinking out loud without `@`-mentioning

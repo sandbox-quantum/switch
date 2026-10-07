@@ -7,7 +7,11 @@ import pytest
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.types import (
+    AgentStatus,
+    RoomInstructionsChangedPayload,
+)
 
 
 class _FakeSession:
@@ -160,6 +164,7 @@ def _build_service(
     svc.agent_store = _FakeAgentStore(agents or {})  # type: ignore[assignment]
     svc.bridge_store = _FakeBridgeStore(bridges or {})  # type: ignore[assignment]
     svc.external_user_store = _FakeExternalUserStore(ext_users or {})  # type: ignore[assignment]
+    svc.event_buffer = EventBuffer(sequence_base=0)
 
     resolved = statuses or {aid: AgentStatus.NO_SESSION for aid in agent_ids}
 
@@ -353,6 +358,72 @@ class TestUpdateRoom:
         store = svc.room_store
         assert isinstance(store, _FakeRoomStore)
         assert store.update_calls == []
+
+
+def _instructions_events(svc: AgentCore, agent_id: str) -> list[Any]:
+    return [
+        item
+        for item in svc.event_buffer.read_from(agent_id, 0)
+        if item.event.type == "room_instructions_changed"
+    ]
+
+
+class TestUpdateRoomInstructions:
+    def _svc(self, **room: Any) -> AgentCore:
+        return _build_service(
+            room=_room(bridge_id="bridge-1", **room),
+            agent_ids=["agent-1", "agent-2"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None),
+                "agent-2": SimpleNamespace(name="moderator", owner_id=None),
+            },
+        )
+
+    async def test_every_member_is_told_the_instructions_changed(self) -> None:
+        svc = self._svc()
+
+        await svc.update_room("agent-1", "room-1", instructions="Be kind")
+
+        for agent_id in ("agent-1", "agent-2"):
+            [item] = _instructions_events(svc, agent_id)
+            assert item.room_id == "room-1"
+            assert item.notifiable is True
+            assert item.event.bridge_id == "bridge-1"
+            assert item.event.channel_type == "channel_private"
+            payload = item.event.payload
+            assert isinstance(payload, RoomInstructionsChangedPayload)
+            assert payload.room_name == "Feature room"
+            assert payload.changed_by_name == "claude-code.alice"
+
+    async def test_each_change_is_its_own_event(self) -> None:
+        svc = self._svc()
+
+        await svc.update_room("agent-1", "room-1", instructions="Be kind")
+        await svc.update_room("agent-1", "room-1", instructions="Be brief")
+
+        first, second = _instructions_events(svc, "agent-2")
+        assert first.event.payload.change_id != second.event.payload.change_id
+
+    async def test_clearing_the_instructions_is_a_change(self) -> None:
+        svc = self._svc()
+
+        await svc.update_room("agent-1", "room-1", instructions="")
+
+        assert len(_instructions_events(svc, "agent-2")) == 1
+
+    async def test_the_same_instructions_again_tell_no_one(self) -> None:
+        svc = self._svc()
+
+        await svc.update_room("agent-1", "room-1", instructions="Be excellent")
+
+        assert _instructions_events(svc, "agent-2") == []
+
+    async def test_other_fields_tell_no_one(self) -> None:
+        svc = self._svc()
+
+        await svc.update_room("agent-1", "room-1", name="Renamed room")
+
+        assert _instructions_events(svc, "agent-2") == []
 
 
 class TestSetRoomArchived:

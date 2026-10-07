@@ -9,11 +9,13 @@ import { ActivityReporter, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { HostWaker } from './handoff';
 import { followupCommandId, roomControlFollowup } from './room-control-followup';
-import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
+import { isRoomInstructionsChange, SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
   roomCommand,
   roomFreshStartCommandId,
+  roomInstructionsChangedCommand,
+  roomInstructionsChangedSchema,
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
@@ -619,9 +621,46 @@ export async function runSharedHost(
         await instructionsTold();
       return status ?? 'The host did not record the command.';
     };
+    /** Tells the conversation that a room's instructions changed, so it reconnects to read them. */
+    const admitInstructionsChange = async (
+      inbox: SharedRoomInbox,
+      event: ReturnType<SharedRoomInbox['pending']>[number]
+    ): Promise<void> => {
+      const change = roomInstructionsChangedSchema.safeParse(event.event);
+      if (!change.success)
+        await host!.notice(
+          `A change to room ${event.roomId}'s instructions reached this session without its content, so the session was not told. It reads the current instructions when it next connects to the room.`
+        );
+      else {
+        const outcome = await run(
+          roomInstructionsChangedCommand({
+            agentId,
+            sessionId: options.session.sessionId,
+            epoch: host!.snapshot().session.epoch,
+            roomId: event.roomId,
+            messageId: event.messageId,
+            change: change.data,
+            surface: 'switch-web',
+            preface: instructionsNote,
+          }),
+          null
+        );
+        if (
+          instructionsNote !== null &&
+          typeof outcome !== 'string' &&
+          outcome.status !== 'rejected'
+        )
+          await instructionsTold();
+      }
+      await inbox.acknowledge(event);
+    };
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
       for (const event of inbox.pending()) {
+        if (isRoomInstructionsChange(event)) {
+          await admitInstructionsChange(inbox, event);
+          continue;
+        }
         const message = roomMessageSchema.safeParse(event.event);
         if (!message.success) {
           await host!.notice(

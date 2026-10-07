@@ -530,6 +530,7 @@ async def patch_room(
             require_manage(Principal(user.id, is_admin), target.owner_id)
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
+    previous_instructions = target.instructions
     try:
         await room_service.update_room(
             room_id,
@@ -543,6 +544,10 @@ async def patch_room(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await session.commit()
+    if req.instructions is not None and req.instructions != previous_instructions:
+        await protocol.announce_room_instructions_changed(
+            room_id, changed_by_name=user.name
+        )
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")

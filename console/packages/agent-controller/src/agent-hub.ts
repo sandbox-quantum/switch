@@ -85,6 +85,7 @@ export function isNotifiable(type: string, payload: Record<string, unknown>): bo
   if (type === 'message') return payload.addressed === true;
   if (type === 'room_join') return payload.listening === true;
   if (type === 'command') return false;
+  if (type === 'room_instructions_changed') return true;
   return type.startsWith('task_');
 }
 

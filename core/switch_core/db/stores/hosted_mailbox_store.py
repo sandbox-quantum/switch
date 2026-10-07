@@ -73,7 +73,9 @@ def room_input_id(event: AgentEvent) -> str | None:
     """The watcher's `roomInputId` (`host/room-inbox.ts`): the key it dedupes a room input by.
 
     None for an event the watcher does not act on, which the mailbox does not
-    hold either.
+    hold either. Also None for `room_instructions_changed`, which the watcher
+    does act on: it is for a session already attending the room, so it must
+    never be what wakes a sleeping worker.
     """
     payload = event.payload.model_dump(mode="json")
     if event.type == "message":

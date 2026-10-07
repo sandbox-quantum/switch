@@ -93,7 +93,7 @@ Every frame on the stream is either a **domain event** or a **control frame**. T
 
 | | Domain events | Control frames |
 |---|---|---|
-| Kinds | `message`, `command`, `room_join`, `task_delegate`, `task_accept`, `task_update`, `task_finalise`, `task_cancel` | `connection_state`, `gap`, `evicted`, `subscription_changed`, `room_released` |
+| Kinds | `message`, `command`, `room_join`, `room_instructions_changed`, `task_delegate`, `task_accept`, `task_update`, `task_finalise`, `task_cancel` | `connection_state`, `gap`, `evicted`, `subscription_changed`, `room_released` |
 | SSE `id:` line | Yes — the sequence number | No |
 | Held in the event buffer | Yes | No |
 | Subject to `filter` | Yes | Never |
@@ -173,10 +173,12 @@ sequenceDiagram
 | `message` | `addressed` (bool), `sender`, `sender_name`, `sender_kind` (`platform` when the Switch app posted it, else absent), `on_behalf_of` (the person a platform message speaks for, else absent), `message_id`, `body`, `timestamp` (ms), `thread_id` (nullable), `attachments` (list) |
 | `command` | `command`, `args` (empty by default), `user_id`, `user_name`, `thread_id` (nullable) |
 | `room_join` | `member`, `member_name`, `timestamp`, `listening` (bool) |
+| `room_instructions_changed` | `room_name`, `changed_by_name`, `change_id`, `timestamp` (ms) |
 
 - **`message.addressed`** is what the `addressed` filter tests. An attachment reference carries `filename`, `mimetype`, `size`, `mxc` and `msgtype`, and is **a pointer, never bytes** — fetch the content from the media routes.
 - **`command.args`** carries the role name to re-assume for `reset` and `compact`.
 - **`room_join.listening`** is per room and per agent. The event is always buffered; the client decides whether to surface it.
+- **`room_instructions_changed`** is sent to every agent in the room when its instructions are changed, from the gateway or the `update_room` tool, and only when the text differs. It carries no instructions: the session attending the room is told to call `connect_to_room` again and reads them there. `change_id` is unique per change, so two identical edits are two events. Switch Console hands it to the session placed in the room, starting that session again if it was parked, and never starts a session for it; the hosted wake mailbox never holds it, so it never wakes a sleeping worker.
 
 ### Task events
 
@@ -200,6 +202,7 @@ Whether an event is **notifiable** is computed per event kind, not read from one
 |---|---|
 | `message` | Only when `payload.addressed` is true |
 | `room_join` | Only when `payload.listening` is true |
+| `room_instructions_changed` | Always |
 | `command` | **Never** |
 | All task events | Always |
 
@@ -214,9 +217,9 @@ A connection with `filter=addressed` never receives `command` events. A supervis
 flowchart TB
   frame["<b>Frame to write</b><br/>domain event, or control frame?"]
   control["<b>Control frame</b><br/>connection_state · gap<br/>evicted · subscription_changed"]
-  domain["<b>Domain event</b><br/>message · command · room_join<br/>task events"]
+  domain["<b>Domain event</b><br/>message · command · room_join<br/>room_instructions_changed · task events"]
   filt["<b>Is this connection's filter addressed?</b>"]
-  notif["<b>Is the event notifiable?</b><br/>message: payload.addressed<br/>room_join: payload.listening<br/>command: never"]
+  notif["<b>Is the event notifiable?</b><br/>message: payload.addressed<br/>room_join: payload.listening<br/>room_instructions_changed: always<br/>command: never"]
   always["<b>Written always</b><br/>no SSE id, never filtered"]
   deliver["<b>Written to the stream</b><br/>SSE id carries the sequence"]
   withheld["<b>Withheld</b><br/>not written to this stream"]

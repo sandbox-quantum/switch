@@ -23,6 +23,7 @@ import { WorkerObsoleteError } from './exit-codes';
 import type { Handoff } from './handoff';
 import { FAILED_HOLD_MS, HostedWorker } from './hosted-worker';
 import { ensureSharedProcess, type Supervision } from './launch';
+import { roomInputId } from './room-inbox';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 import { clearTakenOver, recordTakenOver } from './taken-over';
@@ -766,6 +767,107 @@ it('routes a room that has a session to that session, and starts no other', asyn
   // Recorded as taken, so a watcher restarted here reopens past it rather than
   // handing the same event over again.
   expect(journal.cursor).toBe(2);
+});
+
+const instructionsChanged = (sequence: number, roomId: string): AgentBridgeEvent => ({
+  type: 'room_instructions_changed',
+  room_id: roomId,
+  sequence,
+  payload: {
+    room_name: 'Feature room',
+    changed_by_name: 'Owner',
+    change_id: `change-${sequence}`,
+    timestamp: sequence,
+  },
+});
+
+it('tells the session attending a room that its instructions changed, and starts no other', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-instructions-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const hosts = sessionHosts();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(instructionsChanged(2, 'room'));
+    await eventually(() => hosts.to(owner.sessionRoot).length === 1);
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(hosts.to(owner.sessionRoot)).toMatchObject([
+    {
+      type: 'room',
+      handoff: {
+        sequence: 2,
+        roomId: 'room',
+        messageId: expect.stringMatching(/^room_instructions_changed:/),
+        event: { type: 'room_instructions_changed', payload: { change_id: 'change-2' } },
+      },
+    },
+  ]);
+  expect(
+    new Set(
+      vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].config.session.sessionId)
+    )
+  ).toEqual(new Set([owner.sessionId]));
+  expect((await AgentHostAssignments.open(root)).sessions()).toHaveLength(1);
+});
+
+it('starts no session for a room whose instructions changed when none attends it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-instructions-unattended-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const { supervision } = sessionHosts();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(instructionsChanged(1, 'room'));
+    await eventually(async () =>
+      (await AgentHostAssignments.open(root)).known({
+        roomId: 'room',
+        messageId: roomInputId(instructionsChanged(1, 'room'))!,
+      })
+    );
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(ensureSharedProcess).not.toHaveBeenCalled();
+  const journal = await AgentHostAssignments.open(root);
+  expect(journal.sessions()).toEqual([]);
+  // Settled rather than held, so nothing waits on a session that may never come.
+  expect(journal.pending()).toEqual([]);
+  expect(journal.cursor).toBe(1);
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('no session of this agent attends it'));
 });
 
 it('routes to the session Console moved the room to, and tells Switch where every session is', async () => {

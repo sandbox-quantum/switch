@@ -36,7 +36,7 @@ import {
 } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLockOutlasting } from './ownership-lock';
 import { SessionPlacements } from './placements';
-import { roomInboxHolds, roomInputId } from './room-inbox';
+import { isRoomInstructionsChange, roomInboxHolds, roomInputId } from './room-inbox';
 import {
   SessionHostFailedError,
   type SessionRequest,
@@ -1219,7 +1219,30 @@ export async function runAgentHost(
         reason,
       });
     };
+    /**
+     * A change to a room's instructions, for the session attending the room.
+     * It goes to that session alone, starting it again if it was parked, since
+     * the room is still its own. A room with no session attending it has
+     * nobody to tell: whichever session takes it next reads the instructions
+     * as it connects. So this never starts a session, holds, or answers in
+     * the room.
+     */
+    const tellAttending = async (event: Handoff, waiting: boolean): Promise<boolean> => {
+      const placed = placements.sessionIn(event.roomId);
+      const owner = placed ? await sessionConfig(placed) : null;
+      if (placed && owner && !(await stopped(placed))) {
+        await deliver(owner, event, waiting);
+        return true;
+      }
+      console.warn(
+        `Room ${event.roomId}'s instructions changed; no session of this agent attends it here, so none is told.`
+      );
+      if (!waiting) await assignments.park(event, false, false);
+      await assignments.released(event, 'no session attends the room');
+      return true;
+    };
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
+      if (isRoomInstructionsChange(event)) return tellAttending(event, waiting);
       if (hosted?.revoked) {
         await refuse(event, 'revoked');
         return true;

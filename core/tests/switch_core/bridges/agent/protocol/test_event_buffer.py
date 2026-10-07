@@ -12,6 +12,7 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     MessagePayload,
+    RoomInstructionsChangedPayload,
     RoomJoinPayload,
     TaskDelegatePayload,
 )
@@ -100,6 +101,26 @@ async def test_room_join_fans_out_only_when_listening() -> None:
     notifs = await q.poll_notifications(AGENT, timeout=0, rooms={ROOM})
     assert len(notifs) == 1
     assert notifs[0].type == "room_join"
+
+
+async def test_room_instructions_changed_fans_out() -> None:
+    q = EventBuffer(sequence_base=0)
+    q.enqueue(
+        AGENT,
+        ROOM,
+        AgentEvent(
+            type="room_instructions_changed",
+            room_id=ROOM,
+            payload=RoomInstructionsChangedPayload(
+                room_name="Feature room",
+                changed_by_name="louisa",
+                change_id="c1",
+                timestamp=1700000000000,
+            ),
+        ),
+    )
+    notifs = await q.poll_notifications(AGENT, timeout=0, rooms={ROOM})
+    assert [event.type for event in notifs] == ["room_instructions_changed"]
 
 
 async def test_polling_everything_can_be_limited_to_the_rooms_given() -> None:

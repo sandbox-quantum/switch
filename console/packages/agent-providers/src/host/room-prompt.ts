@@ -191,3 +191,68 @@ export function roomCommand(input: {
     body: { type: 'message.send', text, attachments, delivery: 'queue' },
   };
 }
+
+/** The part of a room-instructions change a session's notice is built from. */
+export const roomInstructionsChangedSchema = z.object({
+  type: z.literal('room_instructions_changed'),
+  payload: z.object({
+    room_name: z.string(),
+    changed_by_name: z.string(),
+    change_id: z.string().min(1),
+  }),
+});
+export type RoomInstructionsChanged = z.infer<typeof roomInstructionsChangedSchema>;
+
+const oneLine = (text: string): string => text.split(/\s+/).filter(Boolean).join(' ');
+
+/**
+ * What the session attending a room is told when the room's instructions
+ * change. The instructions themselves are not in it: the session reconnects
+ * and reads them, so it follows what the room holds then.
+ */
+export function roomInstructionsChangedText(
+  roomId: string,
+  change: RoomInstructionsChanged
+): string {
+  const { room_name: roomName, changed_by_name: changedBy } = change.payload;
+  return (
+    `[Switch] The instructions of room ${JSON.stringify(oneLine(roomName))} (${roomId}) were changed by ${JSON.stringify(oneLine(changedBy))}. ` +
+    `Call connect_to_room for room ${roomId} again to get the latest instructions, and follow them from now on instead of the ones you were given when you connected. ` +
+    'This needs no reply in the room; carry on with what you were doing.'
+  );
+}
+
+export function roomInstructionsChangedCommand(input: {
+  agentId: string;
+  sessionId: string;
+  epoch: string;
+  roomId: string;
+  /** The room input id the change was handed over under. */
+  messageId: string;
+  change: RoomInstructionsChanged;
+  surface: Surface;
+  /** Said before the notice, such as that the agent's instructions changed; null for nothing. */
+  preface: string | null;
+}): Command {
+  return {
+    contractVersion: 1,
+    commandId: roomCommandId(input.agentId, input.roomId, input.messageId),
+    sessionId: input.sessionId,
+    epoch: input.epoch,
+    origin: {
+      surface: input.surface,
+      actorId: input.agentId,
+      roomId: input.roomId,
+      threadId: null,
+      messageId: null,
+    },
+    body: {
+      type: 'message.send',
+      text:
+        (input.preface === null ? '' : `${input.preface}\n\n`) +
+        roomInstructionsChangedText(input.roomId, input.change),
+      attachments: [],
+      delivery: 'queue',
+    },
+  };
+}

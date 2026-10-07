@@ -6,8 +6,9 @@ import type {
   SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { AgentHub } from './agent-hub';
+import { AgentHub, isNotifiable } from './agent-hub';
 import { silentLogger } from './log';
+import { isNotifiable as relayIsNotifiable } from './relay';
 import type { AgentEventFrame } from './schemas';
 
 const AGENT = 'agent-1';
@@ -307,5 +308,15 @@ describe('room controls and approvals', () => {
       answered_by: null,
       answered_at: null,
     });
+  });
+});
+
+describe('what addresses the agent', () => {
+  it('counts a change to a room’s instructions, in the hub and the relay alike', () => {
+    for (const notifiable of [isNotifiable, relayIsNotifiable]) {
+      expect(notifiable('room_instructions_changed', { change_id: 'c1' })).toBe(true);
+      expect(notifiable('message', { addressed: false })).toBe(false);
+      expect(notifiable('command', {})).toBe(false);
+    }
   });
 });

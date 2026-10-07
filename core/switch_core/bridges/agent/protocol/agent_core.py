@@ -49,6 +49,7 @@ from switch_core.bridges.agent.protocol.types import (
     RegistrationResult,
     RoomDescriptor,
     RoomDetailDescriptor,
+    RoomInstructionsChangedPayload,
     RoomWideMentionStatus,
     SendTargetedResult,
     ToolCallReport,
@@ -3832,6 +3833,15 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, room_id, "write")
+            instructions_change: tuple[str | None, str] | None = None
+            if instructions is not None:
+                before = await self.room_store.get(session, room_id)
+                if before is None:
+                    raise ValueError(f"Room not found: {room_id}")
+                caller = await self.agent_store.get(session, agent_id)
+                if caller is None:
+                    raise ValueError(f"Agent not found: {agent_id}")
+                instructions_change = (before.instructions, caller.name)
             await self.room_store.update_fields(
                 session,
                 room_id,
@@ -3855,6 +3865,12 @@ class AgentCore:
                 for agent_name, alias in aliases.items():
                     await self._set_room_alias(session, room_id, agent_name, alias)
             await session.commit()
+        if instructions_change is not None:
+            previous_instructions, caller_name = instructions_change
+            if instructions != previous_instructions:
+                await self.announce_room_instructions_changed(
+                    room_id, changed_by_name=caller_name
+                )
         if settings_by_id:
             await self.room_service.set_join_event_listeners(room_id, settings_by_id)
 
@@ -3878,6 +3894,37 @@ class AgentCore:
             )
 
         return await self.get_room_detail(agent_id, room_id)
+
+    async def announce_room_instructions_changed(
+        self, room_id: str, *, changed_by_name: str
+    ) -> None:
+        """Tell every agent in the room that the room's instructions changed.
+
+        Called once the change is committed, by whoever made it. Each member
+        agent's stream carries the event to the session attending the room,
+        which reconnects to it to read them; an agent with no session there
+        hears nothing, and starts its next one with the current instructions
+        anyway.
+        """
+        async with self.session_factory() as session:
+            room = await self.room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            agent_ids = await self.room_store.get_agent_ids(session, room_id)
+        event = AgentEvent(
+            type="room_instructions_changed",
+            room_id=room.id,
+            bridge_id=room.bridge_id,
+            channel_type=room.channel_type,
+            payload=RoomInstructionsChangedPayload(
+                room_name=room.name,
+                changed_by_name=changed_by_name,
+                change_id=uuid.uuid4().hex,
+                timestamp=int(datetime.now(UTC).timestamp() * 1000),
+            ),
+        )
+        for member_id in agent_ids:
+            self.event_buffer.enqueue(member_id, room.id, event)
 
     async def set_room_archived(
         self, agent_id: str, room_id: str, archived: bool

@@ -8,6 +8,7 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     MessagePayload,
+    RoomInstructionsChangedPayload,
     RoomJoinPayload,
     TaskDelegatePayload,
 )
@@ -164,6 +165,25 @@ def test_room_input_id_matches_the_watcher():
     unaddressed.payload.addressed = False
     assert room_input_id(unaddressed) is None
     assert MailboxEntry.of(unaddressed) is None
+
+
+def test_room_instructions_changes_are_never_held():
+    """Only a session already attending the room hears of the change: the
+    mailbox holding it would wake a sleeping worker for it."""
+    changed = AgentEvent(
+        type="room_instructions_changed",
+        room_id="room-1",
+        bridge_id=None,
+        channel_type=None,
+        payload=RoomInstructionsChangedPayload(
+            room_name="Feature room",
+            changed_by_name="Ana",
+            change_id="c1",
+            timestamp=1700000000000,
+        ),
+    )
+    assert room_input_id(changed) is None
+    assert MailboxEntry.of(changed) is None
 
 
 def test_entry_carries_thread_and_handoff_shape():

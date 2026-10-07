@@ -61,6 +61,7 @@ export type {
   AttachmentRef,
   CommandPayload,
   MessagePayload,
+  RoomInstructionsChangedPayload,
   RoomJoinPayload,
   SwitchCredentials,
   TaskPayload,

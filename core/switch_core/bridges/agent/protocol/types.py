@@ -207,6 +207,7 @@ EventType = Literal[
     "message",
     "command",
     "room_join",
+    "room_instructions_changed",
     "task_delegate",
     "task_accept",
     "task_update",
@@ -271,6 +272,18 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
+class RoomInstructionsChangedPayload(BaseModel):
+    # The room's instructions were changed. Carries no instructions: a session
+    # attending the room reconnects to it to read them, so what it acts on is
+    # what the room holds then rather than a copy that may already be stale.
+    room_name: str
+    changed_by_name: str
+    # Unique per change, so two identical edits are two events to a client
+    # that recognises events by their content.
+    change_id: str
+    timestamp: int
+
+
 class TaskDelegatePayload(BaseModel):
     task_id: str
     requester_agent_id: str
@@ -310,6 +323,7 @@ Payload = (
     MessagePayload
     | CommandPayload
     | RoomJoinPayload
+    | RoomInstructionsChangedPayload
     | TaskDelegatePayload
     | TaskAcceptPayload
     | TaskUpdatePayload
@@ -321,6 +335,7 @@ _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
+    "room_instructions_changed": RoomInstructionsChangedPayload,
     "task_delegate": TaskDelegatePayload,
     "task_accept": TaskAcceptPayload,
     "task_update": TaskUpdatePayload,

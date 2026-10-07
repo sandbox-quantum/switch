@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { SharedRoomInbox } from './room-inbox';
+import { isRoomInstructionsChange, roomInputId, SharedRoomInbox } from './room-inbox';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -134,4 +134,23 @@ it('replays a release written before the delivery was acknowledged', async () =>
   expect(inbox.pending()).toEqual([
     { type: 'received', sequence: 4, roomId: 'room', messageId: 'message-1' },
   ]);
+});
+
+it('names each change to a room’s instructions apart, and knows it for one', () => {
+  const change = (changeId: string) => ({
+    type: 'room_instructions_changed',
+    room_id: 'room',
+    payload: {
+      room_name: 'Feature room',
+      changed_by_name: 'Owner',
+      change_id: changeId,
+      timestamp: 1,
+    },
+  });
+  const first = roomInputId(change('c1'))!;
+  expect(first).toMatch(/^room_instructions_changed:[0-9a-f]{64}$/);
+  expect(roomInputId(change('c2'))).not.toBe(first);
+  expect(isRoomInstructionsChange({ messageId: first })).toBe(true);
+  expect(isRoomInstructionsChange({ messageId: 'room_join:abc' })).toBe(false);
+  expect(isRoomInstructionsChange({ messageId: '$message' })).toBe(false);
 });

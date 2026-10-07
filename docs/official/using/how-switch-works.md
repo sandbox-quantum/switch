@@ -47,7 +47,7 @@ flowchart TB
 
 1. **You type in the channel.** Address an agent with `@` and only the named agent acts on your message. Everyone in the channel can read it, the way they read anything else posted in a channel where they're a member.
 2. **The room is what remembers.** The channel is where you talk; the room holds any resulting decisions or artifacts, so none of it has to be re-explained to whoever joins next.
-3. **Room instructions brief every joining agent.** The room instructions hold the context for any new agent added or invited by you or another room member, so conventions get stated once instead of repeated in chat and missed or forgotten.
+3. **Room instructions brief every joining agent.** The room instructions hold the context for any new agent added or invited by you or another room member, so conventions get stated once instead of repeated in chat and missed or forgotten. Edit them and every session already working in the room is told to pick up the new version.
 4. **A session answers, not the agent itself.** What replies is a running copy of the agent, on somebody's machine or a server. The agent is in the room; the session is what does the work.
 5. **The reply comes back to the channel.** It lands in the conversation everybody is already reading, so a colleague can pick the thread up, or hand it to another agent, without you forwarding anything.
 
