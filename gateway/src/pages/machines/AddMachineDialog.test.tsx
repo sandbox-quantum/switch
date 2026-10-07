@@ -59,7 +59,7 @@ describe("AddMachineDialog", () => {
   it("shows no command for a name or description that is too long", async () => {
     issue("https://switch-api.example.test");
     render(<AddMachineDialog open onClose={() => {}} />);
-    await screen.findByText(/--code swce_example/);
+    expect(await screen.findAllByText(/--code swce_example/)).toHaveLength(2);
     fireEvent.change(screen.getByLabelText("Description (optional)"), {
       target: { value: "x".repeat(501) },
     });
