@@ -48,9 +48,15 @@ curl -fsSL https://raw.githubusercontent.com/sandbox-quantum/switch/main/console
   | sh -s -- --server https://switch.example.com --code <code>
 ```
 
-Without `--server` and `--code`, `install.sh` only installs. It installs with
-`npm install --global`, so npm's global prefix must be writable by the user
-(`npm config set prefix ~/.local` otherwise). The package can also be installed
+Without `--server` and `--code`, `install.sh` only installs. `--data-dir <dir>`
+keeps the controller's state in that folder rather than the default one.
+
+It installs with `npm install --global`, into npm's global prefix. When the user
+cannot write there (Node from the system's packages installs into `/usr`), it
+installs into `~/.local` instead, without changing npm's settings, and says so
+if `~/.local/bin` is not on the PATH; the service runs the controller by its
+full path either way. `switch-agent-controller update` installs into the same
+prefix the running controller came from. The package can also be installed
 directly: `npm install --global <the release's .tgz URL>`.
 
 From a checkout, build the workspace packages

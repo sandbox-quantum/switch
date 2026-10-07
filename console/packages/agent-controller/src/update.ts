@@ -15,6 +15,18 @@ export function releasesRepository(env: NodeJS.ProcessEnv): string {
   return named;
 }
 
+/**
+ * The npm prefix this controller was installed under, from the file it runs
+ * (`<prefix>/lib/node_modules/<package>/…`), so an update lands where the
+ * installer put it, `~/.local` included, whatever npm's own prefix is. Null
+ * when it does not run from an npm global install, a checkout say.
+ */
+export function installPrefix(cliFile: string): string | null {
+  const marker = '/lib/node_modules/';
+  const at = cliFile.lastIndexOf(marker);
+  return at > 0 ? cliFile.slice(0, at) : null;
+}
+
 /** The file a release carries for `npm install -g`. */
 export function packageAssetName(version: string): string {
   return `switch-agent-controller-${version}.tgz`;

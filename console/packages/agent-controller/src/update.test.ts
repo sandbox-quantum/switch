@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isNewer, latestRelease, releasesRepository } from './update';
+import { installPrefix, isNewer, latestRelease, releasesRepository } from './update';
 
 function release(tag: string, extra: Partial<{ draft: boolean; prerelease: boolean }> = {}) {
   const version = tag.replace('switch-agent-controller-v', '');
@@ -64,5 +64,22 @@ describe('releasesRepository', () => {
     expect(() =>
       releasesRepository({ SWITCH_CONTROLLER_RELEASES_REPOSITORY: 'https://evil.invalid/x' })
     ).toThrow(/owner\/name/);
+  });
+});
+
+describe('installPrefix', () => {
+  it('is the folder npm installed the controller under', () => {
+    expect(
+      installPrefix(
+        '/home/ada/.local/lib/node_modules/@switch-console/agent-controller/dist/cli.mjs'
+      )
+    ).toBe('/home/ada/.local');
+    expect(
+      installPrefix('/usr/lib/node_modules/@switch-console/agent-controller/dist/cli.mjs')
+    ).toBe('/usr');
+  });
+
+  it('is null outside an npm global install', () => {
+    expect(installPrefix('/work/switch/console/packages/agent-controller/dist/cli.mjs')).toBeNull();
   });
 });

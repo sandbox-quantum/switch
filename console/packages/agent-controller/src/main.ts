@@ -63,7 +63,7 @@ import {
 } from './service';
 import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
 import { ControllerStore } from './store';
-import { isNewer, latestRelease, releasesRepository } from './update';
+import { installPrefix, isNewer, latestRelease, releasesRepository } from './update';
 
 export const VERSION: string = packageJson.version;
 
@@ -594,13 +594,20 @@ async function updateCommand(args: string[]): Promise<number> {
   }
   process.stdout.write(`Installing ${latest.version} from ${latest.packageUrl}\n`);
   const code = await new Promise<number | null>((done, fail) => {
-    const child = spawn('npm', ['install', '--global', latest.packageUrl], { stdio: 'inherit' });
+    const prefix = installPrefix(cliPath());
+    const npmArgs = [
+      'install',
+      '--global',
+      ...(prefix ? ['--prefix', prefix] : []),
+      latest.packageUrl,
+    ];
+    const child = spawn('npm', npmArgs, { stdio: 'inherit' });
     child.once('error', fail);
     child.once('exit', done);
   });
   if (code !== 0)
     throw new Error(
-      `npm install exited with ${code}. If npm needs root to install globally, point it at a folder of yours (npm config set prefix ~/.local) and install again.`
+      `npm install exited with ${code}. If it could not write where the controller is installed, install it again with the installer, which falls back to ~/.local.`
     );
   const dataDir = resolveDataDir(values['data-dir']);
   if ((await serviceState(dataDir, runSecretCommand)) === 'running') {
