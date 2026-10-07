@@ -224,3 +224,67 @@ async def test_only_rate_limited_403_is_retryable(
     with pytest.raises(GitHubError) as raised:
         await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, 789)
     assert isinstance(raised.value, GitHubUnavailableError) == retryable
+
+
+async def test_mint_asks_for_several_repositories_and_the_given_permissions(
+    signing, monkeypatch
+):
+    issuer, _ = signing
+    sent = {}
+
+    async def post(_client, url, **kwargs):
+        sent.update(kwargs["json"])
+        return httpx.Response(
+            201,
+            json=response_body()
+            | {
+                "permissions": {
+                    "contents": "read",
+                    "pull_requests": "read",
+                    "metadata": "read",
+                },
+                "repositories": [{"id": 790}, {"id": 789}],
+            },
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    token = await issuer.mint(
+        456, [789, 790], {"contents": "read", "pull_requests": "read"}
+    )
+    assert sent == {
+        "repository_ids": [789, 790],
+        "permissions": {"contents": "read", "pull_requests": "read"},
+    }
+    assert token.repository_ids == [789, 790]
+    assert token.token not in repr(token)
+
+
+@pytest.mark.parametrize(
+    ("repositories", "permissions"),
+    [
+        ([], {"contents": "read"}),
+        (list(range(1, 502)), {"contents": "read"}),
+        ([789, 789], {"contents": "read"}),
+        ([789], {}),
+        ([789], {"workflows": "write"}),
+        ([789], {"contents": "admin"}),
+    ],
+)
+async def test_mint_refuses_a_request_it_must_not_make(
+    signing, monkeypatch, repositories, permissions
+):
+    post = AsyncMock()
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    with pytest.raises(GitHubError):
+        await signing[0].mint(456, repositories, permissions)
+    post.assert_not_called()
+
+
+async def test_mint_refuses_a_token_that_reaches_another_level(signing, monkeypatch):
+    monkeypatch.setattr(
+        httpx.AsyncClient,
+        "post",
+        AsyncMock(return_value=httpx.Response(201, json=response_body())),
+    )
+    with pytest.raises(GitHubError, match="invalid repository credential"):
+        await signing[0].mint(456, [789], {"contents": "read", "pull_requests": "read"})

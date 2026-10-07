@@ -1,10 +1,8 @@
-import { execFile, spawn } from 'node:child_process';
-import { mkdir, open, readFile, readdir, realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, readFile, readdir, realpath } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { z } from 'zod';
 
 const MAX_TOKEN_BYTES = 16 * 1024;
 
@@ -68,7 +66,13 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-/** Non-secret command configuration; only GH_TOKEN is supplied separately at launch. */
+/**
+ * Git's configuration for a cloud deployment given a personal token
+ * (`GH_TOKEN`) rather than the agent's GitHub grant, and for the bootstrap's
+ * own clone: the helper this bundle runs answers with `GH_TOKEN`
+ * (`service-github.ts`). It is saved in the deployment's plan, so it stays as
+ * it is.
+ */
 export function githubLaunchEnvironment(
   entrypoint = fileURLToPath(new URL('./hosted-bootstrap.mjs', import.meta.url))
 ): Record<string, string> {
@@ -85,141 +89,6 @@ export function githubLaunchEnvironment(
     GIT_CONFIG_KEY_2: 'core.askPass',
     GIT_CONFIG_VALUE_2: '',
   };
-}
-
-export function githubRedactions(token: string): string[] {
-  return [
-    token,
-    encodeURIComponent(token),
-    Buffer.from(`x-access-token:${token}`).toString('base64'),
-  ];
-}
-
-/** Git credential protocol: no cache/store, no browser, only HTTPS github.com. */
-export function gitHubCredentialResponse(operation: string, input: string, token?: string): string {
-  if (operation !== 'get') return '';
-  if (!token || !validToken(token) || Buffer.byteLength(input) > 64 * 1024) return '';
-  const fields = new Map<string, string>();
-  for (const line of input.split('\n')) {
-    if (line === '') break;
-    const at = line.indexOf('=');
-    if (at <= 0 || line.includes('\r') || line.includes('\0')) return '';
-    const key = line.slice(0, at);
-    if (fields.has(key)) return '';
-    fields.set(key, line.slice(at + 1));
-  }
-  if (fields.get('protocol') !== 'https' || fields.get('host') !== 'github.com') return '';
-  return `username=x-access-token\npassword=${token}\n\n`;
-}
-
-export async function runGitHubCredentialHelper(operation: string | undefined): Promise<void> {
-  if (!operation || !['get', 'store', 'erase'].includes(operation))
-    throw new Error('Unsupported Git credential operation.');
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += String(chunk);
-    if (Buffer.byteLength(input) > 64 * 1024)
-      throw new Error('Git credential request is too large.');
-  }
-  const eligible = gitHubCredentialResponse(operation, input, 'validation-only');
-  if (!eligible) return;
-  process.stdout.write(gitHubCredentialResponse(operation, input, await currentGitHubToken()));
-}
-
-export async function currentGitHubToken(): Promise<string | undefined> {
-  const credentialsPath = process.env.SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS;
-  if (!credentialsPath) return process.env.GH_TOKEN;
-  return renewGitHubCredential(credentialsPath, process.env.SWITCH_HOSTED_GITHUB_REPOSITORY);
-}
-
-export async function renewGitHubCredential(
-  credentialsPath: string,
-  repository: string | undefined
-): Promise<string> {
-  try {
-    const { env } = JSON.parse(await readFile(credentialsPath, 'utf8'));
-    const endpoint = new URL(env.SWITCH_API_ENDPOINT);
-    if (
-      endpoint.protocol !== 'https:' ||
-      endpoint.username ||
-      endpoint.password ||
-      endpoint.search ||
-      endpoint.hash ||
-      !validToken(env.SWITCH_API_TOKEN)
-    )
-      throw new Error();
-    const request = () =>
-      fetch(endpoint.href.replace(/\/$/, '') + '/hosted/github-credential', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${env.SWITCH_API_TOKEN}` },
-        redirect: 'error',
-        signal: AbortSignal.timeout(180_000),
-      });
-    let response = await request();
-    if (response.status === 409 || response.status === 503) {
-      await response.body?.cancel();
-      await delay(1_000);
-      response = await request();
-    }
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error();
-    }
-    const credential = z
-      .object({ token: z.string(), repository: z.string(), expires_at: z.string() })
-      .parse(await response.json());
-    if (
-      !repository ||
-      !validToken(credential.token) ||
-      credential.repository !== repository ||
-      Date.parse(credential.expires_at) < Date.now() + 60_000 ||
-      !Number.isFinite(Date.parse(credential.expires_at))
-    )
-      throw new Error();
-    return credential.token;
-  } catch {
-    throw new Error(
-      'Could not renew cloud repository access. Check the owner’s GitHub connection.'
-    );
-  }
-}
-
-export async function prepareGitHubCli(root: string): Promise<string> {
-  const directory = join(root, 'bin');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const path = join(directory, 'gh');
-  const entrypoint = fileURLToPath(new URL('./hosted-bootstrap.mjs', import.meta.url));
-  const source = `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} --github-cli "$@"\n`;
-  try {
-    const file = await open(path, 'wx', 0o700);
-    try {
-      await file.writeFile(source);
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    if ((await readFile(path, 'utf8')) !== source)
-      throw new Error('Hosted GitHub CLI wrapper differs from the deployment.');
-  }
-  return directory;
-}
-
-export async function runGitHubCli(args: string[]): Promise<void> {
-  const token = await currentGitHubToken();
-  if (!token) throw new Error('Cloud repository credential is missing.');
-  const child = spawn('/usr/local/bin/gh', args, {
-    stdio: 'inherit',
-    env: { ...process.env, GH_TOKEN: token },
-  });
-  await new Promise<void>((resolve, reject) => {
-    child.once('error', () => reject(new Error('GitHub CLI could not start.')));
-    child.once('exit', (code) => {
-      process.exitCode = code ?? 1;
-      resolve();
-    });
-  });
 }
 
 class RepositoryStepError extends Error {}

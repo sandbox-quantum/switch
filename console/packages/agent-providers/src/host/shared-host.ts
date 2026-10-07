@@ -8,6 +8,7 @@ import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { HostWaker } from './handoff';
+import { Redactions } from './redaction';
 import { followupCommandId, roomControlFollowup } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
@@ -17,6 +18,7 @@ import {
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
+import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
 import {
   connectParent,
   type BusyReason,
@@ -27,7 +29,7 @@ import {
 import { HostedSession } from './session-host';
 import { startSessionMcp } from './session-mcp';
 import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
-import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
+import { prepareSharedConfig, type SessionServices, type SharedHostConfig } from './shared-config';
 import { SharedState } from './shared-state';
 import {
   instructionsChangedNote,
@@ -71,6 +73,8 @@ export type SharedHostOptions = {
    * configuration written before they were recorded apart.
    */
   instructions: string | null;
+  /** The service tokens this session has been handed, scrubbed from every event it records. */
+  redactions: Redactions;
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
@@ -323,6 +327,7 @@ export async function runSharedHost(
         input: options.input,
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
+        redactions: options.redactions,
         stageAttachments: (attachments) =>
           Promise.all(
             attachments.map((attachment) =>
@@ -889,13 +894,38 @@ export async function hostSessionProcess(input: {
   adapter: ProviderAdapter;
   port: ParentPort;
   authenticate: ((input: ProviderSessionStartInput) => Promise<void>) | null;
+  /** The agent's service grants, as this session starts. */
+  services: SessionServices;
+  /** This host's bundle, which the session's service helpers run from. */
+  entrypoint: string;
   signal: AbortSignal;
 }): Promise<void> {
   const { config } = input;
   const parent = connectParent(input.port);
   const mcp = await startSessionMcp(parent);
+  const redactions = new Redactions();
+  let endpoint: ServiceEndpointServer | null = null;
   try {
-    const prepared = await prepareSharedConfig(input.root, config, mcp.spec);
+    const { grants } = input.services;
+    if (grants.some((grant) => grant.service === 'github')) {
+      if (process.platform === 'win32')
+        console.warn(
+          `Session ${config.session.sessionId}'s agent has a GitHub grant, but Switch's GitHub helpers do not run on Windows: git and gh use this machine's own sign-in, if any.`
+        );
+      else
+        endpoint = await startServiceEndpoint({
+          services: grants.map((grant) => grant.service),
+          ask: parent.ask,
+          redactions,
+        });
+    }
+    const prepared = await prepareSharedConfig(
+      input.root,
+      config,
+      mcp.spec,
+      input.services,
+      endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint }
+    );
     const authenticate = input.authenticate;
     await runSharedHost(
       {
@@ -911,11 +941,13 @@ export async function hostSessionProcess(input: {
         parent,
         parkAfterMs: parkAfterMs(),
         instructions: config.execution?.instructions ?? null,
+        redactions,
       },
       input.adapter,
       input.signal
     );
   } finally {
+    await endpoint?.close();
     await mcp.close();
   }
 }

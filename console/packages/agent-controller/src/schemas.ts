@@ -180,9 +180,12 @@ export type ProviderStatus = z.infer<typeof providerStatusSchema>;
 
 export const toolStatusSchema = z.object({
   tool: z.string().min(1),
-  state: z.enum(['ok', 'missing', 'unauthenticated', 'unknown']),
+  /** `unsupported`: Switch's helper for the tool does not run on this machine (GitHub's on Windows). */
+  state: z.enum(['ok', 'missing', 'unauthenticated', 'unsupported', 'unknown']),
   reason: reasonCode.optional(),
 });
+
+export type ToolStatus = z.infer<typeof toolStatusSchema>;
 
 export const agentStatusSchema = z
   .object({

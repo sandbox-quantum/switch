@@ -5,3 +5,12 @@ description: Clone, branch, push and open pull requests in the repository you gr
 enabled: true
 auth:
   type: oauth
+  refresh: rotating
+access:
+  read:
+    permissions: { contents: read, pull_requests: read }
+  write:
+    permissions: { contents: write, pull_requests: write }
+tools:
+  read: []
+  write: []

@@ -1,8 +1,16 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { executionEnvironment, prepareSharedConfig, sharedConfigSchema } from './shared-config';
+import {
+  executionEnvironment,
+  prepareSharedConfig,
+  sessionServiceGrants,
+  servicesUnavailableNotice,
+  sharedConfigSchema,
+} from './shared-config';
+
+const NO_SERVICES = { grants: [], unavailable: null };
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -79,7 +87,7 @@ it('gives the provider the host’s own MCP server and no Switch identity', asyn
       url: 'http://127.0.0.1:4321/mcp',
       headers: { Authorization: 'Bearer per-session' },
     };
-    const prepared = await prepareSharedConfig(root, config, runtime);
+    const prepared = await prepareSharedConfig(root, config, runtime, NO_SERVICES, null);
     expect(prepared.input.mcpServers).toEqual({ switch: runtime });
     expect(prepared.input.env).toEqual({ CONFIGURED: 'yes' });
     // The host itself still reports to Switch as the agent.
@@ -148,7 +156,7 @@ it('gives Codex the Switch skill as instructions, like the other providers', asy
       url: 'http://127.0.0.1:4321/mcp',
       headers: { Authorization: 'Bearer per-session' },
     };
-    const prepared = await prepareSharedConfig(root, config, runtime);
+    const prepared = await prepareSharedConfig(root, config, runtime, NO_SERVICES, null);
     expect(prepared.input.systemContext).toBe('Switch skill text');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -233,5 +241,197 @@ describe('agent definitions in the launch spec', () => {
         })
       )
     ).toThrow();
+  });
+});
+
+describe('the skills of the agent’s service grants', () => {
+  const GITHUB_SKILL = {
+    name: 'github',
+    content: '---\nname: github\ndescription: d\n---\n\n# GitHub\n\nUse gh.\n',
+  };
+  const GITHUB_GRANT = {
+    service: 'github',
+    access: 'read' as const,
+    tool_mode: 'allow' as const,
+    tools: [],
+    resources: {},
+    skill: GITHUB_SKILL,
+  };
+  const runtime = {
+    transport: 'http' as const,
+    url: 'http://127.0.0.1:4321/mcp',
+    headers: { Authorization: 'Bearer per-session' },
+  };
+
+  async function configFor(root: string, provider: 'claude' | 'opencode') {
+    const credentialsPath = join(root, 'credentials.json');
+    await writeFile(
+      credentialsPath,
+      JSON.stringify({
+        env: {
+          SWITCH_API_ENDPOINT: 'https://switch.test',
+          SWITCH_API_TOKEN: 'agent-token',
+          SWITCH_AGENT_ID: 'agent',
+        },
+      })
+    );
+    return sharedConfigSchema.parse({
+      session: {
+        sessionId: 'session',
+        agentId: 'agent',
+        hostId: 'host',
+        epoch: 'epoch',
+        provider,
+        status: 'starting',
+        connectivity: 'online',
+        pendingRequestIds: [],
+        capabilities: {
+          input: 'queue',
+          approvals: true,
+          questions: true,
+          interrupt: true,
+          reset: false,
+          compact: false,
+          modelChange: false,
+          attachmentMimeTypes: [],
+        },
+      },
+      start: {
+        provider,
+        input: {
+          sessionId: 'session',
+          cwd: root,
+          runtimeMode: 'approval-required',
+          env: {},
+          mcpServers: {},
+        },
+      },
+      roomConnection: { connectionId: 'controller' },
+      execution: {
+        credentialsPath,
+        inheritEnv: [],
+        codexConfig: '',
+        skill: '',
+        context: 'Switch skill text',
+      },
+    });
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('join the context, except for OpenCode, which loads them as files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      const claude = await prepareSharedConfig(
+        root,
+        await configFor(root, 'claude'),
+        runtime,
+        { grants: [GITHUB_GRANT], unavailable: null },
+        null
+      );
+      expect(claude.input.systemContext).toBe('Switch skill text\n\n# GitHub\n\nUse gh.');
+      const opencode = await prepareSharedConfig(
+        root,
+        await configFor(root, 'opencode'),
+        runtime,
+        { grants: [GITHUB_GRANT], unavailable: null },
+        null
+      );
+      expect(opencode.input.systemContext).toBe('Switch skill text');
+      // Without a service endpoint nothing is set up for GitHub.
+      expect(claude.input.env.SWITCH_SERVICE_ENDPOINT).toBeUndefined();
+      expect(claude.input.env.GIT_CONFIG_COUNT).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('tell the session when they could not be loaded', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      for (const provider of ['claude', 'opencode'] as const) {
+        const prepared = await prepareSharedConfig(
+          root,
+          await configFor(root, provider),
+          runtime,
+          { grants: [], unavailable: 'Switch refused (HTTP 503).' },
+          null
+        );
+        expect(prepared.input.systemContext).toBe(
+          `Switch skill text\n\n${servicesUnavailableNotice('Switch refused (HTTP 503).')}`
+        );
+      }
+      expect(servicesUnavailableNotice('Switch refused (HTTP 503).')).toContain(
+        'could not load the services granted to this agent'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('set up GitHub for a session with a service endpoint and a GitHub grant', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      const prepared = await prepareSharedConfig(
+        root,
+        await configFor(root, 'claude'),
+        runtime,
+        { grants: [GITHUB_GRANT], unavailable: null },
+        {
+          endpoint: { url: 'http://127.0.0.1:5555', token: 'per-session-bearer' },
+          execPath: '/usr/bin/node',
+          entrypoint: '/opt/switch/shared-host.mjs',
+        }
+      );
+      const env = prepared.input.env;
+      expect(env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
+      expect(env.SWITCH_SERVICE_TOKEN).toBe('per-session-bearer');
+      expect(env.GIT_CONFIG_COUNT).toBe('2');
+      expect(env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
+      expect(env.GIT_CONFIG_VALUE_1).toContain("'/opt/switch/shared-host.mjs' --git-credential");
+      expect(env.PATH?.split(':')[0]).toBe(join(root, 'bin'));
+      expect(await readFile(join(root, 'bin', 'gh'), 'utf8')).toContain('--github-cli');
+      // The helpers ask for GitHub's token; none is in the session's environment.
+      expect(env.GH_TOKEN).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('are read as the session starts, and a session starts without them when they cannot be', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const config = await configFor(root, 'claude');
+      const fetchMock = vi.fn<typeof fetch>(
+        async () =>
+          new Response(
+            JSON.stringify({
+              grants: [GITHUB_GRANT],
+            })
+          )
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      expect(await sessionServiceGrants(config)).toEqual({
+        grants: [GITHUB_GRANT],
+        unavailable: null,
+      });
+      expect(String(fetchMock.mock.calls[0][0])).toBe(
+        'https://switch.test/agents/agent/service-grants'
+      );
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn<typeof fetch>(async () => new Response('{}', { status: 503 }))
+      );
+      expect(await sessionServiceGrants(config)).toEqual({
+        grants: [],
+        unavailable: "Switch refused this agent's service grants (HTTP 503).",
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('HTTP 503'));
+    } finally {
+      warn.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

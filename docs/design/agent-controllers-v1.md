@@ -25,7 +25,7 @@ where it deliberately stops short.
 |---|---|---|
 | Controllers act as agents on `/agents/{id}/...` with a controller token | **Not in v1.** The controller fetches a per-agent API key from Management for each bound agent. Every fetch **rotates** the key, which invalidates any earlier holder | The agent host and session hosts read the agent token once, from the credentials file, and cannot refresh a short-lived token. Moving to scoped tokens needs a runtime change first |
 | One SSE stream per controller carrying agent events | **The controller stream carries only nudges** (`assignment.changed`, `operation.pending`, `credential.revoked`). Agent events stay on per-agent agent host streams | Avoids touching message delivery. That is roadmap step 7 |
-| Connector tokens, sealed provider logins | Not in v1 | Later steps |
+| Connector tokens, sealed provider logins | Not in v1. Service tokens are specified in `service-connections-v1.md` | Later steps |
 | Enrollment by EC2 machine secret | Not in v1. Supported: Console sign-in (gateway) and one-time code (headless) | |
 | Operations | `agent.restart` and `provider.recheck` only. Core rejects other kinds with `400 operation_unsupported` | |
 | Per-tenant flag | Deployment-wide env flag | No per-tenant flag mechanism exists yet |

@@ -23,7 +23,6 @@ from switch_core.bridges.agent.dependencies import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
-from switch_core.connections.loader import CATALOG, SKILL_PROVIDERS, deployment_skills
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -185,12 +184,6 @@ async def _agent_entry(
             launch.id,
             provider,
         )
-    if provider not in SKILL_PROVIDERS:
-        logger.warning(
-            "Cloud launch %s: %s has no skills directory; granted connection skills are not installed.",
-            launch.id,
-            provider,
-        )
     return {
         "launch_id": launch.id,
         "agent_id": launch.agent_id,
@@ -211,9 +204,9 @@ async def _agent_entry(
         },
         "repository": launch.repository,
         "spec": launch.spec,
-        "skills": deployment_skills(CATALOG, ["github"])
-        if provider in SKILL_PROVIDERS
-        else [],
+        # Sessions take their skills from the agent's service grants. Kept,
+        # empty, because workers already deployed refuse an agent without it.
+        "skills": [],
     }
 
 

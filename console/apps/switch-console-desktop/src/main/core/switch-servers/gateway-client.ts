@@ -20,13 +20,22 @@ import type {
   CloudLaunchConfiguration,
   CloudLaunchInput,
 } from '@shared/core/switch-servers/cloud-launch';
-import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionCatalogEntry,
+  connectionCatalogSchema,
+  serviceConnectionsSchema,
+} from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
+import {
+  type ServiceGrants,
+  serviceGrantWarningSchema,
+  serviceGrantsSchema,
+} from '@shared/core/switch-servers/service-grants';
 import type {
   AddressingPolicy,
   BridgeConfigField,
@@ -2406,12 +2415,103 @@ export async function disconnectClaude(server: SwitchServer): Promise<void> {
   });
 }
 
-export async function getConnectionCatalog(server: SwitchServer) {
-  return connectionCatalogSchema.parse(
-    await (
-      await gatewayFetch(server, '/provider-connections/catalog', { authenticated: true })
-    ).json()
-  ).connections;
+/**
+ * The services the signed-in person can connect, and their connection to
+ * each: from `/service-connections`, or the older catalog a server from
+ * before service connections answers instead.
+ */
+export async function getConnectionCatalog(
+  server: SwitchServer
+): Promise<ConnectionCatalogEntry[]> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/service-connections', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 404) return getOlderCatalog(server);
+    throw error;
+  }
+  return serviceConnectionsSchema.parse(await response.json()).connections.map((entry) => ({
+    slug: entry.slug,
+    name: entry.name,
+    category: entry.category,
+    description: entry.description,
+    enabled: entry.enabled,
+    auth_type: entry.auth_type,
+    connectable: entry.connectable,
+    status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
+    unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
+  }));
+}
+
+async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogEntry[]> {
+  const response = await gatewayFetch(server, '/provider-connections/catalog', {
+    authenticated: true,
+  });
+  return (
+    connectionCatalogSchema
+      .parse(await response.json())
+      // GitHub was the one service such a server could connect.
+      .connections.map((entry) => ({
+        ...entry,
+        connectable: entry.enabled && entry.slug === 'github',
+        unavailable_reason: null,
+      }))
+  );
+}
+
+/**
+ * Whether the server has service connections, which any of its agents can be
+ * granted: an older one had connections for its cloud agents alone.
+ */
+export async function servesServiceConnections(server: SwitchServer): Promise<boolean> {
+  try {
+    await gatewayFetch(server, '/service-connections', { authenticated: true });
+    return true;
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 404) return false;
+    throw error;
+  }
+}
+
+/** An agent's service grants, with any it works without; its owner's alone to read. */
+export async function fetchServiceGrants(
+  server: SwitchServer,
+  agentId: string
+): Promise<ServiceGrants> {
+  const response = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/service-grants`,
+    { authenticated: true }
+  );
+  return serviceGrantsSchema.parse(await response.json());
+}
+
+/** Create or replace an agent's grant; the warning names access that stays usable a while. */
+export async function setServiceGrant(
+  server: SwitchServer,
+  agentId: string,
+  service: string,
+  grant: { access: 'read' | 'write'; resources: Record<string, unknown> }
+): Promise<string | null> {
+  const response = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/service-grants/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'PUT', body: grant }
+  );
+  return serviceGrantWarningSchema.parse(await response.json()).warning;
+}
+
+export async function removeServiceGrant(
+  server: SwitchServer,
+  agentId: string,
+  service: string
+): Promise<string | null> {
+  const response = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/service-grants/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return serviceGrantWarningSchema.parse(await response.json()).warning;
 }
 export async function getGitHubConnection(server: SwitchServer) {
   return gitHubConnectionSchema.parse(

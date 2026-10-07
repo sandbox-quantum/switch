@@ -23,6 +23,7 @@ const sdkHost = vi.hoisted(() => ({
 const switchServers = vi.hoisted(() => ({
   cloudLifecycle: vi.fn(),
   cloudMachineLifecycle: vi.fn(),
+  servesServiceConnections: vi.fn(async () => true),
 }));
 const navigate = vi.hoisted(() => vi.fn());
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import secrets
@@ -9,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,11 +18,14 @@ from switch_core.clients.client_lifecycle_service import (
     TenantIsolationNotInForce,
 )
 from switch_core.config import SwitchConfig
+from switch_core.connections.broker import (
+    ServiceBroker,
+    ServiceError,
+    get_service_broker,
+)
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
-    GitHubIssuedToken,
     Invitation,
-    ProviderConnection,
     Tenant,
     TenantJoinDomain,
     TenantMember,
@@ -85,7 +87,6 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.email_domains import email_domain, join_domain_refusal
-from switch_core.gateway.github_connections import lock as github_lock
 from switch_core.gateway.invite_mail import (
     InviteEmail,
     InviteEmailFailed,
@@ -114,12 +115,6 @@ from switch_core.gateway.schemas import (
     TenantCreateRequest,
     TenantMembershipResponse,
     UsageTotalResponse,
-)
-from switch_core.providers.github_revocations import (
-    ACCESS_WARNING,
-    queue_revocation,
-    revoke_oauth,
-    revoke_pending,
 )
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
@@ -1390,6 +1385,7 @@ async def remove_member(
     admin: Annotated[User, Depends(require_tenant_admin)],
     is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict:
     """Remove a member from the bound tenant. `owner`/`admin` only.
 
@@ -1402,7 +1398,8 @@ async def remove_member(
     consults membership, so leaving it behind would leave the person with
     working, invisible access (`docs/old/multi-tenancy-phase2-tenants.md`,
     §3). Concretely, this deletes every personal API key the member holds
-    here.
+    here, and every service connection they hold here (their grants go with
+    them), revoking what was issued on those once the removal has committed.
 
     It does **not** touch any agent the member owns — it refuses instead, 409,
     naming them. An agent is not that member's private property to lose along
@@ -1439,29 +1436,12 @@ async def remove_member(
             ),
         )
 
-    await github_lock(session, user_id)
-    github_row = await session.scalar(
-        select(ProviderConnection).where(
-            ProviderConnection.tenant_id == tenant_id,
-            ProviderConnection.user_id == user_id,
-            ProviderConnection.provider == "github",
-        )
-    )
-    github_token = (
-        json.loads(config.keyring.decrypt(github_row.encrypted_credential))[
-            "access_token"
-        ]
-        if github_row
-        else None
-    )
-    await queue_revocation(session, (GitHubIssuedToken.owner_id == user_id,))
-    await session.execute(
-        delete(ProviderConnection).where(
-            ProviderConnection.tenant_id == tenant_id,
-            ProviderConnection.user_id == user_id,
-            ProviderConnection.provider == "github",
-        )
-    )
+    try:
+        removed_services = await broker.remove_connections(session, user_id)
+    except ServiceError as error:
+        raise HTTPException(
+            status_code=error.status_code, detail=error.message
+        ) from None
 
     keys = await api_key_store.get_by_user(session, user_id)
     revoked_key_hashes = [key.key_hash for key in keys]
@@ -1475,7 +1455,11 @@ async def remove_member(
         action=AuditAction.MEMBER_REMOVED,
         target_type="user",
         target_id=user_id,
-        details={"role": membership.role, "api_keys_deleted": len(keys)},
+        details={
+            "role": membership.role,
+            "api_keys_deleted": len(keys),
+            "service_connections_deleted": len(removed_services),
+        },
     )
     await session.delete(membership)
     await session.commit()
@@ -1483,28 +1467,10 @@ async def remove_member(
     for key_hash in revoked_key_hashes:
         protocol.api_key_cache.invalidate(key_hash)
 
-    warning = None
     github = getattr(request.app.state, "github_connections", None)
     if github is not None:
         for flow_id, flow in list(github.flows.items()):
             if (flow.tenant_id, flow.user_id) == (tenant_id, user_id):
                 del github.flows[flow_id]
-    if github_token:
-        if github is None:
-            logger.error(
-                "Member removed but GitHub token revocation is unavailable: tenant=%s user=%s",
-                tenant_id,
-                user_id,
-            )
-            warning = "GitHub could not revoke the old sign-in. Revoke it in your GitHub settings."
-        else:
-            warning = await revoke_oauth(github, github_token)
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.owner_id == user_id,)
-    )
-    messages = [
-        message
-        for message in (warning, ACCESS_WARNING if remaining else None)
-        if message
-    ]
-    return {"ok": True, "warning": " ".join(messages) or None}
+    warning = await broker.finish_disconnect(session, user_id, removed_services)
+    return {"ok": True, "warning": warning}

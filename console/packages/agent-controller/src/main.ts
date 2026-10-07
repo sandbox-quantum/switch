@@ -31,7 +31,7 @@ import {
 } from './runtime';
 import { AgentRuntimes } from './runtimes';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
-import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
+import { contractPlatform, mapAgentProcess, PathProviderLocator, toolStatuses } from './status';
 import { ControllerStore } from './store';
 
 export const VERSION: string = packageJson.version;
@@ -211,6 +211,7 @@ async function runCommand(args: string[]): Promise<number> {
             new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
           ),
         locator: new PathProviderLocator(process.env.PATH),
+        tools: () => toolStatuses(process.env.PATH, process.platform),
         fetch,
         log,
         dataDir,

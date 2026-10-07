@@ -114,7 +114,7 @@ export async function runCredentialVerification(): Promise<void> {
       if (!candidate) throw new Error('No model is available for the configured provider.');
       model = { id: candidate.id };
     }
-    await verifyModelTurn(adapterFor(input.provider, input.binaryPath, ''), {
+    await verifyModelTurn(adapterFor(input.provider, input.binaryPath, '', []), {
       sessionId: randomUUID(),
       cwd,
       runtimeMode: 'approval-required',

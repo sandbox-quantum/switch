@@ -17,6 +17,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_machine_store import lock_machine
 from switch_core.keys import Keyring
+from tests.switch_core.connections.github_seed import github_vendor  # noqa: F401
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     HEADERS,
     SPEC,
@@ -200,8 +201,8 @@ async def test_agents_lists_the_machine_agents_in_the_contract_shape(supervisor)
         assert (
             key.key_hash == hashlib.sha256(env["SWITCH_API_TOKEN"].encode()).hexdigest()
         )
-    assert [skill["slug"] for skill in entry["skills"]] == ["github"]
-    assert entry["skills"][0]["files"]["SKILL.md"].startswith("---\nname: github\n")
+    # Sessions take their skills from the agent's grants, not the machine list.
+    assert entry["skills"] == []
     launch = await launch_row(factory, request_id)
     assert launch.state == "provisioning"
     assert launch.worker_capability_hash is not None
@@ -439,9 +440,7 @@ async def test_agents_lists_a_launch_without_its_key_as_unavailable(supervisor, 
     assert (await launch_row(factory, request_id)).state == "provisioning"
 
 
-async def test_agents_sends_no_skills_to_a_provider_without_a_skills_directory(
-    supervisor, caplog
-):
+async def test_agents_lists_a_cursor_launch_with_its_api_key(supervisor):
     client, request_id, _, _, factory, machine_id, headers = supervisor
     launch = await launch_row(factory, request_id)
     await update_launch(factory, request_id, spec={**SPEC, "provider": "cursor"})
@@ -456,16 +455,13 @@ async def test_agents_sends_no_skills_to_a_provider_without_a_skills_directory(
             )
         )
         await session.commit()
-    with caplog.at_level(logging.WARNING):
-        response = await client.get(
-            f"/hosted/machines/{machine_id}/agents", headers=headers
-        )
+    response = await client.get(
+        f"/hosted/machines/{machine_id}/agents", headers=headers
+    )
     assert response.status_code == 200, response.text
     [entry] = response.json()["agents"]
-    assert entry["skills"] == []
     assert entry["provider"] == "cursor"
     assert entry["provider_credential_kind"] == "api-key"
-    assert "granted connection skills are not installed" in caplog.text
 
 
 async def test_agents_lists_a_launch_whose_provider_connection_is_gone(

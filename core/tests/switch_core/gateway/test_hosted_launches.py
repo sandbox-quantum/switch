@@ -1,3 +1,6 @@
+import asyncio
+import json
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,11 +14,14 @@ from sqlalchemy import func, select, text
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentExistsError
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.connections.broker import Principal, ServiceError
 from switch_core.db.models import (
     Agent,
     HostedLaunch,
     HostedMachine,
     HostedOperation,
+    ServiceGrant,
+    TenantMember,
     User,
     require_tenant_id,
 )
@@ -27,6 +33,7 @@ from switch_core.db.stores.hosted_machine_store import MACHINE_NEEDS_ATTENTION
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agents import (
     update_addressing_policy,
@@ -47,8 +54,14 @@ from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_service,
     register,
 )
+from tests.switch_core.connections.github_seed import (  # noqa: F401
+    connect_github,
+    github_broker,
+    github_vendor,
+)
 from tests.switch_core.hosted_machine_helpers import seed_machine
 
+SERVICE_STORE = ServiceConnectionStore()
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 ICON = "https://cdn.example.com/9.x/bottts/png?seed=helper"
@@ -72,7 +85,7 @@ SUMMARY_KEYS = {
 
 
 @pytest.fixture
-async def launch_app(session_factory, monkeypatch):
+async def launch_app(session_factory, monkeypatch, github_vendor):  # noqa: F811
     async with session_factory() as session:
         owner = User(
             id="cloud-owner",
@@ -90,9 +103,13 @@ async def launch_app(session_factory, monkeypatch):
             TEST_KEYRING.encrypt("SYNTHETIC-CREDENTIAL"),
             datetime.now(UTC),
         )
+        await connect_github(session, owner.id, TEST_KEYRING)
         await session.commit()
     app = FastAPI()
     app.include_router(router)
+    app.state.service_broker = github_broker(
+        session_factory, TEST_KEYRING, github_vendor
+    )
     verifier = AsyncMock()
     app.state.claude_verifier = verifier
     app.state.github_connections = object()
@@ -1035,3 +1052,110 @@ async def test_identity_edits_keep_the_launch_spec_that_registers_it_again(
     assert launch.spec["icon_url"] == ICON
     assert launch.spec["addressing_policy"] == stored_policy
     assert launch.spec["definition_attributes"] == {"model": "sonnet"}
+
+
+async def test_a_launch_grants_its_agent_the_repository(launch_app, github_vendor):  # noqa: F811
+    app = launch_app
+    created = await app.client.post("/hosted-launches", json=body())
+    assert created.status_code == 202, created.text
+    agent_id = created.json()["agent_id"]
+    async with app.factory() as session:
+        grant = await session.scalar(
+            select(ServiceGrant).where(ServiceGrant.agent_id == agent_id)
+        )
+    assert grant is not None
+    assert (grant.service, grant.access, grant.owner_id) == (
+        "github",
+        "write",
+        "cloud-owner",
+    )
+    assert grant.resources == {"installation_id": 123, "repository_ids": [456]}
+    assert github_vendor.checked == [
+        ("SYNTHETIC-GITHUB", {"installation_id": 123, "repository_ids": [456]})
+    ]
+
+
+async def test_a_launch_change_revokes_its_agents_github_tokens(
+    launch_app,
+    github_vendor,  # noqa: F811
+):
+    app = launch_app
+    created = await app.client.post("/hosted-launches", json=body())
+    summary = created.json()
+    async with app.factory() as session:
+        session.add(
+            TenantMember(
+                tenant_id=require_tenant_id(), user_id="cloud-owner", role="member"
+            )
+        )
+        await session.commit()
+        issued = await github_broker(app.factory, TEST_KEYRING, github_vendor).issue(
+            session, summary["agent_id"], Principal.agent_key(), "github"
+        )
+
+    stopped = await _lifecycle(app, summary["request_id"], "stop", summary["revision"])
+
+    assert stopped.status_code == 200, stopped.text
+    assert github_vendor.revoked == [issued.token]
+
+
+async def test_a_stop_does_not_wait_on_a_refresh_and_takes_back_its_token(
+    launch_app,
+    github_vendor,  # noqa: F811
+):
+    app = launch_app
+    created = await app.client.post("/hosted-launches", json=body())
+    summary = created.json()
+    async with app.factory() as session:
+        session.add(
+            TenantMember(
+                tenant_id=require_tenant_id(), user_id="cloud-owner", role="member"
+            )
+        )
+        await SERVICE_STORE.replace_secret(
+            session,
+            "cloud-owner",
+            "github",
+            revision=1,
+            encrypted_secret=TEST_KEYRING.encrypt(
+                json.dumps(
+                    {
+                        "access_token": "SYNTHETIC-GITHUB",
+                        "expires_at": time.time() + 30,
+                        "refresh_token": "SYNTHETIC-REFRESH",
+                        "refresh_expires_at": time.time() + 7200,
+                    }
+                )
+            ),
+        )
+        await session.commit()
+    refreshing, release = asyncio.Event(), asyncio.Event()
+    refresh = github_vendor.refresh
+
+    async def slow_refresh(secret):
+        refreshing.set()
+        await release.wait()
+        return await refresh(secret)
+
+    github_vendor.refresh = slow_refresh  # type: ignore[method-assign]
+    broker = github_broker(app.factory, TEST_KEYRING, github_vendor)
+
+    async def fetch():
+        async with app.factory() as session:
+            return await broker.issue(
+                session, summary["agent_id"], Principal.agent_key(), "github"
+            )
+
+    issuing = asyncio.create_task(fetch())
+    await asyncio.wait_for(refreshing.wait(), 5)
+    try:
+        stopped = await asyncio.wait_for(
+            _lifecycle(app, summary["request_id"], "stop", summary["revision"]), 5
+        )
+        assert stopped.status_code == 200, stopped.text
+    finally:
+        release.set()
+    with pytest.raises(ServiceError) as caught:
+        await issuing
+    assert caught.value.code == "internal" and caught.value.retryable
+    assert github_vendor.revoked == [github_vendor.issued[0][1]]

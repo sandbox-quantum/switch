@@ -11,6 +11,9 @@ import {
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import type { PlacementMap, SessionPlacements } from './placements';
+import type { Redactions } from './redaction';
+import { issueServiceToken } from './service-access';
+import { AgentServiceTokens } from './service-tokens';
 import type { AskHandler, Caller } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 
@@ -24,6 +27,10 @@ import { sharedConfigSchema } from './shared-config';
  * generation. `connect_to_room` is also a local move: the room is placed with
  * the calling session before Switch is asked, so the room's next message
  * reaches it, and put back as it was if Switch refuses.
+ *
+ * It also answers the sessions' asks for service tokens (`AgentServiceTokens`),
+ * and scrubs every token handed out from the arguments of every call it makes,
+ * so a token an agent echoes into a room message never reaches Switch.
  */
 export function sessionToolAnswerer(deps: {
   identity: SwitchIdentity;
@@ -31,7 +38,15 @@ export function sessionToolAnswerer(deps: {
   placements: SessionPlacements;
   /** States every placement to Switch; raises when Switch does not take them. */
   publish: () => Promise<void>;
+  /** The service tokens handed out in this process, added to as more are. */
+  redactions: Redactions;
 }): AskHandler {
+  const services = new AgentServiceTokens({
+    endpoint: deps.identity,
+    redactions: deps.redactions,
+    now: Date.now,
+    issue: issueServiceToken,
+  });
   let catalog: Promise<SwitchToolCatalog> | null = null;
   const tools = (): Promise<SwitchToolCatalog> => {
     catalog ??= loadOperations(deps.identity).then(
@@ -123,10 +138,12 @@ export function sessionToolAnswerer(deps: {
   };
 
   return async (caller, ask) => {
+    if (ask.type === 'service-token') return services.answer(ask.service, ask.rejected);
     const catalog = await tools();
     if (ask.type === 'tools') return catalog.tools();
-    if (ask.name === 'connect_to_room') return connect(caller, catalog, ask.arguments);
-    return catalog.call(await context(caller), ask.name, ask.arguments);
+    const args = deps.redactions.value(ask.arguments);
+    if (ask.name === 'connect_to_room') return connect(caller, catalog, args);
+    return catalog.call(await context(caller), ask.name, args);
   };
 }
 

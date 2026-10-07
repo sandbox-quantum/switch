@@ -155,7 +155,12 @@ class TestScopedTableCatalogue:
         columns for a composite foreign key to exist at all, but this asserts
         it is exactly the `(id, tenant_id)` shape the design calls for,
         derived from who actually references whom rather than a hand-kept
-        list of "the ~13 referenced tables"."""
+        list of "the ~13 referenced tables".
+
+        A key that names a table's natural composite key instead of its `id`
+        is not that shape and is not checked here: `service_grants` names its
+        connection by `(tenant_id, owner_id, service)`, the connection's whole
+        primary key, which already carries `tenant_id` (the test above)."""
         scoped = _scoped_tables()
         async with session_factory() as session:
             conn = await session.connection()
@@ -167,7 +172,11 @@ class TestScopedTableCatalogue:
                         continue
                     local_cols = fk["constrained_columns"]
                     ref_cols = fk["referred_columns"]
-                    if "tenant_id" in local_cols and "tenant_id" in ref_cols:
+                    if (
+                        "tenant_id" in local_cols
+                        and "tenant_id" in ref_cols
+                        and "id" in ref_cols
+                    ):
                         referenced.add(ref_table)
 
             missing: list[str] = []

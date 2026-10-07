@@ -1,39 +1,41 @@
 ---
 name: github
-description: How to use GitHub from this cloud agent. Load before running git or gh against the granted repository — cloning, fetching, pushing, branches, pull requests or reviews.
+description: How to work with the GitHub repositories your owner granted this agent. Load before running git or gh against them — cloning, fetching, branching, pushing, pull requests or reviews.
 ---
 
 # GitHub
 
-Your owner granted this agent access to one GitHub repository. It is already
-cloned into your workspace, and `git` and `gh` are already signed in for it.
+Your owner granted this agent some of their GitHub repositories, to read, or
+to read and write. `git` over HTTPS and `gh` already work for them; there is
+nothing to set up or renew.
 
-## Access
+## What the grant reaches
 
-- `gh` on your `PATH` is a wrapper that fetches a fresh, short-lived token for
-  every call. The `git` credential helper does the same for HTTPS pushes and
-  fetches to github.com. Both refresh automatically; there is nothing to renew.
-- The token reaches only the granted repository, with exactly these
-  permissions:
-  - **Contents** read/write: clone, fetch, branch, commit, push.
-  - **Pull requests** read/write: create, list, view, diff, comment, review.
-  - **Metadata** read.
-- Nothing else is granted. Issues, Actions, check runs, commit statuses and
-  workflow files are out of reach: a push that adds or changes a file under
-  `.github/workflows/` is rejected, and API operations requiring additional permissions are unavailable.
-  Other repositories, organization settings and your owner's personal account
-  are out of reach too. That is the scope, not a bug — tell the user what you
-  could not do rather than retrying or looking for other credentials.
-- Never print, echo, log or persist a token. Do not run `gh auth token`,
-  `gh auth login` or `gh auth setup-git`, do not set `GH_TOKEN` or
-  `GITHUB_TOKEN`, do not put a token in a remote URL, `.git/config`, a file, a
-  commit or a message. The wrapper and helper already supply it.
+- **Read:** clone and fetch; list, view and diff pull requests; read their
+  reviews and comments.
+- **Write:** all of that, and push branches, open pull requests, comment and
+  review.
+- Only the granted repositories. Issues, Actions, check runs, commit statuses
+  and workflow files are out of reach: a push that adds or changes a file under
+  `.github/workflows/` is rejected. Other repositories, organization settings
+  and your owner's own account are out of reach too.
+- That is the scope, not a fault. When something is refused, tell the user what
+  you could not do rather than retrying or looking for other credentials.
+- If `git` or `gh` says GitHub refused its credentials, Switch replaces them:
+  run the command once more. If Switch then says the grant was removed or
+  changed, stop and tell the user; your owner has to grant it again.
+- Pushes, pull requests, comments and reviews appear as the Switch GitHub App's
+  bot, not as your owner.
+- Never print, log or store a credential, and leave git's credential settings
+  and `gh`'s sign-in alone.
 
 ## Everyday commands
 
-Run these from the workspace; `gh` picks the repository from its `origin`.
+If a granted repository is already in your workspace, work there. Otherwise
+clone it over HTTPS; `gh` picks the repository from the `origin` remote.
 
 ```sh
+git clone https://github.com/<owner>/<repo>.git
 git switch -c <branch>                 # work on a branch, not the default one
 git push -u origin <branch>
 
@@ -50,13 +52,16 @@ gh api repos/{owner}/{repo}/pulls/<number>/reviews
 ```
 
 Pass `--json` with only the fields you need to `gh pr view` and `gh pr list`.
-Plain `gh pr view` also asks for checks, projects and other data this token
-cannot read, and fails; so do fields such as `statusCheckRollup`,
-`projectItems` or `closingIssuesReferences`. Do not use `gh pr checks`, `gh issue`,
-`gh run` or `gh workflow`; they need permissions the token does not have.
+Plain `gh pr view` also asks for checks, projects and other data the grant does
+not reach, and fails; so do fields such as `statusCheckRollup`, `projectItems`
+or `closingIssuesReferences`. Do not use `gh pr checks`, `gh issue`, `gh run`
+or `gh workflow`; they need more than the grant gives.
 
-Use `--body-file <path>` for long text instead of shell-quoting it. `gh` never
-prompts in this environment, so pass every value it would ask for as a flag.
+An SSH remote (`git@github.com:...`) does not use the grant. Use HTTPS remotes
+for granted repositories.
+
+Use `--body-file <path>` for long text instead of shell-quoting it. `gh` does
+not prompt here, so pass every value it would ask for as a flag.
 
 ## Etiquette
 

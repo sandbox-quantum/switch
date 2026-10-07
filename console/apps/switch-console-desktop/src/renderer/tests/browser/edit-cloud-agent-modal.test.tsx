@@ -60,6 +60,17 @@ vi.mock(
   '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section',
   () => ({ AddressingPolicyRow: () => <div>Who can talk to your agent</div> })
 );
+vi.mock(
+  '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section',
+  () => ({
+    ServiceGrantsRow: (props: { agentId: string; cloud: boolean }) => (
+      <div>
+        Service access for {props.agentId}
+        {props.cloud ? ' in the cloud' : ''}
+      </div>
+    ),
+  })
+);
 
 import { EditCloudAgentModal } from '@renderer/features/cloud-agents/edit-cloud-agent-modal';
 
@@ -197,6 +208,11 @@ it('sends a changed name and instructions, keeping the model, and says when they
   );
   expect(toast).toHaveBeenCalled();
   expect(onSuccess).toHaveBeenCalled();
+});
+
+it("shows the agent's Service access, as a cloud agent's", async () => {
+  await render('claude');
+  expect(container!.textContent).toContain('Service access for agent in the cloud');
 });
 
 it('sends only the icon when only the icon changed', async () => {

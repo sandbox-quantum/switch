@@ -47,13 +47,41 @@ export function hostedSkillsDirectory(
   provider: HostedSkillProvider,
   env: NodeJS.ProcessEnv
 ): string {
+  const directory = configuredSkillsDirectory(provider, env);
+  if (!directory) throw new Error(`The ${provider} home for connection skills is not configured.`);
+  return directory;
+}
+
+function configuredSkillsDirectory(
+  provider: HostedSkillProvider,
+  env: NodeJS.ProcessEnv
+): string | null {
   const base = {
     claude: env.CLAUDE_CONFIG_DIR,
     codex: env.CODEX_HOME || (env.HOME && join(env.HOME, '.codex')),
     opencode: env.XDG_CONFIG_HOME && join(env.XDG_CONFIG_HOME, 'opencode'),
   }[provider];
-  if (!base) throw new Error(`The ${provider} home for connection skills is not configured.`);
-  return join(base, 'skills');
+  return base ? join(base, 'skills') : null;
+}
+
+/**
+ * The connection skills a Switch from before service grants listed with each
+ * cloud agent, which bootstrap installed into the provider's skills folder.
+ * Sessions now take them from the agent's grants, so a copy left from then
+ * would be loaded twice.
+ */
+const FORMERLY_INSTALLED_SKILLS = ['github'];
+
+/** Remove the connection skills an earlier bootstrap installed for this agent. */
+export async function removeFormerlyInstalledSkills(
+  provider: HostedSkillProvider,
+  env: NodeJS.ProcessEnv
+): Promise<void> {
+  // Nothing was installed where no provider home is configured.
+  const directory = configuredSkillsDirectory(provider, env);
+  if (!directory) return;
+  for (const slug of FORMERLY_INSTALLED_SKILLS)
+    await rm(join(directory, slug), { recursive: true, force: true });
 }
 
 /** Replace each granted skill so a restart always carries the deployment's copy. */

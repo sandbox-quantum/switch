@@ -68,6 +68,7 @@ function deps(server = core.url): ControllerDeps {
     secrets,
     runtime: runtime.build,
     locator: new FakeLocator(),
+    tools: async () => [],
     fetch,
     log: silentLogger,
     dataDir: dir,

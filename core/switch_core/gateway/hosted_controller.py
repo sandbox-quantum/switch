@@ -6,15 +6,17 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
+from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.models import (
     HostedLaunch,
     HostedMachine,
     HostedOperation,
+    ServiceTokenIssuance,
     TenantMember,
     require_tenant_id,
 )
@@ -33,7 +35,6 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
 )
 from switch_core.gateway.hosted_launches import controller_settings, finish_removal
-from switch_core.providers.github_revocations import revoke_pending
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 
@@ -321,6 +322,7 @@ async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict:
     store = HostedMachineStore()
     now = datetime.now(UTC)
@@ -362,7 +364,21 @@ async def machines(
     )
     response = {"machines": [machine_item(machine) for machine in rows]}
     await session.commit()
-    await revoke_pending(session, config, ())
+    # A cloud agent's GitHub tokens end with its launch, however the launch
+    # stopped or failed: the lifecycle routes queue them as they act, and this
+    # catches every other path, as the controller's poll always has.
+    ended = select(HostedLaunch.agent_id).where(
+        HostedLaunch.tenant_id == require_tenant_id(),
+        HostedLaunch.agent_id.is_not(None),
+        or_(HostedLaunch.desired_state != "running", HostedLaunch.state == "error"),
+    )
+    await broker.queue_revocation(
+        session,
+        ServiceTokenIssuance.agent_id.in_(ended),
+        ServiceTokenIssuance.service == "github",
+    )
+    await session.commit()
+    await broker.revoke_pending(session, ())
     return response
 
 

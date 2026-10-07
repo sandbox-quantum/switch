@@ -26,6 +26,7 @@ import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
+import type { Redactions } from './redaction';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -62,6 +63,8 @@ export type HostSessionStart = {
   epochAuthority?: 'server';
   resetEpoch?: () => Promise<string>;
   stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
+  /** Service tokens to scrub from every event before it is recorded; none when absent. */
+  redactions?: Redactions;
 };
 type PendingQuestion = { request: Request; options: Map<string, string> };
 /**
@@ -159,7 +162,7 @@ export class HostedSession {
       if (record.type === 'reset-completed') this.resetPending = false;
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
     }
-    this.projector = new ChatProjector(config.session);
+    this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
       // Process cleanup leaves this conversation available for recovery.
@@ -1128,7 +1131,9 @@ export class HostedSession {
         sessionId: this.config.session.sessionId,
         sequence: this.events.records.length + 1,
         occurredAt: new Date().toISOString(),
-        body,
+        // Scrubbed here, once: the journal, Console's view and the activity
+        // rows Switch shows on the bridges are all made from what is recorded.
+        body: this.config.redactions ? this.config.redactions.value(body) : body,
       };
       if (eventBytes(event) > 64 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: event exceeds 64 KiB.');

@@ -7,7 +7,6 @@ from switch_core.connections.loader import (
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
-    deployment_skills,
     load_catalog,
 )
 
@@ -112,12 +111,109 @@ def test_rejects_unexpected_files_beside_the_definition(catalog_copy):
         load_catalog(catalog_copy)
 
 
-def test_deployment_skills_carries_the_skill_files():
-    skills = deployment_skills(CATALOG, ["github"])
-    assert skills == [{"slug": "github", "files": CATALOG["github"].skill_files}]
+def test_the_shipped_github_entry_says_what_each_level_reaches():
+    definition = CATALOG["github"].definition
+    assert definition.auth.refresh == "rotating"
+    assert definition.access is not None
+    assert definition.access.read.permissions == {
+        "contents": "read",
+        "pull_requests": "read",
+    }
+    assert definition.access.write is not None
+    assert definition.access.write.permissions == {
+        "contents": "write",
+        "pull_requests": "write",
+    }
+    assert definition.level_tools("write") == []
 
 
-def test_deployment_skills_rejects_placeholders_and_unknown_slugs():
-    for slug in ("jira", "unknown"):
-        with pytest.raises(CatalogError, match="not an enabled catalog entry"):
-            deployment_skills(CATALOG, [slug])
+def _rewrite_github(root, old: str, new: str) -> None:
+    path = root / "github" / "connection.yaml"
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new))
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("  refresh: rotating\n", ""),
+        ("tools:\n  read: []\n  write: []\n", ""),
+        (
+            "access:\n  read:\n    permissions: { contents: read, pull_requests: read }\n"
+            "  write:\n    permissions: { contents: write, pull_requests: write }\n",
+            "",
+        ),
+    ],
+    ids=["auth.refresh", "tools", "access"],
+)
+def test_rejects_an_enabled_entry_missing_a_v2_field(catalog_copy, old, new):
+    _rewrite_github(catalog_copy, old, new)
+    with pytest.raises(
+        CatalogError, match="(?s)github is invalid.*an enabled entry needs"
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_level_that_reaches_nothing(catalog_copy):
+    _rewrite_github(
+        catalog_copy,
+        "permissions: { contents: read, pull_requests: read }",
+        "permissions: {}",
+    )
+    with pytest.raises(CatalogError, match="(?s)github is invalid.*at least one"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_level_with_both_scopes_and_permissions(catalog_copy):
+    _rewrite_github(
+        catalog_copy,
+        "permissions: { contents: read, pull_requests: read }",
+        "permissions: { contents: read }\n    scopes: [repo]",
+    )
+    with pytest.raises(CatalogError, match="(?s)github is invalid.*not both"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_write_tool_listed_under_read(catalog_copy):
+    _rewrite_github(
+        catalog_copy,
+        "tools:\n  read: []\n  write: []\n",
+        "tools:\n  read: [list_issues, create_issue]\n  write: [create_issue]\n",
+    )
+    with pytest.raises(
+        CatalogError,
+        match=r"(?s)github is invalid.*both read and write: \['create_issue'\]",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_write_without_read(catalog_copy):
+    _rewrite_github(
+        catalog_copy,
+        "  read:\n    permissions: { contents: read, pull_requests: read }\n",
+        "",
+    )
+    with pytest.raises(CatalogError, match="github is invalid"):
+        load_catalog(catalog_copy)
+
+
+def test_a_placeholder_may_describe_its_levels(catalog_copy):
+    path = catalog_copy / "jira" / "connection.yaml"
+    path.write_text(
+        path.read_text()
+        + "access:\n  read: { scopes: [read:jira-work] }\n"
+        + "tools:\n  read: [search_issues]\n  write: []\n"
+    )
+    definition = load_catalog(catalog_copy)["jira"].definition
+    assert definition.level_tools("read") == ["search_issues"]
+
+
+@pytest.mark.parametrize(
+    "phrase", ["GH_TOKEN", "gh auth status", "an Access Token", "API key"]
+)
+def test_rejects_a_skill_that_talks_about_credentials(catalog_copy, phrase):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    path.write_text(path.read_text() + f"\nNever use {phrase}.\n")
+    with pytest.raises(CatalogError, match="never credentials or setup"):
+        load_catalog(catalog_copy)

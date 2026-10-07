@@ -39,6 +39,10 @@ class AuditAction(StrEnum):
     MESSAGING_INSTALL_STARTED = "messaging_install.started"
     MESSAGING_INSTALL_CONNECTED = "messaging_install.connected"
     MESSAGING_INSTALL_DISCONNECTED = "messaging_install.disconnected"
+    SERVICE_CONNECTED = "service.connected"
+    SERVICE_DISCONNECTED = "service.disconnected"
+    SERVICE_GRANT_SET = "service_grant.set"
+    SERVICE_GRANT_REMOVED = "service_grant.removed"
 
 
 async def record_audit_event(

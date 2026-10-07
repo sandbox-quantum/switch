@@ -20,6 +20,7 @@ from switch_core.bridges.agent.api.hosted_worker_routes import (
     router as hosted_worker_router,
 )
 from switch_core.bridges.agent.api.operations import router as operations_router
+from switch_core.bridges.agent.api.service_routes import router as service_router
 from switch_core.bridges.agent.api.version_routes import router as version_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import (
@@ -156,6 +157,7 @@ def create_agent_bridge_app(
     app.include_router(api_router, prefix="/agents", tags=["api"])
     app.include_router(hosted_worker_router, prefix="/agents", tags=["hosted"])
     app.include_router(hosted_cutover_router, prefix="/agents", tags=["hosted"])
+    app.include_router(service_router, prefix="/agents", tags=["service connections"])
     app.include_router(hosted_router, tags=["hosted"])
     app.include_router(hosted_machine_router, tags=["hosted"])
     app.include_router(operations_router)

@@ -6,9 +6,9 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
-import { pipeRedactedHostedLogs } from './hosted-log';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner, killProcessTree } from './process-fence';
+import { pipeRedactedLogs } from './redaction';
 import type { SessionLinks } from './session-channel';
 
 function alive(pid: number): boolean {
@@ -55,7 +55,10 @@ export async function superviseSharedHost(input: {
    * process does, and the host is then started without one.
    */
   links: SessionLinks | null;
-  /** Exact values scrubbed from the host's output before it reaches worker.log. */
+  /**
+   * Exact values scrubbed from the host's output before it reaches
+   * worker.log, with the service tokens `links` has answered to its hosts.
+   */
   logRedactions: string[];
 }): Promise<void> {
   const directory = join(input.root, 'supervisor');
@@ -77,7 +80,10 @@ export async function superviseSharedHost(input: {
         continue;
       }
       const log = await open(join(directory, 'worker.log'), 'a', 0o600);
-      const redacting = input.logRedactions.length > 0;
+      // A host linked to this process may be handed service tokens at any
+      // time, so its output always passes through here.
+      const linked = input.links;
+      const redacting = input.logRedactions.length > 0 || linked !== null;
       const output = redacting ? 'pipe' : log.fd;
       const child = spawn(input.executable, input.args, {
         detached: true,
@@ -87,12 +93,13 @@ export async function superviseSharedHost(input: {
       input.links?.attach(input.root, child);
       const exited = once(child, 'exit');
       const logged = redacting
-        ? pipeRedactedHostedLogs([child.stdout!, child.stderr!], log, input.logRedactions).catch(
-            (error: unknown) => {
-              child.kill('SIGKILL');
-              throw error;
-            }
-          )
+        ? pipeRedactedLogs([child.stdout!, child.stderr!], log, () => [
+            ...input.logRedactions,
+            ...(linked?.redactions.list() ?? []),
+          ]).catch((error: unknown) => {
+            child.kill('SIGKILL');
+            throw error;
+          })
         : log.close();
       logged.catch(() => {});
       // Asked first. A host that has not gone `CHILD_STOP_GRACE_MS` later is

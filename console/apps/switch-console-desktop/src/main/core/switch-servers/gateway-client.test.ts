@@ -50,6 +50,10 @@ const {
   cloudLifecycle,
   getCloudLaunchConfiguration,
   getConnectionCatalog,
+  servesServiceConnections,
+  fetchServiceGrants,
+  removeServiceGrant,
+  setServiceGrant,
   getGitHubConnection,
   startGitHubConnection,
   completeGitHubConnection,
@@ -1127,7 +1131,49 @@ describe('GitHub connection transport', () => {
     );
     expect(await getGitHubConnection(SERVER)).not.toHaveProperty('access_token');
   });
-  it('reads the connection catalog and rejects an unknown status', async () => {
+  it('reads the service connections, mapped onto the catalog', async () => {
+    const entry = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      configured: false,
+      unavailable_reason: 'GitHub can be connected on this server but not granted to agents.',
+      status: 'needs_reauthorization',
+      consent: 'write',
+      external_identity: 'ada-gh',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            entry,
+            { ...entry, slug: 'jira', name: 'Jira', enabled: false, status: 'not_connected' },
+          ],
+        })
+      )
+    );
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      {
+        slug: 'github',
+        name: 'GitHub',
+        category: 'Source control',
+        description: 'Repositories.',
+        enabled: true,
+        auth_type: 'oauth',
+        connectable: true,
+        status: 'needs_reauthorization',
+        unavailable_reason: entry.unavailable_reason,
+      },
+      expect.objectContaining({ slug: 'jira', status: 'coming_soon', unavailable_reason: null }),
+    ]);
+    const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/service-connections');
+  });
+  it('reads the older catalog from a server without service connections', async () => {
     const github = {
       slug: 'github',
       name: 'GitHub',
@@ -1137,14 +1183,76 @@ describe('GitHub connection transport', () => {
       auth_type: 'oauth',
       status: 'connected',
     };
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [github] })));
-    expect(await getConnectionCatalog(SERVER)).toEqual([github]);
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ connections: [github] })));
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      { ...github, connectable: true, unavailable_reason: null },
+    ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/provider-connections/catalog');
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
-    );
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
+      );
     await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
+  });
+  it('tells a server with service connections from one without', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [] })));
+    expect(await servesServiceConnections(SERVER)).toBe(true);
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await servesServiceConnections(SERVER)).toBe(false);
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(servesServiceConnections(SERVER)).rejects.toThrow();
+  });
+  it("reads, sets and removes an agent's service grants", async () => {
+    const listed = {
+      grants: [
+        {
+          service: 'github',
+          name: 'GitHub',
+          access: 'read',
+          tool_mode: 'allow',
+          tools: [],
+          effective_tools: [],
+          resources: { installation_id: 7, repository_ids: [70] },
+          summary: 'helper can read 1 repository, acting as the GitHub App.',
+        },
+      ],
+      missing: [],
+      addressing_open: true,
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(listed)));
+    expect((await fetchServiceGrants(SERVER, 'agent 1')).grants[0]?.summary).toBe(
+      listed.grants[0]!.summary
+    );
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/agents/agent%201/service-grants'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ grant: listed.grants[0], warning: 'Access stays a while.' }))
+    );
+    expect(
+      await setServiceGrant(SERVER, 'agent 1', 'github', {
+        access: 'write',
+        resources: { installation_id: 7, repository_ids: [70] },
+      })
+    ).toBe('Access stays a while.');
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/agents/agent%201/service-grants/github');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({
+      access: 'write',
+      resources: { installation_id: 7, repository_ids: [70] },
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ warning: null })));
+    expect(await removeServiceGrant(SERVER, 'agent 1', 'github')).toBeNull();
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit])[1].method).toBe(
+      'DELETE'
+    );
   });
 });
 

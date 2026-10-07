@@ -14,6 +14,7 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { buildSharedHostConfig } from './build-shared-config';
@@ -21,22 +22,21 @@ import { WorkerObsoleteError } from './exit-codes';
 import {
   ensureHostedRepository,
   githubLaunchEnvironment,
-  githubRedactions,
-  prepareGitHubCli,
   readGitHubCredential,
-  renewGitHubCredential,
   validateGitHubCredential,
 } from './hosted-github';
-import { redactHostedText } from './hosted-log';
 import { runHostedPreflight } from './hosted-preflight';
 import { fetchHostedProvider, hostedRequest, materializeHostedProvider } from './hosted-provider';
 import {
   hostedSkillsDirectory,
   hostedSkillsSchema,
   installHostedSkills,
+  removeFormerlyInstalledSkills,
   supportsHostedSkills,
 } from './hosted-skills';
 import { checkProviderReadiness } from './provider-readiness';
+import { redactText, tokenForms } from './redaction';
+import { issueServiceToken } from './service-access';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import type { superviseSharedHost } from './supervisor';
 import { WATCH_FLAGS_FILE } from './watch-flags';
@@ -211,7 +211,7 @@ async function readProviderCredential(path: string): Promise<string> {
 async function validateSwitchCredentials(
   path: string,
   agentId: string
-): Promise<{ token: string }> {
+): Promise<{ endpoint: string; token: string }> {
   let value: unknown;
   try {
     value = JSON.parse(await readFile(path, 'utf8'));
@@ -251,7 +251,63 @@ async function validateSwitchCredentials(
   }
   if (env.SWITCH_AGENT_ID !== agentId)
     throw new Error('Switch credential file belongs to a different agent.');
-  return { token: env.SWITCH_API_TOKEN };
+  return { endpoint: env.SWITCH_API_ENDPOINT, token: env.SWITCH_API_TOKEN };
+}
+
+/**
+ * The agent's GitHub token for the bootstrap's own clone of the repository,
+ * from its grant (contract §5), before any session runs. Sessions get theirs
+ * through the agent host. Asked again once when Switch says to retry.
+ */
+async function grantedGitHubToken(
+  switchCredentials: { endpoint: string; token: string },
+  agentId: string
+): Promise<string> {
+  if (new URL(switchCredentials.endpoint).protocol !== 'https:')
+    throw new Error('Cloud repository access needs a Switch endpoint on https.');
+  const endpoint = { ...switchCredentials, agentId };
+  try {
+    let outcome = await issueServiceToken(endpoint, 'github');
+    if ('code' in outcome && outcome.retryable) {
+      await delay(1_000);
+      outcome = await issueServiceToken(endpoint, 'github');
+    }
+    if ('code' in outcome) throw new Error(outcome.message);
+    return outcome.token;
+  } catch (error) {
+    throw new Error(
+      `Could not get the agent's GitHub access for the cloud repository: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * What an earlier build put in a cloud deployment's launch environment for
+ * GitHub, when the bootstrap renewed the token itself: Git's helper for that,
+ * the wrapper directory on PATH, and where the helper found Switch. Sessions
+ * now set GitHub up from the agent's grant, so a saved plan that differs from
+ * this build's only by these is upgraded in place rather than refused.
+ */
+function withoutRenewedGitHub(config: SharedHostConfig, root: string): SharedHostConfig {
+  const upgraded = structuredClone(config);
+  const env = upgraded.start.input.env;
+  for (const key of [
+    'GH_HOST',
+    'GH_PROMPT_DISABLED',
+    'GIT_TERMINAL_PROMPT',
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_KEY_0',
+    'GIT_CONFIG_VALUE_0',
+    'GIT_CONFIG_KEY_1',
+    'GIT_CONFIG_VALUE_1',
+    'GIT_CONFIG_KEY_2',
+    'GIT_CONFIG_VALUE_2',
+    'SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS',
+    'SWITCH_HOSTED_GITHUB_REPOSITORY',
+  ])
+    delete env[key];
+  if (env.PATH?.startsWith(`${join(root, 'bin')}:`)) delete env.PATH;
+  return upgraded;
 }
 
 async function writeNewJson(path: string, value: unknown): Promise<boolean> {
@@ -351,6 +407,8 @@ export interface PreparedHostedDeployment {
   config: SharedHostConfig;
   providerEnvironment: NodeJS.ProcessEnv;
   logRedactions: string[];
+  /** The token from the agent's grant the repository is cloned with; never saved. */
+  cloneToken: string | null;
 }
 
 /**
@@ -456,8 +514,10 @@ export async function prepareHostedDeployment(
     switchCredentialsPath,
     spec.session.agentId
   );
+  // A repository granted to the agent is cloned here with a token from its
+  // grant; a mounted personal token is the cloud's own older way.
   const githubCredential = spec.github?.refresh
-    ? await renewGitHubCredential(switchCredentialsPath, spec.github.repository)
+    ? await grantedGitHubToken(switchCredentials, spec.session.agentId)
     : githubCredentialPath
       ? await readGitHubCredential(githubCredentialPath)
       : undefined;
@@ -466,14 +526,7 @@ export async function prepareHostedDeployment(
   await createControlledDirectories(controlled);
   const environment = {
     ...controlled,
-    ...(githubCredential ? githubLaunchEnvironment() : {}),
-    ...(spec.github?.refresh
-      ? {
-          SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: switchCredentialsPath,
-          SWITCH_HOSTED_GITHUB_REPOSITORY: spec.github.repository!,
-          PATH: `${await prepareGitHubCli(root)}:${process.env.PATH ?? '/usr/bin:/bin'}`,
-        }
-      : {}),
+    ...(githubCredential && !spec.github?.refresh ? githubLaunchEnvironment() : {}),
   };
   const variable = credentialVariable(spec.provider);
   const candidate = hostedDeploymentPlanSchema.parse(
@@ -565,6 +618,21 @@ export async function prepareHostedDeployment(
     throw new Error(
       'Hosted deployment specification differs from the saved state; review the saved assignment before starting a different deployment.'
     );
+  if (
+    spec.github?.refresh &&
+    !sameValue(plan.config, expectedConfig) &&
+    sameValue(withoutRenewedGitHub(plan.config, root), expectedConfig)
+  ) {
+    const upgraded = { version: 1 as const, spec, config: expectedConfig };
+    await replaceJson(configPath, upgraded.config);
+    await replaceJson(planPath, upgraded);
+    await rm(join(root, 'bin', 'gh'), { force: true });
+    await syncDirectory(root);
+    plan = upgraded;
+    console.warn(
+      "Upgraded this deployment's saved launch environment: its sessions now get GitHub from the agent's grant."
+    );
+  }
   if (!sameValue(plan.config, expectedConfig))
     throw new Error(
       'Saved hosted deployment configuration does not match its deployment specification.'
@@ -607,8 +675,9 @@ export async function prepareHostedDeployment(
       ...(providerCredential === null ? [] : [providerCredential]),
       switchCredentials.token,
       workerCapability,
-      ...(githubCredential ? githubRedactions(githubCredential) : []),
+      ...(githubCredential ? tokenForms(githubCredential) : []),
     ],
+    cloneToken: spec.github?.refresh ? (githubCredential ?? null) : null,
   };
 }
 
@@ -654,20 +723,30 @@ export async function runHostedBootstrap(
         'The provider rejected the saved sign-in. Sign in again and reconnect the provider in Switch Console.'
       );
     Object.assign(prepared.providerEnvironment, env);
-    if (spec.github?.refresh && spec.github.repository)
+    if (spec.github?.refresh && spec.github.repository && prepared.cloneToken)
       await ensureHostedRepository({
         workspace: spec.workspacePath,
         mirror: spec.github.mirrorPath,
         repository: spec.github.repository,
         agentId: spec.session.agentId,
-        env: prepared.providerEnvironment,
+        env: {
+          ...prepared.providerEnvironment,
+          ...githubLaunchEnvironment(),
+          GH_TOKEN: prepared.cloneToken,
+        },
       });
     await writeDefinition(spec, false);
-    if (spec.skills && supportsHostedSkills(spec.provider.kind))
-      await installHostedSkills(
-        hostedSkillsDirectory(spec.provider.kind, prepared.providerEnvironment),
-        spec.skills
-      );
+    // A Switch that still lists connection skills with the agent gets them
+    // installed, as before; one that does not gives each session its skills
+    // from the agent's grants instead.
+    if (supportsHostedSkills(spec.provider.kind)) {
+      if (spec.skills)
+        await installHostedSkills(
+          hostedSkillsDirectory(spec.provider.kind, prepared.providerEnvironment),
+          spec.skills
+        );
+      else await removeFormerlyInstalledSkills(spec.provider.kind, prepared.providerEnvironment);
+    }
     await dependencies.supervise({
       root: prepared.root,
       executable: process.execPath,
@@ -681,6 +760,6 @@ export async function runHostedBootstrap(
   } catch (error) {
     if (error instanceof WorkerObsoleteError) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(redactHostedText(message, prepared.logRedactions));
+    throw new Error(redactText(message, prepared.logRedactions));
   }
 }

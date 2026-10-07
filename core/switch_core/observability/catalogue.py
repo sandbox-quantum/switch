@@ -296,6 +296,21 @@ CONNECTORS_RUNNING = _spec(
     "agent host nothing else reports.",
 )
 
+# ── Service tokens ───────────────────────────────────────────────────────────
+# `service` is a catalog slug ("unknown" for a name the catalog does not hold)
+# and `outcome` is "issued" or the reason code the request was refused with,
+# both fixed sets (`connections/broker.py`). A steady stream of refusals from
+# one agent, or issues well above one an hour per session, is worth a look.
+SERVICE_TOKEN_REQUESTS = _spec(
+    "switch.service_tokens.requests",
+    "sum",
+    "{request}",
+    "Service token requests, by service and outcome: issued, or the reason "
+    "code the request was refused with.",
+    "service",
+    "outcome",
+)
+
 # ── Process and runtime ──────────────────────────────────────────────────────
 # What an infrastructure agent would report, and there is none deployed. Still
 # useful once there is: the process knows things the node does not.
@@ -369,6 +384,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
         CONNECTORS_RUNNING,
+        SERVICE_TOKEN_REQUESTS,
         RUNTIME_MEMORY_RSS,
         RUNTIME_CPU_SECONDS,
         RUNTIME_OPEN_FDS,

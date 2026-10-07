@@ -30,6 +30,7 @@ import {
 } from "../../theme/hootFormat";
 import AddressingPolicySection from "./AddressingPolicySection";
 import AgentManagementSection from "./AgentManagementSection";
+import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 import { sessionPlace, sessionRunner } from "./sessionLabels";
 
@@ -139,6 +140,7 @@ export default function AgentDetailPage() {
           canEdit={isOwner}
           onUpdated={refetch}
         />
+        {isOwner && <ServiceAccessSection agent={agent} onAgentUpdated={refetch} />}
         <Divider />
         <SessionsSection sessions={agent.sessions} />
         <Divider />

@@ -41,6 +41,9 @@ import {
   type TemplateRun,
   type TemplateVisibility,
   updateAddressingPolicy,
+  fetchServiceGrants,
+  setServiceGrant,
+  removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
   updateAgentDisplayName,
@@ -66,6 +69,7 @@ import type {
 } from '@main/core/telemetry/events';
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   AddressingPolicy,
   AgentIconBackfill,
@@ -632,6 +636,37 @@ export const workspacesController = createRPCController({
    * about. One agent-list read, so callers need not ration it. */
   ownsOwnerAddressedAgent: (workspaceId: string): Promise<boolean> =>
     withWorkspaceSession(workspaceId, ownsOwnerAddressedAgent),
+
+  /** The agent's service grants, any it works without, and whether anyone can address it. */
+  getServiceGrants: (params: { workspaceId: string; agentId: string }): Promise<ServiceGrants> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchServiceGrants(server, params.agentId)
+    ),
+
+  /** Create or replace the agent's grant on a service; owner only. Resolves to a warning or null. */
+  setServiceGrant: (params: {
+    workspaceId: string;
+    agentId: string;
+    service: string;
+    access: 'read' | 'write';
+    resources: Record<string, unknown>;
+  }): Promise<string | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      setServiceGrant(server, params.agentId, params.service, {
+        access: params.access,
+        resources: params.resources,
+      })
+    ),
+
+  /** Remove the agent's grant on a service; owner only. Resolves to a warning or null. */
+  removeServiceGrant: (params: {
+    workspaceId: string;
+    agentId: string;
+    service: string;
+  }): Promise<string | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      removeServiceGrant(server, params.agentId, params.service)
+    ),
 
   getAddressingPolicy: (params: {
     workspaceId: string;

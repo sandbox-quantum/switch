@@ -1,11 +1,11 @@
 import json
-from datetime import UTC, datetime
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
-from switch_core.db.models import ProviderConnection, User
+from switch_core.db.models import User
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.connection_catalog import router
 from switch_core.gateway.dependencies import get_session
@@ -46,16 +46,17 @@ async def catalog_app(session_factory):
 
 async def link_github(session_factory, user_id):
     async with session_factory() as session:
-        session.add(
-            ProviderConnection(
-                user_id=user_id,
-                provider="github",
-                kind="oauth",
-                encrypted_credential=TEST_KEYRING.encrypt(
-                    json.dumps({"access_token": "SYNTHETIC"})
-                ),
-                verified_at=datetime.now(UTC),
-            )
+        await ServiceConnectionStore().save_connection(
+            session,
+            user_id=user_id,
+            service="github",
+            consent="write",
+            granted_scopes=[],
+            account_id=f"account-{user_id}",
+            external_identity=user_id,
+            encrypted_secret=TEST_KEYRING.encrypt(
+                json.dumps({"access_token": "SYNTHETIC"})
+            ),
         )
         await session.commit()
 

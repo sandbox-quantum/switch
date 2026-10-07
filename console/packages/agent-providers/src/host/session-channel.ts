@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import { Redactions } from './redaction';
 
 /**
  * How long a session host that has finished may take to exit once it has
@@ -69,6 +70,16 @@ export const hostAskSchema = z.discriminatedUnion('type', [
     type: z.literal('tool'),
     name: z.string().min(1),
     arguments: z.record(z.string(), z.unknown()),
+  }),
+  /**
+   * A token for one of the agent's granted services, answered with a
+   * `ServiceTokenAnswer`. `rejected` is a token the service refused (Git
+   * erasing it, or `gh` told 401): the parent stops handing it out.
+   */
+  z.object({
+    type: z.literal('service-token'),
+    service: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
+    rejected: z.string().nullable(),
   }),
 ]);
 export type HostAsk = z.infer<typeof hostAskSchema>;
@@ -202,6 +213,11 @@ type Link = {
  * the supervisor starts the host again.
  */
 export class SessionLinks {
+  /**
+   * Every service token answered to these hosts. Their supervisor scrubs it
+   * from what they log, and their parent from what it sends to Switch.
+   */
+  readonly redactions = new Redactions();
   private readonly links = new Map<string, Link>();
   private readonly answerers = new Map<string, AskHandler>();
   private readonly exitListeners = new Set<(root: string, identity: HostIdentity | null) => void>();

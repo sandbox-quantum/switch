@@ -52,6 +52,11 @@ from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_owner,
     make_service,
 )
+from tests.switch_core.connections.github_seed import (  # noqa: F401
+    connect_github,
+    github_broker,
+    github_vendor,
+)
 from tests.switch_core.hosted_wire_fixtures import (
     AGENT_ID,
     API_ENDPOINT,
@@ -103,7 +108,7 @@ RESPONSES: dict[str, dict[tuple[str, ...], Any]] = {
 
 
 @pytest.fixture
-async def wire(session_factory, monkeypatch, tmp_path):
+async def wire(session_factory, monkeypatch, tmp_path, github_vendor):  # noqa: F811
     owner = await make_owner(session_factory)
     async with session_factory() as session:
         session.add(
@@ -116,6 +121,7 @@ async def wire(session_factory, monkeypatch, tmp_path):
             TEST_KEYRING.encrypt("SYNTHETIC-CLAUDE"),
             datetime.now(UTC),
         )
+        await connect_github(session, owner, TEST_KEYRING)
         await session.commit()
     settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
@@ -160,6 +166,9 @@ async def wire(session_factory, monkeypatch, tmp_path):
     app.state.hosted_controller_settings = settings
     app.state.claude_verifier = AsyncMock()
     app.state.github_connections = object()
+    app.state.service_broker = github_broker(
+        session_factory, TEST_KEYRING, github_vendor
+    )
     app.include_router(controller_router)
     app.include_router(hosted_machine_router)
     app.include_router(launch_router)

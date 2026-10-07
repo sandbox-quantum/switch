@@ -14,6 +14,7 @@ import {
   type Assignment,
   type StatusReport,
   statusReportSchema,
+  type ToolStatus,
 } from './schemas';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import {
@@ -68,6 +69,8 @@ export type ControllerDeps = {
    */
   runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
   locator: ProviderLocator;
+  /** `git` and `gh`, as sessions here would be set up with them (`toolStatuses`). */
+  tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
   log: Logger;
   /** Where disk space is measured and provider checks run. */
@@ -326,6 +329,7 @@ export async function runController(
     store,
     runtime,
     providers,
+    tools: deps.tools,
     attached: (agentId) => delivery(agentId).attached(agentId),
     dataDir: deps.dataDir,
     workspacesDir: workspaces,

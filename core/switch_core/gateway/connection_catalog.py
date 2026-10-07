@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.connections.loader import CATALOG
-from switch_core.db.models import ProviderConnection, User, require_tenant_id
+from switch_core.db.models import ServiceConnection, User, require_tenant_id
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session
 
@@ -19,10 +19,10 @@ async def catalog(
 ) -> dict:
     connected = set(
         await session.scalars(
-            select(ProviderConnection.provider).where(
-                ProviderConnection.tenant_id == require_tenant_id(),
-                ProviderConnection.user_id == user.id,
-                ProviderConnection.provider.in_(list(CATALOG)),
+            select(ServiceConnection.service).where(
+                ServiceConnection.tenant_id == require_tenant_id(),
+                ServiceConnection.user_id == user.id,
+                ServiceConnection.service.in_(list(CATALOG)),
             )
         )
     )

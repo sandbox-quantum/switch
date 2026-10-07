@@ -10,7 +10,9 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     description: `${name} access.`,
     enabled: false,
     auth_type: 'oauth',
+    connectable: false,
     status: 'coming_soon',
+    unavailable_reason: null,
   };
 }
 

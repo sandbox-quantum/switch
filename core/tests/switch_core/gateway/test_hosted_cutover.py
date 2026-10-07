@@ -30,6 +30,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.agent_store import AgentStore
+from tests.switch_core.connections.github_seed import github_vendor  # noqa: F401
 from tests.switch_core.gateway.test_hosted_mailbox import (  # noqa: F401
     attach,
     fail_first_send,

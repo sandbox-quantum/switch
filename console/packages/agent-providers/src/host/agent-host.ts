@@ -883,7 +883,16 @@ export async function runAgentHost(
     // Before any session is started below: a host asks for its tools as soon
     // as its provider comes up.
     unbind.push(
-      links.answer(agentId, sessionToolAnswerer({ identity, connectionId, placements, publish }))
+      links.answer(
+        agentId,
+        sessionToolAnswerer({
+          identity,
+          connectionId,
+          placements,
+          publish,
+          redactions: links.redactions,
+        })
+      )
     );
     // A host coming up — started from Console after it failed, say — takes
     // the messages that waited for it.

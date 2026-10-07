@@ -7,81 +7,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ensureHostedRepository,
   githubLaunchEnvironment,
-  githubRedactions,
-  gitHubCredentialResponse,
   readGitHubCredential,
-  renewGitHubCredential,
   validateGitHubCredential,
 } from './hosted-github';
-import { redactHostedText } from './hosted-log';
 
 const roots: string[] = [];
 const token = 'synthetic-github-credential';
 afterEach(async () => {
   vi.unstubAllGlobals();
   for (const path of roots.splice(0)) await rm(path, { recursive: true, force: true });
-});
-
-it('provides credentials only for the exact GitHub HTTPS host', () => {
-  expect(gitHubCredentialResponse('get', 'protocol=https\nhost=github.com\n\n', token)).toBe(
-    `username=x-access-token\npassword=${token}\n\n`
-  );
-  for (const input of [
-    'protocol=http\nhost=github.com\n',
-    'protocol=https\nhost=github.com.evil.invalid\n',
-    'protocol=https\nhost=github.com:443\n',
-    'protocol=https\nhost=other.invalid\nhost=github.com\n',
-    'protocol=https\nhost=github.com\r\n',
-    'url=https://github.com\n',
-  ])
-    expect(gitHubCredentialResponse('get', input, token)).toBe('');
-  expect(gitHubCredentialResponse('get', 'protocol=https\nhost=github.com\n', undefined)).toBe('');
-  expect(gitHubCredentialResponse('store', 'protocol=https\nhost=github.com\n', token)).toBe('');
-  expect(gitHubCredentialResponse('erase', 'protocol=https\nhost=github.com\n', token)).toBe('');
-});
-
-it('renews only the assigned repository credential and hides failed response bodies', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hosted-github-refresh-'));
-  roots.push(root);
-  const credentials = join(root, 'switch.json');
-  await writeFile(
-    credentials,
-    JSON.stringify({
-      env: {
-        SWITCH_API_ENDPOINT: 'https://switch.example.com/api/agent',
-        SWITCH_API_TOKEN: 'synthetic-switch-credential',
-      },
-    })
-  );
-  const request = vi.fn(
-    async () =>
-      new Response(
-        JSON.stringify({
-          token,
-          repository: 'example/project',
-          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-        })
-      )
-  );
-  vi.stubGlobal('fetch', request);
-  expect(await renewGitHubCredential(credentials, 'example/project')).toBe(token);
-  expect(request.mock.calls[0]).toEqual([
-    'https://switch.example.com/api/agent/hosted/github-credential',
-    expect.objectContaining({ method: 'POST', redirect: 'error' }),
-  ]);
-  await expect(renewGitHubCredential(credentials, 'example/other')).rejects.toThrow(
-    'Could not renew'
-  );
-  request.mockImplementation(async () => new Response('remote-secret-body', { status: 403 }));
-  await expect(renewGitHubCredential(credentials, 'example/project')).rejects.toThrow(
-    'Could not renew'
-  );
-});
-
-it('keeps raw and common transport encodings out of redacted output', () => {
-  const secrets = githubRedactions(token);
-  for (const value of secrets) expect(redactHostedText(value, secrets)).toBe('[REDACTED]');
-  expect(JSON.stringify(githubLaunchEnvironment())).not.toContain(token);
 });
 
 it.each([401, 403, 429, 500, 302])(
@@ -139,10 +73,10 @@ it('authenticates real Git credential requests without writing credentials or co
   const root = await mkdtemp(join(tmpdir(), "hosted github's "));
   roots.push(root);
   const script = join(root, "credential helper's.mjs");
-  const moduleUrl = new URL('./hosted-github.ts', import.meta.url).href;
+  const moduleUrl = new URL('./service-github.ts', import.meta.url).href;
   await writeFile(
     script,
-    `import { runGitHubCredentialHelper } from ${JSON.stringify(moduleUrl)}; await runGitHubCredentialHelper(process.argv.at(-1));`
+    `import { runGitCredentialHelper } from ${JSON.stringify(moduleUrl)}; await runGitCredentialHelper(process.argv.at(-1), { stdin: process.stdin, stdout: process.stdout, env: process.env });`
   );
   const marker = join(root, 'unexpected-helper');
   const config = join(root, '.gitconfig');
@@ -198,41 +132,6 @@ it.each([
   vi.stubGlobal('fetch', request);
   await expect(validateGitHubCredential(token, repository)).rejects.toThrow('repository');
   expect(request).not.toHaveBeenCalled();
-});
-
-it.each([409, 503, 422])('retries a token renewal only for retryable status %s', async (status) => {
-  const root = await mkdtemp(join(tmpdir(), 'hosted-github-retry-'));
-  roots.push(root);
-  const path = join(root, 'switch.json');
-  await writeFile(
-    path,
-    JSON.stringify({
-      env: {
-        SWITCH_API_ENDPOINT: 'https://switch.example.com/api/agent',
-        SWITCH_API_TOKEN: 'synthetic-switch-credential',
-      },
-    })
-  );
-  const request = vi
-    .fn()
-    .mockResolvedValueOnce(new Response('unavailable', { status }))
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          token,
-          repository: 'example/project',
-          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-        })
-      )
-    );
-  vi.stubGlobal('fetch', request);
-  if (status === 422) {
-    await expect(renewGitHubCredential(path, 'example/project')).rejects.toThrow('Could not renew');
-    expect(request).toHaveBeenCalledTimes(1);
-  } else {
-    expect(await renewGitHubCredential(path, 'example/project')).toBe(token);
-    expect(request).toHaveBeenCalledTimes(2);
-  }
 });
 
 describe('ensureHostedRepository', () => {

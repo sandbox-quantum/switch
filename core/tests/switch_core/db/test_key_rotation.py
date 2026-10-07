@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography.fernet import Fernet
@@ -21,10 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db import encrypted_json
 from switch_core.db.key_rotation import reencrypt_stored_secrets
 from switch_core.db.models import (
+    Agent,
     ApiKey,
     Client,
     CollaborationBridge,
     MessagingInstall,
+    ServiceConnection,
+    ServiceTokenIssuance,
     Tenant,
     User,
 )
@@ -90,8 +94,61 @@ async def _seed(
             installed_by_user_id=user_id,
         )
         session.add_all([bridge, key, install])
+        await session.flush()
+        agent_client = Client(
+            transport_user_id=f"@agent-{uuid.uuid4().hex[:8]}:switch.local",
+            display_name="agent client",
+            type="agent",
+        )
+        session.add(agent_client)
+        await session.flush()
+        agent = Agent(
+            name=f"agent-{uuid.uuid4().hex[:8]}",
+            description="",
+            agent_type="session_passive",
+            connector_type="external",
+            integration_profile={},
+            client_id=agent_client.id,
+            api_key_id=key.id,
+            owner_id=user_id,
+        )
+        connection = ServiceConnection(
+            user_id=user_id,
+            service="github",
+            status="active",
+            consent="write",
+            granted_scopes=[],
+            account_id="1001",
+            external_identity="ada",
+            encrypted_secret=_legacy_encrypt(f"service-secret-{tenant_id}"),
+            secret_revision=1,
+        )
+        session.add_all([agent, connection])
+        await session.flush()
+        issuance = ServiceTokenIssuance(
+            grant_id="grant",
+            agent_id=agent.id,
+            owner_id=user_id,
+            service="github",
+            principal="agent_key",
+            controller_id=None,
+            permissions={},
+            resources={},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            token_sha256="0" * 64,
+            encrypted_token=_legacy_encrypt(f"service-token-{tenant_id}"),
+            revoke_requested=False,
+            attempts=0,
+        )
+        session.add(issuance)
         await session.commit()
-        return {"bridge": bridge.id, "key": key.id, "install": install.id}
+        return {
+            "bridge": bridge.id,
+            "key": key.id,
+            "install": install.id,
+            "issuance": issuance.id,
+            "user": user_id,
+        }
 
 
 async def _raw(
@@ -101,6 +158,14 @@ async def _raw(
         result = await session.execute(
             text(f"SELECT {column} FROM {table} WHERE id = :id"), {"id": row_id}
         )
+        return result.scalar_one()
+
+
+async def _raw_where(
+    owner: async_sessionmaker[AsyncSession], query: str, params: dict[str, str]
+) -> object:
+    async with owner() as session:
+        result = await session.execute(text(query), params)
         return result.scalar_one()
 
 
@@ -139,6 +204,24 @@ async def test_every_tenants_secrets_end_up_under_the_current_key(
         )
         assert isinstance(token, str) and token.startswith(current)
         assert _NEW.decrypt(token) == f"install-{tenant_id}"
+
+        secret = await _raw_where(
+            rls_harness.owner,
+            "SELECT encrypted_secret FROM service_connections "
+            "WHERE tenant_id = :tenant AND user_id = :user",
+            {"tenant": tenant_id, "user": ids["user"]},
+        )
+        assert isinstance(secret, str) and secret.startswith(current)
+        assert _NEW.decrypt(secret) == f"service-secret-{tenant_id}"
+
+        issued = await _raw(
+            rls_harness.owner,
+            "service_token_issuances",
+            "encrypted_token",
+            ids["issuance"],
+        )
+        assert isinstance(issued, str) and issued.startswith(current)
+        assert _NEW.decrypt(issued) == f"service-token-{tenant_id}"
 
     # Once done, nothing needs the old key or the legacy secret any more.
     without_old = Keyring.parse("new:" + "n" * 40, legacy_secret=None)

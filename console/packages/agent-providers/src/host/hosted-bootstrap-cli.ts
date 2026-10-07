@@ -2,8 +2,8 @@
 import { fileURLToPath } from 'node:url';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { runHostedBootstrap } from './hosted-bootstrap';
-import { runGitHubCli, runGitHubCredentialHelper } from './hosted-github';
 import { checkHostedPreflight } from './hosted-preflight';
+import { runGitCredentialHelper } from './service-github';
 import { superviseSharedHost } from './supervisor';
 import { runCredentialVerification } from './verify-credential';
 
@@ -23,13 +23,15 @@ async function main(): Promise<void> {
     if ('blocked' in result) process.exitCode = 2;
     return;
   }
-  if (process.argv[2] === '--github-cli') {
-    await runGitHubCli(process.argv.slice(3));
-    return;
-  }
+  // The helper a deployment given a mounted GitHub token saves in its plan
+  // (`githubLaunchEnvironment`), and the bootstrap's own clone, run.
   if (process.argv[2] === '--git-credential') {
     if (process.argv.length !== 4) throw new Error('Invalid Git credential helper arguments.');
-    await runGitHubCredentialHelper(process.argv[3]);
+    await runGitCredentialHelper(process.argv[3], {
+      stdin: process.stdin,
+      stdout: process.stdout,
+      env: process.env,
+    });
     return;
   }
   const [stateDirectory, specPath, ...extra] = process.argv.slice(2);

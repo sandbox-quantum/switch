@@ -1,6 +1,7 @@
 /**
  * Connections open from a server's Your Agents page at any time, not only from
- * the setup wizard. The button is offered on a server with cloud agents; the
+ * the setup wizard. The button is offered on a server with service
+ * connections, which any agent can be granted, or with cloud agents; the
  * modal shows the server's catalog, says so when the catalog cannot be read
  * (an older server has no catalog endpoint) rather than showing an empty one,
  * and opens the GitHub step in place, with a way back to the grid.
@@ -24,6 +25,7 @@ const modalHost = vi.hoisted(() => ({
 const switchServers = vi.hoisted(() => ({
   getConnectionCatalog: vi.fn(),
   getGitHubConnection: vi.fn(),
+  servesServiceConnections: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -100,7 +102,9 @@ function entry(
     description: `${name} access`,
     enabled,
     auth_type: 'oauth',
+    connectable: enabled,
     status,
+    unavailable_reason: null,
   };
 }
 
@@ -118,6 +122,8 @@ beforeEach(() => {
   sdkHost.cloudMachines.mockResolvedValue(null);
   switchServers.getConnectionCatalog.mockReset();
   switchServers.getGitHubConnection.mockReset();
+  switchServers.servesServiceConnections.mockReset();
+  switchServers.servesServiceConnections.mockResolvedValue(false);
 });
 
 afterEach(async () => {
@@ -165,13 +171,41 @@ it('offers Connections on a server with cloud agents', async () => {
   await vi.waitFor(() => expect(button(/^connections$/i, container!)).toBeDefined());
 });
 
-it('offers no Connections on a server without cloud agents', async () => {
+it('offers Connections on a server with service connections and no cloud agents', async () => {
+  sdkHost.cloudAgents.mockResolvedValue(null);
+  switchServers.servesServiceConnections.mockResolvedValue(true);
+  await render();
+
+  await vi.waitFor(() => expect(button(/^connections$/i, container!)).toBeDefined());
+  expect(switchServers.servesServiceConnections).toHaveBeenCalledWith('server');
+});
+
+it('offers no Connections on an older server without cloud agents', async () => {
   sdkHost.cloudAgents.mockResolvedValue(null);
   await render();
 
   await vi.waitFor(() => expect(sdkHost.cloudAgents).toHaveBeenCalled());
+  await vi.waitFor(() => expect(switchServers.servesServiceConnections).toHaveBeenCalled());
   await act(async () => {});
   expect(button(/^connections$/i, container!)).toBeUndefined();
+});
+
+it('disables a service the server cannot connect, saying why', async () => {
+  switchServers.servesServiceConnections.mockResolvedValue(true);
+  sdkHost.cloudAgents.mockResolvedValue(null);
+  switchServers.getConnectionCatalog.mockResolvedValue([
+    {
+      ...entry('github', 'GitHub', true, 'not_connected'),
+      connectable: false,
+      unavailable_reason: 'GitHub is not set up on this server.',
+    },
+  ]);
+  await render();
+  const modal = await openConnections();
+
+  await vi.waitFor(() => expect(button(/GitHub/, modal)).toBeDefined());
+  expect(button(/GitHub/, modal)?.disabled).toBe(true);
+  expect(button(/GitHub/, modal)?.textContent).toMatch(/not set up on this server/);
 });
 
 it('shows the server’s connection grid', async () => {

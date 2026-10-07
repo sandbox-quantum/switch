@@ -12,6 +12,7 @@ import pytest
 from switch_core.db.models import HostedWakeMailbox
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.hosted_machines import router as machine_router
+from tests.switch_core.connections.github_seed import github_vendor  # noqa: F401
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     controller_app,
     machine_of,

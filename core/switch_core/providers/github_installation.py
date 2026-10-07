@@ -23,6 +23,17 @@ from switch_core.providers.github import (
 logger = logging.getLogger(__name__)
 
 
+# GitHub's limit on the repositories one installation token may name.
+MAX_REPOSITORIES = 500
+
+
+@dataclass(frozen=True)
+class InstallationToken:
+    token: str = field(repr=False)
+    expires_at: datetime
+    repository_ids: list[int]
+
+
 @dataclass(frozen=True)
 class RepositoryCredential:
     token: str = field(repr=False)
@@ -101,6 +112,44 @@ class GitHubInstallationCredentials:
             raise GitHubError(
                 "Your GitHub account needs write access to this repository to run a cloud agent."
             )
+        token = await self.mint(
+            installation_id,
+            [repository_id],
+            {"contents": "write", "pull_requests": "write"},
+        )
+        return RepositoryCredential(
+            token.token, token.expires_at, repository_id, repository["name"]
+        )
+
+    async def mint(
+        self,
+        installation_id: int,
+        repository_ids: list[int],
+        permissions: dict[str, str],
+    ) -> InstallationToken:
+        """An installation token for exactly these repositories and permissions.
+
+        GitHub's answer is checked against the request: the same permissions
+        (and `metadata: read`, which every token carries), the same
+        repositories, and an expiry within the hour. Any difference revokes
+        the token and refuses it.
+        """
+        if (
+            type(installation_id) is not int
+            or installation_id <= 0
+            or not 1 <= len(repository_ids) <= MAX_REPOSITORIES
+            or len(set(repository_ids)) != len(repository_ids)
+            or any(type(i) is not int or i <= 0 for i in repository_ids)
+        ):
+            raise GitHubError(
+                f"Choose a GitHub installation and 1 to {MAX_REPOSITORIES} repositories."
+            )
+        if (
+            not permissions
+            or "workflows" in permissions
+            or any(level not in ("read", "write") for level in permissions.values())
+        ):
+            raise GitHubError("These GitHub permissions cannot be granted.")
         now = int(time.time())
         assertion = jwt.encode(
             {"iat": now - 60, "exp": now + 540, "iss": self._client_id},
@@ -118,8 +167,8 @@ class GitHubInstallationCredentials:
                         "X-GitHub-Api-Version": "2022-11-28",
                     },
                     json={
-                        "repository_ids": [repository_id],
-                        "permissions": {"contents": "write", "pull_requests": "write"},
+                        "repository_ids": list(repository_ids),
+                        "permissions": dict(permissions),
                     },
                 )
             if rate_limited(response) or response.status_code >= 500:
@@ -135,7 +184,7 @@ class GitHubInstallationCredentials:
             expires_at = datetime.fromisoformat(
                 result["expires_at"].replace("Z", "+00:00")
             )
-            permissions = result["permissions"]
+            returned = result["permissions"]
             if (
                 not isinstance(token, str)
                 or not token
@@ -143,19 +192,17 @@ class GitHubInstallationCredentials:
                 or any(not 33 <= ord(char) <= 126 for char in token)
                 or expires_at.tzinfo is None
                 or not time.time() + 60 < expires_at.timestamp() <= time.time() + 3660
-                or not isinstance(permissions, dict)
-                or permissions.get("contents") != "write"
-                or permissions.get("pull_requests") != "write"
-                or set(permissions) - {"contents", "pull_requests", "metadata"}
-                or permissions.get("metadata", "read") != "read"
-                or [repo["id"] for repo in result["repositories"]] != [repository_id]
+                or not isinstance(returned, dict)
+                or {k: v for k, v in returned.items() if k != "metadata"}
+                != dict(permissions)
+                or returned.get("metadata", "read") != "read"
+                or sorted(repo["id"] for repo in result["repositories"])
+                != sorted(repository_ids)
             ):
                 raise GitHubError(
                     "GitHub returned an invalid repository credential or scope."
                 )
-            return RepositoryCredential(
-                token, expires_at, repository_id, repository["name"]
-            )
+            return InstallationToken(token, expires_at, sorted(repository_ids))
         except (
             GitHubError,
             httpx.HTTPError,

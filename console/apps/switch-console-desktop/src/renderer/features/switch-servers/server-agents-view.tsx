@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Bot,
   CircleStop,
@@ -90,6 +90,13 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   }, [serverId]);
 
   const cloud = useCloudAgents(serverId);
+  // Connections are for any agent on a server with service connections, and
+  // for cloud agents alone on one from before them.
+  const serviceConnections = useQuery({
+    queryKey: ['server-service-connections', serverId],
+    queryFn: () => rpc.switchServers.servesServiceConnections(serverId),
+    retry: false,
+  });
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
   const agents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
@@ -100,7 +107,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
       title="Your Agents"
       description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
       action={
-        cloud.data && (
+        (cloud.data || serviceConnections.data) && (
           <Button variant="outline" size="sm" onClick={() => showConnectionsModal({ serverId })}>
             <Plug className="size-4" />
             Connections

@@ -146,6 +146,8 @@ def protocol_service(
 @dataclass
 class Harness:
     app: FastAPI
+    # Mounted at `/gateway` on `app`, for a test to add routes to.
+    gateway_app: FastAPI
     management: Management
     protocol: AgentCore
     cache: ApiKeyCache
@@ -235,6 +237,7 @@ def build_harness(
     )
     return Harness(
         app=agent_app,
+        gateway_app=gateway_app,
         management=management,
         protocol=protocol,
         cache=cache,

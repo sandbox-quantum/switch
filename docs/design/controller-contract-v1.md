@@ -96,6 +96,8 @@ type AgentDefinition = {
 type Skill = { name: string; content: string }   // installed into the provider's skills dir
 ```
 
+`repo` and `skills` are not sent in v1. An agent's service grants and their skills are read by its agent host from `GET /agents/{agent_id}/service-grants` (§5) when a session starts, so a grant change bumps no revision.
+
 ---
 
 ## 3. Status (Management)
@@ -135,8 +137,9 @@ type ProviderStatus = {
   reason?: ReasonCode
 }
 
-type ToolStatus = { tool: string; state: "ok" | "missing" | "unauthenticated" | "unknown"; reason?: ReasonCode }
-                                            // e.g. "gh", "git", "mcp:jira"
+type ToolStatus = { tool: string; state: "ok" | "missing" | "unauthenticated" | "unsupported" | "unknown"; reason?: ReasonCode }
+                                            // e.g. "gh", "git", "mcp:jira". unsupported: this machine cannot run
+                                            // Switch's helper for the tool (GitHub's on Windows)
 
 type AgentStatus = {
   agent_id: string
@@ -191,14 +194,48 @@ Claim leases last 5 minutes and are renewed by `progress`. Every operation reach
 
 ---
 
-## 5. Tokens and secrets (Management)
+## 5. Tokens and secrets
+
+### Service tokens (Core)
+
+Service tokens are issued on agent routes (§7), so one route serves a controller acting as an agent and a directly connected agent using its own key. Implementation: `service-connections-v1.md`.
 
 ```
-POST /v1/management/controllers/{id}/connector-token
-  { agent_id: string, service: "github" | "jira" | "confluence" | "gdrive" | string, scope?: string[] }
-  → 200 { token: string, expires_at: Time }          // ≤ 1h. Every issuance is audited
-  → 403 not_assigned | 404 connector_not_connected
+GET /agents/{agent_id}/service-grants                auth: controller token acting as the agent (§7), or the agent's own key
+  → 200 { grants: ServiceGrant[] }
 
+POST /agents/{agent_id}/service-tokens/{service}     auth: as above. No body
+  → 200 { token: string, expires_at: Time, resources: ServiceResources }   // ≤ 1h, Cache-Control: no-store. Every issuance is recorded
+  → 403 grant_missing | not_assigned | forbidden
+  → 404 connector_not_connected | not_found          // not_found: no such service
+  → 409 connector_revoked | grant_account_changed | managed_by_controller
+  → 500 internal                                     // the vendor's token outlived an hour; not retryable
+  → 503 internal                                     // the vendor or the connection is unavailable
+```
+
+```ts
+type ServiceGrant = {
+  service: string                     // catalog slug: "github"; later "jira", "google-workspace", …
+  access: "read" | "write"
+  tool_mode: "allow" | "deny"         // allow: only `tools`; deny: every tool of the level except `tools`
+  tools: string[]
+  resources: ServiceResources
+  skill: { name: string; content: string } | null   // the service's SKILL.md
+}
+
+type ServiceResources =
+  | { installation_id: number; repository_ids: number[] }   // GitHub
+  | Record<string, never>                                    // a service whose token cannot be narrowed
+```
+
+- **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
+- **When grants are read.** The agent's host reads its grants when a session starts, and a change applies from the next session. No stream frame announces a change: a removed grant fails the next fetch, and a GitHub token already issued is revoked at once.
+- **`credential.revoked` is not used for grants.** It revokes the controller itself.
+- **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper.
+
+### Provider logins (Management)
+
+```
 GET /v1/management/controllers/{id}/provider-credentials/{provider}
   → 200 { revision: string, sealed: { alg: "X25519-XChaCha20Poly1305", key_id: string, ciphertext: base64 } }
   → 404 provider_login_missing
@@ -324,6 +361,9 @@ The personal agent relays that reason to the user as is.
 | `provider_not_installed` / `provider_version_unsupported` | status, placement | CLI missing, or too old |
 | `provider_login_missing` / `provider_login_expired` | status, placement | No usable login |
 | `connector_not_connected` / `connector_revoked` | tokens | User hasn't connected the service, or revoked it |
+| `grant_missing` | tokens | The agent has no grant for that service |
+| `grant_account_changed` | tokens | The owner re-linked a different account at the vendor; the grant must be made again |
+| `forbidden` | any | Authenticated, but not allowed this action, and `message` says why |
 | `definition_invalid` | status | The definition can't be applied, and `detail` says why |
 | `repo_clone_failed` | status | Clone or worktree failed |
 | `crash_loop` | status | 5 restarts in 10 minutes, stopped retrying |
@@ -342,6 +382,6 @@ The personal agent relays that reason to the user as is.
 | §2 assignment | #556 `GET /hosted/machines/{id}/agents` | Generalise, and add revisions per agent |
 | §3 status | #556 `/heartbeat`, `process_state`, OOM and restart counts, `/provider-status` | Merge into one snapshot |
 | §4 operations | #556 `HostedOperation`, `/operations/{id}/claim` and `/result` | Generalise the kinds |
-| §5 tokens | #556 `/github-credential` | Generalise to connectors. Sealed provider logins are new |
+| §5 tokens | #556 `/github-credential` | Generalise to services, on the agent route `/agents/{id}/service-tokens/{service}`. Sealed provider logins are new |
 | §6 stream | Per-agent `GET /agents/{id}/events` with connection, generation, beat and takeover | One stream per controller, as a read-side merge of the per-agent buffers |
 | §7 act as | Per-agent API keys on `/agents/{id}/...` | Add the controller principal and the binding check |

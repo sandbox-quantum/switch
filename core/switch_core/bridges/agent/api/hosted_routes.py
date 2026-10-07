@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -13,6 +12,12 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_config, get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
+from switch_core.connections.broker import (
+    Principal,
+    ServiceBroker,
+    ServiceError,
+    get_service_broker,
+)
 from switch_core.db.models import (
     Agent,
     HostedLaunch,
@@ -22,21 +27,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
-from switch_core.gateway.github_connections import (
-    conditions,
-    discard_github_credential,
-    github_credentials,
-)
-from switch_core.gateway.github_connections import lock as github_lock
 from switch_core.gateway.hosted_launches import operation_summary
-from switch_core.providers.github import (
-    GitHubConnections,
-    GitHubError,
-    GitHubUnavailableError,
-)
-from switch_core.providers.github_installation import GitHubInstallationCredentials
-from switch_core.providers.github_revocations import remember_repository_token
-from switch_core.providers.hosted import HostedControllerSettings
 
 router = APIRouter(prefix="/hosted")
 
@@ -246,16 +237,16 @@ async def repository_credential(
     response: Response,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict:
+    """A cloud worker's GitHub token, for workers from before the agent route.
+
+    Issued by the broker on the agent's GitHub grant, as
+    `POST /agents/{agent_id}/service-tokens/github` issues it, and answered in
+    the shape those workers check: their repository, by name. Goes in the next
+    release.
+    """
     response.headers["Cache-Control"] = "no-store"
-    if not config.hosted_controller_config_path or not config.hosted_github_config_path:
-        raise HTTPException(503, "Cloud repository credentials are not enabled.")
-    settings = HostedControllerSettings.model_validate_json(
-        Path(config.hosted_controller_config_path).read_text()  # nosemgrep
-    )
-    if settings.tenant_id != require_tenant_id():
-        raise HTTPException(403, "This agent is not a managed cloud worker.")
     launch = await session.scalar(
         select(HostedLaunch).where(
             HostedLaunch.tenant_id == require_tenant_id(),
@@ -265,75 +256,36 @@ async def repository_credential(
             HostedLaunch.desired_state == "running",
         )
     )
-    if launch is None:
+    if launch is None or launch.repository is None:
         raise HTTPException(403, "This agent is not a managed cloud worker.")
-    if await session.get(TenantMember, (require_tenant_id(), launch.owner_id)) is None:
-        raise HTTPException(
-            403, "The cloud agent owner is no longer a workspace member."
-        )
-    revision = launch.revision
-    launch_id = launch.id
-    owner_id = launch.owner_id
-    installation_id = launch.spec["installation_id"]
-    repository_id = launch.spec["repository_id"]
-    github = GitHubConnections(config.hosted_github_config_path)
-    await session.commit()
-    saved_github = await github_credentials(owner_id, session, config, github)
-    if saved_github is None:
-        raise HTTPException(422, "The owner must reconnect GitHub.")
-    credentials, github_revision = saved_github
-    signer = GitHubInstallationCredentials(
-        github.client_id, str(settings.github_private_key_path)
+    launch_id, revision, repository = launch.id, launch.revision, launch.repository
+    try:
+        token = await broker.issue(session, agent.id, Principal.agent_key(), "github")
+    except ServiceError as error:
+        raise HTTPException(error.status_code, error.message) from None
+    # A launch change while the token was issued ends the worker it was for.
+    # The lifecycle routes queue the agent's tokens under this lock, so either
+    # they saw this token's record or this sees their change.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"hosted-launch:{require_tenant_id()}:{launch_id}"},
     )
-    try:
-        credential = await signer.issue(
-            github,
-            credentials["access_token"],
-            installation_id,
-            repository_id,
-        )
-    except GitHubUnavailableError as error:
-        raise HTTPException(503, str(error)) from None
-    except GitHubError as error:
-        raise HTTPException(422, str(error)) from None
-    try:
-        await github_lock(session, owner_id)
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"hosted-launch:{require_tenant_id()}:{launch_id}"},
-        )
-        launch = await session.get(
-            HostedLaunch, (require_tenant_id(), launch_id), populate_existing=True
-        )
-        row = await session.scalar(
-            select(ProviderConnection)
-            .where(*conditions(owner_id))
-            .execution_options(populate_existing=True)
-        )
-        if (
-            launch is None
-            or launch.revision != revision
-            or launch.desired_state != "running"
-            or launch.state == "error"
-            or row is None
-            or row.verified_at != github_revision
-            or await session.get(
-                TenantMember, (require_tenant_id(), owner_id), populate_existing=True
-            )
-            is None
-        ):
-            raise HTTPException(
-                409, "Cloud launch or GitHub connection changed. Please retry."
-            )
-        remember_repository_token(session, launch, credential, config)
+    current = await session.get(
+        HostedLaunch, (require_tenant_id(), launch_id), populate_existing=True
+    )
+    if (
+        current is None
+        or current.revision != revision
+        or current.desired_state != "running"
+        or current.state == "error"
+    ):
+        issued = await broker.queue_agent_revocation(session, agent.id, "github")
         await session.commit()
-        return {
-            "token": credential.token,
-            "expires_at": credential.expires_at.isoformat(),
-            "repository": credential.repository_name,
-        }
-    except BaseException as error:
-        await discard_github_credential(
-            session, signer, credential, config, launch_id, error
-        )
-        raise
+        await broker.revoke_pending(session, issued)
+        raise HTTPException(409, "The cloud launch changed. Please retry.")
+    await session.commit()
+    return {
+        "token": token.token,
+        "expires_at": token.expires_at.isoformat(),
+        "repository": repository,
+    }

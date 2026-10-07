@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useId, useRef, useState } from 'react';
 import { AgentAdvancedConfig } from '@renderer/features/locations/components/add-agent-modal/agent-advanced-config';
 import { AddressingPolicyRow } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
+import { ServiceGrantsRow } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -221,6 +222,13 @@ function EditCloudAgentForm({
             agentId={agent.id}
             agentName={launch.name}
             showName={false}
+          />
+          <ServiceGrantsRow
+            workspaceId={workspaceId}
+            serverId={serverId}
+            agentId={agent.id}
+            agentName={launch.name}
+            cloud
           />
           <Field>
             <FieldLabel htmlFor={instructionsId}>

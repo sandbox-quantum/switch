@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -47,7 +47,6 @@ from switch_core.db.models import (
     HostedLaunch,
     HostedMachine,
     Message,
-    ProviderConnection,
     Room,
     TenantMember,
     User,
@@ -75,14 +74,16 @@ from switch_core.gateway.hosted_launches import router as launch_router
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.gateway.hosted_relay import router as relay_router
 from switch_core.keys import Keyring
-from switch_core.providers.github_installation import (
-    GitHubInstallationCredentials,
-    RepositoryCredential,
-)
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_owner,
     make_service,
+)
+from tests.switch_core.connections.github_seed import (  # noqa: F401
+    connect_github,
+    github_broker,
+    github_vendor,
+    grant_repository,
 )
 from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
@@ -106,7 +107,7 @@ SPEC = {
 
 
 @pytest.fixture
-async def worker_app(session_factory, monkeypatch, tmp_path):
+async def worker_app(session_factory, monkeypatch, tmp_path, github_vendor):  # noqa: F811
     """A running machine with one launch whose identity Core registered.
 
     Yields `(client, request_id, agent_id, service, factory, prepared)`, where
@@ -119,24 +120,7 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
         session.add(
             TenantMember(tenant_id=require_tenant_id(), user_id=owner, role="member")
         )
-        session.add(
-            ProviderConnection(
-                user_id=owner,
-                provider="github",
-                kind="oauth",
-                encrypted_credential=TEST_KEYRING.encrypt(
-                    json.dumps(
-                        {
-                            "access_token": "SYNTHETIC-GITHUB",
-                            "expires_at": (
-                                datetime.now(UTC) + timedelta(hours=1)
-                            ).timestamp(),
-                        }
-                    ),
-                ),
-                verified_at=datetime.now(UTC),
-            )
-        )
+        await connect_github(session, owner, TEST_KEYRING)
         await ProviderConnectionStore().save(
             session,
             owner,
@@ -184,6 +168,7 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
             HostedLaunch, (require_tenant_id(), request_id), populate_existing=True
         )
         capability = HostedLaunchStore().issue_worker_capability(launch, TEST_KEYRING)
+        await grant_repository(session, agent_id, owner)
         await session.commit()
     settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
@@ -192,10 +177,12 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
         github_private_key_path="/tmp/synthetic-signing-key.pem",
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
-    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", AsyncMock())
     app = FastAPI()
     app.state.hosted_controller_settings = settings
     app.state.github_connections = SimpleNamespace(client_id="synthetic-app")
+    app.state.service_broker = github_broker(
+        session_factory, TEST_KEYRING, github_vendor
+    )
     app.include_router(hosted_routes_router)
     app.include_router(hosted_worker_router, prefix="/agents")
     app.include_router(hosted_cutover_router, prefix="/agents")
@@ -231,22 +218,6 @@ async def worker_app(session_factory, monkeypatch, tmp_path):
     app.dependency_overrides[get_config] = lambda: service.config
     app.dependency_overrides[get_protocol] = lambda: service
     app.dependency_overrides[get_worker_protocol] = lambda: service
-    issue = AsyncMock(
-        return_value=RepositoryCredential(
-            "SYNTHETIC-REPOSITORY",
-            datetime.now(UTC) + timedelta(hours=1),
-            456,
-            "example/project",
-        )
-    )
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.api.hosted_routes.GitHubConnections",
-        lambda _: app.state.github_connections,
-    )
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
-        lambda *_: SimpleNamespace(issue=issue, revoke=AsyncMock()),
-    )
     prepared = {
         "worker_capability": capability,
         "revision": 1,

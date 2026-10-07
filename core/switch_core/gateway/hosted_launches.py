@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self, cast
+from typing import Annotated, Any, Literal, Self, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,14 +20,20 @@ from switch_core.bridges.agent.api.hosted_worker_routes import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.config import SwitchConfig
+from switch_core.connections.broker import (
+    ACCESS_WARNING,
+    ServiceBroker,
+    ServiceError,
+    get_service_broker,
+)
 from switch_core.db.models import (
     Agent,
     ApiKey,
-    GitHubIssuedToken,
     HostedLaunch,
     HostedMachine,
     HostedOperation,
     ProviderConnection,
+    ServiceTokenIssuance,
     User,
     require_tenant_id,
 )
@@ -64,11 +70,6 @@ from switch_core.providers.claude_verifier import (
     ClaudeVerifier,
 )
 from switch_core.providers.github import GitHubConnections, repository_writable
-from switch_core.providers.github_revocations import (
-    ACCESS_WARNING,
-    queue_revocation,
-    revoke_pending,
-)
 from switch_core.providers.hosted import HostedControllerSettings
 
 logger = logging.getLogger(__name__)
@@ -442,6 +443,20 @@ def ring_mailbox_cancel(
     )
 
 
+async def _queue_github_revocation(
+    session: AsyncSession, broker: ServiceBroker, launch: HostedLaunch
+) -> tuple[Any, ...] | None:
+    """Queue the agent's GitHub tokens with the launch change that ends them.
+
+    Every launch change bumps its revision, and a worker of an older revision
+    must not keep repository access: the tokens go with the change, as they
+    always have. Returns what to revoke once the change has committed.
+    """
+    if launch.agent_id is None:
+        return None
+    return await broker.queue_agent_revocation(session, launch.agent_id, "github")
+
+
 @router.post("/{request_id}/lifecycle", response_model=None)
 async def lifecycle(
     request_id: UUID,
@@ -450,6 +465,7 @@ async def lifecycle(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict | JSONResponse:
     launch, machine = await locked_owned(session, str(request_id), user.id)
     if launch.revision != body.revision:
@@ -468,7 +484,7 @@ async def lifecycle(
     if body.action in ("restart", "retry") and owner_stopped(machine):
         return coded_conflict("machine_stopped", MACHINE_STOPPED)
     if body.action == "remove":
-        return await remove(session, protocol, config, launch, machine)
+        return await remove(session, protocol, config, broker, launch, machine)
     machines = HostedMachineStore()
     now = datetime.now(UTC)
     split = None
@@ -494,7 +510,7 @@ async def lifecycle(
     launch.revision += 1
     launch.updated_at = now
     await HostedLaunchStore().fail_stale_operations(session, launch.id, launch.revision)
-    await queue_revocation(session, (GitHubIssuedToken.launch_id == launch.id,))
+    issued = await _queue_github_revocation(session, broker, launch)
     machines.bump_agents(machine)
     await session.commit()
     if launch.agent_id:
@@ -503,9 +519,7 @@ async def lifecycle(
         protocol.connections.supersede(launch.agent_id, launch.revision)
     if split is not None:
         await post_mailbox_notices(protocol, split.cancelled)
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.launch_id == launch.id,)
-    )
+    remaining = issued is not None and await broker.revoke_pending(session, issued)
     if launch.desired_state == "running":
         launch = await register_identity(session, protocol, launch.id)
     response = await launch_summary(session, launch)
@@ -539,6 +553,7 @@ async def remove(
     session: AsyncSession,
     protocol: AgentCore,
     config: SwitchConfig,
+    broker: ServiceBroker,
     launch: HostedLaunch,
     machine: HostedMachine,
 ) -> dict:
@@ -560,7 +575,7 @@ async def remove(
         await HostedLaunchStore().fail_stale_operations(
             session, launch.id, launch.revision
         )
-        await queue_revocation(session, (GitHubIssuedToken.launch_id == launch.id,))
+        await _queue_github_revocation(session, broker, launch)
         mailbox = HostedMailboxStore()
         split = await mailbox.stop(session, launch.id)
         cancelled, cancel_requested = split.cancelled, split.cancel_requested
@@ -596,8 +611,12 @@ async def remove(
     launch, machine = await locked_owned(session, launch.id, launch.owner_id)
     await finish_removal(session, protocol, config, launch, machine, now)
     await session.commit()
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.launch_id == launch.id,)
+    remaining = launch.agent_id is not None and await broker.revoke_pending(
+        session,
+        (
+            ServiceTokenIssuance.agent_id == launch.agent_id,
+            ServiceTokenIssuance.service == "github",
+        ),
     )
     response = summary(launch, machine)
     return {**response, "access_warning": ACCESS_WARNING if remaining else None}
@@ -773,6 +792,7 @@ async def create(
     verifier: Annotated[ClaudeVerifier, Depends(get_verifier)],
     github: Annotated[GitHubConnections, Depends(get_github)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict:
     if not launch_enabled(config, settings):
         raise HTTPException(503, LAUNCH_DISABLED)
@@ -821,7 +841,7 @@ async def create(
         except ClaudeVerificationError as error:
             raise HTTPException(422, str(error)) from None
     await session.commit()
-    access = await connection_status(user.id, session, config, github)
+    access = await connection_status(user.id, session, broker, github)
     repository = next(
         (
             repo
@@ -858,4 +878,51 @@ async def create(
         raise HTTPException(409, str(error)) from None
     await session.commit()
     launch = await register_identity(session, protocol, launch.id)
-    return await launch_summary(session, launch)
+    response = await launch_summary(session, launch)
+    await _grant_repository(session, broker, user, launch, body)
+    return response
+
+
+async def _grant_repository(
+    session: AsyncSession,
+    broker: ServiceBroker,
+    user: User,
+    launch: HostedLaunch,
+    body: LaunchRequest,
+) -> None:
+    """Grant the launch's agent its repository, for writing.
+
+    In a transaction of its own, after the agent exists. A grant that cannot
+    be made (the repository's access changed in between, GitHub unreachable)
+    leaves the launch running without GitHub: it is logged, the agent's token
+    fetch names the missing grant, and the agent's grants show it.
+    """
+    if launch.agent_id is None:
+        return
+    agent = await session.scalar(
+        select(Agent).where(
+            Agent.tenant_id == require_tenant_id(), Agent.id == launch.agent_id
+        )
+    )
+    if agent is None:
+        return
+    try:
+        await broker.set_grant(
+            session,
+            agent=agent,
+            actor_id=user.id,
+            service="github",
+            access="write",
+            tool_mode=None,
+            tools=None,
+            resources={
+                "installation_id": body.installation_id,
+                "repository_ids": [body.repository_id],
+            },
+        )
+    except ServiceError as error:
+        logger.error(
+            "Cloud launch %s started without its GitHub grant: %s",
+            launch.id,
+            error.message,
+        )

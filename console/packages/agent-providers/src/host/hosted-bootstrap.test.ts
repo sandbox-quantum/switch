@@ -304,9 +304,8 @@ it('rejects a GitHub credential inside hosted state or workspace before validati
   });
 });
 
-it('renews a refreshed GitHub credential from Switch without a mounted GitHub file', async () => {
-  const input = await fixture();
-  const agents = join(input.root, 'agents', 'agent-id');
+/** A deployment of a repository granted to the agent, as the worker writes it. */
+async function grantedRepository(input: Awaited<ReturnType<typeof fixture>>) {
   const workspace = join(input.root, 'worktrees', 'agent-id', 'example', 'project');
   await mkdir(workspace, { recursive: true });
   input.spec.workspacePath = workspace;
@@ -316,29 +315,115 @@ it('renews a refreshed GitHub credential from Switch without a mounted GitHub fi
     refresh: true,
     mirrorPath: mirrorPath(input),
   };
-  const request = vi.fn(async (url: string | URL | Request) =>
-    String(url).endsWith('/hosted/github-credential')
-      ? new Response(
-          JSON.stringify({
-            token: 'renewed-github-secret',
-            repository: 'example/project',
-            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-          })
-        )
+  return workspace;
+}
+
+const GRANTED_TOKEN_ROUTE =
+  'https://switch.invalid/api/agent/agents/agent-id/service-tokens/github';
+
+function grantedToken(token = 'granted-github-secret') {
+  return new Response(
+    JSON.stringify({
+      token,
+      expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      resources: { installation_id: 1, repository_ids: [2] },
+    })
+  );
+}
+
+it("clones a granted repository with a token from the agent's grant, and saves none of it", async () => {
+  const input = await fixture();
+  const agents = join(input.root, 'agents', 'agent-id');
+  await grantedRepository(input);
+  const request = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+    String(url) === GRANTED_TOKEN_ROUTE && init?.method === 'POST'
+      ? grantedToken()
       : new Response('{}')
   );
   vi.stubGlobal('fetch', request);
 
   const prepared = await prepareHostedDeployment(agents, input.spec);
   expect(request.mock.calls.map(([url]) => String(url))).toEqual([
-    'https://switch.invalid/api/agent/hosted/github-credential',
+    GRANTED_TOKEN_ROUTE,
     'https://api.github.com/repos/example/project',
   ]);
+  expect(request.mock.calls[0]![1]?.headers).toEqual({
+    Authorization: 'Bearer switch-secret-value',
+  });
+  expect(prepared.cloneToken).toBe('granted-github-secret');
+  expect(prepared.logRedactions).toContain('granted-github-secret');
+  // Sessions set GitHub up from the grant themselves: nothing of it is saved.
   expect(prepared.providerEnvironment.GH_TOKEN).toBeUndefined();
-  expect(prepared.providerEnvironment.SWITCH_HOSTED_GITHUB_REPOSITORY).toBe('example/project');
-  expect(prepared.logRedactions).toContain('renewed-github-secret');
+  expect(prepared.config.start.input.env.GIT_CONFIG_COUNT).toBeUndefined();
+  expect(prepared.config.start.input.env.SWITCH_HOSTED_GITHUB_REPOSITORY).toBeUndefined();
   const persisted = await readFile(join(prepared.root, 'hosted-deployment.json'), 'utf8');
-  expect(persisted).not.toContain('renewed-github-secret');
+  expect(persisted).not.toContain('granted-github-secret');
+});
+
+it("says why when Switch will not give the agent's GitHub access", async () => {
+  const input = await fixture();
+  await grantedRepository(input);
+  const request = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'grant_missing',
+            message: 'This agent has no GitHub grant.',
+            retryable: false,
+          },
+        }),
+        { status: 403 }
+      )
+  );
+  vi.stubGlobal('fetch', request);
+  await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
+    "Could not get the agent's GitHub access for the cloud repository: This agent has no GitHub grant."
+  );
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it('upgrades a plan an earlier build saved with its own GitHub renewal, once', async () => {
+  const input = await fixture();
+  await grantedRepository(input);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string | URL | Request) =>
+      String(url) === GRANTED_TOKEN_ROUTE ? grantedToken() : new Response('{}')
+    )
+  );
+  const first = await prepareHostedDeployment(input.state, input.spec);
+  // What the earlier build saved for the same revision.
+  const earlier = structuredClone(first.config);
+  Object.assign(earlier.start.input.env, githubLaunchEnvironment('/opt/old/hosted-bootstrap.mjs'), {
+    SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/switch.json',
+    SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
+    PATH: `${join(first.root, 'bin')}:/usr/bin:/bin`,
+  });
+  const planPath = join(first.root, 'hosted-deployment.json');
+  const plan = JSON.parse(await readFile(planPath, 'utf8'));
+  await writeFile(planPath, JSON.stringify({ ...plan, config: earlier }));
+  await writeFile(join(first.root, 'config.json'), JSON.stringify(earlier));
+  await mkdir(join(first.root, 'bin'), { recursive: true });
+  await writeFile(join(first.root, 'bin', 'gh'), '#!/bin/sh\n');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const upgraded = await prepareHostedDeployment(input.state, input.spec);
+  expect(upgraded.config).toEqual(first.config);
+  expect(JSON.parse(await readFile(join(first.root, 'config.json'), 'utf8'))).toEqual(first.config);
+  await expect(readFile(join(first.root, 'bin', 'gh'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(warn).toHaveBeenCalledOnce();
+  await prepareHostedDeployment(input.state, input.spec);
+  expect(warn).toHaveBeenCalledOnce();
+
+  // Any other difference is still refused.
+  const other = structuredClone(first.config);
+  other.start.input.env.SOMETHING_ELSE = '1';
+  await writeFile(planPath, JSON.stringify({ ...plan, config: other }));
+  await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
+    'does not match its deployment specification'
+  );
+  warn.mockRestore();
 });
 
 it('still requires the mounted GitHub file when the credential is not refreshed', async () => {
@@ -682,6 +767,23 @@ it('installs granted connection skills into the provider skills directory before
   expect(await readdir(join(input.state, 'provider-home', 'claude', 'skills'))).toEqual(['github']);
 });
 
+it('removes a connection skill an earlier bootstrap installed when none is listed', async () => {
+  const input = await fixture();
+  delete input.spec.skills;
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  const skills = join(input.state, 'provider-home', 'claude', 'skills');
+  await mkdir(input.state, { mode: 0o700 });
+  await mkdir(join(skills, 'github'), { recursive: true, mode: 0o700 });
+  await writeFile(join(skills, 'github', 'SKILL.md'), '---\nname: github\n---\n');
+  await mkdir(join(skills, 'own-skill'), { recursive: true, mode: 0o700 });
+  mockHosted();
+  const supervise = vi.fn<typeof superviseSharedHost>(async () => {
+    expect(await readdir(skills)).toEqual(['own-skill']);
+  });
+  await run(input, { supervise });
+  expect(supervise).toHaveBeenCalledOnce();
+});
+
 it('rejects unsafe, oversized or unsupported connection skills', async () => {
   const { spec } = await fixture();
   const skill = (files: Record<string, string>, slug = 'github') => ({ slug, files });
@@ -770,14 +872,7 @@ it('adds the worktree on a later revision after the first repository setup faile
             credential: 'provider-secret-value',
           })
         );
-      if (path.endsWith('/hosted/github-credential'))
-        return new Response(
-          JSON.stringify({
-            token: 'renewed-github-secret',
-            repository: 'example/project',
-            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-          })
-        );
+      if (path === GRANTED_TOKEN_ROUTE) return grantedToken();
       return new Response('{}');
     })
   );

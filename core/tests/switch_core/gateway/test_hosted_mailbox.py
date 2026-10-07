@@ -49,6 +49,7 @@ from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_mailbox_store import MAILBOX_LIMIT, HostedMailboxStore
 from switch_core.events import TaskDelegate
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
+from tests.switch_core.connections.github_seed import github_vendor  # noqa: F401
 from tests.switch_core.gateway.test_hosted_workers import (  # noqa: F401
     _agent,
     _first_frames,

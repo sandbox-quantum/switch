@@ -37,14 +37,15 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentExistsError
 from switch_core.bridges.agent.protocol.hosted_workers import IdleReport, WorkerBinding
+from switch_core.connections.broker import ServiceBroker
 from switch_core.db.models import (
     Agent,
     ApiKey,
-    GitHubIssuedToken,
     HostedLaunch,
     HostedMachine,
     HostedOperation,
     ProviderConnection,
+    ServiceTokenIssuance,
     TenantMember,
     User,
     require_tenant_id,
@@ -57,6 +58,7 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_launches,
 )
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user, get_current_user_in_transaction
 from switch_core.gateway.dependencies import (
     get_config,
@@ -69,19 +71,22 @@ from switch_core.gateway.hosted_launches import router as launch_router
 from switch_core.gateway.hosted_relay import router as relay_router
 from switch_core.gateway.known_agents import KNOWN_AGENTS
 from switch_core.keys import Keyring
-from switch_core.providers.github_installation import (
-    GitHubInstallationCredentials,
-    RepositoryCredential,
-)
-from switch_core.providers.github_revocations import queue_revocation, revoke_pending
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     PROFILE,
     make_owner,
     make_service,
 )
+from tests.switch_core.connections.fake_vendor import FakeVendor
+from tests.switch_core.connections.github_seed import (  # noqa: F401
+    connect_github,
+    github_broker,
+    github_vendor,
+    grant_repository,
+)
 from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
+SERVICE_STORE = ServiceConnectionStore()
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 TOKEN = "SYNTHETIC-CONTROLLER-CREDENTIAL-FOR-TESTS"
@@ -150,32 +155,16 @@ SPEC = {
 
 
 @pytest.fixture
-async def controller_app(session_factory, monkeypatch, tmp_path):
-    """A queued machine with one queued launch whose agent is registered."""
+async def controller_app(session_factory, monkeypatch, tmp_path, github_vendor):  # noqa: F811
+    """A queued machine with one queued launch whose agent is registered and
+    granted its repository."""
     owner = await make_owner(session_factory)
     request_id = str(uuid4())
     async with session_factory() as session:
         session.add(
             TenantMember(tenant_id=require_tenant_id(), user_id=owner, role="member")
         )
-        session.add(
-            ProviderConnection(
-                user_id=owner,
-                provider="github",
-                kind="oauth",
-                encrypted_credential=TEST_KEYRING.encrypt(
-                    json.dumps(
-                        {
-                            "access_token": "SYNTHETIC-GITHUB",
-                            "expires_at": (
-                                datetime.now(UTC) + timedelta(hours=1)
-                            ).timestamp(),
-                        }
-                    ),
-                ),
-                verified_at=datetime.now(UTC),
-            )
-        )
+        await connect_github(session, owner, TEST_KEYRING)
         await ProviderConnectionStore().save(
             session,
             owner,
@@ -216,6 +205,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
         )
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
         launch.repository = "example/project"
+        await grant_repository(session, agent_id, owner)
         await session.commit()
     settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
@@ -224,10 +214,12 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
         github_private_key_path="/tmp/synthetic-signing-key.pem",
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
-    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", AsyncMock())
     app = FastAPI()
     app.state.hosted_controller_settings = settings
     app.state.github_connections = SimpleNamespace(client_id="synthetic-app")
+    app.state.service_broker = github_broker(
+        session_factory, TEST_KEYRING, github_vendor
+    )
     app.include_router(router)
     app.include_router(worker_router)
     app.include_router(hosted_machine_router)
@@ -266,22 +258,6 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     app.dependency_overrides[get_config] = lambda: service.config
     app.dependency_overrides[get_protocol] = lambda: service
     app.dependency_overrides[get_worker_protocol] = lambda: service
-    issue = AsyncMock(
-        return_value=RepositoryCredential(
-            "SYNTHETIC-REPOSITORY",
-            datetime.now(UTC) + timedelta(hours=1),
-            456,
-            "example/project",
-        )
-    )
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.api.hosted_routes.GitHubConnections",
-        lambda _: app.state.github_connections,
-    )
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
-        lambda *_: SimpleNamespace(issue=issue, revoke=AsyncMock()),
-    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
     ) as client:
@@ -720,7 +696,7 @@ async def test_prepare_does_not_touch_launches_or_agents(controller_app):
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
         assert launch.state == "queued"
         assert launch.worker_capability_hash is None
-        assert await session.scalar(select(GitHubIssuedToken)) is None
+        assert await session.scalar(select(ServiceTokenIssuance)) is None
 
 
 async def test_prepare_refuses_unknown_and_deleted_machines(controller_app):
@@ -1623,54 +1599,62 @@ async def test_provider_status_does_not_overwrite_stop_during_lock_wait(
 
 @pytest.mark.parametrize("change", ["stop", "relink", "disconnect", "revoke_failure"])
 async def test_worker_token_is_revoked_when_authorization_changes_during_issue(
-    controller_app, monkeypatch, change
+    controller_app,
+    github_vendor,  # noqa: F811
+    change,
 ):
     client, request_id, _, _, factory, _ = controller_app
-    revoke = AsyncMock(
-        side_effect=RuntimeError("Synthetic revocation failure")
-        if change == "revoke_failure"
-        else None
-    )
 
-    async def issue(*args):
+    async def during_issue() -> None:
         async with factory() as session:
             await asyncio.wait_for(lock_launch(session, request_id), 1)
             launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
             if change in ("stop", "revoke_failure"):
                 launch.desired_state = "stopped"
                 launch.revision += 1
-            else:
-                row = await session.get(
-                    ProviderConnection, (require_tenant_id(), launch.owner_id, "github")
+            elif change == "disconnect":
+                await SERVICE_STORE.delete_connection(
+                    session, launch.owner_id, "github"
                 )
-                if change == "disconnect":
-                    await session.delete(row)
-                else:
-                    row.verified_at = datetime.now(UTC) + timedelta(seconds=1)
+            else:
+                await SERVICE_STORE.save_connection(
+                    session,
+                    user_id=launch.owner_id,
+                    service="github",
+                    consent="write",
+                    granted_scopes=[],
+                    account_id="2002",
+                    external_identity="someone-else",
+                    encrypted_secret=TEST_KEYRING.encrypt(
+                        json.dumps(
+                            {"access_token": "SYNTHETIC-OTHER", "expires_at": 4e9}
+                        )
+                    ),
+                )
             await session.commit()
-        return RepositoryCredential(
-            "SYNTHETIC-REPOSITORY",
-            datetime.now(UTC) + timedelta(hours=1),
-            456,
-            "example/project",
-        )
 
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
-        lambda *_: SimpleNamespace(issue=issue, revoke=revoke),
-    )
+    async def unreachable(token: str) -> None:
+        raise RuntimeError("Synthetic revocation failure")
+
+    github_vendor.during_issue = during_issue
+    if change == "revoke_failure":
+        github_vendor.revoke_issued = unreachable  # type: ignore[method-assign]
     response = await client.post("/hosted/github-credential")
-    assert response.status_code == 409
-    revoke.assert_awaited_once_with("SYNTHETIC-REPOSITORY")
+    expected = {"stop": 409, "revoke_failure": 409, "relink": 409, "disconnect": 403}
+    assert response.status_code == expected[change], response.text
+    [(_, token)] = github_vendor.issued
+    assert token not in response.text
     if change == "revoke_failure":
         async with factory() as session:
             queued = await session.scalar(
-                select(GitHubIssuedToken).where(
-                    GitHubIssuedToken.revoke_requested.is_(True)
+                select(ServiceTokenIssuance).where(
+                    ServiceTokenIssuance.revoke_requested.is_(True),
+                    ServiceTokenIssuance.encrypted_token.is_not(None),
                 )
             )
             assert queued is not None
-    assert "SYNTHETIC-REPOSITORY" not in response.text
+    else:
+        assert github_vendor.revoked == [token]
 
 
 async def test_local_registration_cannot_take_a_reserved_cloud_name(controller_app):
@@ -1730,20 +1714,45 @@ async def test_operations_from_an_earlier_worker_are_not_claimed_or_completed(
         assert "worker changed" in row.error.lower()
 
 
-async def _issue_repository_token(client) -> None:
+async def _issue_repository_token(client) -> str:
     response = await client.post("/hosted/github-credential")
     assert response.status_code == 200, response.text
+    return str(response.json()["token"])
+
+
+def _broker(factory, vendor: FakeVendor) -> ServiceBroker:
+    return github_broker(factory, TEST_KEYRING, vendor)
+
+
+def _issuance(owner: str, token: str, expires_at: datetime) -> ServiceTokenIssuance:
+    return ServiceTokenIssuance(
+        grant_id="grant",
+        agent_id="agent",
+        owner_id=owner,
+        service="github",
+        principal="agent_key",
+        controller_id=None,
+        permissions={},
+        resources={},
+        expires_at=expires_at,
+        token_sha256="0" * 64,
+        encrypted_token=TEST_KEYRING.encrypt(token),
+        revoke_requested=True,
+        attempts=0,
+    )
 
 
 @pytest.mark.parametrize("cause", ["stop", "owner_loss", "disconnect", "expired"])
 async def test_repository_tokens_are_revoked_after_access_commit(
-    controller_app, monkeypatch, cause
+    controller_app,
+    github_vendor,  # noqa: F811
+    cause,
 ):
-    client, request_id, _, service, factory, _ = controller_app
-    await _issue_repository_token(client)
+    client, request_id, _, _, factory, _ = controller_app
+    token = await _issue_repository_token(client)
     async with factory() as session:
-        record = await session.scalar(select(GitHubIssuedToken))
-        assert "SYNTHETIC" not in record.encrypted_token
+        record = await session.scalar(select(ServiceTokenIssuance))
+        assert token not in (record.encrypted_token or "")
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
         owner = launch.owner_id
         if cause == "stop":
@@ -1754,113 +1763,107 @@ async def test_repository_tokens_are_revoked_after_access_commit(
                 await session.get(TenantMember, (require_tenant_id(), owner))
             )
         elif cause == "disconnect":
-            await session.delete(
-                await session.get(
-                    ProviderConnection, (require_tenant_id(), owner, "github")
-                )
-            )
+            await SERVICE_STORE.delete_connection(session, owner, "github")
         else:
             record.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
 
-    async def revoked(token):
-        assert token == "SYNTHETIC-REPOSITORY"
-        async with factory() as session:
-            stored = await session.scalar(select(GitHubIssuedToken))
-            assert stored.revoke_requested
-
-    revoke = AsyncMock(side_effect=revoked)
-    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", revoke)
-    async with factory() as session:
-        assert await revoke_pending(session, service.config, ()) is False
-        assert await revoke_pending(session, service.config, ()) is False
-        assert await session.scalar(select(GitHubIssuedToken)) is None
-    assert revoke.await_count == (0 if cause == "expired" else 1)
-
-
-async def test_machines_listing_drains_pending_revocations(controller_app, monkeypatch):
-    client, request_id, _, _, factory, _ = controller_app
-    await _issue_repository_token(client)
-    await update_launch(factory, request_id, desired_state="stopped", revision=2)
-    revoke = AsyncMock()
-    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", revoke)
     await list_machines(client)
-    revoke.assert_awaited_once_with("SYNTHETIC-REPOSITORY")
+    await list_machines(client)
     async with factory() as session:
-        assert await session.scalar(select(GitHubIssuedToken)) is None
-
-
-async def test_failed_repository_revocation_remains_queued(controller_app, monkeypatch):
-    client, request_id, _, service, factory, _ = controller_app
-    await _issue_repository_token(client)
-    async with factory() as session:
-        await queue_revocation(session, (GitHubIssuedToken.launch_id == request_id,))
-        await session.commit()
-    revoke = AsyncMock(side_effect=RuntimeError("Synthetic failure"))
-    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", revoke)
-    async with factory() as session:
-        assert await revoke_pending(session, service.config, ()) is True
-        record = await session.scalar(select(GitHubIssuedToken))
-        assert record.revoke_requested
-        await session.commit()
-        revoke.side_effect = None
-        assert await revoke_pending(session, service.config, ()) is False
-
-
-async def test_error_retry_issues_a_fresh_repository_token(controller_app, monkeypatch):
-    client, request_id, _, service, factory, _ = controller_app
-    await _issue_repository_token(client)
-    await update_launch(factory, request_id, state="error")
-    async with factory() as session:
-        assert await revoke_pending(session, service.config, ()) is False
-        assert await session.scalar(select(GitHubIssuedToken)) is None
-    await update_launch(factory, request_id, state="queued", revision=2)
-    issue = AsyncMock(
-        return_value=RepositoryCredential(
-            "SYNTHETIC-FRESH-REPOSITORY",
-            datetime.now(UTC) + timedelta(hours=1),
-            456,
-            "example/project",
+        record = await session.scalar(
+            select(ServiceTokenIssuance).execution_options(populate_existing=True)
         )
-    )
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
-        lambda *_: SimpleNamespace(issue=issue, revoke=AsyncMock()),
-    )
-    result = await client.post("/hosted/github-credential")
-    assert result.status_code == 200, result.text
-    assert result.json()["token"] == "SYNTHETIC-FRESH-REPOSITORY"
+        assert record.encrypted_token is None
+    assert github_vendor.revoked == ([] if cause == "expired" else [token])
+
+
+async def test_machines_listing_drains_pending_revocations(
+    controller_app,
+    github_vendor,  # noqa: F811
+):
+    client, request_id, _, _, factory, _ = controller_app
+    token = await _issue_repository_token(client)
+    await update_launch(factory, request_id, desired_state="stopped", revision=2)
+    await list_machines(client)
+    assert github_vendor.revoked == [token]
     async with factory() as session:
-        record = await session.scalar(select(GitHubIssuedToken))
-        assert not record.revoke_requested
-        assert record.launch_revision == 2
+        record = await session.scalar(select(ServiceTokenIssuance))
+        assert record.encrypted_token is None
 
 
-async def test_concurrent_revocation_drains_claim_once(controller_app, monkeypatch):
-    client, request_id, _, service, factory, _ = controller_app
+async def test_failed_repository_revocation_remains_queued(
+    controller_app,
+    github_vendor,  # noqa: F811
+):
+    client, _, agent_id, _, factory, _ = controller_app
+    token = await _issue_repository_token(client)
+    broker = _broker(factory, github_vendor)
+    async with factory() as session:
+        await broker.queue_agent_revocation(session, agent_id, "github")
+        await session.commit()
+    revoked = github_vendor.revoke_issued
+    github_vendor.revoke_issued = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("Synthetic failure")
+    )
+    async with factory() as session:
+        assert await broker.revoke_pending(session, ()) is True
+        record = await session.scalar(select(ServiceTokenIssuance))
+        assert record.revoke_requested and record.encrypted_token is not None
+        await session.commit()
+    github_vendor.revoke_issued = revoked  # type: ignore[method-assign]
+    async with factory() as session:
+        assert await broker.revoke_pending(session, ()) is False
+    assert github_vendor.revoked == [token]
+
+
+async def test_error_retry_issues_a_fresh_repository_token(
+    controller_app,
+    github_vendor,  # noqa: F811
+):
+    client, request_id, _, _, factory, _ = controller_app
+    first = await _issue_repository_token(client)
+    await update_launch(factory, request_id, state="error")
+    await list_machines(client)
+    assert github_vendor.revoked == [first]
+    await update_launch(factory, request_id, state="queued", revision=2)
+    fresh = await _issue_repository_token(client)
+    assert fresh != first
+    async with factory() as session:
+        latest = await session.scalar(
+            select(ServiceTokenIssuance).order_by(
+                ServiceTokenIssuance.created_at.desc()
+            )
+        )
+        assert not latest.revoke_requested and latest.encrypted_token is not None
+
+
+async def test_concurrent_revocation_drains_claim_once(controller_app, github_vendor):  # noqa: F811
+    client, _, agent_id, _, factory, _ = controller_app
     await _issue_repository_token(client)
+    broker = _broker(factory, github_vendor)
     async with factory() as session:
-        await queue_revocation(session, ())
+        await broker.queue_agent_revocation(session, agent_id, "github")
         await session.commit()
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def revoke(token):
+    async def revoke(token: str) -> None:
         entered.set()
         await release.wait()
 
     mocked = AsyncMock(side_effect=revoke)
-    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", mocked)
+    github_vendor.revoke_issued = mocked  # type: ignore[method-assign]
 
-    async def drain():
+    async def drain() -> bool:
         async with factory() as session:
-            return await revoke_pending(session, service.config, ())
+            return await broker.revoke_pending(session, ())
 
     first = asyncio.create_task(drain())
     try:
         await asyncio.wait_for(entered.wait(), 5)
         assert await drain() is True
         async with factory() as session:
-            row = await session.scalar(select(GitHubIssuedToken))
+            row = await session.scalar(select(ServiceTokenIssuance))
             assert row.attempts == 1
             assert row.claim_until > datetime.now(UTC) + timedelta(seconds=60)
         mocked.assert_awaited_once()
@@ -1868,10 +1871,15 @@ async def test_concurrent_revocation_drains_claim_once(controller_app, monkeypat
         release.set()
     assert await first is False
     async with factory() as session:
-        assert await session.scalar(select(GitHubIssuedToken)) is None
+        row = await session.scalar(
+            select(ServiceTokenIssuance).execution_options(populate_existing=True)
+        )
+        assert row.encrypted_token is None
 
 
-async def test_revocation_lock_timeout_preserves_the_committed_sweep(controller_app):
+async def test_revocation_lock_timeout_preserves_the_committed_sweep(
+    controller_app,
+):
     client, request_id, _, _, factory, _ = controller_app
     await _issue_repository_token(client)
     machine = await machine_of(factory, request_id)
@@ -1881,9 +1889,9 @@ async def test_revocation_lock_timeout_preserves_the_committed_sweep(controller_
     async with factory() as locked:
         await locked.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"github-revocation:{require_tenant_id()}"},
+            {"key": f"service-revocation:{require_tenant_id()}"},
         )
-        await queue_revocation(locked, ())
+        await SERVICE_STORE.queue_revocation(locked)
         listed = await list_machines(client)
         assert listed[0]["state"] == "error"
         await locked.rollback()
@@ -1891,48 +1899,47 @@ async def test_revocation_lock_timeout_preserves_the_committed_sweep(controller_
 
 
 async def test_failed_revocations_do_not_starve_newer_tokens(
-    controller_app, monkeypatch
+    controller_app,
+    github_vendor,  # noqa: F811
 ):
-    client, request_id, _, service, factory, _ = controller_app
+    client, _, _, _, factory, _ = controller_app
     await _issue_repository_token(client)
+    broker = _broker(factory, github_vendor)
     async with factory() as session:
-        first = await session.scalar(select(GitHubIssuedToken))
+        first = await session.scalar(select(ServiceTokenIssuance))
+        first.revoke_requested = True
         for number in range(8):
             session.add(
-                GitHubIssuedToken(
-                    id=str(uuid4()),
-                    owner_id=first.owner_id,
-                    launch_id=request_id,
-                    launch_revision=1,
-                    encrypted_token=TEST_KEYRING.encrypt(f"SYNTHETIC-TOKEN-{number}"),
-                    expires_at=first.expires_at + timedelta(seconds=1),
-                    revoke_requested=True,
-                    attempts=0,
+                _issuance(
+                    first.owner_id,
+                    f"SYNTHETIC-TOKEN-{number}",
+                    first.expires_at + timedelta(seconds=1),
                 )
             )
-        first.revoke_requested = True
         await session.commit()
-    seen = []
+    seen: list[str] = []
 
-    async def fail(token):
+    async def fail(token: str) -> None:
         seen.append(token)
         raise RuntimeError("Synthetic outage")
 
-    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", fail)
+    github_vendor.revoke_issued = fail  # type: ignore[method-assign]
     async with factory() as session:
-        assert await revoke_pending(session, service.config, ()) is True
+        assert await broker.revoke_pending(session, ()) is True
         assert len(set(seen)) == 8
-        assert await revoke_pending(session, service.config, ()) is True
+        assert await broker.revoke_pending(session, ()) is True
     assert len(set(seen)) == 9
 
 
 async def test_revocation_warning_is_scoped_to_action_owner(
-    controller_app, monkeypatch
+    controller_app,
+    github_vendor,  # noqa: F811
 ):
-    client, request_id, _, service, factory, _ = controller_app
+    client, _, _, _, factory, _ = controller_app
     await _issue_repository_token(client)
+    broker = _broker(factory, github_vendor)
     async with factory() as session:
-        first = await session.scalar(select(GitHubIssuedToken))
+        first = await session.scalar(select(ServiceTokenIssuance))
         owner = first.owner_id
         other_user = User(
             name="other",
@@ -1943,37 +1950,21 @@ async def test_revocation_warning_is_scoped_to_action_owner(
         session.add(other_user)
         await session.flush()
         other = other_user.id
-        other_launch = HostedLaunch(
-            id=str(uuid4()), owner_id=other, name="other-revocation-worker", spec={}
-        )
-        session.add(other_launch)
-        await session.flush()
-        session.add(
-            GitHubIssuedToken(
-                id=str(uuid4()),
-                owner_id=other,
-                launch_id=other_launch.id,
-                launch_revision=1,
-                encrypted_token=TEST_KEYRING.encrypt("SYNTHETIC-OTHER-TOKEN"),
-                expires_at=first.expires_at,
-                revoke_requested=True,
-                attempts=0,
-            )
-        )
+        session.add(_issuance(other, "SYNTHETIC-OTHER-TOKEN", first.expires_at))
         await session.commit()
     revoke = AsyncMock(side_effect=RuntimeError("Synthetic outage"))
-    monkeypatch.setattr(GitHubInstallationCredentials, "revoke", revoke)
+    github_vendor.revoke_issued = revoke  # type: ignore[method-assign]
     async with factory() as session:
         assert (
-            await revoke_pending(
-                session, service.config, (GitHubIssuedToken.owner_id == owner,)
+            await broker.revoke_pending(
+                session, (ServiceTokenIssuance.owner_id == owner,)
             )
             is False
         )
         revoke.assert_not_awaited()
         assert (
-            await revoke_pending(
-                session, service.config, (GitHubIssuedToken.owner_id == other,)
+            await broker.revoke_pending(
+                session, (ServiceTokenIssuance.owner_id == other,)
             )
             is True
         )

@@ -12,6 +12,7 @@ from switch_core.bridges.agent import hosted_mailbox
 from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from tests.switch_core.bridges.agent.protocol.registration_harness import make_service
+from tests.switch_core.connections.github_seed import github_vendor  # noqa: F401
 from tests.switch_core.gateway.test_hosted_workers import worker_app  # noqa: F401
 
 

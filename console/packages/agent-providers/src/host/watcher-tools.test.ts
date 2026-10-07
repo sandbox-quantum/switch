@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { SessionPlacements } from './placements';
+import { Redactions } from './redaction';
 import type { Caller } from './session-channel';
 import { sessionToolAnswerer, WatcherControl, type WatcherHealth } from './watcher-tools';
 
@@ -47,6 +48,7 @@ it('moves rooms one at a time, so a refused move puts back only what it replaced
     connectionId: 'connection',
     placements,
     publish: async () => {},
+    redactions: new Redactions(),
   });
   let refuseFirst!: () => void;
   calls.connect.mockImplementation((sessionId: string) =>
@@ -73,6 +75,68 @@ it('moves rooms one at a time, so a refused move puts back only what it replaced
   await second;
   expect(calls.connect.mock.calls.map(([sessionId]) => sessionId)).toEqual(['first', 'second']);
   expect(placements.sessionIn('room')).toBe('second');
+});
+
+it('scrubs every service token handed out from what it sends to Switch', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const redactions = new Redactions();
+  redactions.add('synthetic-handed_out');
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+    connectionId: 'connection',
+    placements: await SessionPlacements.open(base, () => []),
+    publish: async () => {},
+    redactions,
+  });
+  calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'posted' }] });
+  await answer(await caller(base, 'session'), {
+    type: 'tool',
+    name: 'post_message',
+    arguments: { body: 'my token is synthetic-handed_out', mentions: ['synthetic-handed_out'] },
+  });
+  expect(calls.connect).toHaveBeenCalledWith('session', 'post_message', {
+    body: 'my token is [REDACTED]',
+    mentions: ['[REDACTED]'],
+  });
+});
+
+it('answers a service token ask from Switch, as the agent, and scrubs the token from then on', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const redactions = new Redactions();
+  const fetchMock = vi.fn<typeof fetch>(
+    async () =>
+      new Response(
+        JSON.stringify({
+          token: 'synthetic-issued',
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          resources: {},
+        })
+      )
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  try {
+    const answer = sessionToolAnswerer({
+      identity: { agentId: 'agent', endpoint: 'https://switch.test/api/agent', token: 'agent-key' },
+      connectionId: 'connection',
+      placements: await SessionPlacements.open(base, () => []),
+      publish: async () => {},
+      redactions,
+    });
+    const answered = await answer(await caller(base, 'session'), {
+      type: 'service-token',
+      service: 'github',
+      rejected: null,
+    });
+    expect(answered).toMatchObject({ kind: 'token', token: 'synthetic-issued' });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://switch.test/api/agent/agents/agent/service-tokens/github');
+    expect(init).toMatchObject({ method: 'POST', headers: { Authorization: 'Bearer agent-key' } });
+    expect(redactions.text('synthetic-issued')).toBe('[REDACTED]');
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it('keeps the watcher health, telling listeners only when something changed', () => {

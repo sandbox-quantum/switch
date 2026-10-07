@@ -19,6 +19,8 @@ import { ManagedGitHubStep } from './managed-github-step';
 const STATUS_LABEL: Record<ConnectionCatalogEntry['status'], string> = {
   connected: 'Connected',
   not_connected: 'Not connected',
+  needs_reauthorization: 'Reconnect needed',
+  error: 'Connection failed',
   coming_soon: 'Coming soon',
 };
 
@@ -65,7 +67,8 @@ export function ConnectionsGrid({
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         <p className="text-sm text-foreground-muted">
-          Connect the services your cloud agents can work with.
+          Connect the services your agents can work with. Each agent uses a service only once you
+          grant it, from the agent's settings.
         </p>
         <SearchInput
           aria-label="Search connections"
@@ -95,7 +98,8 @@ export function ConnectionsGrid({
             className="grid max-h-96 grid-cols-2 gap-2 overflow-auto"
           >
             {visible.map((connection) => {
-              const available = connection.enabled && connection.slug === 'github';
+              // GitHub is the one service with a connect step here.
+              const available = connection.connectable && connection.slug === 'github';
               return (
                 <button
                   key={connection.slug}
@@ -115,10 +119,22 @@ export function ConnectionsGrid({
                     </span>
                     <Badge
                       className="mt-1.5"
-                      variant={connection.status === 'connected' ? 'outline' : 'secondary'}
+                      variant={
+                        connection.status === 'connected'
+                          ? 'outline'
+                          : connection.status === 'needs_reauthorization' ||
+                              connection.status === 'error'
+                            ? 'destructive'
+                            : 'secondary'
+                      }
                     >
                       {STATUS_LABEL[connection.status]}
                     </Badge>
+                    {connection.unavailable_reason && (
+                      <span className="mt-1 block text-xs text-foreground-muted">
+                        {connection.unavailable_reason}
+                      </span>
+                    )}
                   </span>
                 </button>
               );
