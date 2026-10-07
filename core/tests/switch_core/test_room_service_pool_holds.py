@@ -16,6 +16,7 @@ written until the transport side is in place.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -151,6 +152,9 @@ def _service(
     svc._provisioning = provisioning  # type: ignore[assignment]
     svc._client_lifecycle = _RunningClients(running)  # type: ignore[assignment]
     svc._collab_lifecycle = _RunningClients({})  # type: ignore[assignment]
+    svc._room_cache = SimpleNamespace(  # type: ignore[assignment]
+        invalidate=lambda tenant_id, room_id: None
+    )
     return svc, provisioning
 
 

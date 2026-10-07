@@ -7,8 +7,10 @@ import {
   type Assignment,
   assignmentSchema,
   type ControllerConnection,
-  controllerBeatResponseSchema,
+  type ControllerInfo,
+  type ControllerInfoChange,
   controllerConnectionResponseSchema,
+  controllerInfoResponseSchema,
   credentialRotateResponseSchema,
   type EnrollRequest,
   type EnrollResponse,
@@ -31,6 +33,36 @@ export const PROTOCOL_HEADER = 'Switch-Controller-Protocol';
 export const CONTROLLER_CLIENT = 'switch-agent-controller';
 
 export type Fetch = typeof fetch;
+
+/** What the controller needs of a WebSocket; Node's own satisfies it. */
+export type SocketLike = Pick<
+  WebSocket,
+  'addEventListener' | 'removeEventListener' | 'send' | 'close' | 'readyState'
+>;
+
+/** Opens a WebSocket with request headers, as Node's does and a browser's does not. */
+export type OpenWebSocket = (url: string, headers: Record<string, string>) => SocketLike;
+
+/** Node's WebSocket (Node 22 and newer), which takes request headers. */
+export const nodeWebSocket: OpenWebSocket = (url, headers) => {
+  const Socket = (
+    globalThis as unknown as {
+      WebSocket?: new (url: string, init: { headers: Record<string, string> }) => WebSocket;
+    }
+  ).WebSocket;
+  if (!Socket)
+    throw new ConfigurationError(
+      `The agents controller needs Node 22 or newer to connect to Switch (this is ${process.version}, with no WebSocket).`
+    );
+  return new Socket(url, { headers });
+};
+
+/** The controller's socket, and how to say its token was refused. */
+export type OpenedSocket = {
+  socket: SocketLike;
+  /** The socket was refused with a 401 that is not a revocation: the token went stale. */
+  tokenRefused: () => void;
+};
 
 /**
  * A refusal from the server, read from its `{"error": {code, message,
@@ -274,6 +306,7 @@ export class ControllerClient {
       /** This controller's version, declared when the stream connection opens. */
       version: string;
       tokens: AccessTokens;
+      openWebSocket: OpenWebSocket;
     }
   ) {}
 
@@ -320,6 +353,31 @@ export class ControllerClient {
       }
       throw error;
     }
+  }
+
+  /** Renames this machine and/or changes its description, as its owner can in the gateway. */
+  async updateInfo(change: ControllerInfoChange): Promise<ControllerInfo> {
+    let response: Response;
+    try {
+      response = await this.request(this.controllerPath, { method: 'PATCH', body: change });
+    } catch (error) {
+      // A server from before this route answers with the framework's own
+      // refusal, which carries no Switch error envelope.
+      if (
+        error instanceof ControllerApiError &&
+        (error.status === 404 || error.status === 405) &&
+        error.code === 'unexpected_response'
+      )
+        throw new ControllerApiError(
+          error.status,
+          'not_supported',
+          "This Switch server cannot rename a machine from its controller. Change the name and description in the gateway's Machines page instead.",
+          false,
+          null
+        );
+      throw error;
+    }
+    return parsed(response, controllerInfoResponseSchema);
   }
 
   async rotateCredential(): Promise<string> {
@@ -407,48 +465,24 @@ export class ControllerClient {
   }
 
   /**
-   * Proves the connection alive, and confirms how far each agent's host has
-   * read.
+   * The socket that carries an open connection: its frames down, the
+   * controller's pongs (its beat) up. A refusal arrives on it as a `refused`
+   * frame, read by the caller.
    */
-  async beat(
-    connection: { connectionId: string; generation: number },
-    cursors: Record<string, number>,
-    signal: AbortSignal
-  ): Promise<void> {
-    const response = await this.request(`${this.streamPath}/connection/beat`, {
-      method: 'POST',
-      body: {
-        connection_id: connection.connectionId,
-        generation: connection.generation,
-        cursors,
-      },
-      signal,
-    });
-    await parsed(response, controllerBeatResponseSchema);
-  }
-
-  /** Attaches the controller stream to an open connection; the caller reads the body. */
-  async openEvents(
-    connection: { connectionId: string; generation: number },
-    signal: AbortSignal
-  ): Promise<Response> {
+  async openSocket(connection: {
+    connectionId: string;
+    generation: number;
+  }): Promise<OpenedSocket> {
     const query = new URLSearchParams({
       connection_id: connection.connectionId,
       generation: String(connection.generation),
     });
-    const response = await this.request(`${this.streamPath}/events?${query}`, {
-      method: 'GET',
-      headers: { Accept: 'text/event-stream' },
-      signal,
+    const url = `${this.streamPath.replace(/^http/, 'ws')}/connection/ws?${query}`;
+    const token = await this.deps.tokens.get();
+    const socket = this.deps.openWebSocket(url, {
+      [PROTOCOL_HEADER]: String(PROTOCOL_VERSION),
+      Authorization: `Bearer ${token}`,
     });
-    if (!response.body)
-      throw new ControllerApiError(
-        response.status,
-        'invalid_response',
-        'The event stream opened with no body.',
-        true,
-        null
-      );
-    return response;
+    return { socket, tokenRefused: () => this.deps.tokens.invalidate(token) };
   }
 }

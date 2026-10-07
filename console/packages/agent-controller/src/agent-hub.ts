@@ -140,6 +140,13 @@ export class AgentHub {
     return cursors;
   }
 
+  /** Where Core attached the agent on the controller stream, while it is attached. */
+  attachment(agentId: string): { fromSeq: number; rooms: string[] } | null {
+    const agent = this.agents.get(agentId);
+    if (!agent?.attached || agent.head === null) return null;
+    return { fromSeq: agent.head, rooms: [...(agent.rooms ?? [])] };
+  }
+
   /** The agent's events flow on the controller stream and its agent host is taking them. */
   attached(agentId: string): boolean {
     return this.agents.get(agentId)?.host?.connected ?? false;

@@ -38,6 +38,7 @@ import {
   type MachineStatusTone,
   toggleBlocker,
   toggleChecked,
+  unknownToServer,
 } from './this-computer-machine';
 
 /** How often the card re-reads the server while it is on screen. */
@@ -135,6 +136,10 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
     mutationFn: () => rpc.embeddedController.dismissRemoved(serverId),
     ...handlers,
   });
+  const enrollAgain = useMutation({
+    mutationFn: () => rpc.embeddedController.enrollAgain(serverId),
+    ...handlers,
+  });
 
   const overview = overviewQuery.data;
   // Nothing to say on a server this computer has nothing to do with and is not
@@ -208,6 +213,17 @@ export const ThisComputerMachineCard = observer(function ThisComputerMachineCard
           >
             <RefreshCw className="size-4" />
             Start again
+          </Button>
+        )}
+        {unknownToServer(overview) && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={enrollAgain.isPending}
+            onClick={() => enrollAgain.mutate()}
+          >
+            <RefreshCw className="size-4" />
+            {enrollAgain.isPending ? 'Enrolling…' : 'Enroll again'}
           </Button>
         )}
         {overview.phase.kind === 'removed' && (

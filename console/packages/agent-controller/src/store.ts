@@ -147,6 +147,13 @@ export class ControllerStore {
     this.setMeta('secret_store', kind);
   }
 
+  /** Records the name the server now has for this controller. */
+  saveName(name: string): void {
+    if (!this.meta('controller_id'))
+      throw new Error('There is no identity whose name could be changed.');
+    this.setMeta('name', name);
+  }
+
   /** Moves the identity to another server URL, keeping everything else. */
   saveServer(server: string): void {
     if (!this.meta('controller_id'))

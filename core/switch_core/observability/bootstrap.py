@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.logging_context import LogContextFilter
@@ -26,7 +26,11 @@ from switch_core.observability.catalogue import (
     DB_POOL_IN_USE,
     DB_POOL_OVERFLOW,
     DB_POOL_SIZE,
+    DELIVERY_CACHE_BYTES,
+    DELIVERY_CACHE_ROOMS,
+    RUNTIME_STARTS,
 )
+from switch_core.observability.db_server import DbServerSampler
 from switch_core.observability.exporter import MetricsExporter
 from switch_core.observability.health import (
     HealthMonitor,
@@ -55,6 +59,7 @@ from switch_core.observability.runtime import (
     RuntimeMetrics,
     log_unreadable_sources,
 )
+from switch_core.transport.room_cache import RoomCacheStats
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +88,13 @@ class RuntimeProbes:
     consumers_running: Callable[[], int]
     connectors_running: Callable[[], int]
     connectors_configured: Callable[[], int]
-    agents_connected: Callable[[], int]
+    # Agents per (transport, client); see
+    # `AgentConnectionRegistry.live_agents_by_transport`.
+    agents_connected: Callable[[], Mapping[tuple[str, str], int]]
     # None when the engine's pool does not keep these — see
     # :mod:`switch_core.observability.pool`.
     pool_stats: Callable[[], PoolStats | None]
+    room_cache_stats: Callable[[], RoomCacheStats]
 
 
 @dataclass
@@ -119,8 +127,19 @@ class Observability:
 
 
 def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading]]:
+    # Every (transport, client) pair reported so far: one that empties out is
+    # reported as 0, or the dashboard would keep showing its last count.
+    seen: set[tuple[str, str]] = {("websocket", "unknown")}
+
     def readings() -> Iterator[GaugeReading]:
-        yield GaugeReading(AGENTS_CONNECTED, float(probes.agents_connected()), {})
+        connected = probes.agents_connected()
+        seen.update(connected)
+        for transport, client in sorted(seen):
+            yield GaugeReading(
+                AGENTS_CONNECTED,
+                float(connected.get((transport, client), 0)),
+                {"transport": transport, "client": client},
+            )
         yield GaugeReading(CONSUMERS_RUNNING, float(probes.consumers_running()), {})
         for platform, running in probes.bridges_running_by_platform().items():
             yield GaugeReading(
@@ -136,6 +155,10 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
             yield GaugeReading(DB_POOL_SIZE, float(stats.size), {})
             yield GaugeReading(DB_POOL_OVERFLOW, float(stats.overflow), {})
 
+        cache = probes.room_cache_stats()
+        yield GaugeReading(DELIVERY_CACHE_BYTES, float(cache.bytes), {})
+        yield GaugeReading(DELIVERY_CACHE_ROOMS, float(cache.rooms), {})
+
     return readings
 
 
@@ -144,10 +167,13 @@ def start_observability(
     version: str | None,
     session_factory: async_sessionmaker,
     probes: RuntimeProbes,
+    db_server_engine: Callable[[], AsyncEngine] | None = None,
 ) -> Observability:
     """Install the registry, start the loops, and hand back the handle.
 
-    Called once, from the server's lifespan.
+    Called once, from the server's lifespan. `db_server_engine` builds the
+    engine the database sampler takes its one connection from; it must not be
+    the application's pooled engine.
     """
     monitor = HealthMonitor(
         checks=[
@@ -179,6 +205,7 @@ def start_observability(
 
     registry = MetricsRegistry()
     install(registry)
+    registry.increment(RUNTIME_STARTS, {})
 
     monitor.install(registry)
     RuntimeMetrics(lag).install(registry)
@@ -209,6 +236,12 @@ def start_observability(
         tasks.append(
             asyncio.create_task(exporter.run_forever(), name="metrics-exporter")
         )
+        if db_server_engine is not None:
+            sampler = DbServerSampler(db_server_engine)
+            registry.register_observer(sampler.readings)
+            tasks.append(
+                asyncio.create_task(sampler.run_forever(), name="db-server-sampler")
+            )
         logger.info(
             "Reporting metrics to %s every %.0fs as service %r.",
             client.url_for("metrics"),

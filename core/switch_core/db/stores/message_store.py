@@ -92,6 +92,10 @@ class MessageStore:
     async def _next_seq(self, session: AsyncSession, room_id: str) -> int:
         """The next position in this room, allocated in commit order.
 
+        One above the room's highest, so live positions run 1, 2, 3 with no
+        gaps: a transaction that rolls back takes its number with it, and the
+        next writer gets the same one.
+
         A database sequence — `Identity`, `SERIAL`, `nextval` — is the obvious
         way to number rows and the wrong one here. It hands out a number when
         the INSERT runs, not when the transaction commits, and it does so

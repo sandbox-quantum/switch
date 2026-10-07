@@ -27,6 +27,7 @@ from tests.switch_core.management.harness import (
     create_managed_agent,
     definition,
     enroll_console,
+    ensure_connected,
     platform,
     provider,
     report_status,
@@ -579,6 +580,7 @@ async def report_machine(
         del report["machine"]["workspaces_dir"]
     else:
         report["machine"]["workspaces_dir"] = workspaces_dir
+    await ensure_connected(client, controller)
     response = await client.put(
         f"/v1/management/controllers/{controller.controller_id}/status",
         json=report,

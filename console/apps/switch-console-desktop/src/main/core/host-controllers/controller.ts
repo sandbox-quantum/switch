@@ -19,6 +19,10 @@ export const hostControllersController = createRPCController({
   restart: (params: { sshHost: string; serverId: string }): Promise<void> =>
     hostControllerService.restart(params.sshHost, params.serverId),
 
+  /** Enrolls the host again when the server no longer knows the machine it was. */
+  enrollAgain: (params: { sshHost: string; serverId: string }): Promise<void> =>
+    hostControllerService.enrollAgain(params.sshHost, params.serverId),
+
   disable: (params: { sshHost: string; serverId: string }): Promise<void> =>
     hostControllerService.disable(params.sshHost, params.serverId, { force: false }),
 

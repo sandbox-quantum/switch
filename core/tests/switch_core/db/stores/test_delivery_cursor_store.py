@@ -60,8 +60,8 @@ class TestPosition:
     async def test_an_agent_that_was_never_delivered_is_at_zero(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Zero, not an error: `seq` starts at 1, so zero already says
-        "behind everything"."""
+        """Zero, not an error: live messages are numbered from 1, so zero
+        already says "behind every live message"."""
         async with session_factory() as session:
             agent_id, room_id = await _make_agent_and_room(session)
             await session.commit()

@@ -143,7 +143,8 @@ async def delete_connector(
             raise HTTPException(
                 status_code=403, detail="Not authorized to delete this connector"
             )
-
+    # Not held across removal, which deletes the agents on sessions of its own.
+    await session.commit()
     try:
         await connector_lifecycle.remove(connector_id)
     except ValueError as exc:

@@ -4,7 +4,15 @@ import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import packageJson from '../package.json' with { type: 'json' };
-import { ControllerApiError, enroll, exchangeToken, normalizeServerUrl } from './api';
+import {
+  AccessTokens,
+  ControllerApiError,
+  ControllerClient,
+  enroll,
+  exchangeToken,
+  normalizeServerUrl,
+  nodeWebSocket,
+} from './api';
 import { DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
 import { formatChecks, runDoctor } from './doctor';
@@ -36,6 +44,7 @@ import {
   probeProvider,
 } from './runtime';
 import { AgentRuntimes } from './runtimes';
+import type { ControllerInfoChange } from './schemas';
 import {
   CONTROLLER_CREDENTIAL,
   defaultSecretStoreKind,
@@ -60,6 +69,9 @@ export const VERSION: string = packageJson.version;
 
 const SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
+const MAX_NAME = 200;
+const MAX_DESCRIPTION = 500;
+
 const USAGE = `Usage: switch-agent-controller <command> [options]
 
 Commands:
@@ -76,6 +88,10 @@ Commands:
       the data directory holds none, and move the same identity to a new
       server URL when it holds that one. --credential-stdin reads the
       controller credential from stdin and keeps it in memory only.
+  set-info [--name <name>] [--description <text>] [--data-dir <dir>]
+      Rename this machine and/or change its description on the server, with
+      this controller's own credential. Either or both; --description ""
+      clears the description. The same limits as at enrollment.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
   install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
@@ -154,8 +170,8 @@ async function enrollCommand(args: string[]): Promise<number> {
   const server = normalizeServerUrl(values.server);
   const name = values.name ?? hostname();
   const description = values.description?.trim() || undefined;
-  if (description !== undefined && description.length > 500)
-    throw new UsageError('--description must be at most 500 characters.');
+  if (description !== undefined && description.length > MAX_DESCRIPTION)
+    throw new UsageError(`--description must be at most ${MAX_DESCRIPTION} characters.`);
   const { dataDir, layout, store } = await openState(values['data-dir']);
   const secrets = secretStoreFor(secretStore, { dir: layout.secrets, dataDir }, runSecretCommand);
   try {
@@ -187,6 +203,82 @@ async function enrollCommand(args: string[]): Promise<number> {
     );
     const warning = secrets.startupWarning();
     if (warning) process.stderr.write(`Warning: ${warning}\n`);
+    return EXIT_OK;
+  } finally {
+    store.close();
+  }
+}
+
+/** The change `set-info` asks for, checked as the server checks it. */
+export function infoChange(values: { name?: string; description?: string }): ControllerInfoChange {
+  if (values.name === undefined && values.description === undefined)
+    throw new UsageError('set-info needs --name, --description, or both.');
+  const change: ControllerInfoChange = {};
+  if (values.name !== undefined) {
+    const name = values.name.trim();
+    if (!name) throw new UsageError('--name must not be blank.');
+    if (name.length > MAX_NAME)
+      throw new UsageError(`--name must be at most ${MAX_NAME} characters.`);
+    change.name = name;
+  }
+  if (values.description !== undefined) {
+    const description = values.description.trim();
+    if (description.length > MAX_DESCRIPTION)
+      throw new UsageError(`--description must be at most ${MAX_DESCRIPTION} characters.`);
+    change.description = description || null;
+  }
+  return change;
+}
+
+async function setInfoCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      name: { type: 'string' },
+      description: { type: 'string' },
+      'data-dir': { type: 'string' },
+    },
+    strict: true,
+  });
+  const change = infoChange(values);
+  const { dataDir, store, secrets } = await openState(values['data-dir']);
+  try {
+    const identity = store.identity();
+    if (!identity)
+      throw new ConfigurationError(`${dataDir} holds no enrolled controller. Enroll it first.`);
+    if (store.revokedAt())
+      throw new ConfigurationError(
+        `Controller ${identity.controllerId} was revoked; it has to be enrolled again.`
+      );
+    const credential = await secrets.get(CONTROLLER_CREDENTIAL);
+    if (!credential)
+      throw new ConfigurationError(
+        `${dataDir} holds no controller credential (it is handed over at run time, or was removed). Change the name and description in the gateway's Machines page instead.`
+      );
+    const log = createLogger({
+      level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
+      write: (line) => process.stderr.write(line),
+    });
+    const client = new ControllerClient({
+      fetch,
+      server: identity.server,
+      controllerId: identity.controllerId,
+      version: VERSION,
+      tokens: new AccessTokens({
+        fetch,
+        server: identity.server,
+        controllerId: identity.controllerId,
+        credential: async () => credential,
+        now: Date.now,
+        log,
+      }),
+      openWebSocket: nodeWebSocket,
+    });
+    const updated = await client.updateInfo(change);
+    store.saveName(updated.name);
+    process.stdout.write(
+      `Controller ${updated.id} is now "${updated.name}"${updated.description ? `: ${updated.description}` : ', with no description'}.\n`
+    );
     return EXIT_OK;
   } finally {
     store.close();
@@ -283,6 +375,7 @@ async function runCommand(args: string[]): Promise<number> {
           ),
         locator: new PathProviderLocator(process.env.PATH),
         fetch,
+        openWebSocket: nodeWebSocket,
         log,
         dataDir,
         workspacesFor: serverWorkspacesDir,
@@ -533,6 +626,8 @@ export async function main(argv: string[]): Promise<number> {
           ? EXIT_OK
           : code;
       }
+      case 'set-info':
+        return await setInfoCommand(rest);
       case 'status':
         return await statusCommand(rest);
       case 'install-service':

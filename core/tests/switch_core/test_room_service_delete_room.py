@@ -70,6 +70,14 @@ class _FakeProvisioning:
         self._events.append(("delete_room", transport_room_id))
 
 
+class _FakeRoomCache:
+    def __init__(self) -> None:
+        self.invalidated: list[tuple[str, str]] = []
+
+    def invalidate(self, tenant_id: str, room_id: str) -> None:
+        self.invalidated.append((tenant_id, room_id))
+
+
 def _build_service(
     *,
     room: Any,
@@ -85,6 +93,7 @@ def _build_service(
     svc._collab_lifecycle = _FakeLifecycle(bridges)  # type: ignore[assignment]
     svc._client_lifecycle = _FakeClientLifecycle(clients)  # type: ignore[assignment]
     svc._provisioning = _FakeProvisioning(events)  # type: ignore[assignment]
+    svc._room_cache = _FakeRoomCache()  # type: ignore[assignment]
     return svc, room_store
 
 
@@ -198,3 +207,23 @@ class TestDeleteRoom:
 
         with pytest.raises(ValueError, match="Room not found"):
             await svc.delete_room("nope")
+
+    async def test_drops_the_rooms_shared_delivery_reads(self) -> None:
+        """Members still running here are kicked, which empties the room's
+        cache entry; this is the call that covers any that were not."""
+        events: list[Any] = []
+        room = SimpleNamespace(
+            id="room-1",
+            tenant_id="room-tenant",
+            transport_room_id="!mx:switch.local",
+            bridge_id=None,
+            external_channel_id=None,
+        )
+        svc, room_store = _build_service(
+            room=room, client_ids=[], clients={}, bridges={}, events=events
+        )
+
+        await svc.delete_room("room-1")
+
+        assert room_store.deleted == ["room-1"]
+        assert svc._room_cache.invalidated == [("room-tenant", "room-1")]  # type: ignore[attr-defined]

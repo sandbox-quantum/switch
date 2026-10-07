@@ -115,7 +115,7 @@ function MachineCard({
   );
 }
 
-function MachineStatePill({ state }: { state: 'online' | 'unknown' | 'revoked' }) {
+function MachineStatePill({ state }: { state: 'online' | 'offline' | 'unknown' | 'revoked' }) {
   if (state === 'revoked')
     return <span className="shrink-0 text-xs text-foreground-muted">Removed</span>;
   const online = state === 'online';

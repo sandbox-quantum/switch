@@ -460,6 +460,8 @@ async def create_tenant(
         user = await user_store.get(session, caller.id)
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
+        # Not held across provisioning, which opens a session per tenant.
+        await session.commit()
         tenant = await _provision_workspace(
             session_factory, user_store, client_lifecycle, caller, req.name
         )

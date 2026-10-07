@@ -4,11 +4,12 @@
 # machine and installs the controller as a service of this user.
 #
 #   curl -fsSL <url of this file> | sh
-#   curl -fsSL <url of this file> | sh -s -- --server <Switch API URL> --code <code> [--name <name>]
+#   curl -fsSL <url of this file> | sh -s -- --server <Switch API URL> --code <code> [--name <name>] [--description <text>]
 #
 # Options:
 #   --server <url> --code <code>   Enroll with a one-time code from the Machines page.
 #   --name <name>                  The machine's name in Switch (default: the host name).
+#   --description <text>           What the machine is for, shown on the Machines page.
 #   --no-service                   Enroll, but do not install the service.
 #   --version <x.y.z>              Install this release rather than the newest.
 #
@@ -26,6 +27,7 @@ fail() {
 SERVER=""
 CODE=""
 NAME=""
+DESCRIPTION=""
 SERVICE=1
 VERSION=""
 while [ $# -gt 0 ]; do
@@ -33,6 +35,7 @@ while [ $# -gt 0 ]; do
     --server) [ $# -ge 2 ] || fail "--server needs a URL."; SERVER="$2"; shift 2 ;;
     --code) [ $# -ge 2 ] || fail "--code needs a code."; CODE="$2"; shift 2 ;;
     --name) [ $# -ge 2 ] || fail "--name needs a name."; NAME="$2"; shift 2 ;;
+    --description) [ $# -ge 2 ] || fail "--description needs a text."; DESCRIPTION="$2"; shift 2 ;;
     --no-service) SERVICE=0; shift ;;
     --version) [ $# -ge 2 ] || fail "--version needs x.y.z."; VERSION="$2"; shift 2 ;;
     *) fail "Unknown option '$1'." ;;
@@ -102,11 +105,10 @@ if [ -z "$SERVER" ]; then
   exit 0
 fi
 
-if [ -n "$NAME" ]; then
-  "$BIN" enroll --server "$SERVER" --code "$CODE" --name "$NAME"
-else
-  "$BIN" enroll --server "$SERVER" --code "$CODE"
-fi
+set -- enroll --server "$SERVER" --code "$CODE"
+if [ -n "$NAME" ]; then set -- "$@" --name "$NAME"; fi
+if [ -n "$DESCRIPTION" ]; then set -- "$@" --description "$DESCRIPTION"; fi
+"$BIN" "$@"
 if [ "$SERVICE" = 1 ]; then
   "$BIN" install-service
 fi

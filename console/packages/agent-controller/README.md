@@ -15,12 +15,12 @@ runs, and the agent hosts do the running.
 
 An agent whose definition asks for `isolation: "isolated"` runs instead as an agent
 host in a process of its own (the shared-host bundle with `--ensure-watch`, as Console
-runs an agent on an SSH host). It hears its events through the relay, which serves it
-the per-agent agent protocol (its own event stream, heartbeat and placements), and it
-is not stopped when the controller exits: it reconnects when the controller is back.
+runs an agent on an SSH host). It hears its events on the controller's **hub**, the
+same one in-process agent hosts use, over a WebSocket on the relay's port, and it is
+not stopped when the controller exits: it reconnects when the controller is back.
 Changing an agent's isolation restarts it the other way.
 
-The controller holds **one** event stream to Switch for all of its agents and hands
+The controller holds **one** connection to Switch, a WebSocket, for all of its agents and hands
 each shared agent's events to its agent host directly. Each agent host makes its calls to Switch
 through a **local relay** on a loopback port, which adds the controller's
 credentials. No agent holds a Switch credential: each is given a token that only the
@@ -73,6 +73,7 @@ switch-agent-controller enroll \
 switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
 switch-agent-controller doctor [--data-dir <dir>]
 switch-agent-controller update [--check]
 ```
@@ -85,6 +86,13 @@ switch-agent-controller update [--check]
   characters). Its owner sees it in the gateway's Machines page, where both the
   name and the description can be changed later, and so do the agents allowed
   to manage agents for that owner.
+- `set-info` changes the machine's name and/or description on the server after
+  enrollment, with this controller's own credential, and records the new name
+  in the data directory. Give `--name`, `--description` or both; `--description ""`
+  clears the description. The limits are enrollment's (a name of at most 200
+  characters, not blank). It needs the credential in the data directory, so a
+  controller whose credential is handed over with `--credential-stdin` is
+  renamed in the gateway instead. It can run while `run` does.
 - `status` reads only local state. It makes no network call.
 - Logging goes to stderr. Set the level with `SWITCH_CONTROLLER_LOG_LEVEL`
   (`debug`, `info`, `warn`, `error`; the default is `info`).
@@ -104,7 +112,8 @@ switch-agent-controller update [--check]
   a newer controller wrote; a shared-host bundle that is missing, not a file
   or unreadable; an unsupported platform (Windows); a data directory that
   holds no identity, or no credential (revoked earlier and wiped, or never
-  enrolled); and with `--credential-stdin`, a credential that does not arrive
+  enrolled); `set-info` with nothing to change, or a name or description past
+  the limits; and with `--credential-stdin`, a credential that does not arrive
   (stdin is a terminal, closes empty, holds more than one token, cannot be
   read, or stays open past 10 s). The reason is the last line on stderr,
   prefixed `switch-agent-controller: `. Once the controller is running,
@@ -248,24 +257,25 @@ session hosts it launches with `process.execPath` run as Node too.
 ### The controller stream
 
 - Opens a connection (`POST /v1/controllers/{id}/connection`) with each agent's
-  cursor (the last sequence its agent host confirmed, or `"head"`), then attaches the
-  stream (`GET /v1/controllers/{id}/events`). The stream carries every bound agent's
+  cursor (the last sequence its agent host confirmed, or `"head"`), then attaches a
+  WebSocket to it (`/v1/controllers/{id}/connection/ws`). It carries every bound agent's
   events (`agent.event`, `agent.gap`, `agent.session_command`,
   `agent.approval_outcome`), its attachment and room membership (`agent.attached`,
   `agent.detached`, `agent.rooms`), and the management nudges (`assignment.changed`,
   `operation.pending`, `credential.revoked`).
-- Beats the connection (`POST .../connection/beat`) every `heartbeat_interval_s`
-  (2 s) while the stream is attached, with each agent's confirmed cursor.
+- Answers every `ping` Switch sends on the socket (each `heartbeat_interval_s`, 2 s)
+  with a `pong` naming each agent's confirmed cursor: that pong is its heartbeat.
 - The open and every beat also carry `placements`: for each agent whose running
   agent host has a session placed in a room, those rooms. It is the
   whole current map each time (Switch replaces what it held), and agents with no
   placement are left out, so a placement the agent host makes reaches Switch on the
   next beat.
-- A dropped stream is reattached to the same connection. A connection Switch no
+- A dropped socket is reattached to the same connection. A connection Switch no
   longer knows (`unknown_connection`, `stale_generation`, or any `evicted` but
   `taken_over`) is opened afresh, from the cursors as they stand. Reconnects back
-  off with jitter, and a stream silent for 45 s (Switch writes a keepalive every
-  15 s) counts as dropped.
+  off with jitter, except after close code 1012 (Switch restarting), which is
+  retried within a second. A socket silent for 10 s (Switch pings every 2 s)
+  counts as dropped.
 - `taken_over`, as a frame or a refusal, means another instance of this controller
   opened the stream. This one stops its agents and exits with code `4`.
 - Each agent's events are handed to its agent host one at a time, in order, and only
@@ -287,9 +297,18 @@ session hosts it launches with `process.execPath` run as Node too.
   with a token minted for that agent (`swlr_…`) as `SWITCH_API_TOKEN`. A token the
   relay did not mint is refused with `401`; while the controller is still starting,
   with `503`.
-- It serves no event stream and no connection bookkeeping
-  (`GET /agents/{id}/events`, `POST /agents/{id}/connection/…` answer `404`): the
+- It serves no event stream and no connection bookkeeping of the agent protocol
+  (`GET /agents/{id}/events`, `POST /agents/{id}/connection/…` answer `410`): the
   controller holds each agent's connection to Switch itself.
+- **The hub**, at `ws://127.0.0.1:<port>/hub` with the agent's relay token, named in
+  the credentials file as `SWITCH_AGENT_HUB`. An agent host in a process of its own
+  hears its events there: the hub sends each event, gap, room control and approval
+  outcome as a request, and counts it handled when the agent host answers `done`, as
+  it does for an agent host in the controller's process. The agent host states its
+  sessions' rooms there too (`placements`). One agent host per agent: a newer one
+  takes the hub over (close `4409`, the older stands down). When the controller
+  stops, the hub closes with `1012` and the agent hosts reconnect when it is back,
+  resuming after the last event they handled.
 - **Forwarded to Switch**, everything else under `/agents/{id}/…`,
   `/agent-sessions/…`, `/sessions/…`, `/version` and `/health`: operations, media,
   typing, history, session activity and approvals. The relay sends them with the
@@ -319,7 +338,8 @@ session hosts it launches with `process.execPath` run as Node too.
     reboot, say): the agent host is launched again, once 15 s have passed since it
     was last launched, so an agent host still coming up is not launched twice.
   - **Desired `running`, relay credentials rewritten** (the relay came back on
-    another port): a running agent host is restarted so it reads them.
+    another port, or they were written before the hub): a running agent host is
+    restarted so it reads them.
   - **Agent host failed or was taken over:** it is left down, and reported as
     `failed`. A new revision or an `agent.restart` brings it back. One that failed
     because the relay refused its token is relaunched once it has a new one.
@@ -377,7 +397,7 @@ It holds:
 |---|---|
 | `controller.db` | SQLite: identity, cached assignment, per-agent applied revision and local failures, restart times, each agent's stream cursor, the relay's port, status seq. Everything except the identity can be rebuilt from the server. |
 | `secrets/controller-credential` | The controller credential, with the `file` secret store (see below). Absent with a keychain store, or when the credential is handed over with `--credential-stdin`. |
-| `agents/<id>/credentials.json` | Each agent's relay endpoint and relay token, in the layout the shared host reads. No Switch credential. |
+| `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
 | `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
 
 An agent whose definition names no directory works in

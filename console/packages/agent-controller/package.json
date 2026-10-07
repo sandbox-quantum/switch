@@ -27,11 +27,13 @@
   "dependencies": {
     "@switch-console/agent-providers": "workspace:*",
     "@switch-console/plugins": "workspace:*",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@sandboxaq/switch-agent-runtime": "workspace:*",
     "@types/node": "^24.13.3",
+    "@types/ws": "^8.18.2",
     "@typescript/native-preview": "7.0.0-dev.20260609.1",
     "esbuild": "0.25.12",
     "tsdown": "^0.22.2",
