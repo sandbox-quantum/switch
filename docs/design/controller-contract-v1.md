@@ -7,10 +7,11 @@ Step 1 of the roadmap turns this into OpenAPI and JSON Schema files plus recorde
 
 ## 0. Conventions
 
-- **Transport:** HTTPS with JSON bodies (`application/json`), and one SSE stream (`text/event-stream`).
+- **Transport:** HTTPS with JSON bodies (`application/json`), and one WebSocket per controller carrying JSON frames.
 - **Base paths:** Management is `/v1/management/...`. The Core controller surface is `/v1/controllers/...`. Agent actions use the existing `/agents/{agent_id}/...` routes.
-- **Version:** every request sends `Switch-Controller-Protocol: 1`.
-  - The server answers with the range it supports in `Switch-Controller-Protocol-Accepts: 1-1`.
+- **Version:** every request, and the socket's opening request, sends `Switch-Controller-Protocol: 2`.
+  - The server answers with the range it supports in `Switch-Controller-Protocol-Accepts: 2-2`.
+  - Protocol 2 moved the stream and the beat onto one WebSocket (§6). Protocol 1 (an SSE stream and a beat POST) is no longer accepted.
   - An unsupported version returns `426` with code `protocol_unsupported`.
 - **Forward compatibility:** receivers ignore unknown fields. An unknown enum value is read as `unknown`, never as an error.
 - **Time:** RFC 3339 UTC strings. **IDs:** opaque strings.
@@ -222,22 +223,26 @@ POST /v1/controllers/{id}/connection
   → 201 { connection_id: string, generation: number, heartbeat_interval_s: number,
           attached: string[] }                        // agents Core attached to this connection
 
-GET /v1/controllers/{id}/events?connection_id=…&generation=…
-  Accept: text/event-stream
-  → SSE stream (frames below). The server sends ": ping" every 15s
-
-POST /v1/controllers/{id}/connection/beat
-  { connection_id: string, generation: number, cursors: Record<agent_id, number> }
-  → 200 { attached: string[] }
-  → 409 { code: "taken_over" | "stale_generation" }   // taken_over is terminal for this client
-  → 404 { code: "unknown_connection" }                // reopen
+WS /v1/controllers/{id}/connection/ws?connection_id=…&generation=…
+  Authorization: Bearer <access token>
+  ← { event: string, data: object }                   // frames below, one JSON text message each
+  ← { event: "ping", data: {} }                       // every heartbeat_interval_s
+  → { type: "pong", cursors: Record<agent_id, number> }
+                                                      // the beat: alive, and how far each agent has read
+  ← { event: "refused", data: { status, detail: { code, message } } }, then close 4000 + status
+                                                      // 404 unknown_connection, 409 taken_over | stale_generation,
+                                                      // 401 controller_revoked | token_expired, 426 protocol_unsupported
+  ← { event: "evicted", data: { code, reason } }, then close
+                                                      // a pong refused: taken_over is terminal for this client,
+                                                      // the rest (no_stream, unknown_connection, …) reopen
+  close 1012                                          // the server is restarting: reconnect within a second
 ```
 
 **Attachment is automatic.** Core attaches the agents currently bound to this controller (§7), and attaches or detaches them as bindings change. There's no per-agent subscribe call.
 
-**Core knows only whether an agent is connected.** A controller-backed agent is connected while its controller's stream is attached and beating, its owner has it `running`, and the controller is not revoked. Core does not know where the agent's sessions are, or whether one is running: the open and the beat carry no session map, and a body that still sends `placements` is refused with `422 validation_error` (the one exception to ignoring unknown fields, so a controller still reporting sessions is noticed rather than silently dropped). When a connected agent is addressed, Core delivers the message and posts nothing; if a session has to start, the agent's host posts "Starting a session…" itself. When it is not connected, Core tells the room why: stopped by its owner, its machine removed, or its machine offline.
+**Core knows only whether an agent is connected.** A controller-backed agent is connected while its controller's socket is attached and answering pings, its owner has it `running`, and the controller is not revoked. Core does not know where the agent's sessions are, or whether one is running: the open and the pong carry no session map, and a body that still sends `placements` is refused with `422 validation_error` (the one exception to ignoring unknown fields, so a controller still reporting sessions is noticed rather than silently dropped). When a connected agent is addressed, Core delivers the message and posts nothing; if a session has to start, the agent's host posts "Starting a session…" itself. When it is not connected, Core tells the room why: stopped by its owner, its machine removed, or its machine offline.
 
-**SSE frames.** `event:` is the type and `data:` is JSON.
+**Frames.** `event` is the type and `data` is the JSON object below without its `type`.
 
 ```ts
 type StreamEvent =

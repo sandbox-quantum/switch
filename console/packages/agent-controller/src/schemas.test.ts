@@ -4,9 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   assignmentSchema,
-  controllerBeatRequestSchema,
-  controllerBeatResponseSchema,
   controllerConnectionRequestSchema,
+  controllerPongSchema,
   controllerConnectionResponseSchema,
   credentialRotateResponseSchema,
   enrollRequestSchema,
@@ -46,8 +45,7 @@ const FIXTURES = join(
  */
 const SCHEMA_FOR: Record<string, z.ZodType> = {
   'assignment_response.json': assignmentSchema,
-  'controller_beat_request.json': controllerBeatRequestSchema,
-  'controller_beat_response.json': controllerBeatResponseSchema,
+  'controller_pong.json': controllerPongSchema,
   'controller_connection_request.json': controllerConnectionRequestSchema,
   'controller_connection_response.json': controllerConnectionResponseSchema,
   'credential_rotate_response.json': credentialRotateResponseSchema,
@@ -178,7 +176,7 @@ describe('status report', () => {
   const report = {
     seq: 1,
     observed_at: '2026-01-01T00:00:00Z',
-    controller: { version: '0.1.0', protocol: 1, assignment_revision: 0 },
+    controller: { version: '0.1.0', protocol: 2, assignment_revision: 0 },
     machine: {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1' },
       disk_free_bytes: 1,

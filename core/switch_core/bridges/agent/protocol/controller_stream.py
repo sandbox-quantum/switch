@@ -1,4 +1,5 @@
-"""One event stream per agents controller (`GET /v1/controllers/{id}/events`).
+"""One stream per agents controller, sent on its socket
+(`/v1/controllers/{id}/connection/ws`).
 
 A read-side merge over the per-agent `EventBuffer`: every agent bound to the
 controller is read from its own cursor, with nothing filtered (the controller
@@ -28,17 +29,17 @@ of its agents' watchers exactly the stream it would have had from Switch:
 - `evicted {code, reason}`: the stream ends. `taken_over` is terminal for the
   client that receives it; the rest are recovered by opening again.
 
-A keepalive comment is written whenever nothing else has been for the
-keepalive interval, only so idle proxies keep the connection.
+Frames are `{"event", "data"}` dicts, which the socket sends as JSON. When
+nothing has happened for the idle interval the stream yields `IDLE`, which is
+not sent: it only lets the loop look at the connection again.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -59,15 +60,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-KEEPALIVE_INTERVAL_SECONDS = 15.0
-KEEPALIVE = b": keepalive\n\n"
+IDLE_INTERVAL_SECONDS = 15.0
 CATCH_UP_BATCH = 200
 
-STREAM_HEADERS = {
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
+ControllerFrame = dict[str, Any]
+# Yielded when nothing happened for the idle interval; never sent.
+IDLE: ControllerFrame = {"event": "idle", "data": {}}
 
 # The nudge after which nothing more is written: the controller stops every
 # agent on it and exits.
@@ -85,10 +83,8 @@ class ControllerNudges(Protocol):
     def close(self) -> None: ...
 
 
-def frame(event: str, data: dict[str, Any]) -> bytes:
-    return (
-        f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
-    ).encode()
+def frame(event: str, data: dict[str, Any]) -> ControllerFrame:
+    return {"event": event, "data": data}
 
 
 @dataclass
@@ -117,8 +113,8 @@ def controller_event_stream(
     nudges: ControllerNudges,
     opening: dict[str, Any],
     rooms_of: Callable[[str], Awaitable[set[str]]],
-    keepalive_seconds: float,
-) -> AsyncIterator[bytes]:
+    idle_seconds: float,
+) -> AsyncGenerator[ControllerFrame]:
     """The stream for an open controller connection whose stream was just
     attached as `stream_token`. Takes ownership of `nudges` and closes it."""
     return _ControllerStream(
@@ -129,7 +125,7 @@ def controller_event_stream(
         approvals=approvals,
         nudges=nudges,
         rooms_of=rooms_of,
-        keepalive_seconds=keepalive_seconds,
+        idle_seconds=idle_seconds,
     ).run(opening)
 
 
@@ -144,7 +140,7 @@ class _ControllerStream:
         approvals: ApprovalOutcomes | None,
         nudges: ControllerNudges,
         rooms_of: Callable[[str], Awaitable[set[str]]],
-        keepalive_seconds: float,
+        idle_seconds: float,
     ) -> None:
         self._conn = conn
         self._token = stream_token
@@ -153,11 +149,11 @@ class _ControllerStream:
         self._approvals = approvals
         self._nudges = nudges
         self._rooms_of = rooms_of
-        self._keepalive = keepalive_seconds
+        self._idle = idle_seconds
         self._tenant_id = current_tenant_id()
         self._attached: dict[str, _Attached] = {}
 
-    async def run(self, opening: dict[str, Any]) -> AsyncIterator[bytes]:
+    async def run(self, opening: dict[str, Any]) -> AsyncGenerator[ControllerFrame]:
         conn = self._conn
         try:
             yield frame("connection_state", opening)
@@ -213,7 +209,7 @@ class _ControllerStream:
                     continue
 
                 if not await self._wait():
-                    yield KEEPALIVE
+                    yield IDLE
         finally:
             for attached in self._attached.values():
                 if attached.unsubscribe is not None:
@@ -239,11 +235,11 @@ class _ControllerStream:
             return conn.closure
         return None
 
-    def _detach_departed(self) -> list[bytes]:
+    def _detach_departed(self) -> list[ControllerFrame]:
         conn = self._conn
         owed = self._presence.take_detached(conn)
         bound = self._presence.agents_of(conn.controller_id)
-        frames: list[bytes] = []
+        frames: list[ControllerFrame] = []
         for agent_id in sorted(self._attached):
             if agent_id in bound and agent_id not in owed:
                 continue
@@ -264,9 +260,9 @@ class _ControllerStream:
             )
         return frames
 
-    async def _attach_arrivals(self) -> list[bytes]:
+    async def _attach_arrivals(self) -> list[ControllerFrame]:
         conn = self._conn
-        frames: list[bytes] = []
+        frames: list[ControllerFrame] = []
         for agent_id in sorted(
             self._presence.agents_of(conn.controller_id) - set(self._attached)
         ):
@@ -357,8 +353,8 @@ class _ControllerStream:
         )
         attached.resync = True
 
-    async def _owed_outcomes(self) -> list[bytes]:
-        frames: list[bytes] = []
+    async def _owed_outcomes(self) -> list[ControllerFrame]:
+        frames: list[ControllerFrame] = []
         for attached in list(self._attached.values()):
             if attached.resync and self._approvals is not None:
                 attached.resync = False
@@ -377,7 +373,7 @@ class _ControllerStream:
             )
         return frames
 
-    def _deliver(self, attached: _Attached) -> list[bytes]:
+    def _deliver(self, attached: _Attached) -> list[ControllerFrame]:
         agent_id = attached.agent_id
         for room_id in self._presence.rooms(agent_id):
             self._buffer.ensure_counting(
@@ -409,7 +405,7 @@ class _ControllerStream:
             # would find work it can never read and spin.
             attached.cursor = max(attached.cursor, self._buffer.head(agent_id))
             return []
-        frames: list[bytes] = []
+        frames: list[ControllerFrame] = []
         for item in pending:
             data = item.event.model_dump(mode="json")
             data["sequence"] = item.seq
@@ -441,13 +437,13 @@ class _ControllerStream:
 
     async def _wait(self) -> bool:
         """Wait for an event, a nudge or a change to the connection. False when
-        the keepalive interval passed with none of them."""
+        the idle interval passed with none of them."""
         bells = [self._buffer.doorbell(agent_id) for agent_id in self._attached]
         for bell in bells:
             bell.clear()
         self._conn.wake.clear()
         # Re-checked after clearing: anything that arrived between the last
-        # read and the clear would otherwise wait for the keepalive timeout.
+        # read and the clear would otherwise wait for the idle timeout.
         if self._has_work() or self._nudges.wake.is_set():
             return True
         waiters = [
@@ -456,7 +452,7 @@ class _ControllerStream:
         ]
         try:
             done, _ = await asyncio.wait(
-                waiters, timeout=self._keepalive, return_when=asyncio.FIRST_COMPLETED
+                waiters, timeout=self._idle, return_when=asyncio.FIRST_COMPLETED
             )
             return bool(done)
         finally:

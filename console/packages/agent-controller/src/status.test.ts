@@ -315,7 +315,7 @@ describe('StatusCollector', () => {
     const assignment = { revision: 7, agents: [entry()] };
     const first = await collector.collect(assignment);
     expect(statusReportSchema.safeParse({ ...first, seq: 1 }).success).toBe(true);
-    expect(first.controller).toEqual({ version: '0.1.0', protocol: 1, assignment_revision: 7 });
+    expect(first.controller).toEqual({ version: '0.1.0', protocol: 2, assignment_revision: 7 });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
     expect(first.agents[0]).toMatchObject({
       agent_id: 'agent-1',

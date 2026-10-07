@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 from collections.abc import AsyncIterator
@@ -66,6 +67,23 @@ def verify_password(password: str, password_hash: str | None) -> bool:
         return False
     result: bool = bcrypt.checkpw(password.encode(), password_hash.encode())
     return result
+
+
+async def hash_password_off_loop(password: str) -> str:
+    """`hash_password` on a worker thread.
+
+    bcrypt is slow on purpose, a few hundred milliseconds of CPU per call, and
+    it holds the event loop for all of it: on the loop, every other request in
+    the process waits behind one login. Call it with no transaction open, too,
+    or the connection waits with them.
+    """
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_off_loop(password: str, password_hash: str | None) -> bool:
+    """`verify_password` on a worker thread, for the same reason as
+    `hash_password_off_loop`."""
+    return await asyncio.to_thread(verify_password, password, password_hash)
 
 
 def create_jwt(
@@ -716,11 +734,15 @@ async def get_tenant_is_admin(
     should be built from — see ``UserStore.administers`` for what it actually
     checks.
 
-    Also callable directly (not just as a FastAPI dependency) from any
-    handler or service function that already holds a bound `session`, the
-    caller's `User`, and a `UserStore`.
+    Ends the read's transaction before returning, the way `get_current_user`
+    does, so the connection is back in the pool before the route body runs. A
+    route that went on to open a second session, or to call a messaging
+    platform, would otherwise do it holding this one. So it must not be called
+    on a session with writes pending.
     """
-    return await user_store.administers(session, user)
+    is_admin = await user_store.administers(session, user)
+    await session.commit()
+    return is_admin
 
 
 async def get_tenant_is_owner(
@@ -732,9 +754,12 @@ async def get_tenant_is_owner(
 
     Strictly narrower than ``get_tenant_is_admin`` — see
     ``authz.owns_tenant``. A route that changes the ownership set needs both:
-    ``require_tenant_admin`` to get in, this to make the call.
+    ``require_tenant_admin`` to get in, this to make the call. Ends its read's
+    transaction for the same reason ``get_tenant_is_admin`` does.
     """
-    return await user_store.owns(session, user)
+    is_owner = await user_store.owns(session, user)
+    await session.commit()
+    return is_owner
 
 
 async def require_tenant_admin(

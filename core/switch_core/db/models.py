@@ -2469,12 +2469,25 @@ class Message(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    # Position within the room, from 1, and the cursor the read path pages on.
-    # Assigned by MessageStore.create under a per-room lock rather than by a
-    # sequence: a sequence hands out numbers when a statement runs, not when it
-    # commits, so a row can commit after one with a higher number and a reader
-    # paging on `seq > n` would step straight over it. See the store for the
-    # argument in full.
+    # The message's position in its room's log: the room's offset, in Kafka
+    # terms (room = partition, seq = offset, a reader's cursor = its consumer
+    # offset). It means something only within its room: unique per room, and
+    # two rooms can each have a message 5.
+    #
+    # Live messages (MessageStore.create) count up from 1 with no gaps, in
+    # commit order, and a number is never renumbered or reused. Reconstructed
+    # history (MessageStore.create_historical) counts down from -1, below the
+    # room's oldest, so seq can be negative and ordering by it still walks the
+    # room in the order things happened.
+    #
+    # A reader's cursor is the last seq it has, and it reads `seq > cursor`.
+    # Commit order is what makes that safe: nothing can later commit behind a
+    # cursor. A Postgres sequence would not give it, because it hands out
+    # numbers when a statement runs rather than when it commits. See
+    # MessageStore._next_seq for the argument in full.
+    #
+    # Not the `sequence` an agent sees on its event stream: that one is the
+    # event buffer's, numbered per agent across all its rooms.
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
     # Global on purpose: a random, globally-unique identifier — scoping it

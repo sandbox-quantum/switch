@@ -242,6 +242,59 @@ DELIVERY_LAG = _spec(
     "actor",
 )
 
+# ── Shared room reads ────────────────────────────────────────────────────────
+# The per-room cache of recent rows (`transport/room_cache.py`). Every value
+# below comes from a fixed set in that module.
+DELIVERY_CACHE_READS = _spec(
+    "switch.delivery_cache.reads",
+    "sum",
+    "{read}",
+    "A transport asking the room cache for the rows after its cursor. "
+    "`outcome` is hit (served from memory), filled (served after waiting for "
+    "the room's one read), or why it fell back to its own database read: "
+    "behind (cursor below what is held), evicted (dropped while it waited, "
+    "and the read it waited for could not answer it), "
+    "unwatched, or gave_up.",
+    "outcome",
+)
+DELIVERY_CACHE_FILLS = _spec(
+    "switch.delivery_cache.fills",
+    "sum",
+    "{fill}",
+    "Database reads made by the room cache on behalf of every member of a "
+    "room. `outcome` is ok, failed, or discarded (the room was dropped while "
+    "it read).",
+    "outcome",
+)
+DELIVERY_CACHE_ROWS_READ = _spec(
+    "switch.delivery_cache.rows_read",
+    "sum",
+    "{row}",
+    "Rows the room cache read from the database. Against "
+    "switch.messages.delivered, the number of deliveries each read served.",
+)
+DELIVERY_CACHE_EVICTIONS = _spec(
+    "switch.delivery_cache.evictions",
+    "sum",
+    "{eviction}",
+    "Rows or rooms the room cache let go of, by reason: bytes or rooms (the "
+    "process-wide limits), rows or age (one room's), unwatched (its last "
+    "member left), invalidated.",
+    "reason",
+)
+DELIVERY_CACHE_BYTES = _spec(
+    "switch.delivery_cache.bytes",
+    "gauge",
+    "By",
+    "Estimated memory the room cache holds, against room_delivery_cache_max_bytes.",
+)
+DELIVERY_CACHE_ROOMS = _spec(
+    "switch.delivery_cache.rooms",
+    "gauge",
+    "{room}",
+    "Rooms the room cache holds rows for.",
+)
+
 # ── Bridges ──────────────────────────────────────────────────────────────────
 # Both bridges report the same metrics. `bridge` is "collaboration" or
 # "agent". For a collaboration bridge `platform` is one of the registered
@@ -314,6 +367,28 @@ AGENT_EVENTS_DROPPED = _spec(
     "an agent that cannot keep up (overflow) from one away too long "
     "(retention).",
     "reason",
+)
+# The buffer answers a read and an unread count by walking the agent's retained
+# events from the oldest. These say what that walk costs, so whether to index
+# the buffer is decided from data. `operation` is "read" or "unread".
+AGENT_BUFFER_SCANNED = _spec(
+    "switch.agent.buffer.scanned",
+    "histogram",
+    "{event}",
+    "Retained events walked to answer one buffer read or unread count. Bounded "
+    "by the per-agent cap, so a p95 near it means every read walks a full buffer.",
+    "operation",
+    bounds=(0.0, 10.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 1500.0, 2000.0),
+)
+AGENT_BUFFER_SCAN_DURATION = _spec(
+    "switch.agent.buffer.scan.duration",
+    "histogram",
+    "ms",
+    "Wall time of one buffer read or unread count. A read runs on every pass "
+    "of a connection's delivery loop, an unread count on every addressed event "
+    "it delivers.",
+    "operation",
+    bounds=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 100.0),
 )
 # `reason` is from a fixed set the refusal sites choose. `transport_removed` is
 # a client still asking for the retired event stream, the one way to see old
@@ -463,12 +538,20 @@ CATALOGUE: dict[str, MetricSpec] = {
         SEND_FAILURES,
         DELIVERY_FAILURES,
         DELIVERY_LAG,
+        DELIVERY_CACHE_READS,
+        DELIVERY_CACHE_FILLS,
+        DELIVERY_CACHE_ROWS_READ,
+        DELIVERY_CACHE_EVICTIONS,
+        DELIVERY_CACHE_BYTES,
+        DELIVERY_CACHE_ROOMS,
         BRIDGE_EVENTS_IN,
         BRIDGE_EVENTS_OUT,
         BRIDGE_ERRORS,
         BRIDGES_RUNNING,
         BRIDGE_CALL_DURATION,
         AGENT_EVENTS_DROPPED,
+        AGENT_BUFFER_SCANNED,
+        AGENT_BUFFER_SCAN_DURATION,
         AGENT_CONNECTIONS_REFUSED,
         AGENT_CONNECTIONS_EXPIRED,
         AGENT_CONNECTIONS_OPENED,

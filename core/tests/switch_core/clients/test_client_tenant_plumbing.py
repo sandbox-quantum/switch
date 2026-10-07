@@ -65,6 +65,7 @@ def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory
         listener=MagicMock(),
         invites=InviteBus(),
         ephemeral=EphemeralBus(),
+        room_cache=MagicMock(),
     )
     factory.register("user", Actor)
     return factory

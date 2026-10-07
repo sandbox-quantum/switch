@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.models import Message, MessageAttachment
@@ -16,10 +16,20 @@ from switch_core.transport.types import (
     InboundMessage,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from switch_core.transport.room_cache import CachedAttachment, CachedRow
+
+    # A row as delivery reads it: straight from the table, or the shared copy
+    # the room cache holds. `to_inbound` reads the same attributes off either.
+    DeliveryRow = Message | CachedRow
+    DeliveryAttachments = Sequence[MessageAttachment] | Sequence[CachedAttachment]
+
 
 def to_inbound(
-    row: Message,
-    attachments: list[MessageAttachment],
+    row: DeliveryRow,
+    attachments: DeliveryAttachments,
     *,
     transport_room_id: str,
 ) -> InboundEvent:
@@ -28,6 +38,9 @@ def to_inbound(
     Which of the four inbound shapes a row becomes is read off the row itself:
     an arrival, a file, a `com.switch.*` payload, or a message. The row keeps the
     whole content dict, so nothing is reconstructed here that was not sent.
+
+    A `CachedRow` is shared by every client in the room, so its `content` is
+    parsed afresh on each access and every event built here owns its dict.
     """
     content = dict(row.content)
     room_id = transport_room_id

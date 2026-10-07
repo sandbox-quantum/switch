@@ -174,6 +174,7 @@ from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -537,6 +538,18 @@ async def run(config: SwitchConfig) -> None:
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = AgentConnectionRegistry()
 
+    # One shared read per room for every client in this process.
+    room_cache = RoomDeliveryCache(
+        session_factory=session_factory,
+        message_store=message_store,
+        limits=RoomCacheLimits(
+            max_bytes=config.room_delivery_cache_max_bytes,
+            max_rooms=config.room_delivery_cache_max_rooms,
+            max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
+            max_age_seconds=config.room_delivery_cache_max_age_seconds,
+        ),
+    )
+
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
         client_store=client_store,
@@ -549,6 +562,7 @@ async def run(config: SwitchConfig) -> None:
         listener=message_listener,
         invites=invites,
         ephemeral=ephemeral,
+        room_cache=room_cache,
     )
     client_factory.register(
         "agent",
@@ -614,6 +628,7 @@ async def run(config: SwitchConfig) -> None:
         resource_service=resource_service,
         session_factory=session_factory,
         telemetry=telemetry,
+        room_cache=room_cache,
     )
     collab_lifecycle._room_service = room_service
 
@@ -825,6 +840,7 @@ async def run(config: SwitchConfig) -> None:
         connectors_configured=connector_lifecycle.expected_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
+        room_cache_stats=room_cache.stats,
     )
 
     # ── Lifespan: start server-side connectors once HTTP is serving ────────

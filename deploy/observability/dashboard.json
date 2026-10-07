@@ -797,6 +797,52 @@
     {
       "definition": {
         "type": "timeseries",
+        "title": "Agent buffer events walked per scan, p50 / p95 by operation (cap 2000), needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "display_type": "line"
+          },
+          {
+            "q": "p95:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 75,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent buffer scan duration p95 / p99 (ms) by operation, needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "display_type": "line"
+          },
+          {
+            "q": "p99:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 75,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
         "title": "Database pool: connection hold p95 / p99 (ms) by caller. Needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
@@ -812,7 +858,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 75,
+        "y": 79,
         "width": 6,
         "height": 4
       }
@@ -835,7 +881,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 75,
+        "y": 79,
         "width": 6,
         "height": 4
       }
@@ -854,7 +900,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 79,
+        "y": 83,
         "width": 6,
         "height": 4
       }
@@ -873,7 +919,115 @@
       },
       "layout": {
         "x": 6,
-        "y": 79,
+        "y": 83,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Shared room reads.** Each fill is one database read standing in for one per member of the room, so fills against deliveries is the saving. A fallback (behind, evicted, unwatched, gave_up) is a transport reading the database itself: it costs a read, never a message.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 87,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Room cache reads per second, by outcome (hit and filled are served from memory)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.delivery_cache.reads{$env,$service} by {outcome}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 89,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Room cache fills and rows read per second, against messages delivered",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.delivery_cache.fills{$env,$service} by {outcome}.as_rate()",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.delivery_cache.rows_read{$env,$service}.as_rate()",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.messages.delivered{$env,$service}.as_rate()",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 89,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Room cache memory (bytes) and rooms held",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.delivery_cache.bytes{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.delivery_cache.rooms{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 93,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Room cache evictions per second, by reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.delivery_cache.evictions{$env,$service} by {reason}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 93,
         "width": 6,
         "height": 4
       }

@@ -195,12 +195,17 @@ async def _resolve_registration_user_id(
         "bootstrap" if key.type == BOOTSTRAP_KEY_TYPE else "personal_key"
     )
     try:
-        return await resolve_registration_owner_id(session, protocol.user_store, key)
+        owner_id = await resolve_registration_owner_id(
+            session, protocol.user_store, key
+        )
     except RuntimeError as exc:
         logger.error("Agent-registration bootstrap owner resolution failed: %s", exc)
         raise HTTPException(
             status_code=503, detail="Agent registration is temporarily unavailable"
         ) from exc
+    # Not held across registration, which opens its own session and calls every bridge.
+    await session.commit()
+    return owner_id
 
 
 # How the current registration authenticated. A contextvar rather than a
@@ -399,6 +404,8 @@ async def register_known_agents_bulk_endpoint(
                 ),
             )
 
+    # Not held across registration, which opens its own session and calls every bridge.
+    await session.commit()
     results: list[BulkRegisterResult] = []
     for subagent_name, name, description in derived:
         # Inherited parent settings are the base; explicit request options

@@ -440,18 +440,18 @@ class TestStatus:
             response = await client.put(
                 f"/v1/management/controllers/{controller.controller_id}/status",
                 json=fixture("status_request.json"),
-                headers={**controller.headers, "Switch-Controller-Protocol": "2"},
+                headers={**controller.headers, "Switch-Controller-Protocol": "1"},
             )
             accepted = await client.put(
                 f"/v1/management/controllers/{controller.controller_id}/status",
                 json=fixture("status_request.json"),
-                headers={**controller.headers, "Switch-Controller-Protocol": "1"},
+                headers={**controller.headers, "Switch-Controller-Protocol": "2"},
             )
         assert response.status_code == 426
         assert response.json()["error"]["code"] == "protocol_unsupported"
-        assert response.headers["Switch-Controller-Protocol-Accepts"] == "1-1"
+        assert response.headers["Switch-Controller-Protocol-Accepts"] == "2-2"
         assert accepted.status_code == 200
-        assert accepted.headers["Switch-Controller-Protocol-Accepts"] == "1-1"
+        assert accepted.headers["Switch-Controller-Protocol-Accepts"] == "2-2"
 
 
 async def _placed_agent(

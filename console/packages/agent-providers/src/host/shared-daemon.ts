@@ -7,13 +7,14 @@ import { AttachmentTransfers } from './attachment-transfers';
 import { type ControlContext, ensureSessions, serveControl } from './control';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { hostedWorker } from './hosted-watcher';
+import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
-import { sharedConfigSchema } from './shared-config';
+import { readSharedCredentials, sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
 import { superviseSharedHost } from './supervisor';
 import { recordWatcherHealth } from './watcher-health-file';
@@ -135,6 +136,11 @@ async function main(): Promise<void> {
       transfers,
     };
     const hosted = await hostedWorker(config, resolve(root), context);
+    // An agents controller running this agent host in a process of its own
+    // names its hub: the agent's events come from there, not from Switch.
+    const hub = config.execution
+      ? (await readSharedCredentials(config)).SWITCH_AGENT_HUB
+      : undefined;
     // Console reads the watcher's connection state from this file, with the
     // rest of the host's watcher state, rather than from the control port.
     const stopRecording = recordWatcherHealth(resolve(root), control);
@@ -151,7 +157,7 @@ async function main(): Promise<void> {
           supervision,
           control,
           hosted,
-          openSwitchStream
+          hub ? openHubStream(hub) : openSwitchStream
         ).finally(() => stop.abort()),
         serveControl(resolve(root), context, stop.signal),
       ]);
