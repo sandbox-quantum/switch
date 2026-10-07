@@ -3,15 +3,12 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import {
-  type AgentBridgeEvent,
-  type ApprovalOutcome,
-  CONTRACTS,
-  type Eviction,
-  PlacementsRefusedError,
-  type SessionCommand,
-  SwitchEventStream,
-  type SwitchEventStreamDeps,
+import type {
+  AgentBridgeEvent,
+  ApprovalOutcome,
+  Eviction,
+  SessionCommand,
+  SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
 import {
   callOperation,
@@ -19,10 +16,14 @@ import {
   fetchMediaToFile,
   SESSION_SELECTOR_HEADERS,
 } from '@sandboxaq/switch-agent-runtime/hosted';
+import { type AgentEventStream, openHubStream } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import WebSocket from 'ws';
+import { AgentHub } from './agent-hub';
 import { AccessTokens } from './api';
+import { HubSocket } from './hub-socket';
 import { silentLogger } from './log';
-import { LocalRelay, RELAY_AGENT_PROTOCOL } from './relay';
+import { LocalRelay } from './relay';
 import { UpstreamForwarder } from './relay-forward';
 import type { AgentAssignment } from './schemas';
 import { FakeCore } from './testing/fake-core';
@@ -45,7 +46,7 @@ function assigned(agentId: string): AgentAssignment {
       instructions: '',
       auto_approve: false,
       directory: null,
-      isolation: 'shared',
+      isolation: 'isolated',
     },
   };
 }
@@ -68,7 +69,6 @@ function message(sequence: number, addressed: boolean, room = 'room-a') {
         timestamp: sequence,
       },
       sequence,
-      ...(addressed ? { missed: { count: sequence, reason: null } } : {}),
     },
   };
 }
@@ -82,16 +82,14 @@ async function waitFor(condition: () => boolean, what: string, timeoutMs = 15_00
 }
 
 let core: FakeCore;
+let hub: AgentHub;
 let relay: LocalRelay;
 let token: string;
 let revokedCalls: number;
 let cursorsSaved: [string, number][];
 const stops: (() => void)[] = [];
 
-beforeEach(async () => {
-  core = new FakeCore();
-  await core.start();
-  core.setAssignment({ revision: 1, agents: [assigned(AGENT), assigned('agent-2')] });
+function newRelay(): LocalRelay {
   const tokens = new AccessTokens({
     fetch,
     server: core.url,
@@ -100,11 +98,10 @@ beforeEach(async () => {
     now: Date.now,
     log: silentLogger,
   });
-  revokedCalls = 0;
-  cursorsSaved = [];
-  relay = new LocalRelay({
+  return new LocalRelay({
     log: silentLogger,
-    version: '0.1.0',
+    roomFor: (agentId, sessionId) => hub.roomFor(agentId, sessionId),
+    hub: new HubSocket({ hub, log: silentLogger }),
     forwarder: new UpstreamForwarder({
       server: core.url,
       auth: {
@@ -114,18 +111,26 @@ beforeEach(async () => {
       },
       log: silentLogger,
     }),
+  });
+}
+
+beforeEach(async () => {
+  core = new FakeCore();
+  await core.start();
+  core.setAssignment({ revision: 1, agents: [assigned(AGENT), assigned('agent-2')] });
+  revokedCalls = 0;
+  cursorsSaved = [];
+  hub = new AgentHub({
+    log: silentLogger,
+    bufferLimit: 100,
     onCursor: (agentId, cursor) => cursorsSaved.push([agentId, cursor]),
     onChange: () => {},
-    sharedRoomFor: (agentId, sessionId) =>
-      agentId === 'agent-2' && sessionId === 'session-7' ? 'room-shared' : null,
-    now: Date.now,
-    timing: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
-    bufferLimit: 100,
   });
+  relay = newRelay();
   await relay.start(null);
   token = relay.mint(AGENT);
-  relay.streamAttached();
-  relay.attach(AGENT, 0, ['room-a', 'room-b']);
+  hub.streamAttached();
+  hub.attach(AGENT, 0, ['room-a', 'room-b']);
   relay.setReady();
 });
 
@@ -135,37 +140,34 @@ afterEach(async () => {
   await core.stop();
 });
 
-type Watcher = ReturnType<typeof watch>;
+type Host = ReturnType<typeof host>;
 
-/** The runtime's own protocol client, pointed at the relay as a watcher points it. */
-function watch(overrides: Partial<SwitchEventStreamDeps> = {}) {
+/** An agent host in a process of its own, as the shared daemon opens its stream: on the hub. */
+function host(overrides: Partial<SwitchEventStreamDeps> = {}, as = token) {
   const seen = {
     events: [] as AgentBridgeEvent[],
     gaps: [] as Parameters<SwitchEventStreamDeps['onGap']>[0][],
     evictions: [] as Eviction[],
     commands: [] as SessionCommand[],
     outcomes: [] as ApprovalOutcome[],
-    released: [] as { roomId: string; sessionId: string | null }[],
-    rooms: [] as string[][],
     connected: 0,
+    disconnected: [] as string[],
   };
   const controller = new AbortController();
-  const stream = new SwitchEventStream({
-    creds: { agentId: AGENT, apiEndpoint: relay.endpoint, token },
-    connectionId: 'watcher-connection',
+  const stream: AgentEventStream = openHubStream(relay.hubUrl)({
+    creds: { agentId: AGENT, apiEndpoint: relay.endpoint, token: as },
+    connectionId: 'host-connection',
     worker: null,
     scope: 'all',
     filter: 'addressed',
-    spawnCapable: true,
     rooms: [],
     onEvent: (event) => void seen.events.push(event),
     onGap: (gap) => void seen.gaps.push(gap),
     onEvicted: (eviction) => void seen.evictions.push(eviction),
     onSessionCommand: (command) => void seen.commands.push(command),
     onApprovalOutcome: (outcome) => void seen.outcomes.push(outcome),
-    onRoomReleased: (released) => void seen.released.push(released),
-    onRooms: (rooms) => void seen.rooms.push(rooms),
     onConnected: () => void seen.connected++,
+    onDisconnected: ({ error }) => void seen.disconnected.push(error),
     log: quiet,
     signal: controller.signal,
     ...overrides,
@@ -176,18 +178,14 @@ function watch(overrides: Partial<SwitchEventStreamDeps> = {}) {
   return { stream, seen, stop };
 }
 
-async function connected(watcher: Watcher, times = 1): Promise<void> {
-  await waitFor(() => watcher.seen.connected >= times, 'the stream to connect');
+async function connected(agentHost: Host, times = 1): Promise<void> {
+  await waitFor(() => agentHost.seen.connected >= times, 'the hub to say connected');
 }
 
-function caller(
-  watcher: Watcher,
-  overrides: Partial<CallerContext> = {},
-  sessionId: string | null = 'session-1'
-): CallerContext {
+function caller(overrides: Partial<CallerContext> = {}, sessionId: string | null = 'session-1') {
   return {
     identity: { endpoint: relay.endpoint, agentId: AGENT, token },
-    connectionId: 'watcher-connection',
+    connectionId: 'host-connection',
     selector: sessionId
       ? {
           [SESSION_SELECTOR_HEADERS.sessionId]: sessionId,
@@ -198,9 +196,9 @@ function caller(
     room: null,
     mediaDir: '/nonexistent',
     cwd: '/',
-    deadConnection: (operation) => `dead: ${operation}`,
+    deadConnection: (operation: string) => `dead: ${operation}`,
     ...overrides,
-  };
+  } satisfies CallerContext;
 }
 
 async function post(path: string, body: unknown, bearer = token): Promise<Response> {
@@ -211,179 +209,86 @@ async function post(path: string, body: unknown, bearer = token): Promise<Respon
   });
 }
 
-describe('the relay as the agent protocol, read by the real SwitchEventStream', () => {
-  it('serves switch-core’s revisions up to the socket, which the runtime still accepts', () => {
-    const core = CONTRACTS['agent-protocol']['switch-core'];
-    const runtime = CONTRACTS['agent-protocol']['agent-runtime'];
-    // The relay serves the event stream, not the socket of agent-protocol 8.
-    expect(RELAY_AGENT_PROTOCOL).toEqual({ speaks: 7, accepts: core.accepts });
-    expect(runtime.accepts).toBeLessThanOrEqual(RELAY_AGENT_PROTOCOL.speaks);
-    expect(RELAY_AGENT_PROTOCOL.accepts).toBeLessThanOrEqual(runtime.speaks);
+/** The status a WebSocket upgrade to the hub is answered with, as a raw client sees it. */
+function upgradeStatus(bearer: string, path = '/hub'): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`${relay.hubUrl.replace('/hub', path)}`, {
+      headers: { Authorization: `Bearer ${bearer}` },
+    });
+    socket.on('unexpected-response', (_req, res) => {
+      resolve(res.statusCode ?? 0);
+      socket.terminate();
+    });
+    socket.on('open', () => {
+      resolve(101);
+      socket.terminate();
+    });
+    socket.on('error', reject);
+  });
+}
+
+describe('the hub, over the relay’s WebSocket, read by openHubStream', () => {
+  it('serves the hub on the relay’s loopback port', () => {
+    expect(relay.hubUrl).toBe(`${relay.endpoint.replace('http', 'ws')}/hub`);
   });
 
-  it('connects, then delivers addressed events in order, with their ids and missed counts', async () => {
-    const watcher = watch();
-    await connected(watcher);
-    // Switch keeps no record of its sessions, so the agent host says when it starts one.
-    expect(watcher.stream.announcesSessionStarts).toBe(true);
-    relay.ingest(message(1, true));
-    relay.ingest(message(2, false));
-    relay.ingest({
-      agent_id: AGENT,
-      seq: 3,
-      event: {
-        type: 'command',
-        room_id: 'room-a',
-        sequence: 3,
-        payload: { command: 'reset', args: '', user_id: 'u', user_name: 'U' },
+  it('connects, then delivers addressed events in order, each confirmed once handled', async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const seen: number[] = [];
+    const agentHost = host({
+      onEvent: async (event) => {
+        seen.push(event.sequence!);
+        if (event.sequence === 4) await held;
       },
     });
-    relay.ingest(message(4, true, 'room-b'));
-    await waitFor(() => watcher.seen.events.length === 2, 'two addressed events');
-    expect(watcher.seen.events.map((event) => event.sequence)).toEqual([1, 4]);
-    expect(watcher.seen.events[0]).toMatchObject({
-      type: 'message',
-      room_id: 'room-a',
-      bridge_id: null,
-      missed: { count: 1, reason: null },
-    });
-    expect(watcher.seen.events[0]).not.toHaveProperty('agent_id');
-    expect(watcher.stream.position).toBe(4);
+    await connected(agentHost);
+    hub.ingest(message(1, true));
+    hub.ingest(message(2, false));
+    hub.ingest(message(4, true));
+    hub.ingest(message(5, true));
+    await waitFor(() => seen.length === 2, 'the events up to the held one');
+    // The event being handled is not confirmed, and the next is not sent.
+    expect(seen).toEqual([1, 4]);
+    expect(hub.cursors()[AGENT]).toBe(2);
+    release();
+    await waitFor(() => seen.length === 3, 'the event after the held one');
+    expect(seen).toEqual([1, 4, 5]);
+    await waitFor(() => hub.cursors()[AGENT] === 5, 'the cursor to move past it');
+    expect(cursorsSaved.at(-1)).toEqual([AGENT, 5]);
   });
 
-  it('delivers every event to a connection filtering nothing', async () => {
-    const watcher = watch({ filter: 'all', connectionId: 'everything' });
-    await connected(watcher);
-    relay.ingest(message(1, true));
-    relay.ingest(message(2, false));
-    await waitFor(() => watcher.seen.events.length === 2, 'both events');
-  });
-
-  it('resumes from Last-Event-ID without replaying what was read, and opens at head', async () => {
-    const first = watch();
-    await connected(first);
-    relay.ingest(message(1, true));
-    relay.ingest(message(2, true));
-    await waitFor(() => first.seen.events.length === 2, 'the first two events');
-    first.stop();
-    relay.ingest(message(3, true));
-    relay.ingest(message(4, true));
-    const resumed = watch({ startCursor: 2 });
-    await waitFor(() => resumed.seen.events.length === 2, 'the events missed while away');
-    expect(resumed.seen.events.map((event) => event.sequence)).toEqual([3, 4]);
-    const fresh = watch({ connectionId: 'fresh' });
-    await connected(fresh);
-    relay.ingest(message(5, true));
-    await waitFor(() => fresh.seen.events.length === 1, 'only what came after opening');
-    expect(fresh.seen.events[0]!.sequence).toBe(5);
-  });
-
-  it('confirms the cursor the watcher beats, and only that', async () => {
-    const watcher = watch();
-    await connected(watcher);
-    relay.ingest(message(1, true));
-    relay.ingest(message(2, true));
-    await waitFor(() => watcher.seen.events.length === 2, 'the events');
-    await waitFor(() => relay.cursors()[AGENT] === 2, 'the beat confirming sequence 2', 5000);
-    expect(cursorsSaved.at(-1)).toEqual([AGENT, 2]);
-    expect(relay.attached(AGENT)).toBe(true);
-  });
-
-  it('answers the heartbeat as Switch does: 200, 404 unknown, 409 taken_over or no_stream', async () => {
-    const watcher = watch();
-    await connected(watcher);
-    const unknown = await post(`/agents/${AGENT}/connection/beat`, {
-      connection_id: 'nobody',
-      cursor: 0,
-      generation: 1,
-    });
-    expect(unknown.status).toBe(404);
-    expect(await unknown.text()).toContain('nobody is not open');
-    const stale = await post(`/agents/${AGENT}/connection/beat`, {
-      connection_id: 'watcher-connection',
-      cursor: 0,
-      generation: 999_999,
-    });
-    expect(stale.status).toBe(409);
-    expect((await stale.json()).detail.code).toBe('taken_over');
-    const unfenced = await post(`/agents/${AGENT}/connection/beat`, {
-      connection_id: 'watcher-connection',
-      cursor: 0,
-    });
-    expect((await unfenced.json()).detail.code).toBe('unfenced');
-    watcher.stop();
-    await delay(50);
-    const detached = await post(`/agents/${AGENT}/connection/beat`, {
-      connection_id: 'watcher-connection',
-      cursor: 0,
-      generation: null,
-    });
-    expect(detached.status).toBe(409);
-  });
-
-  it('evicts the stream another client takes over, and the runtime stands down', async () => {
-    const first = watch();
-    await connected(first);
-    const second = watch();
-    await connected(second);
-    await waitFor(() => first.seen.evictions.length === 1, 'the first to be evicted');
-    expect(first.seen.evictions[0]!.code).toBe('taken_over');
-    relay.ingest(message(1, true));
-    await waitFor(() => second.seen.events.length === 1, 'the event on the new holder');
-    expect(first.seen.events).toEqual([]);
-  });
-
-  it('closes a connection whose heartbeat lapses, with an evicted frame', async () => {
-    await relay.close();
-    relay = new LocalRelay({
-      log: silentLogger,
-      version: '0.1.0',
-      forwarder: { forward: async () => {} },
-      onCursor: () => {},
-      onChange: () => {},
-      sharedRoomFor: () => null,
-      now: Date.now,
-      timing: { heartbeatTtlMs: 300, heartbeatIntervalS: 2, sweepMs: 20, keepaliveMs: 15_000 },
-      bufferLimit: 100,
-    });
-    await relay.start(null);
-    token = relay.mint(AGENT);
-    relay.setReady();
-    const response = await fetch(
-      `${relay.endpoint}/agents/${AGENT}/events?connection_id=raw&scope=all&protocol=6`,
-      { headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' } }
-    );
-    const text = await response.text();
-    expect(text).toContain('event: connection_state');
-    expect(text).toContain('event: evicted');
-    expect(text).toContain('"code":"heartbeat_lapsed"');
+  it('tells the agent host when the controller loses and regains Switch', async () => {
+    const agentHost = host();
+    await connected(agentHost);
+    hub.setUpstream(false);
+    await waitFor(() => agentHost.seen.disconnected.length === 1, 'disconnected');
+    expect(agentHost.seen.disconnected[0]).toMatch(/reconnecting to Switch/);
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a', 'room-b']);
+    await connected(agentHost, 2);
   });
 
   it('tracks placements, names the session’s room on its calls, and routes room controls to it', async () => {
-    const watcher = watch();
-    await connected(watcher);
-    await watcher.stream.replacePlacements({ 'session-1': 'room-a' });
-    await waitFor(
-      () => watcher.seen.rooms.some((rooms) => rooms.includes('room-a')),
-      'the subscription change naming room-a'
-    );
+    const agentHost = host();
+    await connected(agentHost);
+    await agentHost.stream.replacePlacements({ 'session-1': 'room-a' });
 
-    const placed = await callOperation(caller(watcher), 'post_message', { body: 'hi' });
+    const placed = await callOperation(caller(), 'post_message', { body: 'hi' });
     expect(placed.isError).toBeFalsy();
     expect(placed.structuredContent).toMatchObject({ room_id: 'room-a' });
     const forwarded = core.requests.findLast((r) => r.path.endsWith('/ops/post_message'))!;
     expect(forwarded.headers['x-switch-room-id']).toBe('room-a');
     expect(forwarded.headers['x-switch-agent-id']).toBe(AGENT);
     expect(forwarded.headers['x-switch-session-id']).toBe('session-1');
-    expect(forwarded.headers['x-switch-connection-id']).toBeUndefined();
     expect(forwarded.headers.authorization).toMatch(/^Bearer access-token-/);
 
-    const unplaced = await callOperation(caller(watcher, {}, 'session-9'), 'post_message', {});
+    const unplaced = await callOperation(caller({}, 'session-9'), 'post_message', {});
     expect(unplaced.structuredContent).toMatchObject({ room_id: null });
-    const bySoleRoom = await callOperation(caller(watcher, {}, null), 'post_message', {});
+    const bySoleRoom = await callOperation(caller({}, null), 'post_message', {});
     expect(bySoleRoom.structuredContent).toMatchObject({ room_id: 'room-a' });
 
-    relay.sessionCommand({
+    hub.sessionCommand({
       agent_id: AGENT,
       room_id: 'room-a',
       command: {
@@ -402,32 +307,22 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
         requesterName: 'Person',
       },
     });
-    await waitFor(() => watcher.seen.commands.length === 1, 'the room control');
-    expect(watcher.seen.commands[0]).toMatchObject({
-      sessionId: 'session-1',
+    await waitFor(() => agentHost.seen.commands.length === 1, 'the room control');
+    expect(agentHost.seen.commands[0]).toMatchObject({
       commandId: 'command-1',
+      roomId: 'room-a',
       body: { type: 'session.reset' },
-      requesterName: 'Person',
     });
-    expect(watcher.seen.commands[0]).not.toHaveProperty('room_id');
-    expect(watcher.seen.commands[0]).not.toHaveProperty('agent_id');
 
-    relay.sessionCommand({
-      agent_id: AGENT,
-      room_id: null,
-      command: { commandId: 'command-2', origin: { roomId: 'room-b' } },
-    });
     await expect(
-      watcher.stream.replacePlacements({ 'session-1': 'room-elsewhere' })
-    ).rejects.toBeInstanceOf(PlacementsRefusedError);
-    await delay(50);
-    expect(watcher.seen.commands).toHaveLength(1);
+      agentHost.stream.replacePlacements({ 'session-1': 'room-elsewhere' })
+    ).rejects.toThrow(/not a member of room room-elsewhere/);
   });
 
-  it('passes approval outcomes to the watcher', async () => {
-    const watcher = watch();
-    await connected(watcher);
-    relay.approvalOutcome({
+  it('passes approval outcomes to the agent host', async () => {
+    const agentHost = host();
+    await connected(agentHost);
+    hub.approvalOutcome({
       agent_id: AGENT,
       outcome: {
         session_id: 'session-1',
@@ -438,27 +333,16 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
         answered_at: '2026-01-01T00:00:00Z',
       },
     });
-    await waitFor(() => watcher.seen.outcomes.length === 1, 'the outcome');
-    expect(watcher.seen.outcomes[0]).toMatchObject({ request_id: 'request-1', answer: 'yes' });
-  });
-
-  it('tells a connection its room was taken by a sibling placing a session there', async () => {
-    const watcher = watch();
-    await connected(watcher);
-    await watcher.stream.replacePlacements({ 'session-1': 'room-a' });
-    const other = watch({ connectionId: 'other-connection' });
-    await connected(other);
-    await other.stream.replacePlacements({ 'session-2': 'room-a' });
-    await waitFor(() => watcher.seen.released.length === 1, 'room_released');
-    expect(watcher.seen.released[0]).toEqual({ roomId: 'room-a', sessionId: 'session-1' });
+    await waitFor(() => agentHost.seen.outcomes.length === 1, 'the outcome');
+    expect(agentHost.seen.outcomes[0]).toMatchObject({ request_id: 'request-1', answer: 'yes' });
   });
 
   it('passes gaps through in order, and a reset as a cursor reset', async () => {
-    const watcher = watch();
-    await connected(watcher);
-    relay.ingest(message(1, true));
-    await waitFor(() => watcher.seen.events.length === 1, 'the first event');
-    relay.gap({
+    const agentHost = host();
+    await connected(agentHost);
+    hub.ingest(message(1, true));
+    await waitFor(() => agentHost.seen.events.length === 1, 'the first event');
+    hub.gap({
       agent_id: AGENT,
       from_sequence: 1,
       resumed_at: 10,
@@ -466,15 +350,10 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
       all_rooms: false,
       reason: 'events older than the retention window were dropped',
     });
-    relay.ingest(message(11, true));
-    await waitFor(() => watcher.seen.events.length === 2, 'the event after the gap');
-    expect(watcher.seen.gaps[0]).toMatchObject({
-      fromSequence: 1,
-      resumedAt: 10,
-      rooms: ['room-a'],
-      cursorReset: false,
-    });
-    relay.gap({
+    hub.ingest(message(11, true));
+    await waitFor(() => agentHost.seen.events.length === 2, 'the event after the gap');
+    expect(agentHost.seen.gaps[0]).toMatchObject({ fromSequence: 1, resumedAt: 10 });
+    hub.gap({
       agent_id: AGENT,
       from_sequence: 11,
       resumed_at: 2,
@@ -482,59 +361,68 @@ describe('the relay as the agent protocol, read by the real SwitchEventStream', 
       all_rooms: true,
       reason: 'the server restarted',
     });
-    await waitFor(() => watcher.seen.gaps.length === 2, 'the reset');
-    expect(watcher.seen.gaps[1]).toMatchObject({ resumedAt: 2, cursorReset: true });
-    relay.ingest(message(3, true));
-    await waitFor(() => watcher.seen.events.length === 3, 'numbering from the reset');
-    expect(relay.cursors()[AGENT]).toBe(2);
+    await waitFor(() => agentHost.seen.gaps.length === 2, 'the reset');
+    expect(agentHost.seen.gaps[1]).toMatchObject({ resumedAt: 2, cursorReset: true });
+    hub.ingest(message(3, true));
+    await waitFor(() => agentHost.seen.events.length === 3, 'numbering from the reset');
+    await waitFor(() => hub.cursors()[AGENT] === 3, 'the cursor from the reset');
   });
 
-  it('drops what a reattached stream replays, and a gap behind what it holds', async () => {
-    const watcher = watch();
-    await connected(watcher);
-    relay.ingest(message(1, true));
-    relay.ingest(message(2, true));
-    relay.streamAttached();
-    relay.attach(AGENT, 0, ['room-a', 'room-b']);
-    relay.gap({
-      agent_id: AGENT,
-      from_sequence: 0,
-      resumed_at: 1,
-      rooms: ['room-a'],
-      all_rooms: false,
-      reason: 'dropped',
+  it('a handler that fails leaves the event unconfirmed', async () => {
+    const agentHost = host({
+      onEvent: (event) => {
+        if (event.sequence === 2) throw new Error('the journal is full');
+      },
     });
-    relay.ingest(message(1, true));
-    relay.ingest(message(2, true));
-    relay.ingest(message(3, true));
-    await waitFor(() => watcher.seen.events.length === 3, 'the new event');
-    expect(watcher.seen.events.map((event) => event.sequence)).toEqual([1, 2, 3]);
-    expect(watcher.seen.gaps).toEqual([]);
+    await connected(agentHost);
+    hub.ingest(message(1, true));
+    hub.ingest(message(2, true));
+    await waitFor(() => hub.cursors()[AGENT] === 1, 'the first event confirmed');
+    await delay(100);
+    expect(hub.cursors()[AGENT]).toBe(1);
   });
 
-  it('tells a watcher reconnecting from before what the relay still holds that it missed events', async () => {
-    relay.setCursor('agent-2', 50);
-    const tokenTwo = relay.mint('agent-2');
-    const gaps: number[] = [];
-    const controller = new AbortController();
-    stops.push(() => controller.abort());
-    const behind = new SwitchEventStream({
-      creds: { agentId: 'agent-2', apiEndpoint: relay.endpoint, token: tokenTwo },
-      connectionId: 'behind',
-      worker: null,
-      scope: 'all',
-      filter: 'addressed',
-      rooms: [],
-      startCursor: 40,
-      onEvent: () => {},
-      onGap: (gap) => void gaps.push(gap.resumedAt ?? -1),
-      onEvicted: () => {},
-      log: quiet,
-      signal: controller.signal,
+  it('reconnects when the controller restarts, resuming after what it handled', async () => {
+    const agentHost = host();
+    await connected(agentHost);
+    hub.ingest(message(1, true));
+    await waitFor(() => agentHost.seen.events.length === 1, 'the first event');
+    const port = Number(new URL(relay.endpoint).port);
+    await relay.close();
+    await waitFor(() => agentHost.seen.disconnected.length >= 1, 'the restart close');
+
+    // The controller comes back on the same port, its hub knowing nothing yet.
+    hub = new AgentHub({
+      log: silentLogger,
+      bufferLimit: 100,
+      onCursor: (agentId, cursor) => cursorsSaved.push([agentId, cursor]),
+      onChange: () => {},
     });
-    behind.start();
-    await waitFor(() => gaps.length === 1, 'the gap');
-    expect(gaps[0]).toBe(50);
+    relay = newRelay();
+    await relay.start(port);
+    relay.register(AGENT, token);
+    relay.setReady();
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a', 'room-b']);
+    await connected(agentHost, 2);
+    // Switch replays from the opened cursor; the agent host said where it was.
+    hub.ingest(message(1, true));
+    hub.ingest(message(2, true));
+    await waitFor(() => agentHost.seen.events.length === 2, 'the new event');
+    expect(agentHost.seen.events.map((event) => event.sequence)).toEqual([1, 2]);
+  });
+
+  it('a second agent host for the agent takes the hub over, and the first stands down', async () => {
+    const first = host();
+    await connected(first);
+    const second = host();
+    await connected(second);
+    await waitFor(() => first.seen.evictions.length === 1, 'the first to be evicted');
+    expect(first.seen.evictions[0]).toMatchObject({ code: 'taken_over' });
+    hub.ingest(message(1, true));
+    await waitFor(() => second.seen.events.length === 1, 'the event at the second');
+    await delay(50);
+    expect(first.seen.events).toEqual([]);
   });
 });
 
@@ -544,19 +432,12 @@ describe('what the relay refuses', () => {
   });
 
   it('refuses a token it did not mint with 401, and asks to retry while starting', async () => {
-    const refused = await post(`/agents/${AGENT}/connection/beat`, {}, 'swlr_not-a-token');
+    const refused = await post(`/agents/${AGENT}/ops/post_message`, {}, 'swlr_not-a-token');
     expect(refused.status).toBe(401);
-    const starting = new LocalRelay({
-      log: silentLogger,
-      version: '0.1.0',
-      forwarder: { forward: async () => {} },
-      onCursor: () => {},
-      onChange: () => {},
-      sharedRoomFor: () => null,
-      now: Date.now,
-      timing: { heartbeatTtlMs: 6_000, heartbeatIntervalS: 2, sweepMs: 50, keepaliveMs: 15_000 },
-      bufferLimit: 100,
-    });
+    expect(await upgradeStatus('swlr_not-a-token')).toBe(401);
+    expect(await upgradeStatus(token)).toBe(101);
+    expect(await upgradeStatus(token, '/elsewhere')).toBe(404);
+    const starting = newRelay();
     await starting.start(null);
     try {
       const early = await fetch(`${starting.endpoint}/agents/${AGENT}/ops`, {
@@ -566,6 +447,18 @@ describe('what the relay refuses', () => {
     } finally {
       await starting.close();
     }
+  });
+
+  it('answers the agent connection routes of an agent host from before the hub with 410', async () => {
+    for (const path of [`/agents/${AGENT}/connection/beat`, `/agents/${AGENT}/events`]) {
+      const response = await fetch(`${relay.endpoint}${path}`, {
+        method: path.endsWith('beat') ? 'POST' : 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status, path).toBe(410);
+      expect(JSON.stringify(await response.json())).toMatch(/\/hub/);
+    }
+    expect(core.requests.filter((r) => r.path.includes('/connection/'))).toEqual([]);
   });
 
   it('refuses another agent’s routes, and never relays the management routes', async () => {
@@ -616,7 +509,26 @@ describe('forwarding to Switch', () => {
     expect(forwarded.body).toEqual({ row: 1 });
   });
 
-  it('names the room of a shared agent’s call from its host in the controller', async () => {
+  it('names the room of a call from its session’s placement on the hub', async () => {
+    // An agent host in the controller's own process states its placements to the hub directly.
+    hub.attach('agent-2', 0, ['room-shared']);
+    const inProcess = new AbortController();
+    stops.push(() => inProcess.abort());
+    await hub
+      .open('agent-2', {
+        creds: { agentId: 'agent-2', apiEndpoint: '', token: '' },
+        connectionId: 'in-process',
+        worker: null,
+        scope: 'all',
+        filter: 'addressed',
+        rooms: [],
+        onEvent: () => {},
+        onGap: () => {},
+        onEvicted: () => {},
+        log: quiet,
+        signal: inProcess.signal,
+      })
+      .replacePlacements({ 'session-7': 'room-shared' });
     const shared = relay.mint('agent-2');
     const response = await fetch(`${relay.endpoint}/agents/agent-2/ops/post_message`, {
       method: 'POST',

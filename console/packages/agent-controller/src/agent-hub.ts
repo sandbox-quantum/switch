@@ -140,10 +140,7 @@ export class AgentHub {
     return cursors;
   }
 
-  /**
-   * Where Core attached the agent on the controller stream, while it is
-   * attached: what another delivery takes over when the agent moves.
-   */
+  /** Where Core attached the agent on the controller stream, while it is attached. */
   attachment(agentId: string): { fromSeq: number; rooms: string[] } | null {
     const agent = this.agents.get(agentId);
     if (!agent?.attached || agent.head === null) return null;

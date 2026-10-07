@@ -406,10 +406,9 @@ stream. The flag and everything else above stay as they are.
 
 ### Agent hosts in the controller's process, and the local relay
 - Each agent's definition says where its agent host runs: `isolation: "shared"` (the default)
-  in the controller's process, as below; `isolated` in a process of its own, served the
-  per-agent agent protocol by the relay (its own event stream, heartbeat, placements and room
-  claims), as before agent hosts moved in-process. Cloud machines run every agent isolated, as
-  a systemd unit. Changing an agent's isolation restarts it the other way.
+  in the controller's process, as below; `isolated` in a process of its own, which reaches
+  the same hub over a WebSocket on the relay's port (`/hub`). Cloud machines run every agent
+  isolated, as a systemd unit. Changing an agent's isolation restarts it the other way.
 - One upstream stream. Each agent's agent host runs inside the controller's process and is handed
   its events from that stream directly (`AgentHub`): in order, filtered to what addresses the
   agent, with gaps, resets, room controls and approval outcomes. Events that arrive while its
@@ -417,13 +416,15 @@ stream. The flag and everything else above stay as they are.
   event. The agent host states its sessions' rooms in memory, for the relay and for routing
   session commands; none of it is sent upstream.
 - The shared agent host code (`runAgentHost`) takes the function that opens its event stream: the
-  controller passes its hub, while Console and the shared daemon pass the agent host's own
-  connection to Switch.
+  controller passes its hub, an isolated agent host the hub over its WebSocket
+  (`openHubStream`, chosen by `SWITCH_AGENT_HUB` in its credentials), while Console passes the
+  agent host's own connection to Switch. Only the controller holds the agent protocol's
+  connection to Switch; nothing on the machine imitates it.
 - A loopback HTTP relay (`127.0.0.1`, a per-agent bearer token minted locally) is what each
   agent host uses as `SWITCH_API_ENDPOINT` for its calls to Switch. It forwards everything with the
   controller access token, the `X-Switch-Agent-Id` header, and `X-Switch-Room-Id` resolved from
-  the placements. It serves no event stream and no connection bookkeeping. The credentials file
-  names the relay and its local token, never a Switch credential.
+  the placements. It serves no event stream and no connection bookkeeping of its own. The
+  credentials file names the relay, its hub and its local token, never a Switch credential.
 
 ### Core implementation notes (decisions the spec left open)
 

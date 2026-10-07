@@ -76,8 +76,11 @@ export type LaunchOptions = {
   clearTakenOver: boolean;
 };
 
-/** What an agent host reads to reach Switch: the controller's relay, and a token for it. */
-export type RelayCredentials = { endpoint: string; token: string };
+/**
+ * What an agent host reads to reach Switch: the controller's relay, a token
+ * for it, and the hub an agent host in a process of its own hears its events on.
+ */
+export type RelayCredentials = { endpoint: string; token: string; hub: string };
 
 /** Runs agent hosts one way: in this controller's process, or each in a process of its own. */
 export interface AgentRunner {
@@ -286,8 +289,12 @@ export class InProcessRuntime implements AgentRuntime {
       const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
       const endpoint = env.SWITCH_API_ENDPOINT;
       const token = env.SWITCH_API_TOKEN;
+      // Written before the hub: an empty one, which no relay names, so the file is written again.
+      const hub = typeof env.SWITCH_AGENT_HUB === 'string' ? env.SWITCH_AGENT_HUB : '';
       if (env.SWITCH_AGENT_ID !== agentId) return null;
-      return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
+      return typeof endpoint === 'string' && typeof token === 'string'
+        ? { endpoint, token, hub }
+        : null;
     } catch {
       return null;
     }
@@ -302,6 +309,7 @@ export class InProcessRuntime implements AgentRuntime {
           SWITCH_API_ENDPOINT: credentials.endpoint,
           SWITCH_API_TOKEN: credentials.token,
           SWITCH_AGENT_ID: agentId,
+          SWITCH_AGENT_HUB: credentials.hub,
         },
       })
     );

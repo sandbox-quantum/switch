@@ -34,11 +34,12 @@ const LAUNCH_TIMEOUT_MS = 60_000;
  * runs an agent on an SSH host: a detached agent host from the agent-providers
  * shared-host bundle, in a state root of its own, driven through the files it
  * reads (`watch.json`, `config.json`) and observed through the files it
- * writes (`health.json`, `supervisor/failure.json`). It reaches Switch, its
- * event stream included, through the controller's relay.
+ * writes (`health.json`, `supervisor/failure.json`). It makes its calls to
+ * Switch through the controller's relay, and hears its events on the
+ * controller's hub, over a WebSocket on the relay's port.
  *
  * Being its own process, it is not stopped when the controller exits: it
- * keeps retrying the relay, and picks up again when the controller is back.
+ * keeps retrying the hub, and picks up again when the controller is back.
  * A restart is a stop and a start: the agent host is turned off, waited out,
  * and launched again from the new template.
  */

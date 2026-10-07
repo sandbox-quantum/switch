@@ -15,9 +15,9 @@ runs, and the agent hosts do the running.
 
 An agent whose definition asks for `isolation: "isolated"` runs instead as an agent
 host in a process of its own (the shared-host bundle with `--ensure-watch`, as Console
-runs an agent on an SSH host). It hears its events through the relay, which serves it
-the per-agent agent protocol (its own event stream, heartbeat and placements), and it
-is not stopped when the controller exits: it reconnects when the controller is back.
+runs an agent on an SSH host). It hears its events on the controller's **hub**, the
+same one in-process agent hosts use, over a WebSocket on the relay's port, and it is
+not stopped when the controller exits: it reconnects when the controller is back.
 Changing an agent's isolation restarts it the other way.
 
 The controller holds **one** connection to Switch, a WebSocket, for all of its agents and hands
@@ -208,9 +208,18 @@ session hosts it launches with `process.execPath` run as Node too.
   with a token minted for that agent (`swlr_…`) as `SWITCH_API_TOKEN`. A token the
   relay did not mint is refused with `401`; while the controller is still starting,
   with `503`.
-- It serves no event stream and no connection bookkeeping
-  (`GET /agents/{id}/events`, `POST /agents/{id}/connection/…` answer `404`): the
+- It serves no event stream and no connection bookkeeping of the agent protocol
+  (`GET /agents/{id}/events`, `POST /agents/{id}/connection/…` answer `410`): the
   controller holds each agent's connection to Switch itself.
+- **The hub**, at `ws://127.0.0.1:<port>/hub` with the agent's relay token, named in
+  the credentials file as `SWITCH_AGENT_HUB`. An agent host in a process of its own
+  hears its events there: the hub sends each event, gap, room control and approval
+  outcome as a request, and counts it handled when the agent host answers `done`, as
+  it does for an agent host in the controller's process. The agent host states its
+  sessions' rooms there too (`placements`). One agent host per agent: a newer one
+  takes the hub over (close `4409`, the older stands down). When the controller
+  stops, the hub closes with `1012` and the agent hosts reconnect when it is back,
+  resuming after the last event they handled.
 - **Forwarded to Switch**, everything else under `/agents/{id}/…`,
   `/agent-sessions/…`, `/sessions/…`, `/version` and `/health`: operations, media,
   typing, history, session activity and approvals. The relay sends them with the
@@ -240,7 +249,8 @@ session hosts it launches with `process.execPath` run as Node too.
     reboot, say): the agent host is launched again, once 15 s have passed since it
     was last launched, so an agent host still coming up is not launched twice.
   - **Desired `running`, relay credentials rewritten** (the relay came back on
-    another port): a running agent host is restarted so it reads them.
+    another port, or they were written before the hub): a running agent host is
+    restarted so it reads them.
   - **Agent host failed or was taken over:** it is left down, and reported as
     `failed`. A new revision or an `agent.restart` brings it back. One that failed
     because the relay refused its token is relaunched once it has a new one.
@@ -299,7 +309,7 @@ It holds:
 |---|---|
 | `controller.db` | SQLite: identity, cached assignment, per-agent applied revision and local failures, restart times, each agent's stream cursor, the relay's port, status seq. Everything except the identity can be rebuilt from the server. |
 | `secrets/controller-credential` | The controller credential (see below). Absent when the credential is handed over with `--credential-stdin`. |
-| `agents/<id>/credentials.json` | Each agent's relay endpoint and relay token, in the layout the shared host reads. No Switch credential. |
+| `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
 | `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
 
 An agent whose definition names no directory works in
