@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { AgentMigrationEvent } from '@shared/core/agent-migration/agent-migration';
 import {
   type AgentMigrationDeps,
+  type MachineHealth,
   AgentMigrationService,
   MigrationBlockedError,
   type MigrationAgent,
@@ -72,6 +73,8 @@ type World = {
   clock: number;
   /** The lookup for one agent; `lookup` for every agent when unset. */
   lookupFor: ((agent: MigrationAgent) => TargetLookup) | null;
+  /** What repairing a machine finds; when unset, `not-set-up` while the lookup offers to set it up. */
+  heal: ((agent: MigrationAgent) => Promise<MachineHealth>) | null;
 };
 
 let world: World;
@@ -93,12 +96,21 @@ function deps(): AgentMigrationDeps {
         if (world.enableFails) throw new Error('ssh: connect to host gpu-1: Connection refused');
         world.lookup = world.lookupAfterEnable ?? world.lookup;
       },
+      heal: async (agent) => {
+        if (world.heal) return world.heal(agent);
+        return world.lookup.canEnable && !world.lookup.target
+          ? { kind: 'not-set-up' }
+          : { kind: 'unchanged' };
+      },
     },
     management: {
       eligibility: async () => world.eligibility,
       adopt: async (workspaceId, switchAgentId, body) => {
         world.calls.push(`adopt ${switchAgentId} ${body.desired_state} on ${body.controller_id}`);
         if (world.failAdoptOn === switchAgentId) throw new Error('controller_offline');
+      },
+      place: async (_workspaceId, switchAgentId, controllerId) => {
+        world.calls.push(`place ${switchAgentId} on ${controllerId}`);
       },
       setDesiredState: async (_workspaceId, switchAgentId, desiredState) => {
         world.calls.push(`desired ${switchAgentId} ${desiredState}`);
@@ -194,6 +206,9 @@ function deps(): AgentMigrationDeps {
     controllerStopWaitMs: 8_000,
     machineReadyWaitMs: 5_000,
     unmanageableRecheckMs: 60_000,
+    minRetryMs: 1_000,
+    maxRetryMs: 8_000,
+    healIntervalMs: 5_000,
   };
 }
 
@@ -224,6 +239,7 @@ beforeEach(() => {
     managedView: { controllerId: CONTROLLER, desiredState: 'running' },
     clock: 0,
     lookupFor: null,
+    heal: null,
   };
 });
 
@@ -755,6 +771,7 @@ describe('moving every agent automatically', () => {
     ]);
     world.enableFails = false;
     world.lookupAfterEnable = ready;
+    world.clock += 1_000;
     await migration.migrateEverything();
     expect(migration.migrationProblems()).toEqual([]);
   });
@@ -767,6 +784,118 @@ describe('moving every agent automatically', () => {
       expect.objectContaining({ name: 'trainer', message: 'controller_offline' }),
     ]);
     expect(adopted()).toEqual(['switch-1', 'switch-2', 'switch-3']);
+  });
+
+  it('enrolls a machine again after a revocation, and places the agents moved onto it there', async () => {
+    const migration = service();
+    await migration.migrateEverything();
+    for (const record of world.records.values())
+      world.records.set(record.agentId, { ...record, controllerId: 'revoked-controller' });
+    world.calls = [];
+    world.heal = async () => ({ kind: 'changed' });
+    world.clock += 5_000;
+    await migration.migrateEverything();
+    expect(world.calls.filter((call) => call.startsWith('place'))).toEqual([
+      `place switch-1 on ${CONTROLLER}`,
+      `place switch-2 on ${CONTROLLER}`,
+      `place switch-3 on ${CONTROLLER}`,
+    ]);
+    expect([...world.records.values()].every((record) => record.controllerId === CONTROLLER)).toBe(
+      true
+    );
+    expect(adopted()).toEqual([]);
+  });
+
+  it('waits for a repaired controller to reach Switch before placing agents on it', async () => {
+    const ready = world.lookup;
+    world.lookup = { ...ready, target: null, blocker: 'Not reached Switch yet.' };
+    world.heal = async () => ({ kind: 'changed' });
+    const migration = service({
+      sleep: async (ms) => {
+        world.clock += ms;
+        world.lookup = ready;
+      },
+    });
+    await migration.migrateEverything();
+    expect(adopted()).toHaveLength(3);
+  });
+
+  it('leaves the agents of a server that cannot take the controller alone, saying why on the overview', async () => {
+    world.heal = async (agent) =>
+      agent.serverId === 'server-2'
+        ? { kind: 'incompatible', reason: 'Local dev accepts agents controller protocol 1-1.' }
+        : { kind: 'unchanged' };
+    const migration = service();
+    await migration.migrateEverything();
+    expect(adopted()).toEqual(['switch-1', 'switch-2']);
+    expect(migration.migrationProblems()).toEqual([]);
+    const overview = await migration.overview();
+    expect(
+      overview.machines.map((m) => [m.machine, m.serverId, m.moved, m.total, m.controller?.kind])
+    ).toEqual([
+      ['this computer', 'server-1', 1, 1, 'ready'],
+      ['gpu-1', 'server-1', 1, 1, 'ready'],
+      ['gpu-1', 'server-2', 0, 1, 'incompatible'],
+    ]);
+  });
+
+  it('reports a machine that cannot be repaired on each of its agents', async () => {
+    world.heal = async (agent) => {
+      if (agent.sshHost)
+        throw new Error('Console cannot tell whether gpu-1’s controller runs: ssh: timed out');
+      return { kind: 'unchanged' };
+    };
+    const migration = service();
+    await migration.migrateEverything();
+    expect(adopted()).toEqual(['switch-1']);
+    expect(migration.migrationProblems().map((p) => [p.name, p.message])).toEqual([
+      ['trainer', 'Console cannot tell whether gpu-1’s controller runs: ssh: timed out'],
+      ['other', 'Console cannot tell whether gpu-1’s controller runs: ssh: timed out'],
+    ]);
+    expect((await migration.overview()).machines[1]?.controller).toEqual({
+      kind: 'failed',
+      reason: 'Console cannot tell whether gpu-1’s controller runs: ssh: timed out',
+    });
+  });
+
+  it('tries a failing agent again after a delay that doubles, up to the limit', async () => {
+    all = [PARENT];
+    world.failAdoptOn = 'switch-1';
+    const migration = service();
+    const tries = () => adopted().length;
+    await migration.migrateEverything();
+    expect(tries()).toBe(1);
+    await migration.migrateEverything();
+    expect(tries()).toBe(1);
+    world.clock += 1_000;
+    await migration.migrateEverything();
+    expect(tries()).toBe(2);
+    world.clock += 1_000;
+    await migration.migrateEverything();
+    expect(tries()).toBe(2);
+    world.clock += 1_000;
+    await migration.migrateEverything();
+    expect(tries()).toBe(3);
+    migration.recheck(PARENT.id);
+    await migration.migrateEverything();
+    expect(tries()).toBe(4);
+  });
+
+  it('counts what it left alone and what it could not ask about', async () => {
+    const base = deps().management;
+    const migration = service({
+      management: {
+        ...base,
+        eligibility: async (_workspaceId, switchAgentId) => {
+          if (switchAgentId === 'switch-2') throw new Error('Agent not found');
+          if (switchAgentId === 'switch-3')
+            return { management: true, owner: 'Grace', ownedByMe: false };
+          return base.eligibility(_workspaceId, switchAgentId);
+        },
+      },
+    });
+    await migration.migrateEverything();
+    expect(await migration.overview()).toMatchObject({ leftAlone: 1, unasked: 1, running: false });
   });
 
   it('runs one pass at a time', async () => {

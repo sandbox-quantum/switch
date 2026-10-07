@@ -235,6 +235,23 @@ describe('EmbeddedControllerService', () => {
     expect(secrets.get(credentialSecretKey(SERVER))).toBe('swcc_second');
   });
 
+  it('enrolls again when Switch revoked the machine', async () => {
+    const running = await enabled();
+    management.read.mockResolvedValue({
+      kind: 'ok',
+      controller: { name: 'build-box', description: null, state: 'revoked', lastSeenAt: null },
+      agents: [],
+    });
+    management.enroll.mockResolvedValueOnce({
+      serverId: SERVER,
+      apiUrl: 'https://switch.example.com',
+      controllerId: 'controller-3',
+      credential: 'swcc_third',
+    });
+    await running.enrollAgain(SERVER);
+    expect(storedRecord()).toMatchObject({ kind: 'enrolled', controllerId: 'controller-3' });
+  });
+
   it('refuses to enroll again while Switch still lists the machine', async () => {
     const running = await enabled();
     management.read.mockResolvedValue({

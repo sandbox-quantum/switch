@@ -44,7 +44,7 @@ import {
   probeProvider,
 } from './runtime';
 import { AgentRuntimes } from './runtimes';
-import type { ControllerInfoChange } from './schemas';
+import { type ControllerInfoChange, PROTOCOL_VERSION } from './schemas';
 import {
   CONTROLLER_CREDENTIAL,
   defaultSecretStoreKind,
@@ -646,6 +646,9 @@ export async function main(argv: string[]): Promise<number> {
         return command === undefined ? EXIT_CONFIGURATION : EXIT_OK;
       case '--version':
         process.stdout.write(`${VERSION}\n`);
+        return 0;
+      case '--protocol':
+        process.stdout.write(`${PROTOCOL_VERSION}\n`);
         return 0;
       default:
         throw new UsageError(`Unknown command '${command}'.`);

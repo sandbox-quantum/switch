@@ -308,7 +308,7 @@ export class EmbeddedControllerService {
           ? `Switch could not be asked about this computer: ${remote.message}`
           : 'This server no longer has agent management turned on.'
       );
-    if (remote.controller)
+    if (remote.controller && remote.controller.state !== 'revoked')
       throw new Error(
         'Switch still lists this computer as a machine. Turn it off and on again instead.'
       );

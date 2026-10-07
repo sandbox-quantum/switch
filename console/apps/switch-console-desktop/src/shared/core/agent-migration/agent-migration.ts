@@ -98,6 +98,38 @@ export type MigrationProblem = {
   message: string;
 };
 
+/** The controller one machine runs for one server, as the last automatic pass found it. */
+export type MigrationControllerState =
+  | { kind: 'ready' }
+  /** The server cannot take this Console's controller; its agents are left as they are. */
+  | { kind: 'incompatible'; reason: string }
+  | { kind: 'failed'; reason: string };
+
+/** One machine's agents for one server: how many moved, and what keeps the rest. */
+export type MigrationMachine = {
+  /** "this computer", or the SSH host's name. */
+  machine: string;
+  sshHost: string | null;
+  serverId: string;
+  total: number;
+  moved: number;
+  /** Null until a pass has looked at the machine. */
+  controller: MigrationControllerState | null;
+  checkedAt: string | null;
+  problems: MigrationProblem[];
+};
+
+/** Where the automatic move to managed agents stands. */
+export type MigrationOverview = {
+  machines: MigrationMachine[];
+  /** Agents left as they are: someone else's, or on a server without agent management. */
+  leftAlone: number;
+  /** Agents whose server could not be asked whether they can move; tried again later. */
+  unasked: number;
+  running: boolean;
+  lastPassAt: string | null;
+};
+
 export type AgentMigrationEvent = {
   agentId: string;
   runner: AgentRunner;

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { resolveAgentControllerBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { agentLaunchConfig } from '@main/core/agents/agent-launch-config';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { resolveWorkdirFsFor } from '@main/core/agents/agent-workdir-fs';
@@ -39,7 +40,9 @@ import {
   putManagedAgent,
   revealAgentApiKey,
   setManagedAgentDesiredState,
+  updateManagedAgent,
 } from '@main/core/switch-servers/gateway-client';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { withReachableWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -47,6 +50,7 @@ import type { Agent } from '@shared/core/agents/agents';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 import {
   AgentMigrationService,
+  type MachineHealth,
   type MigrationAgent,
   type MigrationCredentialsPort,
   type MigrationMachinePort,
@@ -177,14 +181,12 @@ async function resolveThisComputer(
     );
   if (overview.phase.kind !== 'running')
     return refuse(
-      `This computer’s controller is not running (${overview.phase.kind.replaceAll('_', ' ')}). See “This computer as a machine” on the server’s page.`
+      `This computer’s controller is not running (${overview.phase.kind.replaceAll('_', ' ')}); Console starts it again on its next check.`
     );
   if (remote?.kind === 'error')
     return refuse(`Switch could not be asked about this computer’s controller: ${remote.message}`);
   if (remote?.kind === 'ok' && remote.controller?.state !== 'online')
-    return refuse(
-      'This computer’s controller has not reached Switch yet. Wait until the server’s page shows it Running.'
-    );
+    return refuse('This computer’s controller has not reached Switch yet.');
   const dataDir = embeddedControllerDataDir(serverId);
   return {
     display,
@@ -251,14 +253,12 @@ async function resolveSshHost(
     return refuse(
       overview.process?.kind === 'unknown'
         ? `Console cannot tell whether ${sshHost}’s controller runs: ${overview.process.reason}`
-        : `${sshHost}’s controller is not running. Start it again from the host’s page.`
+        : `${sshHost}’s controller is not running; Console starts it again on its next check.`
     );
   if (remote?.kind === 'error')
     return refuse(`Switch could not be asked about ${sshHost}’s controller: ${remote.message}`);
   if (remote?.kind === 'ok' && remote.controller?.state !== 'online')
-    return refuse(
-      `${sshHost}’s controller has not reached Switch yet. Wait until the host’s page shows it Running.`
-    );
+    return refuse(`${sshHost}’s controller has not reached Switch yet.`);
   const dataDir = hostControllerDataDir(serverId);
   return {
     display,
@@ -314,6 +314,18 @@ const management: MigrationManagementPort = {
       );
     } catch (error) {
       throw managementFailure('Switch did not start the agent on its machine', error);
+    }
+  },
+  place: async (workspaceId, switchAgentId, controllerId) => {
+    try {
+      await withReachableWorkspaceSession(workspaceId, (server) =>
+        updateManagedAgent(server, switchAgentId, { definition: null, controllerId })
+      );
+    } catch (error) {
+      throw managementFailure(
+        'Switch did not place the agent on its machine’s new controller',
+        error
+      );
     }
   },
   release: async (workspaceId, switchAgentId) => {
@@ -503,6 +515,121 @@ async function buildDefinition(agent: MigrationAgent) {
   });
 }
 
+let localControllerProtocol: Promise<string> | null = null;
+
+/** The controller protocol this Console's agents controller speaks, as the bundle reports it. */
+function controllerProtocol(): Promise<string> {
+  localControllerProtocol ??= execute(
+    process.execPath,
+    [resolveAgentControllerBundlePath(), '--protocol'],
+    { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 15_000 }
+  ).then(({ stdout }) => {
+    const protocol = stdout.trim();
+    if (!protocol) throw new Error('The agents controller did not report its protocol.');
+    return protocol;
+  });
+  localControllerProtocol.catch(() => {
+    localControllerProtocol = null;
+  });
+  return localControllerProtocol;
+}
+
+/**
+ * Why the server cannot take this Console's controller, or null when it can.
+ * A server that does not speak the controller's protocol refuses every call
+ * it makes, enrollment first, with HTTP 426.
+ */
+async function controllerRefusal(serverId: string): Promise<string | null> {
+  const server = await getServer(serverId);
+  if (!server) throw new Error('Console no longer knows this Switch server.');
+  const protocol = await controllerProtocol();
+  const response = await fetch(`${server.apiUrl}/v1/management/controllers/enroll`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'Switch-Controller-Protocol': protocol },
+    body: '{}',
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (response.status !== 426) return null;
+  const accepts = response.headers.get('switch-controller-protocol-accepts');
+  return `${server.name} accepts agents controller protocol ${accepts ?? 'older than this Console’s'}, but this Console’s controller speaks ${protocol}. Upgrade the server to move agents onto it.`;
+}
+
+/** Repairs the controller an agent's machine runs for its server; see `AgentMigrationDeps.targets.heal`. */
+async function healMachine(agent: MigrationAgent): Promise<MachineHealth> {
+  const serverId = agent.serverId!;
+  const refusal = await controllerRefusal(serverId);
+  if (refusal) return { kind: 'incompatible', reason: refusal };
+  if (agent.sshHost) {
+    const sshHost = agent.sshHost;
+    const record = await hostControllerService.record(sshHost, serverId);
+    if (!record) return { kind: 'not-set-up' };
+    const overview = await hostControllerService.overview(sshHost, serverId, record.workspaceId);
+    const { process: running, remote } = overview;
+    if (running?.kind === 'unknown')
+      throw new Error(
+        `Console cannot tell whether ${sshHost}’s controller runs: ${running.reason}`
+      );
+    if (remote?.kind === 'error')
+      throw new Error(`Switch could not be asked about ${sshHost}’s controller: ${remote.message}`);
+    const gone =
+      (remote?.kind === 'ok' &&
+        (remote.controller === null || remote.controller.state === 'revoked')) ||
+      (running?.kind === 'stopped' && running.code === 3);
+    if (gone) {
+      log.warn('Switch revoked or forgot an SSH host’s controller; enrolling it again', {
+        event: 'agent_migration',
+        sshHost,
+        serverId,
+        controllerId: record.controllerId,
+      });
+      await hostControllerService.enrollAgain(sshHost, serverId);
+      return { kind: 'changed' };
+    }
+    const outdated = await hostControllerService.outdated(record);
+    if (running?.kind !== 'running' || outdated) {
+      log.info('Starting an SSH host’s controller again', {
+        event: 'agent_migration',
+        sshHost,
+        serverId,
+        reason: outdated ? 'older build' : 'not running',
+      });
+      await hostControllerService.restart(sshHost, serverId);
+      return { kind: 'changed' };
+    }
+    return { kind: 'unchanged' };
+  }
+  const overview = await embeddedControllerService.overview(serverId, agent.workspaceId);
+  if (overview.unsupportedReason)
+    return { kind: 'incompatible', reason: overview.unsupportedReason };
+  if (!overview.enrollment) return { kind: 'not-set-up' };
+  const remote = overview.remote;
+  if (remote?.kind === 'error')
+    throw new Error(
+      `Switch could not be asked about this computer’s controller: ${remote.message}`
+    );
+  if (
+    remote?.kind === 'ok' &&
+    (remote.controller === null || remote.controller.state === 'revoked')
+  ) {
+    log.warn('Switch revoked or forgot this computer’s controller; enrolling it again', {
+      event: 'agent_migration',
+      serverId,
+      controllerId: overview.enrollment.controllerId,
+    });
+    await embeddedControllerService.enrollAgain(serverId);
+    return { kind: 'changed' };
+  }
+  if (overview.phase.kind === 'taken_over')
+    throw new Error(
+      'Another copy of this computer’s controller connected to Switch and took over, so this one is not started again.'
+    );
+  if (overview.phase.kind !== 'running' && overview.phase.kind !== 'restarting') {
+    await embeddedControllerService.restart(serverId);
+    return { kind: 'changed' };
+  }
+  return { kind: 'unchanged' };
+}
+
 export const agentMigrationService = new AgentMigrationService({
   agents: {
     get: migrationAgent,
@@ -529,6 +656,7 @@ export const agentMigrationService = new AgentMigrationService({
         await hostControllerService.enable(agent.sshHost, agent.serverId, agent.workspaceId);
       else await embeddedControllerService.enable(agent.serverId, agent.workspaceId);
     },
+    heal: (agent) => healMachine(agent),
   },
   management,
   machine,
@@ -552,6 +680,9 @@ export const agentMigrationService = new AgentMigrationService({
   controllerStopWaitMs: 60_000,
   machineReadyWaitMs: 180_000,
   unmanageableRecheckMs: 15 * 60_000,
+  minRetryMs: 60_000,
+  maxRetryMs: 15 * 60_000,
+  healIntervalMs: 5 * 60_000,
 });
 
 const AUTO_MIGRATION_INTERVAL_MS = 60_000;
