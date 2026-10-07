@@ -18,6 +18,7 @@ import type {
   AdvancedConfigField,
   ManagedAgentChanges,
   ManagedAgentView,
+  ManagedMachine,
   OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -33,19 +34,28 @@ export const managedAgentsController = createRPCController({
     const workspace = await requireWorkspaceForServer(serverId);
     return withReachableServerWorkspaceSession(serverId, async (server) => {
       let agents;
-      let controllers;
+      let machines = new Map<string, ManagedMachine>();
       try {
-        [agents, controllers] = await Promise.all([
-          fetchManagedAgents(server),
-          fetchManagementControllers(server),
-        ]);
+        agents = await fetchManagedAgents(server);
+        // A server that does not send each agent's machine with it is asked for its machines.
+        if (agents.some((agent) => agent.machine === undefined))
+          machines = new Map(
+            (await fetchManagementControllers(server)).map((controller) => [
+              controller.id,
+              controller,
+            ])
+          );
       } catch (error) {
         if (error instanceof AgentManagementUnavailableError) return null;
         throw error;
       }
-      const machines = new Map(controllers.map((controller) => [controller.id, controller]));
       return agents.map((agent): ManagedAgentView => {
-        const machine = agent.controllerId ? machines.get(agent.controllerId) : undefined;
+        const machine =
+          agent.machine !== undefined
+            ? agent.machine
+            : agent.controllerId
+              ? machines.get(agent.controllerId)
+              : undefined;
         return {
           serverId,
           workspaceId: workspace.id,

@@ -1830,6 +1830,9 @@ describe('agent management calls', () => {
           display_name: 'Scout',
           icon_url: 'https://icons.example.test/scout.png',
           description: 'Finds things',
+          controller_name: 'build-box',
+          controller_kind: 'console',
+          controller_state: 'online',
           controller_id: 'controller-1',
           desired_state: 'running',
           revision: 3,
@@ -1878,6 +1881,7 @@ describe('agent management calls', () => {
         iconUrl: 'https://icons.example.test/scout.png',
         description: 'Finds things',
         controllerId: 'controller-1',
+        machine: { id: 'controller-1', name: 'build-box', kind: 'console', state: 'online' },
         desiredState: 'running',
         revision: 3,
         provider: 'claude',
@@ -1920,6 +1924,7 @@ describe('agent management calls', () => {
         iconUrl: null,
         description: '',
         controllerId: null,
+        machine: null,
         desiredState: 'stopped',
         revision: 0,
         provider: 'unknown',
@@ -1932,6 +1937,8 @@ describe('agent management calls', () => {
         status: null,
       },
     ]);
+    const [, older] = await fetchManagedAgents(SERVER);
+    expect(older!.machine).toBeUndefined();
   });
 
   it('refuses an advanced configuration of a shape no field takes rather than dropping it', async () => {
