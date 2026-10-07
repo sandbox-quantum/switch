@@ -410,7 +410,7 @@ class TeamsAppInstaller(MessagingAppInstaller):
         text = description or ""
         if "AADSTS65004" in text or error == "access_denied":
             return "Switch was not approved on Microsoft's screen."
-        if "AADSTS90094" in text or "AADSTS90008" in text:
+        if "AADSTS90094" in text:
             return (
                 "Approving Switch needs a Microsoft Global Administrator or "
                 "Privileged Role Administrator. Ask one of them to connect Teams "

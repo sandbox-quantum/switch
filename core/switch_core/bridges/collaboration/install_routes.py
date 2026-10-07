@@ -231,6 +231,12 @@ def create_messaging_install_router(
                 detail=str(failure),
                 status=400,
             )
+        except MessagingInstallClaimedError as failure:
+            return _page(
+                title="Workspace already connected",
+                detail=str(failure),
+                status=409,
+            )
         except MessagingInstallError as failure:
             return _page(
                 title="Install could not be completed",
