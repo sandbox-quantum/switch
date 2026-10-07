@@ -11,6 +11,7 @@ import {
   machineStatus,
   toggleBlocker,
   toggleChecked,
+  unknownToServer,
 } from './this-computer-machine';
 
 const ENROLLMENT = {
@@ -63,6 +64,21 @@ describe('machineStatus', () => {
       label: 'Running',
       tone: 'warn',
     });
+  });
+
+  it('says Switch no longer knows the computer when it is enrolled but not listed, and offers to enroll again', () => {
+    const unknown = overview(running, ok(null));
+    expect(unknownToServer(unknown)).toBe(true);
+    expect(machineStatus(unknown, LATER)).toMatchObject({
+      label: 'Unknown to Switch',
+      tone: 'error',
+      detail: expect.stringContaining('Enroll it again.'),
+    });
+    const withMoved = { ...unknown, movedAgents: ['jack'] };
+    expect(machineStatus(withMoved, LATER).detail).toContain('jack, moved here from this Console');
+    expect(unknownToServer(overview(running, ok('offline')))).toBe(false);
+    expect(unknownToServer(overview(running, { kind: 'error', message: 'down' }))).toBe(false);
+    expect(unknownToServer(overview({ kind: 'off' }, ok(null), false))).toBe(false);
   });
 
   it('says connecting, not disconnected, in the first minute after the controller starts', () => {

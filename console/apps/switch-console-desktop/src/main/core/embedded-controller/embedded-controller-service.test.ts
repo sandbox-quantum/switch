@@ -219,6 +219,33 @@ describe('EmbeddedControllerService', () => {
     expect(events.map((event) => event.phase.kind)).toEqual(['enrolling', 'running']);
   });
 
+  it('enrolls again when Switch no longer lists the machine, forgetting the old identity', async () => {
+    const running = await enabled();
+    management.enroll.mockResolvedValueOnce({
+      serverId: SERVER,
+      apiUrl: 'https://switch.example.com',
+      controllerId: 'controller-2',
+      credential: 'swcc_second',
+    });
+    await running.enrollAgain(SERVER);
+    expect(management.revoke).not.toHaveBeenCalled();
+    expect(management.enroll).toHaveBeenCalledTimes(2);
+    await waitFor(() => calls.length === 2, 'the new controller started');
+    expect(storedRecord()).toMatchObject({ kind: 'enrolled', controllerId: 'controller-2' });
+    expect(secrets.get(credentialSecretKey(SERVER))).toBe('swcc_second');
+  });
+
+  it('refuses to enroll again while Switch still lists the machine', async () => {
+    const running = await enabled();
+    management.read.mockResolvedValue({
+      kind: 'ok',
+      controller: { name: 'build-box', description: null, state: 'offline', lastSeenAt: null },
+      agents: [],
+    });
+    await expect(running.enrollAgain(SERVER)).rejects.toThrow(/still lists this computer/);
+    expect(management.enroll).toHaveBeenCalledTimes(1);
+  });
+
   it('restarts the controller with backoff when it exits on its own', async () => {
     await enabled();
     calls[0]!.child.exit(1);
