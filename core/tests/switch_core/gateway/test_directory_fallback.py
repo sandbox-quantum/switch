@@ -84,6 +84,14 @@ class _StubUserStore:
         return []
 
 
+class _StubSession:
+    """The route commits before asking the platform, so it is not holding a
+    connection while the platform answers."""
+
+    async def commit(self) -> None:
+        return None
+
+
 async def _search(
     *,
     adapter_result: list[DirectoryUser] | Exception | None,
@@ -93,7 +101,7 @@ async def _search(
     return await search_bridge_directory(
         "b1",
         query,
-        None,  # type: ignore[arg-type]
+        _StubSession(),  # type: ignore[arg-type]
         _StubBridgeStore(),  # type: ignore[arg-type]
         _StubExternalUserStore(known),  # type: ignore[arg-type]
         _StubUserStore(),  # type: ignore[arg-type]

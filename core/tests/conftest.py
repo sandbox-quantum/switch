@@ -29,6 +29,7 @@ from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+from tests.switch_core.pool_checkouts import PoolCheckouts
 
 # Production configures this in `main.run()`; every test that touches a
 # connection config needs the same, and none needs a particular key.
@@ -172,6 +173,23 @@ async def session_factory(
             yield create_session_factory(engine)
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+def pool_checkouts(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Iterator[PoolCheckouts]:
+    """Connections borrowed from `session_factory`'s pool, counted per request.
+
+    Wrap an app under test with `pool_checkouts.wrap(app)`, or a block with
+    `pool_checkouts.scope(label)`, and assert `pool_checkouts.over() == []`:
+    no request held two connections at once. See `pool_checkouts.py`.
+    """
+    tracker = PoolCheckouts(session_factory.kw["bind"])
+    try:
+        yield tracker
+    finally:
+        tracker.close()
 
 
 @dataclass(frozen=True)

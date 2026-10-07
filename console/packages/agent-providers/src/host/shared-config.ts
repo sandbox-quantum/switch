@@ -117,6 +117,9 @@ export async function readSharedCredentials(config: SharedHostConfig) {
         SWITCH_API_ENDPOINT: z.string().min(1),
         SWITCH_API_TOKEN: z.string().min(1),
         SWITCH_AGENT_ID: z.string().min(1),
+        // Set when an agents controller runs the agent host in a process of
+        // its own: the hub it hears its events on instead of Switch.
+        SWITCH_AGENT_HUB: z.string().min(1).optional(),
       }),
     })
     .parse(JSON.parse(await readFile(config.execution.credentialsPath, 'utf8'))).env;

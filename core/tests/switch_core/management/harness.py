@@ -40,6 +40,10 @@ from switch_core.bridges.agent.auth import BearerAuthMiddleware, ControllerPrinc
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.controller_presence import (
+    ControllerConnectionError,
+)
+from switch_core.bridges.agent.protocol.controller_stream import IDLE
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -59,6 +63,7 @@ from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.keys import Keyring
 from switch_core.management import controller_routes
+from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
@@ -432,31 +437,49 @@ async def add_room(
         return room.id
 
 
-def parse_frame(raw: bytes) -> tuple[str, dict[str, Any]]:
-    event, data = "", "{}"
-    for line in raw.decode().strip().splitlines():
-        if line.startswith("event: "):
-            event = line[len("event: ") :]
-        elif line.startswith("data: "):
-            data = line[len("data: ") :]
-    return event, json.loads(data)
+def parse_frame(frame: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    return frame["event"], frame["data"]
 
 
 async def take(
-    stream: AsyncIterator[bytes], count: int, timeout: float = 3.0
+    stream: AsyncIterator[dict[str, Any]], count: int, timeout: float = 3.0
 ) -> list[tuple[str, dict[str, Any]]]:
-    """The next `count` frames off a stream, keepalives skipped."""
+    """The next `count` frames off a stream, idle ticks skipped."""
     frames: list[tuple[str, dict[str, Any]]] = []
 
     async def pump() -> None:
         while len(frames) < count:
             raw = await anext(stream)
-            if raw.startswith(b":"):
+            if raw is IDLE:
                 continue
             frames.append(parse_frame(raw))
 
     await asyncio.wait_for(pump(), timeout=timeout)
     return frames
+
+
+@dataclass
+class Answer:
+    """What the socket would have said, shaped like an HTTP response: a beat
+    or an attach either succeeds or is refused with the contract's envelope."""
+
+    status_code: int
+    body: dict[str, Any]
+
+    @property
+    def text(self) -> str:
+        return json.dumps(self.body)
+
+    def json(self) -> dict[str, Any]:
+        return self.body
+
+
+def _principal(controller: EnrolledController) -> ControllerPrincipal:
+    return ControllerPrincipal(
+        controller_id=controller.controller_id,
+        owner_id=controller.owner.id,
+        tenant_id=TENANT_ZERO_ID,
+    )
 
 
 async def open_connection(
@@ -477,22 +500,57 @@ async def open_stream(
     harness: Harness,
     controller: EnrolledController,
     opened: dict[str, Any],
-) -> AsyncIterator[bytes]:
-    """The controller's event stream, from the route itself.
-
-    Called directly rather than over HTTP: the in-process transport collects a
-    response whole, and this one never ends by itself.
-    """
-    response = await controller_routes.controller_events(
-        principal=ControllerPrincipal(
-            controller_id=controller.controller_id,
-            owner_id=controller.owner.id,
-            tenant_id=TENANT_ZERO_ID,
-        ),
+) -> AsyncIterator[dict[str, Any]]:
+    """The frames the controller's socket would send, from the route's own
+    stream: the socket adds only pings around them."""
+    return await controller_routes.attach_stream(
+        principal=_principal(controller),
         management=harness.management.service,
         protocol=harness.protocol,
         session_factory=harness.session_factory,
         connection_id=opened["connection_id"],
         generation=opened["generation"],
     )
-    return response.body_iterator  # type: ignore[return-value]
+
+
+async def attach(
+    harness: Harness,
+    controller: EnrolledController,
+    connection_id: str,
+    generation: int,
+) -> Answer:
+    """An attach, answered as the socket's `refused` frame would be."""
+    try:
+        stream = await open_stream(
+            harness,
+            controller,
+            {"connection_id": connection_id, "generation": generation},
+        )
+    except ManagementError as error:
+        return Answer(error.status_code, error.body())
+    await stream.aclose()  # type: ignore[attr-defined]
+    return Answer(200, {})
+
+
+def beat(
+    harness: Harness,
+    controller: EnrolledController,
+    *,
+    connection_id: str,
+    generation: int,
+    cursors: dict[str, int],
+) -> Answer:
+    """A pong, answered as the socket would: the agents on success, the
+    refusal its `evicted` frame would name otherwise."""
+    try:
+        agents = controller_routes.record_beat(
+            principal=_principal(controller),
+            protocol=harness.protocol,
+            connection_id=connection_id,
+            generation=generation,
+            cursors=cursors,
+        )
+    except ControllerConnectionError as exc:
+        error = controller_routes._connection_refusal(exc)
+        return Answer(error.status_code, error.body())
+    return Answer(200, {"agents": agents})

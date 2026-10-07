@@ -8,6 +8,9 @@ it.
 What is deliberately not implemented is tested too: a transport that quietly
 returns nothing would look like a working deployment with a silent room, which
 is the one failure this codebase refuses to ship.
+
+Every transport here shares the room delivery cache, as in production. The
+cache must not change anything a test here can observe.
 """
 
 from __future__ import annotations
@@ -50,8 +53,41 @@ from switch_core.transport import (
 )
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
-from switch_core.transport.postgres import _DELIVERY_PAGE, PostgresTransport
+from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
+from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from tests.conftest import RLSHarness
+
+# The room cache `_transport` hands out. One per session factory, because that
+# is what the process has: one, shared by every transport built on the same
+# pool. Emptied per test by `_fresh_caches`.
+_CACHES: dict[int, RoomDeliveryCache] = {}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_caches() -> Iterator[None]:
+    _CACHES.clear()
+    yield
+    _CACHES.clear()
+
+
+def _room_cache(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> RoomDeliveryCache:
+    cache = _CACHES.get(id(session_factory))
+    if cache is None:
+        cache = RoomDeliveryCache(
+            session_factory=session_factory,
+            message_store=MessageStore(),
+            limits=RoomCacheLimits(
+                max_bytes=64 * 1024 * 1024,
+                max_rooms=1000,
+                max_rows_per_room=1000,
+                max_age_seconds=300.0,
+            ),
+            page=DELIVERY_PAGE,
+        )
+        _CACHES[id(session_factory)] = cache
+    return cache
 
 
 async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
@@ -202,6 +238,7 @@ def _transport(
         listener=listener or _FakeListener(),
         invites=invites or InviteBus(),
         ephemeral=ephemeral or EphemeralBus(),
+        room_cache=_room_cache(session_factory),
     )
 
 
@@ -592,6 +629,7 @@ class TestMedia:
                 listener=_FakeListener(),
                 invites=InviteBus(),
                 ephemeral=EphemeralBus(),
+                room_cache=_room_cache(session_factory),
             )
 
 
@@ -2071,7 +2109,7 @@ class TestBeingRemovedFromARoom:
 
         async def _kick_on_the_page_boundary(_room_ref, event) -> None:
             delivered.append(event.body)
-            if len(delivered) == _DELIVERY_PAGE:
+            if len(delivered) == DELIVERY_PAGE:
                 await provisioning.kick_user(room, leaving[1])
 
         removed = _transport(
@@ -2090,14 +2128,14 @@ class TestBeingRemovedFromARoom:
         await _watched_room(member)
 
         # More than one page, so the loop would come back for another.
-        for i in range(_DELIVERY_PAGE + 25):
+        for i in range(DELIVERY_PAGE + 25):
             await member.send_message(
                 room, f"line {i}", sender_name="agent one", metered=True
             )
         await listener.announce(room_id)
 
         # The whole of page one, and none of page two.
-        assert delivered == [f"line {i}" for i in range(_DELIVERY_PAGE)]
+        assert delivered == [f"line {i}" for i in range(DELIVERY_PAGE)]
         assert room_id not in removed._watching
         assert room_id not in removed._cursors
         assert "Delivery failed" not in caplog.text, (

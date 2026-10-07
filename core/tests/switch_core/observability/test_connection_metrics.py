@@ -36,6 +36,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.observability.bootstrap import RuntimeProbes, _state_readings
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.transport.room_cache import RoomCacheStats
 
 AGENT_ID = "agent-1"
 
@@ -162,6 +163,7 @@ def _probes(agents_connected: Any) -> RuntimeProbes:
         connectors_configured=lambda: 0,
         agents_connected=agents_connected,
         pool_stats=lambda: None,
+        room_cache_stats=lambda: RoomCacheStats(bytes=0, rooms=0, rows=0),
     )
 
 

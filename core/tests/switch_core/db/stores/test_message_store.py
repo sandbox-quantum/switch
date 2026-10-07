@@ -369,8 +369,8 @@ class TestListForRoom:
     async def test_after_seq_from_another_room_does_not_skip_rows(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """`seq` is global, so a cursor is only meaningful within its own room;
-        rows interleaved from another room must not consume the page."""
+        """`seq` is per room, so a cursor is only meaningful within its own
+        room; rows interleaved from another room must not consume the page."""
         store = MessageStore()
         async with session_factory() as session:
             room_a = await _make_room(session, "alpha")

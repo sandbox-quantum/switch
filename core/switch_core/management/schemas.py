@@ -320,14 +320,6 @@ class ControllerConnectionRequest(_ControllerStreamBody):
         }
 
 
-class ControllerBeatRequest(_ControllerStreamBody):
-    """A beat: the connection is still there, and these cursors are confirmed."""
-
-    connection_id: str
-    generation: int
-    cursors: dict[str, int]
-
-
 # ── Gateway requests ──────────────────────────────────────────────────────────
 
 
