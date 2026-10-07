@@ -147,6 +147,9 @@ class _Adapter:
         self._calls.record("platform channel deeplink")
         return None
 
+    def channel_ids_refused(self) -> str | None:
+        return None
+
 
 class _CollabLifecycle:
     def __init__(self, calls: _Calls) -> None:

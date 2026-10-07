@@ -457,6 +457,13 @@ class _BridgeStore:
         return self.bridge
 
 
+class _Session:
+    """The request's session; the route commits it before checking the edit."""
+
+    async def commit(self) -> None:
+        return None
+
+
 class TestEditingAConnection:
     async def _patch(
         self, lifecycle: Any, stored: dict[str, object], change: dict[str, object]
@@ -467,7 +474,7 @@ class TestEditingAConnection:
         await update_bridge(
             "b1",
             BridgeUpdateRequest(connection_config=change),
-            None,  # type: ignore[arg-type]
+            _Session(),  # type: ignore[arg-type]
             _BridgeStore(bridge),  # type: ignore[arg-type]
             None,  # type: ignore[arg-type]
             lifecycle,
