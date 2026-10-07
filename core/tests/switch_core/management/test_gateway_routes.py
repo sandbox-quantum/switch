@@ -266,6 +266,7 @@ class TestPlacement:
         assert unplace.status_code == 200
         assert unplace.json()["controller_id"] is None
         assert unplace.json()["controller_state"] is None
+        assert unplace.json()["controller_name"] is None
 
 
 class TestManagedAgents:
@@ -765,6 +766,8 @@ class TestRevocation:
         [agent] = agents.json()
         assert agent["agent_id"] == created.json()["agent_id"]
         assert agent["controller_state"] == "revoked"
+        assert agent["controller_name"] == listed.json()[0]["name"]
+        assert agent["controller_kind"] == listed.json()[0]["kind"]
         assert refused.status_code == 401
         assert refused.json()["error"]["code"] == "controller_revoked"
 

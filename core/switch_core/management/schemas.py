@@ -566,6 +566,8 @@ def managed_agent_view(
         "icon_url": agent.icon_url,
         "description": agent.description,
         "controller_id": row.controller_id,
+        "controller_name": controller.name if controller is not None else None,
+        "controller_kind": controller.kind if controller is not None else None,
         "controller_state": controller_state,
         "desired_state": row.desired_state,
         "revision": row.revision,

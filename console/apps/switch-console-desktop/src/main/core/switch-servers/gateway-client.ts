@@ -8,7 +8,10 @@ import {
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
-import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
+import type {
+  AdvancedConfigField,
+  ManagedMachine,
+} from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
@@ -2638,6 +2641,12 @@ export type ManagedAgent = {
   iconUrl: string | null;
   description: string;
   controllerId: string | null;
+  /**
+   * The machine it is placed on, as the server sent it with the agent: null
+   * when placed on none, and undefined from a server that does not send it,
+   * whose machines are read from `/controllers` instead.
+   */
+  machine?: ManagedMachine | null;
   desiredState: 'running' | 'stopped';
   revision: number;
   provider: string;
@@ -2680,6 +2689,10 @@ type ManagedAgentJson = {
   display_name: string | null;
   icon_url?: string | null;
   controller_id: string | null;
+  /** Absent from servers older than the machine being sent with the agent. */
+  controller_name?: string | null;
+  controller_kind?: string | null;
+  controller_state?: 'online' | 'offline' | 'unknown' | 'revoked' | null;
   desired_state: 'running' | 'stopped';
   description?: string;
   revision?: number;
@@ -2796,6 +2809,19 @@ function advancedConfigOf(agentId: string, value: unknown): Record<string, Advan
   );
 }
 
+function machineOf(json: ManagedAgentJson): ManagedMachine | null | undefined {
+  if (json.controller_id === null) return null;
+  if (json.controller_name === undefined) return undefined;
+  // Placed on a controller the server no longer has a row for: shown as on no machine, as before.
+  if (json.controller_name === null || !json.controller_kind || !json.controller_state) return null;
+  return {
+    id: json.controller_id,
+    name: json.controller_name,
+    kind: json.controller_kind,
+    state: json.controller_state,
+  };
+}
+
 function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
   return {
     agentId: json.agent_id,
@@ -2804,6 +2830,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     iconUrl: json.icon_url ?? null,
     description: json.description ?? '',
     controllerId: json.controller_id,
+    machine: machineOf(json),
     desiredState: json.desired_state,
     revision: json.revision ?? 0,
     provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
