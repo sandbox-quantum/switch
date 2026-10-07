@@ -1,7 +1,7 @@
 import asyncio
 from urllib.parse import parse_qs, urlsplit
 
-from switch_core.agent_icon import generated_icon_url
+from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.adapter import AgentPresentation
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -54,6 +54,13 @@ def test_leaves_an_operators_own_image_alone() -> None:
     # a guess would be worse than leaving it as authored.
     custom = "https://example.com/avatar.png"
     assert on_slack_background(custom) == custom
+
+
+def test_leaves_the_initials_badge_alone() -> None:
+    # ui-avatars already draws an opaque background, so it has no white square
+    # to fix and its own colour must survive.
+    badge = initials_icon_url("switch_worker")
+    assert on_slack_background(badge) == badge
 
 
 def test_does_not_match_a_lookalike_host() -> None:

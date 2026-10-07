@@ -5,7 +5,9 @@ come from an operator's own host or anywhere else the client chooses; an agent
 created without one gets a generated icon (`generated_icon_url`), the same set
 every client offers, so it looks alike in the gateway, Console and every
 platform. An agent with no icon stored at all is drawn with the one its name
-generates, so it looks the same as one that was given it.
+generates, so it looks the same as one that was given it. A sender that is not
+an agent at all keeps a lettered badge (`initials_icon_url`), so a person never
+wears an agent's face.
 
 That makes the URL attacker-controlled input with two distinct consumers, and
 the rules below exist for the second one:
@@ -25,7 +27,7 @@ rather than treating storage validation as sufficient.
 
 import ipaddress
 from typing import NoReturn
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 # Long enough for a generated-avatar link carrying a full set of style options,
 # short enough that the column cannot be used to smuggle a payload.
@@ -151,6 +153,56 @@ def generated_icon_url(seed: str) -> str:
     return f"{_GENERATED_ICON_BASE}?{urlencode(query, quote_via=quote)}"
 
 
+# The robot every client generated before gaze, in exactly the shape they built
+# it: a seed and this size, nothing else. A robot URL with anything more on it
+# was put together by hand and is someone's choice, so it is left alone.
+_LEGACY_ICON_HOST = "api.dicebear.com"
+_LEGACY_ICON_PATH = "/9.x/bottts/png"
+_LEGACY_ICON_PIXELS = "256"
+
+
+def upgrade_legacy_icon_url(url: str) -> str:
+    """`url`, or the gaze icon for its seed when it is a generated robot.
+
+    Switch Console builds from before gaze still generate the robot for a new
+    agent and for one with no icon, and send it here to be stored. Converting it
+    on the way in means those clients cannot reintroduce robots after the
+    migration that replaced every stored one.
+    """
+    parts = urlsplit(url)
+    if (
+        parts.scheme != "https"
+        or (parts.hostname or "").lower() != _LEGACY_ICON_HOST
+        or parts.path != _LEGACY_ICON_PATH
+        or parts.fragment
+    ):
+        return url
+
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    fields = dict(query)
+    if len(query) != 2 or set(fields) != {"seed", "size"}:
+        return url
+    if fields["size"] != _LEGACY_ICON_PIXELS or not fields["seed"]:
+        return url
+
+    return generated_icon_url(fields["seed"])
+
+
+def initials_icon_url(name: str) -> str:
+    """The lettered badge for a sender that is not an agent.
+
+    A person relayed from another platform, or a platform's own bot, is drawn
+    with initials rather than a generated face: the generated faces are what
+    agents wear, and a human drawn as one would read as an agent.
+    """
+    # Escape first, substitute second. The `+` stands in for a space so the
+    # badge draws two initials for `switch_worker`; percent-encoding it after
+    # the fact turns it back into a literal plus and the name renders with one
+    # initial instead.
+    escaped = quote(name).replace("_", "+")
+    return f"https://ui-avatars.com/api/?name={escaped}&background=random&size=128"
+
+
 def generated_icon_choices(agent_name: str, page: int) -> list[str]:
     """One page of icons to choose from for an agent called `agent_name`.
 
@@ -170,6 +222,8 @@ def normalise_icon_url(url: str | None) -> str | None:
     Callers accept `None` to mean "leave unset" and an empty string to mean
     "clear it"; both collapse to `None` so a cleared icon is stored as NULL
     rather than as an empty string the display layer would have to special-case.
+    A generated robot from an older client is stored as its gaze equivalent
+    (`upgrade_legacy_icon_url`).
     """
     if url is None:
         return None
@@ -177,4 +231,4 @@ def normalise_icon_url(url: str | None) -> str | None:
     if not url.strip():
         return None
 
-    return validate_icon_url(url)
+    return upgrade_legacy_icon_url(validate_icon_url(url))

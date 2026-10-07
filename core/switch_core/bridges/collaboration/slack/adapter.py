@@ -1615,11 +1615,11 @@ class SlackAdapter(PlatformAdapter):
                 text,
             )
 
-    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
+    def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
         # white. Adjusting here rather than at each call site keeps every place
         # that posts as an agent on the same background.
-        return on_slack_background(super().adapt_icon_url(raw, agent_name))
+        return on_slack_background(super().adapt_icon_url(icon_url))
 
     def slash_invite_hint(self) -> str:
         # Slack passes a slash command's whole tail through as free text, so the

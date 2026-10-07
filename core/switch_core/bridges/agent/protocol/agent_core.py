@@ -18,7 +18,11 @@ from switch_core.addressing import (
     parse_policy,
 )
 from switch_core.agent_display_name import normalise_display_name
-from switch_core.agent_icon import normalise_icon_url, validate_icon_url
+from switch_core.agent_icon import (
+    normalise_icon_url,
+    upgrade_legacy_icon_url,
+    validate_icon_url,
+)
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
@@ -912,7 +916,11 @@ class AgentCore:
             InvalidIconUrl: the URL is malformed or points somewhere unsafe.
             ValueError: no agent with this id exists.
         """
-        validated = validate_icon_url(icon_url) if icon_url is not None else None
+        validated = (
+            upgrade_legacy_icon_url(validate_icon_url(icon_url))
+            if icon_url is not None
+            else None
+        )
 
         async with self.session_factory() as session:
             agent = await self.agent_store.get(session, agent_id)

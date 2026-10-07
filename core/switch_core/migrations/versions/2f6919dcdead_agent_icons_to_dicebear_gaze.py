@@ -9,10 +9,11 @@ given a robot keep it until the stored URL changes; this rewrites each one to
 the gaze icon drawn from the same seed. The seed is carried over exactly as
 stored, already escaped, so it draws for the same input it did before.
 
-Only the robot URL Switch and Switch Console generated is touched. An icon on
-any other host, or any other DiceBear style, was chosen by someone and is left
-as it is. A robot URL with no seed (none were generated that way) is drawn
-from the agent's name, as an agent with no icon is.
+Only the robot URL Switch and Switch Console generated is touched, matched in
+exactly the shape they built it: a seed and `size=256`, nothing more. An icon on
+any other host, any other DiceBear style, or a robot URL carrying options of its
+own was chosen by someone and is left as it is. Downgrade is held to the same
+line, turning back only the gaze URL in exactly the shape this writes.
 
 The gaze URL is written out here rather than built by
 `switch_core.agent_icon.generated_icon_url`: a migration has to keep producing
@@ -28,6 +29,9 @@ down_revision: str | Sequence[str] | None = "fabf9b9bff78"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_ROBOT = "https://api.dicebear.com/9.x/bottts/png?seed="
+_GAZE = "https://api.dicebear.com/10.x/gaze/png?seed="
+
 _GAZE_QUERY_AFTER_SEED = (
     "&size=256&scale=1.1"
     "&shapeVariant=circle&shapeVariant=column&shapeVariant=diamond"
@@ -36,9 +40,11 @@ _GAZE_QUERY_AFTER_SEED = (
     "&shapeVariant=triangle"
 )
 
-# The stored seed, or the agent's name when the URL carries none. Agent names
-# are limited to characters a query string needs no escaping for.
-_SEED = "COALESCE(NULLIF(substring(icon_url from '[?&]seed=([^&#]*)'), ''), name)"
+# The whole stored URL has to be the generated robot, so the pattern is
+# anchored at both ends and the seed is the only part allowed to vary.
+_ROBOT_SEED = r"'^https://api\.dicebear\.com/9\.x/bottts/png\?seed=([^&#]+)&size=256$'"
+# A gaze URL's seed, checked afterwards against the full generated shape.
+_GAZE_SEED = r"'^https://api\.dicebear\.com/10\.x/gaze/png\?seed=([^&#]+)&'"
 
 
 def upgrade() -> None:
@@ -47,22 +53,23 @@ def upgrade() -> None:
     op.execute(
         f"""
         UPDATE agents
-        SET icon_url = 'https://api.dicebear.com/10.x/gaze/png?seed='
-            || {_SEED} || '{_GAZE_QUERY_AFTER_SEED}'
-        WHERE icon_url ~ '^https://api\\.dicebear\\.com/9\\.x/bottts/png([?#]|$)'
+        SET icon_url = '{_GAZE}'
+            || substring(icon_url from {_ROBOT_SEED}) || '{_GAZE_QUERY_AFTER_SEED}'
+        WHERE icon_url ~ {_ROBOT_SEED}
         """
     )
 
 
 def downgrade() -> None:
-    # Every gaze icon goes back to the robot for its seed, including ones given
-    # to agents after the upgrade: the code this returns to draws only robots,
-    # so a gaze icon would be the one face it never generates.
+    # Every generated gaze icon goes back to the robot for its seed, including
+    # ones given to agents after the upgrade: the code this returns to draws
+    # only robots, so a gaze icon would be the one face it never generates.
     op.execute(
         f"""
         UPDATE agents
-        SET icon_url = 'https://api.dicebear.com/9.x/bottts/png?seed='
-            || {_SEED} || '&size=256'
-        WHERE icon_url ~ '^https://api\\.dicebear\\.com/10\\.x/gaze/png([?#]|$)'
+        SET icon_url = '{_ROBOT}'
+            || substring(icon_url from {_GAZE_SEED}) || '&size=256'
+        WHERE icon_url = '{_GAZE}'
+            || substring(icon_url from {_GAZE_SEED}) || '{_GAZE_QUERY_AFTER_SEED}'
         """
     )

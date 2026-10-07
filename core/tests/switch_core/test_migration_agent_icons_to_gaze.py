@@ -2,7 +2,8 @@
 
 An agent's icon is a stored URL, so agents given the old robot keep it until the
 row changes. This seeds every kind of stored icon, runs the migration up and
-back down, and checks only the generated robots moved, each keeping its seed.
+back down, and checks only the generated robots moved, each keeping its seed,
+while robots someone customised by hand stayed as they were.
 """
 
 from __future__ import annotations
@@ -21,8 +22,21 @@ _PRE_MIGRATION_REVISION = "fabf9b9bff78"
 _MIGRATION_UNDER_TEST = "2f6919dcdead"
 
 _ROBOT = "https://api.dicebear.com/9.x/bottts/png"
-_CUSTOM = "https://icons.example/reviewer.png"
-_OTHER_STYLE = "https://api.dicebear.com/9.x/identicon/png?seed=chosen"
+_UUID = "0b6c4f0e-8e1a-4f7e-9d65-0c2b5a3e9f11"
+_HAND_GAZE = "https://api.dicebear.com/10.x/gaze/png?seed=x&backgroundColor=ffe3ea"
+
+# Everything the migration must not touch, up or down: only the robot URL in
+# exactly the shape Switch and Switch Console generated it is theirs to move.
+_UNTOUCHED: dict[str, str | None] = {
+    "custom": "https://icons.example/reviewer.png",
+    "other-style": "https://api.dicebear.com/9.x/identicon/png?seed=chosen",
+    "lookalike": "https://api.dicebear.com.example/9.x/bottts/png?seed=x&size=256",
+    "robot-with-options": f"{_ROBOT}?seed=x&size=256&backgroundColor=ff0000",
+    "robot-other-size": f"{_ROBOT}?seed=x&size=128",
+    "robot-size-first": f"{_ROBOT}?size=256&seed=x",
+    "robot-unseeded": f"{_ROBOT}?size=256",
+    "none": None,
+}
 
 
 @pytest.fixture
@@ -77,13 +91,9 @@ async def test_generated_robots_become_gaze_and_back(migration_url: str) -> None
             {
                 "named": f"{_ROBOT}?seed=named&size=256",
                 "picked": f"{_ROBOT}?seed=named-2-7&size=256",
-                "random": f"{_ROBOT}?seed=0b6c4f0e-8e1a-4f7e-9d65-0c2b5a3e9f11&size=256",
-                "escaped": f"{_ROBOT}?size=256&seed=a%26b",
-                "unseeded": f"{_ROBOT}?size=256",
-                "custom": _CUSTOM,
-                "other-style": _OTHER_STYLE,
-                "lookalike": "https://api.dicebear.com.example/9.x/bottts/png?seed=x",
-                "none": None,
+                "random": f"{_ROBOT}?seed={_UUID}&size=256",
+                "escaped": f"{_ROBOT}?seed=a%26b&size=256",
+                **_UNTOUCHED,
             },
         )
 
@@ -92,6 +102,9 @@ async def test_generated_robots_become_gaze_and_back(migration_url: str) -> None
                 _migrate_to(_MIGRATION_UNDER_TEST, downgrade=False)
             )
         upgraded = await _icons(engine)
+        # Given after the upgrade: a hand-built gaze URL with options of its
+        # own, which downgrade must leave alone like the upgrade's own rule.
+        await _insert(engine, {"hand-gaze": _HAND_GAZE})
 
         async with engine.begin() as connection:
             await connection.run_sync(
@@ -101,27 +114,20 @@ async def test_generated_robots_become_gaze_and_back(migration_url: str) -> None
     finally:
         await engine.dispose()
 
-    untouched = {
-        "custom": _CUSTOM,
-        "other-style": _OTHER_STYLE,
-        "lookalike": "https://api.dicebear.com.example/9.x/bottts/png?seed=x",
-        "none": None,
-    }
     # The migration's frozen URL is the one the server generates today, so an
     # agent moved by it looks the same as one created after it.
     assert upgraded == {
         "named": generated_icon_url("named"),
         "picked": generated_icon_url("named-2-7"),
-        "random": generated_icon_url("0b6c4f0e-8e1a-4f7e-9d65-0c2b5a3e9f11"),
+        "random": generated_icon_url(_UUID),
         "escaped": generated_icon_url("a&b"),
-        "unseeded": generated_icon_url("unseeded"),
-        **untouched,
+        **_UNTOUCHED,
     }
     assert downgraded == {
         "named": f"{_ROBOT}?seed=named&size=256",
         "picked": f"{_ROBOT}?seed=named-2-7&size=256",
-        "random": f"{_ROBOT}?seed=0b6c4f0e-8e1a-4f7e-9d65-0c2b5a3e9f11&size=256",
+        "random": f"{_ROBOT}?seed={_UUID}&size=256",
         "escaped": f"{_ROBOT}?seed=a%26b&size=256",
-        "unseeded": f"{_ROBOT}?seed=unseeded&size=256",
-        **untouched,
+        "hand-gaze": _HAND_GAZE,
+        **_UNTOUCHED,
     }

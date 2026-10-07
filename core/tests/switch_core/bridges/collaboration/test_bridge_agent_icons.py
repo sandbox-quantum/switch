@@ -11,7 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.agent_icon import generated_icon_url
+from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     PlatformAdapter,
@@ -94,9 +94,11 @@ class TestCollaborationCoreResolver:
 
 
 class TestAdapterIconSelection:
-    async def test_uses_the_default_when_no_resolver_is_installed(self) -> None:
+    async def test_draws_initials_when_no_resolver_is_installed(self) -> None:
+        # Without a resolver nothing says the name is an agent, and a person
+        # must not be drawn with an agent's face.
         adapter = _Adapter()
-        assert await adapter.agent_icon_url("worker") == generated_icon_url("worker")
+        assert await adapter.agent_icon_url("worker") == initials_icon_url("worker")
 
     async def test_prefers_the_agents_own_icon(self) -> None:
         adapter = _Adapter()
@@ -125,3 +127,4 @@ class TestAdapterIconSelection:
 
         assert await adapter.agent_icon_url("worker") == _CUSTOM
         assert await adapter.agent_icon_url("plain") == generated_icon_url("plain")
+        assert await adapter.agent_icon_url("alice") == initials_icon_url("alice")

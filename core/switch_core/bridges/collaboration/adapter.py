@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
-from switch_core.agent_icon import generated_icon_url
+from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
@@ -1573,14 +1573,13 @@ class PlatformAdapter(ABC):
         message instead of at the next restart."""
         self._resolve_agent_presentation = resolver
 
-    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
-        """Turn the stored icon URL into the one this platform should be handed.
+    def adapt_icon_url(self, icon_url: str) -> str:
+        """Turn the icon URL chosen for a sender into the one this platform
+        should be handed.
 
-        `raw` is the agent's own icon, or None when it has none and the icon
-        its name generates stands in. Pure and synchronous so it composes with
-        a single lookup: an override adjusts the URL, it does not go looking
-        for one."""
-        return raw or generated_icon_url(agent_name)
+        Pure and synchronous so it composes with a single lookup: an override
+        adjusts the URL, it does not go looking for one."""
+        return icon_url
 
     def escape_label_for_body(self, label: str) -> str:
         """Neutralise a label's markup before it goes into message text.
@@ -1630,16 +1629,21 @@ class PlatformAdapter(ABC):
         that need one of them alone — an unescaped label is not among them:
         :attr:`AgentRendering.field_label` is reachable only alongside the
         escaped one, so choosing it is a choice."""
-        raw = AgentPresentation(display_name=None, icon_url=None)
+        found: AgentPresentation | None = None
         if self._resolve_agent_presentation is not None:
             found = await self._resolve_agent_presentation(agent_name)
-            if found is not None:
-                raw = found
-        label = raw.display_name or agent_name
+        label = (found.display_name if found else None) or agent_name
+        # An agent with no icon wears the face its name generates; a sender
+        # that is not an agent keeps a lettered badge, so a person relayed
+        # from elsewhere is never drawn as an agent.
+        if found is None:
+            icon_url = initials_icon_url(agent_name)
+        else:
+            icon_url = found.icon_url or generated_icon_url(agent_name)
         return AgentRendering(
             field_label=label,
             body_label=self.escape_label_for_body(label),
-            icon_url=self.adapt_icon_url(raw.icon_url, agent_name),
+            icon_url=self.adapt_icon_url(icon_url),
         )
 
     async def agent_icon_url(self, agent_name: str) -> str:

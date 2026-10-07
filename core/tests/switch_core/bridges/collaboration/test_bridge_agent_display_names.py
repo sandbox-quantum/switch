@@ -16,7 +16,7 @@ from typing import Any
 import discord
 import pytest
 
-from switch_core.agent_icon import generated_icon_url
+from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     PlatformAdapter,
@@ -235,7 +235,7 @@ class TestAdapterLabelSelection:
 
         rendering = await adapter.agent_rendering("some-slack-bot")
         assert rendering.field_label == "some-slack-bot"
-        assert rendering.icon_url == generated_icon_url("some-slack-bot")
+        assert rendering.icon_url == initials_icon_url("some-slack-bot")
 
 
 def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
