@@ -56,7 +56,7 @@ describe('the state of a host as a machine', () => {
     });
     const stopped = {
       ...unknown,
-      process: { kind: 'stopped' as const, state: 'exited', code: 1, log: null },
+      process: { kind: 'stopped' as const, state: 'exited', code: 1, log: '' },
     };
     expect(hostMachineStatus(stopped).label).toBe('Unknown to Switch');
     expect(hostMachineStatus({ ...unknown, movedAgents: ['jack'] }).detail).toContain('jack');
