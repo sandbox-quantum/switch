@@ -29,6 +29,7 @@ import {
   hostMachineStatus,
   hostStateKey,
   hostToggleBlocker,
+  hostUnknownToServer,
   supervisionNote,
 } from './host-machine';
 
@@ -110,6 +111,10 @@ export function HostMachineCard({
     mutationFn: () => rpc.hostControllers.restart({ sshHost, serverId }),
     ...handlers,
   });
+  const enrollAgain = useMutation({
+    mutationFn: () => rpc.hostControllers.enrollAgain({ sshHost, serverId }),
+    ...handlers,
+  });
   const moveAll = useMutation({
     mutationFn: () => rpc.hostControllers.moveAll(sshHost),
     ...handlers,
@@ -183,7 +188,17 @@ export function HostMachineCard({
           {failureText(failure, 'That did not work.')}
         </p>
       )}
-      {canRestartHost(overview) && (
+      {hostUnknownToServer(overview) && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={enrollAgain.isPending}
+          onClick={() => enrollAgain.mutate()}
+        >
+          <RefreshCw className="size-4" /> {enrollAgain.isPending ? 'Enrolling…' : 'Enroll again'}
+        </Button>
+      )}
+      {canRestartHost(overview) && !hostUnknownToServer(overview) && (
         <Button
           variant="outline"
           size="sm"

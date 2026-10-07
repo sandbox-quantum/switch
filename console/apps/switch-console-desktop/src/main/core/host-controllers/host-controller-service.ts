@@ -349,6 +349,45 @@ export class HostControllerService {
   }
 
   /**
+   * Enrolls the host afresh when the server no longer knows the machine it
+   * was enrolled as: its database was reset or restored, say. The old
+   * controller is stopped and its identity wiped on the host (there is nothing
+   * on the server to revoke), then the host enrolls again in the same
+   * workspace. Refused while the server still lists the machine, which is
+   * turned off and on instead.
+   */
+  async enrollAgain(sshHost: string, serverId: string): Promise<void> {
+    const record = await this.deps.records.get(sshHost, serverId);
+    if (!record) throw new Error(`${sshHost} is not a machine for this server.`);
+    const remote = await this.deps.management.read(record.workspaceId, record.controllerId);
+    if (remote.kind !== 'ok')
+      throw new Error(
+        remote.kind === 'error'
+          ? `Switch could not be asked about ${sshHost}: ${remote.message}`
+          : 'This server no longer has agent management turned on.'
+      );
+    if (remote.controller)
+      throw new Error(
+        `Switch still lists ${sshHost} as a machine. Turn it off and on again instead.`
+      );
+    await this.exclusive(sshHost, serverId, async () => {
+      const shell = await this.deps.shell(sshHost);
+      try {
+        await this.stopOn(shell, record, { turnOff: true, wipe: true });
+      } finally {
+        shell.close();
+      }
+      await this.deps.records.delete(sshHost, serverId);
+      this.deps.log.warn('Switch no longer knew an SSH host as a machine; enrolling it again', {
+        sshHost,
+        serverId,
+        controllerId: record.controllerId,
+      });
+    });
+    await this.enable(sshHost, serverId, record.workspaceId);
+  }
+
+  /**
    * The host is being removed from Console: its controllers go first. Refused,
    * with nothing changed, while any of them runs agents moved from this Console.
    */

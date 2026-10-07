@@ -8,6 +8,7 @@ import {
   hostMachineStatus,
   hostStateKey,
   hostToggleBlocker,
+  hostUnknownToServer,
   supervisionNote,
 } from './host-machine';
 
@@ -43,6 +44,24 @@ describe('the state of a host as a machine', () => {
     expect(
       hostMachineStatus({ ...OFF, phase: { kind: 'installing', step: 'Enrolling the host…' } })
     ).toEqual({ label: 'Setting up…', tone: 'busy', detail: 'Enrolling the host…' });
+  });
+
+  it('says Switch no longer knows the host when it is enrolled but not listed, whatever its process does', () => {
+    const unknown = { ...ON, remote: { kind: 'ok' as const, controller: null, agents: [] } };
+    expect(hostUnknownToServer(unknown)).toBe(true);
+    expect(hostMachineStatus(unknown)).toMatchObject({
+      label: 'Unknown to Switch',
+      tone: 'error',
+      detail: expect.stringContaining('Switch no longer knows build-box as a machine'),
+    });
+    const stopped = {
+      ...unknown,
+      process: { kind: 'stopped' as const, state: 'exited', code: 1, log: null },
+    };
+    expect(hostMachineStatus(stopped).label).toBe('Unknown to Switch');
+    expect(hostMachineStatus({ ...unknown, movedAgents: ['jack'] }).detail).toContain('jack');
+    expect(hostUnknownToServer(OFF)).toBe(false);
+    expect(hostUnknownToServer(ON)).toBe(false);
   });
 
   it('is running when the host runs it and Switch sees it', () => {

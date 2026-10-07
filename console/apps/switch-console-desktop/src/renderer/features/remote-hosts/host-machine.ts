@@ -59,6 +59,16 @@ export function hostMachineStatus(overview: HostControllerOverview): HostMachine
     return { label: 'Off', tone: 'neutral', detail: null };
   }
   const failed = phase.kind === 'error' ? phase.message : null;
+  if (hostUnknownToServer(overview)) {
+    const why = `Switch no longer knows ${overview.sshHost} as a machine (its data was reset or restored, or the machine was deleted), so its controller cannot sign in. Enroll it again.`;
+    return {
+      label: 'Unknown to Switch',
+      tone: 'error',
+      detail: overview.movedAgents.length
+        ? `${why} ${overview.movedAgents.join(', ')}, moved here from this Console, then need Stop managing, and can be moved again.`
+        : why,
+    };
+  }
   if (process?.kind === 'unknown')
     return {
       label: 'Unknown',
@@ -97,9 +107,7 @@ export function hostMachineStatus(overview: HostControllerOverview): HostMachine
       detail:
         state === 'revoked'
           ? 'Switch has removed this host; its controller is stopping its agents.'
-          : state === null
-            ? 'Switch does not list this host’s controller.'
-            : 'The controller runs but has not reached Switch recently. It keeps trying.',
+          : 'The controller runs but has not reached Switch recently. It keeps trying.',
     };
   return { label: 'Running', tone: failed ? 'warn' : 'ok', detail: failed };
 }
@@ -192,4 +200,15 @@ export function hostStateKey(overview: HostControllerOverview): string {
 /** Whether a failed action's message is already on the card, as the failure Console keeps for the host. */
 export function failureAlreadyShown(overview: HostControllerOverview, message: string): boolean {
   return overview.phase.kind === 'error' && overview.phase.message.trim() === message.trim();
+}
+
+/** Switch answered, and does not list the machine this host is enrolled as. */
+export function hostUnknownToServer(overview: HostControllerOverview): boolean {
+  return (
+    overview.enrollment !== null &&
+    overview.phase.kind !== 'installing' &&
+    overview.phase.kind !== 'removing' &&
+    overview.remote?.kind === 'ok' &&
+    overview.remote.controller === null
+  );
 }
