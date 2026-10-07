@@ -308,18 +308,37 @@ class TeamsAppInstaller(MessagingAppInstaller):
                 f"{_GRAPH}/appCatalogs/teamsApps",
                 params={
                     "$filter": f"externalId eq '{self._package.manifest_id}'",
-                    "$expand": "appDefinitions",
+                    "$expand": "appDefinitions($select=id,version,authorization)",
                 },
                 headers=headers,
             )
             existing.raise_for_status()
             found = existing.json().get("value") or []
             if found:
-                catalog_app_id = str(found[0]["id"])
-                versions = [
-                    str(definition.get("version"))
-                    for definition in found[0].get("appDefinitions") or []
+                definitions = found[0].get("appDefinitions") or []
+                versions = [str(d.get("version")) for d in definitions]
+                same_version = [
+                    d
+                    for d in definitions
+                    if str(d.get("version")) == self._package.version
                 ]
+                if any(_asks_per_team(d) for d in same_version):
+                    # Not Switch's package, which asks for nothing per team:
+                    # most likely one uploaded by hand under the same id. It
+                    # cannot be replaced at this version, and Switch cannot
+                    # add an app that asks per team to a team itself.
+                    return {
+                        "publish_problem": (
+                            "your organisation's Teams app list already has an "
+                            "app under Switch's id that asks for per-team "
+                            "permissions — probably a package uploaded by hand — "
+                            "and Switch cannot add that one to teams. A Teams "
+                            "admin should delete it (Teams admin center, Teams "
+                            "apps, Manage apps), then approve Switch again so it "
+                            "adds its own"
+                        )
+                    }
+                catalog_app_id = str(found[0]["id"])
                 if self._package.version not in versions:
                     updated = await http.post(
                         f"{_GRAPH}/appCatalogs/teamsApps/{catalog_app_id}/appDefinitions",
@@ -587,6 +606,13 @@ def _notification_event(item: dict[str, Any]) -> InboundWebhook:
         delivery_attempt=0,
         answers_inline=False,
     )
+
+
+def _asks_per_team(definition: Mapping[str, Any]) -> bool:
+    """Whether a catalogue app definition requires resource-specific consent."""
+    authorization = definition.get("authorization") or {}
+    permission_set = authorization.get("requiredPermissionSet") or {}
+    return bool(permission_set.get("resourceSpecificPermissions"))
 
 
 def _graph_refusal(error: Exception) -> str:

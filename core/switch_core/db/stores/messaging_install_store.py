@@ -194,9 +194,9 @@ class MessagingInstallStore:
                 raise
             raise MessagingInstallClaimedError(
                 f"the {platform} workspace {external_workspace_id} is already "
-                "connected to Switch. Disconnect the existing install — from "
-                "the organisation that holds it, which may not be yours — "
-                "before connecting it again."
+                "connected to a Switch workspace, possibly another one, and "
+                "possibly one you do not belong to. Disconnect it from that "
+                "Switch workspace before connecting it again."
             ) from exc
         return install
 

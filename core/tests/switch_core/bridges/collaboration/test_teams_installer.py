@@ -364,6 +364,82 @@ async def test_an_organisation_that_has_the_app_already_is_not_given_it_twice() 
     assert microsoft.posted("/appCatalogs") == []
 
 
+async def test_a_hand_uploaded_package_under_switchs_id_is_not_adopted() -> None:
+    """Seen in a real organisation: a package uploaded by hand from the
+    bring-your-own template, under the same id and version, which asks for
+    per-team permissions. Graph refuses to let Switch add such an app to a
+    team, so adopting it only moves the failure to the Teams panel."""
+    microsoft = _Microsoft()
+    microsoft.catalog = [
+        {
+            "id": "hand-uploaded",
+            "appDefinitions": [
+                {
+                    "version": "1.0.0",
+                    "authorization": {
+                        "requiredPermissionSet": {
+                            "resourceSpecificPermissions": [
+                                {
+                                    "permissionValue": "ChannelMessage.Read.Group",
+                                    "permissionType": "application",
+                                }
+                            ]
+                        }
+                    },
+                }
+            ],
+        }
+    ]
+
+    grant = await _redeem(microsoft)
+
+    assert "catalog_app_id" not in grant.platform_data
+    assert "per-team permissions" in str(grant.platform_data["publish_problem"])
+    assert microsoft.posted("/appCatalogs") == []
+
+
+async def test_an_older_hand_uploaded_package_is_replaced_by_this_one() -> None:
+    microsoft = _Microsoft()
+    microsoft.catalog = [
+        {
+            "id": "hand-uploaded",
+            "appDefinitions": [
+                {
+                    "version": "0.9.0",
+                    "authorization": {
+                        "requiredPermissionSet": {
+                            "resourceSpecificPermissions": [
+                                {"permissionValue": "ChannelMessage.Read.Group"}
+                            ]
+                        }
+                    },
+                }
+            ],
+        }
+    ]
+
+    grant = await _redeem(microsoft)
+
+    assert grant.platform_data["catalog_app_id"] == "hand-uploaded"
+    assert (
+        len(microsoft.posted("/appCatalogs/teamsApps/hand-uploaded/appDefinitions"))
+        == 1
+    )
+
+
+async def test_the_catalogue_is_asked_for_each_versions_permissions() -> None:
+    microsoft = _Microsoft()
+
+    await _redeem(microsoft)
+
+    [lookup] = [
+        r
+        for r in microsoft.requests
+        if r.method == "GET" and "/appCatalogs/teamsApps" in str(r.url)
+    ]
+    assert "authorization" in lookup.url.params["$expand"]
+
+
 async def test_an_organisation_with_an_older_version_is_given_this_one() -> None:
     microsoft = _Microsoft()
     microsoft.catalog = [{"id": "existing", "appDefinitions": [{"version": "0.9.0"}]}]

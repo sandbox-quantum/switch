@@ -99,9 +99,11 @@ environment's app itself, to test against.
      certificate and its key (`TEAMS_APP_CERTIFICATE`,
      `TEAMS_APP_CERTIFICATE_PRIVATE_KEY`).
    - **Client secret:** simplest, for local development; it expires.
-6. **Azure Bot resource.** Type of app: **Single Tenant**, using the app above.
-   Messaging endpoint as in the table. Under **Channels**, enable **Microsoft
-   Teams**.
+6. **Azure Bot resource.** Type of app: **Single Tenant**, and **Use existing
+   app registration** with the app above: the bot's Microsoft App ID *is* that
+   app's client ID. Leaving "Create new" selected makes a second app, which has
+   none of the setup above. Messaging endpoint as in the table. Under
+   **Channels**, add **Microsoft Teams** — a new bot has it off.
 7. **Notification keypair.** An RSA keypair Graph encrypts captured messages
    to, as PEM (`TEAMS_APP_NOTIFICATION_CERTIFICATE`,
    `TEAMS_APP_NOTIFICATION_PRIVATE_KEY`). Self-signed is fine; Graph uses it
@@ -205,6 +207,20 @@ Disconnecting from Switch stops capture in the organisation and takes Switch
 out of every team it is in. Removing the app from the organisation entirely is
 the customer's to do: their Teams admin removes **Agent Switch** in the Teams
 admin center, and their Entra admin deletes the enterprise application.
+
+## When setup goes wrong
+
+What each mistake looks like, in the order an approval meets them:
+
+| What you see | Cause | Fix |
+| --- | --- | --- |
+| Microsoft: `AADSTS500113` — no reply address | No redirect URI on the app registration | Step 2: add it, platform **Web** |
+| Microsoft: `AADSTS650056` — misconfigured application | The app registration lists no Graph permissions | Step 4: add them |
+| Microsoft: "Need admin approval" | The person signing in is not an admin | A Global or Privileged Role Administrator approves |
+| Switch: "Microsoft did not say which roles the person signing in holds" | Directory roles are not emitted in tokens | Step 3 |
+| Switch: "Workspace already connected" | The organisation belongs to another Switch workspace (perhaps another of yours) | Approve from the workspace that holds it, or disconnect it there first |
+| Teams: "Invalid Bot", or the admin center cannot install the app | No Azure Bot on this app's client ID, or its Teams channel is off | Step 6 |
+| The Teams panel says the app list already has an app under Switch's id that asks for per-team permissions | A package uploaded by hand under the same id | Delete it in Teams admin center, then approve again |
 
 ## Left out on purpose
 
