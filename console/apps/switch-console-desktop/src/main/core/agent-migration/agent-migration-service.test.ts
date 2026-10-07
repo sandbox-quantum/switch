@@ -66,6 +66,8 @@ type World = {
   controllerRunning: boolean[];
   failAdoptOn: string | null;
   failStopWatchers: boolean;
+  /** Agents whose watcher does not stop when a batch turns them off. */
+  stuckWatchers: string[];
   failStartFresh: boolean;
   failDesiredState: boolean;
   releaseOutcome: 'released' | 'already_gone';
@@ -143,6 +145,18 @@ function deps(): AgentMigrationDeps {
       startConsoleWatcher: async (agent) => {
         world.calls.push(`start console ${agent.name}`);
       },
+      stopConsoleWatchers: async (agents) => {
+        world.calls.push(`stop console batch ${agents.map((agent) => agent.name).join(',')}`);
+        if (world.failStopWatchers) throw new Error('watcher did not stop');
+        return new Map(
+          agents.map((agent) => [
+            agent.id,
+            world.stuckWatchers.includes(agent.name)
+              ? 'Its watcher on the host did not stop.'
+              : null,
+          ])
+        );
+      },
       handoff: async (_agent, request: HandoffRequest) => {
         const ids = request.identities.map((identity) => identity.switchAgentId).join(',');
         world.calls.push(
@@ -176,6 +190,10 @@ function deps(): AgentMigrationDeps {
       },
       restore: async (_agent, identity) => {
         world.calls.push(`restore ${identity.slug}`);
+      },
+      stashMany: async (items) => {
+        world.calls.push(`stash batch ${items.map((item) => item.identity.slug).join(',')}`);
+        return new Map(items.map((item) => [item.agent.id, true]));
       },
     },
     store: {
@@ -233,6 +251,7 @@ beforeEach(() => {
     controllerRunning: [false],
     failAdoptOn: null,
     failStopWatchers: false,
+    stuckWatchers: [],
     failStartFresh: false,
     failDesiredState: false,
     releaseOutcome: 'released',
@@ -896,6 +915,64 @@ describe('moving every agent automatically', () => {
     });
     await migration.migrateEverything();
     expect(await migration.overview()).toMatchObject({ leftAlone: 1, unasked: 1, running: false });
+  });
+
+  it('does what happens on a machine once for all its agents, not once per agent', async () => {
+    const SECOND: MigrationAgent = {
+      ...REMOTE,
+      id: 'agent-5',
+      name: 'second',
+      switchAgentId: 'switch-5',
+    };
+    all = [REMOTE, SECOND];
+    await service().migrateEverything();
+    expect(world.calls.filter((call) => call.startsWith('stop console'))).toEqual([
+      'stop console batch trainer,second',
+    ]);
+    expect(world.calls.filter((call) => call.startsWith('stash'))).toEqual([
+      'stash batch trainer,second',
+    ]);
+    expect(world.calls.filter((call) => call.startsWith('start-fresh'))).toEqual([
+      'start-fresh controller switch-2,switch-5',
+    ]);
+    expect(world.calls.filter((call) => call.startsWith('desired'))).toEqual([
+      'desired switch-2 running',
+      'desired switch-5 running',
+    ]);
+  });
+
+  it('undoes only the agent whose watcher would not stop, and moves the rest', async () => {
+    const SECOND: MigrationAgent = {
+      ...REMOTE,
+      id: 'agent-5',
+      name: 'second',
+      switchAgentId: 'switch-5',
+    };
+    all = [REMOTE, SECOND];
+    world.stuckWatchers = ['trainer'];
+    const migration = service();
+    await migration.migrateEverything();
+    expect(world.calls).toContain('release switch-2');
+    expect(world.calls).toContain('start console trainer');
+    expect(world.calls).toContain('start-fresh controller switch-5');
+    expect(world.records.has(REMOTE.id)).toBe(false);
+    expect(world.records.get(SECOND.id)?.identities[0]?.credentialsStashed).toBe(true);
+    expect(migration.migrationProblems()).toEqual([
+      expect.objectContaining({
+        name: 'trainer',
+        message: expect.stringMatching(/^Could not stop Console’s watcher for trainer/),
+      }),
+    ]);
+  });
+
+  it('undoes every agent of a machine when starting them on its controller fails', async () => {
+    all = [REMOTE];
+    world.failStartFresh = true;
+    const migration = service();
+    await migration.migrateEverything();
+    expect(world.records.size).toBe(0);
+    expect(world.calls).toContain('restore trainer');
+    expect(migration.migrationProblems()[0]?.message).toMatch(/^Could not move trainer/);
   });
 
   it('runs one pass at a time', async () => {

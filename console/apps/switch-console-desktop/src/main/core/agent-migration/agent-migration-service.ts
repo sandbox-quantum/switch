@@ -113,6 +113,11 @@ export interface MigrationMachinePort {
   ): Promise<{ roomId: string; reason: string }[]>;
   /** Stops Console's watcher for the agent, and every session it runs. */
   stopConsoleWatcher(agent: MigrationAgent): Promise<void>;
+  /**
+   * Stops Console's watchers for several agents on one machine at once. Per
+   * agent, null once its watcher is down, or why it is not.
+   */
+  stopConsoleWatchers(agents: MigrationAgent[]): Promise<Map<string, string | null>>;
   /** Puts Console's watcher for the agent back as its settings say. */
   startConsoleWatcher(agent: MigrationAgent): Promise<void>;
   handoff(agent: MigrationAgent, request: HandoffRequest): Promise<HandoffResult>;
@@ -122,6 +127,10 @@ export interface MigrationMachinePort {
 export interface MigrationCredentialsPort {
   /** Keeps the file's token in the encrypted secrets store and removes the file. False when there was none. */
   stash(agent: MigrationAgent, identity: { slug: string; switchAgentId: string }): Promise<boolean>;
+  /** `stash` for several agents on one machine at once: per agent, the outcome or the error. */
+  stashMany(
+    items: { agent: MigrationAgent; identity: { slug: string; switchAgentId: string } }[]
+  ): Promise<Map<string, boolean | Error>>;
   /** Writes the file back, from the kept token or, failing that, from Switch; then forgets the kept one. */
   restore(agent: MigrationAgent, identity: { slug: string; switchAgentId: string }): Promise<void>;
 }
@@ -501,20 +510,10 @@ export class AgentMigrationService {
       return;
     }
     if (waiting.length === 0) this.backOff(key, now, this.deps.healIntervalMs);
-    for (const agent of group) {
-      const record = managed.get(agent.id);
-      if (!record && !this.due(agent.id, now)) continue;
+    for (const [agentId, record] of managed) {
+      const agent = group.find((candidate) => candidate.id === agentId)!;
       try {
-        if (record) {
-          if (record.controllerId !== controllerId) await this.replace(agent, record, controllerId);
-        } else {
-          const state = await this.state(agent.id);
-          if (state.runner === 'console') {
-            if (state.blocker) throw new MigrationBlockedError(state.blocker);
-            await this.moveToManaged(agent.id);
-            this.deps.log.info('Moved an agent to managed', { agentId: agent.id });
-          }
-        }
+        if (record.controllerId !== controllerId) await this.replace(agent, record, controllerId);
         this.problems.delete(agent.id);
         this.retryAt.delete(agent.id);
       } catch (error) {
@@ -522,6 +521,282 @@ export class AgentMigrationService {
         this.problem(agent, message(error));
       }
     }
+    const due = waiting.filter((agent) => this.due(agent.id, now));
+    if (!due.length) return;
+    const failures = await this.moveBatch(due);
+    for (const agent of due) {
+      const failure = failures.get(agent.id);
+      if (failure === undefined) {
+        this.problems.delete(agent.id);
+        this.retryAt.delete(agent.id);
+      } else {
+        this.backOff(agent.id, now);
+        this.problem(agent, message(failure));
+      }
+    }
+  }
+
+  /**
+   * Moves several agents on one machine onto its controller together: what
+   * happens on the machine (turning Console's watchers off, keeping their
+   * credentials aside, starting them on the controller) is one command for all
+   * of them rather than one per agent. Each agent still goes through the
+   * steps of `move`, and one that fails at any step is undone on its own,
+   * leaving the rest to carry on. Returns why each agent that did not move
+   * did not.
+   */
+  private async moveBatch(agents: MigrationAgent[]): Promise<Map<string, unknown>> {
+    const failures = new Map<string, unknown>();
+    const claimed: MigrationAgent[] = [];
+    for (const agent of agents) {
+      if (this.operations.has(agent.id)) {
+        failures.set(agent.id, new MigrationBlockedError('This agent is already being moved.'));
+        continue;
+      }
+      this.operations.set(agent.id, { kind: 'moving', stage: 'checking' });
+      claimed.push(agent);
+    }
+    try {
+      await this.moveClaimed(claimed, failures);
+    } finally {
+      for (const agent of claimed) {
+        this.operations.delete(agent.id);
+        const record = await this.deps.store.get(agent.id).catch(() => null);
+        this.deps.emit({
+          agentId: agent.id,
+          runner: record ? 'managed' : 'console',
+          operation: null,
+        });
+      }
+    }
+    return failures;
+  }
+
+  private async moveClaimed(
+    agents: MigrationAgent[],
+    failures: Map<string, unknown>
+  ): Promise<void> {
+    const first = agents[0];
+    if (!first) return;
+    const lookup = await this.deps.targets.resolve(first);
+    const target = lookup.target;
+    if (!target) {
+      const blocked = new MigrationBlockedError(
+        lookup.blocker ?? 'There is no machine to move it to.'
+      );
+      for (const agent of agents) failures.set(agent.id, blocked);
+      return;
+    }
+    const fail = (moving: Moving, error: unknown) => failures.set(moving.agent.id, error);
+
+    let batch: Moving[] = [];
+    for (const agent of agents) {
+      try {
+        if (target.workspaceId !== agent.workspaceId)
+          throw new MigrationBlockedError(
+            'The machine runs managed agents for another workspace on this server; an agent can only be placed on a machine of its own workspace.'
+          );
+        batch.push({
+          agent,
+          target,
+          definition: await this.deps.definitions.build(agent),
+          stoppedByHand: await this.deps.agents.stoppedByHand(agent.id),
+          identity: {
+            switchAgentId: agent.switchAgentId!,
+            slug: agent.name,
+            subagent: null,
+            credentialsStashed: false,
+            controllerRoot: target.watcherRoot(agent.switchAgentId!),
+          },
+        });
+      } catch (error) {
+        failures.set(agent.id, error);
+      }
+    }
+
+    await Promise.all(batch.map((moving) => this.tellTurnsCut(moving.agent)));
+
+    const adopted: Moving[] = [];
+    for (const moving of batch) {
+      this.stage(moving.agent.id, 'adopting');
+      try {
+        await this.deps.management.adopt(moving.agent.workspaceId!, moving.identity.switchAgentId, {
+          controller_id: target.controllerId,
+          desired_state: 'stopped',
+          definition: moving.definition.definition,
+        });
+        adopted.push(moving);
+      } catch (error) {
+        fail(moving, error);
+      }
+    }
+    batch = adopted;
+
+    const records = new Map<string, ManagedAgentRecord>();
+    for (const moving of batch) {
+      this.stage(moving.agent.id, 'stopping-console-watcher');
+      records.set(moving.agent.id, this.recordOf(moving));
+    }
+    const stopped = new Map<string, string | null>();
+    try {
+      for (const record of records.values()) await this.deps.store.set(record);
+      for (const [agentId, outcome] of await this.deps.machine.stopConsoleWatchers(
+        batch.map((moving) => moving.agent)
+      ))
+        stopped.set(agentId, outcome);
+    } catch (error) {
+      for (const moving of batch) stopped.set(moving.agent.id, message(error));
+    }
+    batch = await this.keep(batch, async (moving) => {
+      const why = stopped.has(moving.agent.id)
+        ? stopped.get(moving.agent.id)
+        : 'The machine did not report on its watcher.';
+      if (why === null) return;
+      this.deps.log.error('Could not stop Console’s watcher for an agent being moved; undoing', {
+        agentId: moving.agent.id,
+        error: why,
+      });
+      await this.releaseQuietly(moving.agent.workspaceId!, [moving.identity.switchAgentId]);
+      await this.quietly('forget the managed record', () =>
+        this.deps.store.delete(moving.agent.id)
+      );
+      await this.quietly('start Console’s watcher again', () =>
+        this.deps.machine.startConsoleWatcher(moving.agent)
+      );
+      fail(
+        moving,
+        new Error(
+          `Could not stop Console’s watcher for ${moving.agent.name}, so it stays with this Console: ${why}`
+        )
+      );
+      return 'undone';
+    });
+
+    for (const moving of batch) this.stage(moving.agent.id, 'releasing');
+    let stashed: Map<string, boolean | Error>;
+    try {
+      stashed = await this.deps.credentials.stashMany(
+        batch.map((moving) => ({ agent: moving.agent, identity: moving.identity }))
+      );
+    } catch (error) {
+      stashed = new Map(
+        batch.map((moving) => [
+          moving.agent.id,
+          error instanceof Error ? error : new Error(message(error)),
+        ])
+      );
+    }
+    batch = await this.keep(batch, async (moving) => {
+      const outcome =
+        stashed.get(moving.agent.id) ??
+        new Error('The machine did not report on its credentials file.');
+      if (outcome instanceof Error) {
+        await this.undoInBatch(moving, records.get(moving.agent.id)!, false, outcome, fail);
+        return 'undone';
+      }
+      moving.identity.credentialsStashed = outcome;
+      await this.deps.store.set({
+        ...records.get(moving.agent.id)!,
+        identities: [moving.identity],
+      });
+    });
+
+    if (batch.length) {
+      try {
+        await this.deps.machine.handoff(batch[0]!.agent, {
+          op: 'start-fresh',
+          side: 'controller',
+          identities: this.handoffIdentities(batch.map((moving) => moving.identity)),
+        });
+      } catch (error) {
+        for (const moving of batch)
+          await this.undoInBatch(moving, records.get(moving.agent.id)!, false, error, fail);
+        batch = [];
+      }
+    }
+
+    for (const moving of batch) {
+      if (moving.stoppedByHand) continue;
+      try {
+        await this.deps.management.setDesiredState(
+          moving.agent.workspaceId!,
+          moving.identity.switchAgentId,
+          'running'
+        );
+      } catch (error) {
+        await this.undoInBatch(moving, records.get(moving.agent.id)!, false, error, fail);
+        continue;
+      }
+      this.deps.log.info('Moved an agent onto its controller', {
+        agentId: moving.agent.id,
+        controllerId: target.controllerId,
+      });
+    }
+    for (const moving of batch)
+      if (moving.stoppedByHand)
+        this.deps.log.info('Moved an agent onto its controller, stopped as it was', {
+          agentId: moving.agent.id,
+          controllerId: target.controllerId,
+        });
+  }
+
+  /** The moves for which `step` did not undo anything. */
+  private async keep(
+    batch: Moving[],
+    step: (moving: Moving) => Promise<'undone' | undefined>
+  ): Promise<Moving[]> {
+    const kept: Moving[] = [];
+    for (const moving of batch) if ((await step(moving)) !== 'undone') kept.push(moving);
+    return kept;
+  }
+
+  private async undoInBatch(
+    moving: Moving,
+    record: ManagedAgentRecord,
+    ranOnController: boolean,
+    error: unknown,
+    fail: (moving: Moving, error: unknown) => void
+  ): Promise<void> {
+    this.deps.log.error('Could not finish moving an agent to its controller; undoing', {
+      agentId: moving.agent.id,
+      error: message(error),
+    });
+    await this.undoMove(
+      moving.agent,
+      moving.target,
+      record,
+      this.handoffIdentities([moving.identity]),
+      moving.identity,
+      ranOnController
+    );
+    fail(
+      moving,
+      new Error(
+        `Could not move ${moving.agent.name}, so it stays with this Console: ${message(error)}`,
+        {
+          cause: error,
+        }
+      )
+    );
+  }
+
+  private recordOf(moving: Moving): ManagedAgentRecord {
+    const { agent, target, identity } = moving;
+    return {
+      agentId: agent.id,
+      workspaceId: agent.workspaceId!,
+      controllerId: target.controllerId,
+      placement:
+        target.display.kind === 'this-computer'
+          ? { kind: 'this-computer', serverId: target.display.serverId }
+          : {
+              kind: 'ssh-host',
+              sshHost: target.display.sshHost,
+              serverId: target.display.serverId,
+            },
+      identities: [identity],
+      movedAt: new Date(this.deps.now()).toISOString(),
+    };
   }
 
   /**
@@ -792,21 +1067,7 @@ export class AgentMigrationService {
       definition: definition.definition,
     });
 
-    const record: ManagedAgentRecord = {
-      agentId: agent.id,
-      workspaceId,
-      controllerId: target.controllerId,
-      placement:
-        target.display.kind === 'this-computer'
-          ? { kind: 'this-computer', serverId: target.display.serverId }
-          : {
-              kind: 'ssh-host',
-              sshHost: target.display.sshHost,
-              serverId: target.display.serverId,
-            },
-      identities: [identity],
-      movedAt: new Date(this.deps.now()).toISOString(),
-    };
+    const record = this.recordOf(moving);
     this.stage(agent.id, 'stopping-console-watcher');
     try {
       await this.deps.store.set(record);
