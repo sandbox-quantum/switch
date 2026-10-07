@@ -11,8 +11,8 @@ Local and SSH sessions use the same persistent SDK host. See
 
 ## Documentation
 
-- [Install Switch Console](https://docs.flintai.dev/flintai/switch/getting-started/install-switch-console)
+- [Install Switch Console](https://docs.switchagents.ai/switch-rooms/getting-started/install-switch-console)
   — the published install guide.
-- [Setting up Switch](https://docs.flintai.dev/flintai/switch/getting-started) —
+- [Setting up Switch](https://docs.switchagents.ai/switch-rooms/getting-started) —
   user documentation for the whole product.
 - [`console/AGENTS.md`](AGENTS.md) — developer notes on working in the app.
