@@ -1,14 +1,13 @@
 import type {
   AgentMigrationEvent,
   AgentMigrationState,
+  AgentRunner,
   ManagedActual,
   ManagedMachine,
+  MigrationProblem,
   MigrationOperation,
   MigrationStage,
   MigrationTarget,
-  MoveAllMachine,
-  MoveAllProgress,
-  MoveAllResult,
   MoveToManagedResult,
 } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -157,8 +156,10 @@ export type AgentMigrationDeps = {
   pollMs: number;
   /** How long a return waits for the controller to stop the agent. */
   controllerStopWaitMs: number;
-  /** How long "Move all" waits for a machine it turned on to take agents. */
+  /** How long a pass waits for a machine it set up to take agents. */
   machineReadyWaitMs: number;
+  /** How long an agent found someone else's, or on a server without agent management, is not asked about again. */
+  unmanageableRecheckMs: number;
 };
 
 /** A move refused before anything changed, for a reason a person can act on. */
@@ -177,49 +178,22 @@ type Moving = {
   stoppedByHand: boolean;
 };
 
-export type MoveScope =
-  | { kind: 'this-computer'; serverId: string }
-  | { kind: 'ssh-host'; sshHost: string }
-  /** Every agent of a workspace, on this computer and on every SSH host. */
-  | { kind: 'workspace'; serverId: string; workspaceId: string };
-
-/** Agents grouped by the machine they run on: this computer first, then each SSH host by name. */
-function groupByMachine(agents: MigrationAgent[]): MigrationAgent[][] {
+/**
+ * Agents grouped by the controller they move onto: one per machine and server,
+ * this computer first, then each SSH host by name.
+ */
+function groupByController(agents: MigrationAgent[]): MigrationAgent[][] {
   const groups = new Map<string, MigrationAgent[]>();
   for (const agent of agents) {
-    const key = agent.sshHost ?? '';
+    const key = JSON.stringify([agent.sshHost ?? '', agent.serverId ?? '']);
     groups.set(key, [...(groups.get(key) ?? []), agent]);
   }
-  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, group]) => group);
-}
-
-function agentInScope(agent: MigrationAgent, scope: MoveScope): boolean {
-  switch (scope.kind) {
-    case 'this-computer':
-      return agent.sshHost === null && agent.serverId === scope.serverId;
-    case 'ssh-host':
-      return agent.sshHost === scope.sshHost;
-    case 'workspace':
-      return agent.serverId === scope.serverId && agent.workspaceId === scope.workspaceId;
-  }
-}
-
-/** Whether a moved agent is in scope; `agent` is its Console agent, null when that is gone. */
-function recordInScope(
-  record: ManagedAgentRecord,
-  agent: MigrationAgent | null,
-  scope: MoveScope
-): boolean {
-  switch (scope.kind) {
-    case 'this-computer':
-      return (
-        record.placement.kind === 'this-computer' && record.placement.serverId === scope.serverId
-      );
-    case 'ssh-host':
-      return record.placement.kind === 'ssh-host' && record.placement.sshHost === scope.sshHost;
-    case 'workspace':
-      return agent !== null && agentInScope(agent, scope);
-  }
+  const order = (agent: MigrationAgent) => [agent.sshHost ?? '', agent.serverId ?? ''] as const;
+  return [...groups.values()].sort((a, b) => {
+    const [hostA, serverA] = order(a[0]!);
+    const [hostB, serverB] = order(b[0]!);
+    return hostA === hostB ? serverA.localeCompare(serverB) : hostA.localeCompare(hostB);
+  });
 }
 
 /**
@@ -276,6 +250,10 @@ function message(error: unknown): string {
  */
 export class AgentMigrationService {
   private readonly operations = new Map<string, MigrationOperation>();
+  private readonly problems = new Map<string, MigrationProblem>();
+  /** Agents found someone else's, or on a server without agent management, until when. */
+  private readonly unmanageableUntil = new Map<string, number>();
+  private migrating: Promise<void> | null = null;
 
   constructor(private readonly deps: AgentMigrationDeps) {}
 
@@ -285,6 +263,12 @@ export class AgentMigrationService {
     const operation = this.operations.get(agent.id) ?? null;
     if (record) return this.managedState(agent, record, operation);
     return this.consoleState(agent, operation);
+  }
+
+  /** Who runs the agent: this Console, or a controller it was moved onto. */
+  async runner(agentId: string): Promise<AgentRunner> {
+    const agent = await this.requireAgent(agentId);
+    return (await this.isManaged(agent)) ? 'managed' : 'console';
   }
 
   async moveToManaged(agentId: string): Promise<MoveToManagedResult> {
@@ -308,45 +292,105 @@ export class AgentMigrationService {
     });
   }
 
+  /** Why each agent the last automatic passes could not move did not, by agent. */
+  migrationProblems(): MigrationProblem[] {
+    return [...this.problems.values()];
+  }
+
   /**
-   * Moves every agent that can move, on this computer for a server, on an SSH
-   * host, or across a workspace, one machine at a time. A machine that is not
-   * running managed agents yet is turned on first, as its own toggle would,
-   * then its agents move once it can take them. Agents that cannot move are
-   * skipped with the reason; one that fails does not stop the rest.
+   * Moves every agent this Console runs that can be managed: linked to a
+   * server with agent management, and owned by the signed-in user. A machine
+   * that is not running managed agents yet is set up first. Turns running are
+   * cut. Agents someone else owns, or on a server without agent management,
+   * are left as they are; any other reason an agent did not move is kept as a
+   * problem until a later pass moves it. One pass runs at a time; a call
+   * during one waits for it.
    */
-  async moveAll(scope: MoveScope): Promise<MoveAllResult> {
-    const result: MoveAllResult = { moved: [], skipped: [], failed: [] };
-    const agents = (await this.deps.agents.list()).filter((agent) => agentInScope(agent, scope));
-    for (const group of groupByMachine(agents)) {
+  migrateEverything(): Promise<void> {
+    this.migrating ??= this.migrateOnce().finally(() => {
+      this.migrating = null;
+    });
+    return this.migrating;
+  }
+
+  /** Forgets that an agent could not be managed, so the next pass asks Switch again. */
+  recheck(agentId: string): void {
+    this.unmanageableUntil.delete(agentId);
+  }
+
+  private async migrateOnce(): Promise<void> {
+    const agents = await this.deps.agents.list();
+    const present = new Set(agents.map((agent) => agent.id));
+    for (const agentId of this.problems.keys())
+      if (!present.has(agentId)) this.problems.delete(agentId);
+    const candidates: MigrationAgent[] = [];
+    for (const agent of agents) {
+      if (
+        !agent.switchAgentId ||
+        !agent.workspaceId ||
+        !agent.serverId ||
+        (await this.isManaged(agent))
+      ) {
+        this.problems.delete(agent.id);
+        continue;
+      }
+      if ((this.unmanageableUntil.get(agent.id) ?? 0) > this.deps.now()) continue;
+      let eligibility: Awaited<ReturnType<MigrationManagementPort['eligibility']>>;
+      try {
+        eligibility = await this.deps.management.eligibility(
+          agent.workspaceId,
+          agent.switchAgentId
+        );
+      } catch (error) {
+        this.deps.log.warn('Switch could not be asked whether an agent can be managed', {
+          agentId: agent.id,
+          error: message(error),
+        });
+        continue;
+      }
+      if (!eligibility.management || !eligibility.ownedByMe) {
+        this.unmanageableUntil.set(agent.id, this.deps.now() + this.deps.unmanageableRecheckMs);
+        this.problems.delete(agent.id);
+        continue;
+      }
+      candidates.push(agent);
+    }
+    for (const group of groupByController(candidates)) {
       const setUp = await this.setUpMachine(group);
       for (const agent of group) {
         if (setUp) {
-          if (!(await this.isManaged(agent)))
-            result.skipped.push({ agentId: agent.id, name: agent.name, reason: setUp });
-          continue;
-        }
-        const state = await this.state(agent.id).catch((error: unknown) => ({
-          error: message(error),
-        }));
-        if ('error' in state) {
-          result.failed.push({ agentId: agent.id, name: agent.name, message: state.error });
-          continue;
-        }
-        if (state.runner === 'managed') continue;
-        if (state.blocker) {
-          result.skipped.push({ agentId: agent.id, name: agent.name, reason: state.blocker });
+          this.problem(agent, setUp);
           continue;
         }
         try {
-          await this.moveToManaged(agent.id);
-          result.moved.push({ agentId: agent.id, name: agent.name });
+          const state = await this.state(agent.id);
+          if (state.runner === 'console') {
+            if (state.blocker) {
+              this.problem(agent, state.blocker);
+              continue;
+            }
+            await this.moveToManaged(agent.id);
+            this.deps.log.info('Moved an agent to managed', { agentId: agent.id });
+          }
+          this.problems.delete(agent.id);
         } catch (error) {
-          result.failed.push({ agentId: agent.id, name: agent.name, message: message(error) });
+          this.problem(agent, message(error));
         }
       }
     }
-    return result;
+  }
+
+  private problem(agent: MigrationAgent, why: string): void {
+    this.deps.log.warn('An agent could not be moved to managed', {
+      agentId: agent.id,
+      error: why,
+    });
+    this.problems.set(agent.id, {
+      agentId: agent.id,
+      name: agent.name,
+      machine: agent.sshHost ?? 'this computer',
+      message: why,
+    });
   }
 
   private async isManaged(agent: MigrationAgent): Promise<boolean> {
@@ -354,9 +398,9 @@ export class AgentMigrationService {
   }
 
   /**
-   * Turns on the machine a group of agents runs on when one of them is waiting
-   * for exactly that, and waits until it can take agents. Null when there was
-   * nothing to do or it is ready; otherwise why the group cannot move.
+   * Sets up the machine a group of agents moves onto when one of them is
+   * waiting for exactly that, and waits until it can take agents. Null when
+   * there was nothing to do or it is ready; otherwise why the group cannot move.
    */
   private async setUpMachine(group: MigrationAgent[]): Promise<string | null> {
     const waiting = [];
@@ -368,11 +412,11 @@ export class AgentMigrationService {
     const first = waiting[0];
     if (!first) return null;
     const where = first.sshHost ?? 'this computer';
-    this.deps.log.info('Turning a machine on to move its agents', { machine: where });
+    this.deps.log.info('Setting a machine up to move its agents', { machine: where });
     try {
       await this.deps.targets.enable(first);
     } catch (error) {
-      return `${where} could not be made a machine: ${message(error)}`;
+      return `${where} could not be set up to run managed agents: ${message(error)}`;
     }
     const deadline = this.deps.now() + this.deps.machineReadyWaitMs;
     for (;;) {
@@ -382,84 +426,9 @@ export class AgentMigrationService {
       }));
       if (lookup.target) return null;
       if (this.deps.now() >= deadline)
-        return `${where} was made a machine, but is not ready for agents yet: ${lookup.blocker ?? 'it has not reached Switch'}. Run Move all again once it shows Running.`;
+        return `${where} was set up to run managed agents, but is not ready for them yet: ${lookup.blocker ?? 'it has not reached Switch'}.`;
       await this.deps.sleep(this.deps.pollMs);
     }
-  }
-
-  /**
-   * Brings back every agent this Console moved onto one machine, one at a
-   * time; one that fails does not stop the rest. `moved` lists the ones that
-   * came back.
-   */
-  async stopManagingAll(scope: MoveScope): Promise<MoveAllResult> {
-    const result: MoveAllResult = { moved: [], skipped: [], failed: [] };
-    for (const record of await this.deps.store.list()) {
-      const agent = await this.deps.agents.get(record.agentId);
-      if (!recordInScope(record, agent, scope)) continue;
-      const name = agent?.name ?? record.agentId;
-      try {
-        await this.stopManaging(record.agentId);
-        result.moved.push({ agentId: record.agentId, name });
-      } catch (error) {
-        result.failed.push({ agentId: record.agentId, name, message: message(error) });
-      }
-    }
-    return result;
-  }
-
-  /** The agents this Console moved onto one machine, by name. */
-  async movedOnto(scope: MoveScope): Promise<string[]> {
-    const names: string[] = [];
-    for (const record of await this.deps.store.list()) {
-      const agent = await this.deps.agents.get(record.agentId);
-      if (recordInScope(record, agent, scope)) names.push(agent?.name ?? record.agentId);
-    }
-    return names;
-  }
-
-  /**
-   * How far moving every agent in scope has got, per machine: how many are
-   * managed, how many are moving now, and why the rest cannot move, if
-   * anything stops them other than not having been moved yet.
-   */
-  async moveAllProgress(scope: MoveScope): Promise<MoveAllProgress> {
-    const machines: MoveAllMachine[] = [];
-    const agents = (await this.deps.agents.list()).filter((agent) => agentInScope(agent, scope));
-    for (const group of groupByMachine(agents)) {
-      const machine: MoveAllMachine = {
-        kind: group[0]!.sshHost === null ? 'this-computer' : 'ssh-host',
-        name: group[0]!.sshHost ?? 'This computer',
-        total: group.length,
-        managed: 0,
-        moving: 0,
-        blocked: 0,
-        reason: null,
-        setUpOnMove: false,
-      };
-      const reasons = new Map<string, number>();
-      for (const agent of group) {
-        let state: AgentMigrationState;
-        try {
-          state = await this.state(agent.id);
-        } catch (error) {
-          const reason = `An agent's state cannot be read: ${message(error)}`;
-          reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
-          machine.blocked++;
-          continue;
-        }
-        if (state.operation) machine.moving++;
-        if (state.runner === 'managed') machine.managed++;
-        else if (state.canEnableTarget) machine.setUpOnMove = true;
-        else if (state.blocker) {
-          machine.blocked++;
-          reasons.set(state.blocker, (reasons.get(state.blocker) ?? 0) + 1);
-        }
-      }
-      machine.reason = [...reasons.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-      machines.push(machine);
-    }
-    return { machines };
   }
 
   // ── State ──────────────────────────────────────────────────────────────────

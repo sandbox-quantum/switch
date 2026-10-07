@@ -1,5 +1,3 @@
-import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
-import type { MoveAllResult } from '@shared/core/agent-migration/agent-migration';
 import type { HostControllerOverview } from '@shared/core/host-controllers/host-controllers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { hostControllerService } from './host-controllers';
@@ -25,10 +23,4 @@ export const hostControllersController = createRPCController({
 
   disable: (params: { sshHost: string; serverId: string }): Promise<void> =>
     hostControllerService.disable(params.sshHost, params.serverId, { force: false }),
-
-  moveAll: (sshHost: string): Promise<MoveAllResult> =>
-    agentMigrationService.moveAll({ kind: 'ssh-host', sshHost }),
-
-  stopManagingAll: (sshHost: string): Promise<MoveAllResult> =>
-    agentMigrationService.stopManagingAll({ kind: 'ssh-host', sshHost }),
 });

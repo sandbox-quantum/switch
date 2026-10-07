@@ -311,7 +311,7 @@ export class HostControllerService {
     const moved = await this.deps.movedAgents(sshHost, serverId);
     if (moved.length)
       throw new MovedAgentsHereError(
-        `${sshHost} runs ${moved.join(', ')} for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.`,
+        `${sshHost} runs ${moved.join(', ')} as managed agents for this Console. Delete those agents before turning it off.`,
         moved
       );
     await this.exclusive(sshHost, serverId, async () => {
@@ -398,7 +398,7 @@ export class HostControllerService {
       moved.push(...(await this.deps.movedAgents(sshHost, record.serverId)));
     if (moved.length)
       throw new MovedAgentsHereError(
-        `${sshHost} runs ${moved.join(', ')} for this Console, so it cannot be removed yet. Bring the agents back first: Bring all back on the host’s page, or Stop managing on each agent.`,
+        `${sshHost} runs ${moved.join(', ')} as managed agents for this Console, so it cannot be removed yet. Delete those agents first.`,
         moved
       );
     for (const record of records) await this.disable(sshHost, record.serverId, { force: true });

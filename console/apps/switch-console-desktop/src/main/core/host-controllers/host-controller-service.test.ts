@@ -378,7 +378,7 @@ describe('removing the host as a machine', () => {
     const refused = service.forgetHost(HOST);
     await expect(refused).rejects.toBeInstanceOf(MovedAgentsHereError);
     await expect(refused).rejects.toThrow(
-      'build-box runs builder for this Console, so it cannot be removed yet. Bring the agents back first'
+      'build-box runs builder as managed agents for this Console, so it cannot be removed yet. Delete those agents first.'
     );
     await expect(refused).rejects.toMatchObject({ agents: ['builder'] });
     expect(calls).toEqual([]);

@@ -383,7 +383,7 @@ describe('EmbeddedControllerService', () => {
     const refused = running.disable(SERVER);
     await expect(refused).rejects.toBeInstanceOf(MovedAgentsHereError);
     await expect(refused).rejects.toThrow(
-      'This computer runs builder for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.'
+      'This computer runs builder as managed agents for this Console. Delete those agents before turning it off.'
     );
     expect(management.revoke).not.toHaveBeenCalled();
     expect(calls[0]!.child.signals).toEqual([]);

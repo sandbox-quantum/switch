@@ -44,12 +44,6 @@ vi.mock(
   () => ({ CanManageAgentsRow: () => <div>Can manage agents</div> })
 );
 vi.mock('@renderer/lib/components/agent-icon-picker', () => ({ AgentIconPicker: () => null }));
-vi.mock('@renderer/features/agent-migration/managed-agent-section', () => ({
-  ManagedAgentSection: () => null,
-}));
-vi.mock('@renderer/features/locations/stores/agents-store', () => ({
-  agentsStore: { agentsOnServer: () => [] },
-}));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({ useShowModal: () => vi.fn() }));
 
 import { ManagedAgentPage } from '@renderer/features/managed-agents/managed-agent-page';
