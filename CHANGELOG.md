@@ -3046,6 +3046,12 @@ tags; see RELEASING.md.
 
 ### [Unreleased]
 
+### [0.1.1] - 2026-10-07
+
+#### Fixed
+- **Installer falls back to `~/.local`** when it can't write to a system prefix, and
+  takes a `--data-dir` to place the controller's data directory explicitly.
+
 ### [0.1.0] - 2026-10-07
 
 #### Added
