@@ -235,6 +235,23 @@ describe('EmbeddedControllerService', () => {
     expect(secrets.get(credentialSecretKey(SERVER))).toBe('swcc_second');
   });
 
+  it('enrolls again when Switch revoked the machine', async () => {
+    const running = await enabled();
+    management.read.mockResolvedValue({
+      kind: 'ok',
+      controller: { name: 'build-box', description: null, state: 'revoked', lastSeenAt: null },
+      agents: [],
+    });
+    management.enroll.mockResolvedValueOnce({
+      serverId: SERVER,
+      apiUrl: 'https://switch.example.com',
+      controllerId: 'controller-3',
+      credential: 'swcc_third',
+    });
+    await running.enrollAgain(SERVER);
+    expect(storedRecord()).toMatchObject({ kind: 'enrolled', controllerId: 'controller-3' });
+  });
+
   it('refuses to enroll again while Switch still lists the machine', async () => {
     const running = await enabled();
     management.read.mockResolvedValue({
@@ -383,7 +400,7 @@ describe('EmbeddedControllerService', () => {
     const refused = running.disable(SERVER);
     await expect(refused).rejects.toBeInstanceOf(MovedAgentsHereError);
     await expect(refused).rejects.toThrow(
-      'This computer runs builder for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.'
+      'This computer runs builder as managed agents for this Console. Delete those agents before turning it off.'
     );
     expect(management.revoke).not.toHaveBeenCalled();
     expect(calls[0]!.child.signals).toEqual([]);

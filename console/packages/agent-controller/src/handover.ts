@@ -1,4 +1,4 @@
-import { accessSync, constants, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeServerUrl } from './api';
@@ -108,23 +108,23 @@ export function adoptIdentity(
 
 /**
  * The agent-providers shared-host bundle the controller runs its agents with:
- * `--shared-host-bundle`, then `SWITCH_CONTROLLER_SHARED_HOST_BUNDLE`, then the
- * one built in the workspace. A packaged parent names its own copy, since a
- * bundled controller has no workspace to resolve it from.
+ * `--shared-host-bundle`, then `SWITCH_CONTROLLER_SHARED_HOST_BUNDLE`, then
+ * `defaultBundle` ({@link defaultSharedHostBundle}: the one installed beside
+ * the CLI, or the one built in the workspace).
  */
 export function resolveSharedHostBundle(
   flag: string | undefined,
   env: NodeJS.ProcessEnv,
-  workspaceDefault: () => string
+  defaultBundle: () => string
 ): string {
   const named = flag ?? env[SHARED_HOST_BUNDLE_ENV];
   if (named) return readableBundle(resolve(named), `The shared host bundle ${resolve(named)}`);
   let path: string;
   try {
-    path = workspaceDefault();
+    path = defaultBundle();
   } catch (error) {
     throw new ConfigurationError(
-      `No shared host bundle was named, and none could be found in the workspace: ${errorMessage(error)} Name one with --shared-host-bundle.`
+      `No shared host bundle was named, and none is installed beside the CLI or built in the workspace: ${errorMessage(error)} Name one with --shared-host-bundle.`
     );
   }
   return readableBundle(
@@ -151,6 +151,19 @@ function readableBundle(path: string, what: string, hint = ''): string {
     throw new ConfigurationError(`${what} cannot be read: ${errorMessage(error)}`);
   }
   return path;
+}
+
+/** The file name of the shared-host bundle in a packaged install, beside the CLI. */
+export const PACKAGED_SHARED_HOST_BUNDLE = 'shared-host.mjs';
+
+/**
+ * The shared-host bundle installed beside the CLI, as the packaged controller
+ * ships it; in a workspace checkout, where there is none, the one built there.
+ */
+export function defaultSharedHostBundle(): string {
+  const beside = fileURLToPath(new URL(`./${PACKAGED_SHARED_HOST_BUNDLE}`, import.meta.url));
+  if (existsSync(beside)) return beside;
+  return workspaceSharedHostBundle();
 }
 
 /** The bundle as built in the workspace, resolved through the package's exports. */

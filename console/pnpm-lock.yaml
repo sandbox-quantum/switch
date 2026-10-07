@@ -324,6 +324,9 @@ importers:
       '@typescript/native-preview':
         specifier: 7.0.0-dev.20260609.1
         version: 7.0.0-dev.20260609.1
+      esbuild:
+        specifier: 0.25.12
+        version: 0.25.12
       tsdown:
         specifier: ^0.22.2
         version: 0.22.2(@typescript/native-preview@7.0.0-dev.20260609.1)(tsx@4.23.1)(typescript@6.0.3)

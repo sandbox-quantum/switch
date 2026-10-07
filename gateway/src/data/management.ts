@@ -286,20 +286,39 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** The enroll options for a machine's name and description, when given (blank is left out: the name then defaults to the host name). */
+function machineWords(machine: { name: string; description: string }): string[] {
+  const words: string[] = [];
+  const name = machine.name.trim();
+  const description = machine.description.trim();
+  if (name) words.push("--name", name);
+  if (description) words.push("--description", description);
+  return words;
+}
+
 /**
- * The command a user runs on the machine to enroll it with a fresh code, with
- * the machine's name and description when given (blank is left out: the name
- * then defaults to the host name).
+ * The controller's installer, as published on the default branch: it finds the
+ * newest `switch-agent-controller` release and installs it with npm.
  */
+export const CONTROLLER_INSTALL_SCRIPT_URL =
+  "https://raw.githubusercontent.com/sandbox-quantum/switch/main/console/packages/agent-controller/install.sh";
+
+/** The one command that installs the controller, enrolls the machine with a fresh code and starts it as a service. */
+export function installCommand(
+  server: string,
+  code: string,
+  machine: { name: string; description: string },
+): string {
+  const options = ["--server", server, "--code", code, ...machineWords(machine)];
+  return `curl -fsSL ${CONTROLLER_INSTALL_SCRIPT_URL} | sh -s -- ${options.map(shellQuote).join(" ")}`;
+}
+
+/** The command a user runs on a machine where the controller is installed already, to enroll it with a fresh code. */
 export function enrollCommand(
   server: string,
   code: string,
   machine: { name: string; description: string },
 ): string {
-  const words = ["switch-agent-controller", "enroll", "--server", server, "--code", code];
-  const name = machine.name.trim();
-  const description = machine.description.trim();
-  if (name) words.push("--name", name);
-  if (description) words.push("--description", description);
+  const words = ["switch-agent-controller", "enroll", "--server", server, "--code", code, ...machineWords(machine)];
   return words.map(shellQuote).join(" ");
 }

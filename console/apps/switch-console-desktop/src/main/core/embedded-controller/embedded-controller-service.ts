@@ -255,7 +255,7 @@ export class EmbeddedControllerService {
     const moved = await this.deps.movedAgents(serverId);
     if (moved.length)
       throw new MovedAgentsHereError(
-        `This computer runs ${moved.join(', ')} for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.`,
+        `This computer runs ${moved.join(', ')} as managed agents for this Console. Delete those agents before turning it off.`,
         moved
       );
     await this.turnOff(serverId);
@@ -308,7 +308,7 @@ export class EmbeddedControllerService {
           ? `Switch could not be asked about this computer: ${remote.message}`
           : 'This server no longer has agent management turned on.'
       );
-    if (remote.controller)
+    if (remote.controller && remote.controller.state !== 'revoked')
       throw new Error(
         'Switch still lists this computer as a machine. Turn it off and on again instead.'
       );

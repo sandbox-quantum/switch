@@ -656,7 +656,12 @@ class ManagementService:
     async def list_managed_agents(
         self, session: AsyncSession, tenant_id: str, owner_id: str
     ) -> list[dict[str, Any]]:
-        controllers: dict[str, AgentController] = {}
+        controllers = {
+            controller.id: controller
+            for controller in await self.controllers.list_for_owner(
+                session, tenant_id, owner_id
+            )
+        }
         leases = await self.leases(session)
         return [
             await self._view(session, tenant_id, row, agent, controllers, leases)

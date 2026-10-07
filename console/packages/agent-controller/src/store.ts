@@ -135,6 +135,18 @@ export class ControllerStore {
     });
   }
 
+  /**
+   * Where `enroll` put the controller credential. Null for a data directory
+   * enrolled before the choice was recorded, which kept it in files.
+   */
+  secretStoreKind(): string | null {
+    return this.meta('secret_store');
+  }
+
+  saveSecretStoreKind(kind: string): void {
+    this.setMeta('secret_store', kind);
+  }
+
   /** Records the name the server now has for this controller. */
   saveName(name: string): void {
     if (!this.meta('controller_id'))

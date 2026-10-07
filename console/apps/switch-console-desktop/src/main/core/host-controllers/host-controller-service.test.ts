@@ -308,6 +308,18 @@ describe('the host as a machine afterwards', () => {
   });
 });
 
+describe('a host controller from an older Console', () => {
+  it('is outdated until it is started again on this build', async () => {
+    const service = new HostControllerService(deps());
+    await service.enable(HOST, SERVER, WORKSPACE);
+    const record = records.get(`${HOST}|${SERVER}`)!;
+    expect(await service.outdated(record)).toBe(false);
+    expect(
+      await service.outdated({ ...record, bundle: '/home/ada/sdk-host/agent-controller-old.mjs' })
+    ).toBe(true);
+  });
+});
+
 describe('enrolling a host again that Switch no longer knows', () => {
   it('wipes the old controller on the host, without a revoke, and enrolls it afresh', async () => {
     const base = deps();
@@ -326,6 +338,25 @@ describe('enrolling a host again that Switch no longer knows', () => {
     expect(calls).not.toContain('revoke');
     expect(calls).toContain('code');
     expect(records.get(`${HOST}|${SERVER}`)?.controllerId).toBe('controller-8');
+  });
+
+  it('enrolls a host whose controller Switch revoked afresh too', async () => {
+    const base = deps();
+    const service = new HostControllerService({
+      ...base,
+      management: {
+        ...base.management,
+        read: async () => ({
+          kind: 'ok',
+          controller: { state: 'revoked', lastSeenAt: null },
+          agents: [],
+        }),
+      },
+    });
+    await service.enable(HOST, SERVER, WORKSPACE);
+    host.enroll = { ok: true, controllerId: 'controller-9' };
+    await service.enrollAgain(HOST, SERVER);
+    expect(records.get(`${HOST}|${SERVER}`)?.controllerId).toBe('controller-9');
   });
 
   it('refuses while Switch still lists the host', async () => {
@@ -378,7 +409,7 @@ describe('removing the host as a machine', () => {
     const refused = service.forgetHost(HOST);
     await expect(refused).rejects.toBeInstanceOf(MovedAgentsHereError);
     await expect(refused).rejects.toThrow(
-      'build-box runs builder for this Console, so it cannot be removed yet. Bring the agents back first'
+      'build-box runs builder as managed agents for this Console, so it cannot be removed yet. Delete those agents first.'
     );
     await expect(refused).rejects.toMatchObject({ agents: ['builder'] });
     expect(calls).toEqual([]);

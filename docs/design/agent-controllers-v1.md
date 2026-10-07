@@ -297,21 +297,26 @@ exactly the answer a missing one does.
 
 ## Headless agents controller (`console/packages/agent-controller`)
 
-- CLI `switch-agent-controller`:
-  - `enroll --server <agent-bridge-url> --code <code> [--name] [--description] [--data-dir]`
-  - `run [--data-dir]`
+- CLI `switch-agent-controller`, released as its own npm package on
+  `switch-agent-controller-v*` GitHub releases, with an `install.sh` (see RELEASING.md):
+  - `enroll --server <agent-bridge-url> --code <code> [--name] [--description] [--data-dir] [--secret-store]`
+  - `run [--data-dir] [--env-file]`
   - `set-info [--name] [--description] [--data-dir]`: renames the machine and/or changes its
     description on the server, with the controller's own credential, and records the new name
     locally.
   - `status [--data-dir]`
+  - `install-service` / `uninstall-service`: a systemd user unit or a launchd agent
+  - `doctor`: what the machine lacks to run agents
+  - `update [--check]`: the newest release, from GitHub
 - **Data dir:** `SWITCH_CONTROLLER_DATA_DIR`, otherwise the OS default.
   - macOS: `~/Library/Application Support/Switch/agent-controller`
   - Linux: `$XDG_STATE_HOME/switch/agent-controller`, or `~/.local/state/switch/agent-controller`
   - Mode 0700.
 - **Store:** `node:sqlite`, one file. It holds identity, the assignment cache, per-agent applied revision and
   runtime state, and the status seq. It is a cache that can be rebuilt from the server.
-- **Secrets:** behind a `SecretStore` interface. v1 ships a file backend (0600) that **logs a
-  warning at startup**, saying no OS keychain backend is in use.
+- **Secrets:** behind a `SecretStore` interface: the macOS keychain (the default on a Mac), the
+  desktop keyring through `secret-tool` (on request), or a file backend (0600, the default on
+  Linux) that **logs a warning at startup**. The data directory records which one `enroll` used.
 - **Run loop:**
   1. Exchange the token, refreshing it before expiry. On `controller_revoked`: stop all agents, wipe the credential, and exit non-zero.
   2. Open the nudge stream, reconnecting with jittered backoff capped at 8 s and

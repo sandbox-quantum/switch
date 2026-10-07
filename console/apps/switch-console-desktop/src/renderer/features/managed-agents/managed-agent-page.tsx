@@ -1,8 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
 import { useMemo, useState } from 'react';
-import { ManagedAgentSection } from '@renderer/features/agent-migration/managed-agent-section';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import type {
   FormState,
@@ -25,11 +23,9 @@ import {
 import { AutoApproveRow } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
 import { Badge } from '@renderer/lib/ui/badge';
@@ -354,8 +350,6 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
               Sessions of agents on a machine are not listed here yet.
             </p>
           </section>
-
-          <MovedFromConsole agent={agent} />
         </div>
       </div>
       {error && (
@@ -424,27 +418,3 @@ function WithReason({ reason, children }: { reason: string; children: React.Reac
     </TooltipProvider>
   );
 }
-
-/**
- * An agent moved to managed from this Console still has its entry here, which
- * is what bringing it back needs: "Stop managing" lives with it.
- */
-const MovedFromConsole = observer(function MovedFromConsole({
-  agent,
-}: {
-  agent: ManagedAgentView;
-}) {
-  const { navigate } = useNavigate();
-  const local = agentsStore
-    .agentsOnServer(agent.serverId)
-    .find((candidate) => candidate.switchAgentId === agent.agentId);
-  if (!local) return null;
-  return (
-    <ManagedAgentSection
-      agentId={local.id}
-      onReturned={() =>
-        navigate('location', { locationId: local.locationId, agentName: local.name })
-      }
-    />
-  );
-});

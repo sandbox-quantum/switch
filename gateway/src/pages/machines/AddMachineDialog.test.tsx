@@ -33,6 +33,11 @@ describe("AddMachineDialog", () => {
         "switch-agent-controller enroll --server https://switch-api.example.test --code swce_example",
       ),
     ).toBeTruthy();
+    expect(
+      screen.getByText(
+        /^curl -fsSL https:\/\/raw\.githubusercontent\.com\/.+\/install\.sh \| sh -s -- --server https:\/\/switch-api\.example\.test --code swce_example$/,
+      ),
+    ).toBeTruthy();
     expect(screen.queryByText(new RegExp(window.location.origin))).toBeNull();
   });
 
@@ -54,7 +59,7 @@ describe("AddMachineDialog", () => {
   it("shows no command for a name or description that is too long", async () => {
     issue("https://switch-api.example.test");
     render(<AddMachineDialog open onClose={() => {}} />);
-    await screen.findByText(/--code swce_example/);
+    expect(await screen.findAllByText(/--code swce_example/)).toHaveLength(2);
     fireEvent.change(screen.getByLabelText("Description (optional)"), {
       target: { value: "x".repeat(501) },
     });
