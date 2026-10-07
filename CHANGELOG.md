@@ -1357,6 +1357,11 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.38.2] - 2026-10-07
+
+#### Fixed
+- In-product documentation links now point at `docs.switchagents.ai` (#697).
+
 ### [0.38.1] - 2026-10-01
 
 #### Fixed
