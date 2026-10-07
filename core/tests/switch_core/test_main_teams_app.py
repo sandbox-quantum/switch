@@ -80,6 +80,10 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
         async def aclose(self) -> None:
             calls.append("teams app closed")
 
+    class _Controllers:
+        def begin_shutdown(self) -> None:
+            calls.append("controllers told")
+
     class _Exited(Exception):
         pass
 
@@ -96,6 +100,7 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
     with pytest.raises(_Exited):
         await _shutdown(
             server=server,
+            controllers=_Controllers(),  # type: ignore[arg-type]
             client_lifecycle=_Stoppable("clients"),  # type: ignore[arg-type]
             collab_lifecycle=_Lifecycle(calls),  # type: ignore[arg-type]
             connector_lifecycle=_Stoppable("connectors"),  # type: ignore[arg-type]

@@ -12,7 +12,7 @@ writes for itself. Not a secret store: secrets keep their encrypted column.
 Empty for every existing row, and for a platform with nothing to keep.
 
 Revision ID: e4b7d2a91c06
-Revises: eb24eafa59a0
+Revises: 2f6919dcdead
 Create Date: 2026-10-01 00:00:00.000000
 
 """
@@ -24,7 +24,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "e4b7d2a91c06"
-down_revision: str | None = "eb24eafa59a0"
+down_revision: str | None = "2f6919dcdead"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
