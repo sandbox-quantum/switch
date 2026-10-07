@@ -4,8 +4,10 @@ Revision ID: 9c4e7a1f2b38
 Revises: eb24eafa59a0
 Create Date: 2026-10-07 00:00:00.000000
 
-Every existing flag row was server-global, so it is copied into every tenant:
-a flag that was on for the whole deployment stays on for each workspace in it.
+Every flag that was on server-wide is copied into every tenant, so it stays on
+for each workspace in it. A row that was off is not copied: off was already the
+default, and a copied row would be a workspace choice that hides any server
+default set later.
 A workspace created later takes the server-wide defaults instead, which come
 from `FEATURE_FLAGS_DEFAULT_ON` rather than from this table. The flags that
 were on are logged, so an operator knows what to put in that setting.
@@ -52,7 +54,7 @@ def upgrade() -> None:
     op.execute(
         "INSERT INTO feature_flags (tenant_id, key, enabled, updated_at) "
         "SELECT t.id, f.key, f.enabled, f.updated_at "
-        "FROM tenants t CROSS JOIN feature_flags_global f"
+        "FROM tenants t CROSS JOIN feature_flags_global f WHERE f.enabled"
     )
     enabled = [
         row.key

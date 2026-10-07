@@ -1,8 +1,9 @@
 """Scoping feature flags to workspaces keeps every deployment's current values.
 
 Before `9c4e7a1f2b38` a flag row was server-global. The migration copies each
-row into every tenant, so a flag that was on for the whole deployment is still
-on for each workspace in it, and downgrading folds them back into one row that
+row that was on into every tenant, so a flag that was on for the whole
+deployment is still on for each workspace in it, while one that was off leaves
+no row that would hide a later server default; and downgrading folds them back into one row that
 is on if any workspace had it on.
 """
 
@@ -89,9 +90,7 @@ async def test_global_flags_are_copied_into_every_workspace_and_back(
             ).all()
             assert [tuple(r) for r in rows] == [
                 (_TENANT_ZERO_ID, "ecosystem.show_owners", True),
-                (_TENANT_ZERO_ID, "retired.flag", False),
                 ("second", "ecosystem.show_owners", True),
-                ("second", "retired.flag", False),
             ]
             await connection.execute(
                 text(
@@ -101,8 +100,8 @@ async def test_global_flags_are_copied_into_every_workspace_and_back(
             )
             await connection.execute(
                 text(
-                    "UPDATE feature_flags SET enabled = true "
-                    "WHERE tenant_id = 'second' AND key = 'retired.flag'"
+                    "INSERT INTO feature_flags (tenant_id, key, enabled) "
+                    "VALUES ('second', 'retired.flag', true)"
                 )
             )
 
