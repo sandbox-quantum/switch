@@ -3046,6 +3046,8 @@ tags; see RELEASING.md.
 
 ### [Unreleased]
 
+### [0.1.0] - 2026-10-07
+
 #### Added
 - **Installable on its own.** Each release publishes one npm package (the CLI and
   the shared-host bundle, no dependencies) and an `install.sh`, which checks Node,
