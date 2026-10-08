@@ -39,6 +39,7 @@ from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.clients.agent_consumer import (
     _STARTING_SESSION_MESSAGE,
     AgentConsumer,
+    CloudMachineState,
     _GateOutcome,
 )
 from switch_core.db.models import (
@@ -353,9 +354,16 @@ async def _no_session() -> AsyncIterator[object]:
     yield object()
 
 
-def _client(registry: AgentConnectionRegistry, agent_id: str) -> SimpleNamespace:
+def _client(
+    registry: AgentConnectionRegistry,
+    agent_id: str,
+    cloud_machine: CloudMachineState | None = None,
+) -> SimpleNamespace:
     async def _unavailable_reply(*_args: Any, **_kwargs: Any) -> str:
         return "offline"
+
+    async def _wake_cloud_machine(_controller_id: str) -> CloudMachineState | None:
+        return cloud_machine
 
     async def owner_handle_in(*_args: Any) -> str | None:
         return "owner"
@@ -366,6 +374,8 @@ def _client(registry: AgentConnectionRegistry, agent_id: str) -> SimpleNamespace
         _agent_session_store=_NoRows(),
         _unavailable_reply=_unavailable_reply,
         owner_handle_in=owner_handle_in,
+        _wake_cloud_machine=_wake_cloud_machine,
+        _cloud_waking_notices=set(),
     )
     ns._is_available = AgentConsumer._is_available.__get__(ns)
     ns._reply_when_unavailable_here = (
@@ -482,6 +492,43 @@ class TestTheAgentClientsReplies:
         assert (
             await client._reply_when_unavailable_here(object(), agent, meta, "u")
             is None
+        )
+
+    async def test_a_sleeping_cloud_machine_is_woken_and_says_so_once(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        agent = _agent("auto", "auto_session")
+        client = _client(
+            registry,
+            "auto",
+            CloudMachineState(state="stopped", revision=4, owner_stopped=False),
+        )
+
+        first = await client._reply_when_unavailable_here(object(), agent, meta, "u")
+        again = await client._reply_when_unavailable_here(object(), agent, meta, "u")
+
+        assert first == (
+            "My machine, **machine**, was asleep and is starting now. I'll pick "
+            "this up as soon as it's back, usually within a few minutes."
+        )
+        assert again is None
+
+    async def test_a_cloud_machine_its_owner_stopped_stays_stopped(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        client = _client(
+            registry,
+            "auto",
+            CloudMachineState(state="stopped", revision=4, owner_stopped=True),
+        )
+        reply = await client._reply_when_unavailable_here(
+            object(), _agent("auto", "auto_session"), meta, "u"
+        )
+        assert reply == (
+            "My machine, **machine**, is stopped, so I can't answer. My owner "
+            "(@owner) can start it again in Switch Console."
         )
 
     async def test_an_offline_or_removed_machine_is_named_not_console(

@@ -29,6 +29,7 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.gateway.cloud_controllers import (
     CloudEnrollmentUnavailable,
+    controller_machine_idle,
     enrollment_code,
     live_controller,
 )
@@ -91,9 +92,9 @@ def machine_item(machine: HostedMachine) -> dict:
 
 
 def _idle_stops(machine: HostedMachine, idle_minutes: int) -> bool:
-    """Whether an idle machine is put to sleep. Only a worker machine is: a
-    controller machine's agents could not wake it again on a message yet."""
-    return idle_minutes > 0 and machine.runtime == "worker"
+    """Whether an idle machine is put to sleep: a message addressed to one of
+    its agents wakes it again."""
+    return idle_minutes > 0
 
 
 def _connect_timed_out(machine: HostedMachine, now: datetime) -> bool:
@@ -164,7 +165,10 @@ async def _should_sleep(
 
     Counted agents are the ones meant to run and not in error. A busy one
     renews its own activity, so it keeps the machine awake for another window.
+    A controller machine is idle when its own status reports say so.
     """
+    if machine.runtime == "controller":
+        return controller_machine_idle(machine, idle_after, now)
     idle = True
     for candidate in await HostedMachineStore().launches(session, machine.id):
         await lock_launch(session, candidate.id)

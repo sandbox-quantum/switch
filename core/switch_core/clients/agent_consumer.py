@@ -6,6 +6,7 @@ import random
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from switch_core.attachments import parse_attachment_group
@@ -96,6 +97,7 @@ from switch_core.events import (
     TaskFinalise,
     TaskUpdate,
 )
+from switch_core.gateway.cloud_controllers import wake_controller_machine
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import (
     InboundMedia,
@@ -322,6 +324,41 @@ def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
     )
 
 
+@dataclass(frozen=True)
+class CloudMachineState:
+    """How a Switch cloud machine stood once a message for its agents tried to wake it."""
+
+    state: str
+    revision: int
+    owner_stopped: bool
+
+    @classmethod
+    def of(cls, machine: HostedMachine) -> CloudMachineState:
+        return cls(
+            state=machine.state,
+            revision=machine.revision,
+            owner_stopped=owner_stopped(machine),
+        )
+
+
+def _cloud_machine_waking_message(machine: str) -> str:
+    """A managed agent whose Switch cloud machine was asleep, and is starting
+    for this message: Switch keeps the message until the machine is back."""
+    return (
+        f"My machine, **{machine}**, was asleep and is starting now. I'll pick "
+        "this up as soon as it's back, usually within a few minutes."
+    )
+
+
+def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> str:
+    """A managed agent whose Switch cloud machine its owner stopped: a message
+    does not start it again."""
+    return (
+        f"My machine, **{machine}**, is stopped, so I can't answer. "
+        f"{_owner_ref(owner_handle).capitalize()} can start it again in Switch Console."
+    )
+
+
 def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
     removed = (
         f"my machine, **{machine}**, has been removed from Switch, so nothing "
@@ -403,6 +440,7 @@ class AgentConsumer(Consumer[AgentActor]):
         self._external_user_store = external_user_store
         self._hosted_launch_store = hosted_launch_store
         self._waking_notice_revisions: dict[str, int] = {}
+        self._cloud_waking_notices: set[tuple[str, int]] = set()
         self._unreachable_notice_revisions: dict[str, int] = {}
         self._connections = connections
         self._frontend_base_url = (
@@ -1324,8 +1362,41 @@ class AgentConsumer(Consumer[AgentActor]):
         if controllers.is_revoked(binding.controller_id):
             return _machine_removed_message(binding.controller_name, owner)
         if not controllers.is_live(self.agent.id):
-            return _machine_offline_message(binding.controller_name, owner)
+            machine = await self._wake_cloud_machine(binding.controller_id)
+            if machine is None or machine.state == "error":
+                return _machine_offline_message(binding.controller_name, owner)
+            if machine.owner_stopped:
+                return _cloud_machine_stopped_message(binding.controller_name, owner)
+            # Once per room for each start: the next messages just wait with it.
+            notice = (meta.room_id, machine.revision)
+            if notice in self._cloud_waking_notices:
+                return None
+            self._cloud_waking_notices.add(notice)
+            return _cloud_machine_waking_message(binding.controller_name)
         return None
+
+    async def _wake_cloud_machine(self, controller_id: str) -> CloudMachineState | None:
+        """Starts the Switch cloud machine running `controller_id` if it is
+        asleep, and says how it stands; None for a controller on no cloud
+        machine, or when the machine could not be read."""
+        try:
+            async with (
+                asyncio.timeout(5),
+                tenant_session(self.session_factory, self.tenant_id) as session,
+            ):
+                machine = await wake_controller_machine(
+                    session, controller_id, datetime.now(UTC)
+                )
+                state = None if machine is None else CloudMachineState.of(machine)
+                await session.commit()
+                return state
+        except Exception:
+            logger.warning(
+                "Could not wake the cloud machine of controller %s",
+                controller_id,
+                exc_info=True,
+            )
+            return None
 
     async def owner_handle_in(
         self, session: AsyncSession, agent: Agent, bridge_id: str | None

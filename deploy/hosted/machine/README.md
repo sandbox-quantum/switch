@@ -86,7 +86,10 @@ instance of the image must give the files on it the same owners.
 - The hosted controller's `image_id` must be an image baked here.
 - Launches (`/hosted-launches`) are refused while the runtime is `controller`.
   Cloud agents are managed agents placed on the owner's cloud machine.
-- Controller machines are not stopped when idle. A stopped one could not be
-  woken by a message for its agents yet.
+- A controller machine is stopped once its status reports say no session has
+  run for `HOSTED_IDLE_STOP_MINUTES`. A message addressed to one of its agents,
+  or placing an agent on it, starts it again; Switch keeps the message (up to
+  15 minutes, in memory) until the controller is back and resumes from its
+  saved cursor.
 
 Tests: `uv run --with pytest python -m pytest tests` in this directory.
