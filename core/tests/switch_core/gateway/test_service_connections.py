@@ -130,14 +130,19 @@ class TestConnections:
         assert (github["enabled"], github["auth_type"]) == (True, "oauth")
         assert github["connectable"] is True
         assert (github["pass_through"], github["token_lifetime"]) == (False, 3600)
-        assert (entries["jira"]["pass_through"], entries["jira"]["token_lifetime"]) == (
-            False,
-            None,
+        assert github["loopback_ports"] is None
+        asana = entries["asana"]
+        assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
+        assert asana["configured"] is False
+        assert asana["enabled"] is False
+        assert asana["connectable"] is False
+        assert asana["status"] == "not_connected"
+        atlassian = entries["atlassian"]
+        assert (atlassian["pass_through"], atlassian["token_lifetime"]) == (
+            True,
+            28800,
         )
-        assert entries["jira"]["configured"] is False
-        assert entries["jira"]["enabled"] is False
-        assert entries["jira"]["connectable"] is False
-        assert entries["jira"]["status"] == "not_connected"
+        assert atlassian["loopback_ports"] == [39231, 39232, 39233, 39234, 39235]
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(
         self, harness: Harness, vendor: FakeVendor
@@ -364,11 +369,11 @@ class TestGrants:
         owner = await add_member(harness.session_factory, "ada")
         agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
 
-        jira = await _put(harness, owner, agent_id, {"resources": {}}, "jira")
+        asana = await _put(harness, owner, agent_id, {"resources": {}}, "asana")
         unknown = await _put(harness, owner, agent_id, {"resources": {}}, "nowhere")
 
-        assert jira.status_code == 422
-        assert jira.json()["detail"] == "Not available yet."
+        assert asana.status_code == 422
+        assert asana.json()["detail"] == "Not available yet."
         assert unknown.status_code == 404
 
     async def test_tools_and_resources_outside_the_grant(

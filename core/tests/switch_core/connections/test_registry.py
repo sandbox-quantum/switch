@@ -55,17 +55,33 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, environ={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github"}
+    assert set(adapters) == {"github", "atlassian"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
 
 def test_github_without_the_app_is_left_not_set_up() -> None:
-    assert (
-        build_adapters(
-            CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
-        )
-        == {}
+    adapters = build_adapters(
+        CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
+    )
+    assert "github" not in adapters
+
+
+def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["atlassian"]
+    assert isinstance(adapter, OAuthMcpAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request["redirect_uris"] == [
+        f"http://127.0.0.1:{port}/switch-services/callback"
+        for port in (39231, 39232, 39233, 39234, 39235)
+    ]
+    assert client._request["scope"] == (
+        "read:me read:account email offline_access read:jira:agent-interface "
+        "search:jira:agent-interface write:jira:agent-interface"
     )
 
 

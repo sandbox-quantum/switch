@@ -11,7 +11,6 @@ from switch_core.connections.loader import (
 )
 
 PLACEHOLDERS = {
-    "jira",
     "asana",
     "gitlab",
     "bitbucket",
@@ -28,13 +27,54 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_only_github():
-    assert set(CATALOG) == PLACEHOLDERS | {"github"}
+def test_shipped_catalog_enables_github_and_atlassian():
+    assert set(CATALOG) == PLACEHOLDERS | {"github", "atlassian"}
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
-        "github"
+        "atlassian",
+        "github",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
+    assert "SKILL.md" in CATALOG["atlassian"].skill_files
+
+
+def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["atlassian"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth-mcp",
+        "dynamic",
+        ["loopback"],
+    )
+    # Atlassian matches a loopback redirect's port, so the ports are fixed.
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("atlassian", "https://mcp.atlassian.com/v2/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    identity = ["read:me", "read:account", "email", "offline_access"]
+    jira_read = ["read:jira:agent-interface", "search:jira:agent-interface"]
+    assert definition.access.read.scopes == identity + jira_read
+    assert definition.access.write.scopes == [
+        *identity,
+        *jira_read,
+        "write:jira:agent-interface",
+    ]
+    # Jira only: nothing that reaches Confluence or spends Rovo credits by scope.
+    every = set(definition.access.write.scopes)
+    assert not any("confluence" in scope for scope in every)
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.atlassian.com/me"
 
 
 @pytest.fixture
@@ -45,28 +85,28 @@ def catalog_copy(tmp_path):
 
 
 def test_rejects_unknown_keys(catalog_copy):
-    path = catalog_copy / "jira" / "connection.yaml"
+    path = catalog_copy / "asana" / "connection.yaml"
     path.write_text(path.read_text() + "icon: jira.svg\n")
-    with pytest.raises(CatalogError, match="jira is invalid"):
+    with pytest.raises(CatalogError, match="asana is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_invalid_yaml(catalog_copy):
-    (catalog_copy / "jira" / "connection.yaml").write_text("slug: [jira\n")
-    with pytest.raises(CatalogError, match="jira is invalid"):
+    (catalog_copy / "asana" / "connection.yaml").write_text("slug: [asana\n")
+    with pytest.raises(CatalogError, match="asana is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_unknown_auth_type(catalog_copy):
-    path = catalog_copy / "jira" / "connection.yaml"
+    path = catalog_copy / "asana" / "connection.yaml"
     path.write_text(path.read_text().replace("type: oauth", "type: password"))
-    with pytest.raises(CatalogError, match="jira is invalid"):
+    with pytest.raises(CatalogError, match="asana is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_a_slug_that_differs_from_its_directory(catalog_copy):
-    path = catalog_copy / "jira" / "connection.yaml"
-    path.write_text(path.read_text().replace("slug: jira", "slug: asana"))
+    path = catalog_copy / "asana" / "connection.yaml"
+    path.write_text(path.read_text().replace("slug: asana", "slug: jira"))
     with pytest.raises(CatalogError, match="different slug"):
         load_catalog(catalog_copy)
 
@@ -85,7 +125,7 @@ def test_rejects_a_skill_whose_name_differs_from_the_slug(catalog_copy):
 
 
 def test_rejects_a_placeholder_that_ships_a_skill(catalog_copy):
-    shutil.copytree(catalog_copy / "github" / "skill", catalog_copy / "jira" / "skill")
+    shutil.copytree(catalog_copy / "github" / "skill", catalog_copy / "asana" / "skill")
     with pytest.raises(CatalogError, match="must not ship a skill"):
         load_catalog(catalog_copy)
 
@@ -106,7 +146,7 @@ def test_rejects_a_symlink_in_a_skill(catalog_copy, tmp_path):
 
 
 def test_rejects_unexpected_files_beside_the_definition(catalog_copy):
-    (catalog_copy / "jira" / "icon.svg").write_text("<svg/>")
+    (catalog_copy / "asana" / "icon.svg").write_text("<svg/>")
     with pytest.raises(CatalogError, match="unexpected files"):
         load_catalog(catalog_copy)
 
@@ -205,13 +245,13 @@ def test_rejects_write_without_read(catalog_copy):
 
 
 def test_a_placeholder_may_describe_its_levels(catalog_copy):
-    path = catalog_copy / "jira" / "connection.yaml"
+    path = catalog_copy / "asana" / "connection.yaml"
     path.write_text(
         path.read_text()
         + "access:\n  read: { scopes: [read:jira-work] }\n"
         + "tools:\n  mode: listed\n  read: [search_issues]\n  write: []\n"
     )
-    definition = load_catalog(catalog_copy)["jira"].definition
+    definition = load_catalog(catalog_copy)["asana"].definition
     assert definition.level_tools("read") == ["search_issues"]
 
 

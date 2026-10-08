@@ -883,7 +883,7 @@ class TestConnectOnly:
         reason = broker.availability("github")
         assert reason is not None and "not granted to agents" in reason
         assert broker.connectable("github") is True
-        assert broker.connectable("jira") is False
+        assert broker.connectable("asana") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             503,

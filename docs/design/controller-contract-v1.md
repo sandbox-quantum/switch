@@ -220,7 +220,7 @@ POST /agents/{agent_id}/service-tokens/{service}     auth: as above. No body
 
 ```ts
 type ServiceGrant = {
-  service: string                     // catalog slug: "github"; later "jira", "google-workspace", …
+  service: string                     // catalog slug: "github", "atlassian"; later "google-workspace", …
   access: "read" | "write"
   tool_mode: "allow" | "deny"         // allow: only `tools`; deny: every tool of the level except `tools`
   tools: string[]
