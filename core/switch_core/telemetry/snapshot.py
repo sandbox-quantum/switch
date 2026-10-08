@@ -117,6 +117,10 @@ class UsageCounts:
     # per-tenant count would add it once for each.
     user_active_1d: int = 0
     user_active_7d: int = 0
+    # Of those, accounts on the company's own email domains, so active staff
+    # can be taken out of the headline without a per-event flag.
+    user_internal_active_1d: int = 0
+    user_internal_active_7d: int = 0
     active_user_ids_1d: set[str] = field(default_factory=set)
     active_user_ids_7d: set[str] = field(default_factory=set)
     # Chat identities — a Slack, Mattermost or other platform account — that
@@ -171,6 +175,8 @@ class UsageCounts:
             "user_internal_count": self.user_internal_count,
             "user_active_1d": self.user_active_1d,
             "user_active_7d": self.user_active_7d,
+            "user_internal_active_1d": self.user_internal_active_1d,
+            "user_internal_active_7d": self.user_internal_active_7d,
             "chat_identity_count": self.chat_identity_count,
             "chat_identity_active_1d": self.chat_identity_active_1d,
             "chat_identity_active_7d": self.chat_identity_active_7d,
@@ -756,6 +762,8 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
         "user_internal_count",
         "user_active_1d",
         "user_active_7d",
+        "user_internal_active_1d",
+        "user_internal_active_7d",
         "active_user_ids_1d",
         "active_user_ids_7d",
         "room_users_max",
@@ -770,6 +778,18 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
     total.active_user_ids_7d |= tenant.active_user_ids_7d
     for platform, count in tenant.connector_counts.items():
         total.connector_counts[platform] += count
+
+
+async def _internal_among(session: AsyncSession, user_ids: set[str]) -> int:
+    """How many of `user_ids` are accounts on the company's own domains."""
+    if not user_ids:
+        return 0
+    return await _scalar(
+        session,
+        select(func.count())
+        .select_from(User)
+        .where(User.id.in_(user_ids), internal_email_condition(User.email)),
+    )
 
 
 async def collect_usage(
@@ -829,6 +849,12 @@ async def collect_usage(
             select(func.count())
             .select_from(User)
             .where(internal_email_condition(User.email)),
+        )
+        counts.user_internal_active_1d = await _internal_among(
+            session, counts.active_user_ids_1d
+        )
+        counts.user_internal_active_7d = await _internal_among(
+            session, counts.active_user_ids_7d
         )
     counts.user_active_1d = len(counts.active_user_ids_1d)
     counts.user_active_7d = len(counts.active_user_ids_7d)
