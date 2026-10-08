@@ -91,6 +91,7 @@ from switch_core.management.schemas import (
     workspaces_dir_of,
 )
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
+from switch_core.user_changes import MACHINE, MANAGED_AGENT, UserChangePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ class ManagementService:
         *,
         settings: ManagementSettings,
         notifier: ControllerNotifier,
+        user_changes: UserChangePublisher,
         controllers: AgentControllerStore,
         definitions: AgentDefinitionStore,
         operations: AgentControllerOperationStore,
@@ -140,6 +142,7 @@ class ManagementService:
     ) -> None:
         self.settings = settings
         self.notifier = notifier
+        self.user_changes = user_changes
         self.presence = presence
         self.controllers = controllers
         self.definitions = definitions
@@ -208,6 +211,9 @@ class ManagementService:
             api_key_id=key.id,
         )
         await session.commit()
+        self.user_changes.publish(
+            controller.tenant_id, owner_id, MACHINE, controller.id
+        )
         logger.info(
             "Enrolled agent controller %s (%s) for user %s",
             controller.id,
@@ -341,6 +347,7 @@ class ManagementService:
                 len(moved),
                 controller.id,
             )
+        self.user_changes.publish(tenant_id, consumed.owner_id, MACHINE, controller.id)
         logger.info(
             "Enrolled agent controller %s (%s) by code for user %s",
             controller.id,
@@ -435,13 +442,23 @@ class ManagementService:
         report: StatusReport,
     ) -> dict[str, Any]:
         """Store a status report unless a newer one is stored, and tell the
-        controller its assignment revision either way."""
+        controller its assignment revision either way.
+
+        The owner's Console is told only when what the report says changed,
+        not on every report: free disk and memory, and the times a report and
+        its provider checks were taken, move on every one of them.
+        """
+        controller = await self._principal_controller(session, principal)
+        before = _status_signature(controller.status)
+        revision = controller.assignment_revision
+        owner_id = controller.owner_id
+        new_status = report.model_dump(mode="json", exclude_unset=True)
         stored = await self.controllers.record_status(
             session,
             principal.tenant_id,
             principal.controller_id,
             seq=report.seq,
-            status=report.model_dump(mode="json", exclude_unset=True),
+            status=new_status,
             version=report.controller.version,
             platform=report.machine.platform.model_dump(mode="json"),
             seen_at=self.now(),
@@ -452,13 +469,15 @@ class ManagementService:
                 report.seq,
                 principal.controller_id,
             )
-        controller = await self._principal_controller(session, principal)
-        revision = controller.assignment_revision
         if stored and controller.kind == "ec2":
             await record_controller_status(
                 session, controller.id, report.machine.model_dump(mode="json")
             )
         await session.commit()
+        if stored and _status_signature(new_status) != before:
+            self.user_changes.publish(
+                principal.tenant_id, owner_id, MACHINE, principal.controller_id
+            )
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
@@ -695,7 +714,9 @@ class ManagementService:
         )
         leases = await self.leases(session)
         view = controller_view(controller, self.state_of(controller, leases), leases)
+        owner_id = controller.owner_id
         await session.commit()
+        self.user_changes.publish(tenant_id, owner_id, MACHINE, controller_id)
         if "name" in changes:
             self.presence.rename_controller(controller_id, controller.name)
         logger.info(
@@ -720,6 +741,7 @@ class ManagementService:
             return
         await self._revoke(session, tenant_id, controller_id)
         await session.commit()
+        self.user_changes.publish(tenant_id, owner_id, MACHINE, controller_id)
         logger.info("Revoked agent controller %s", controller_id)
         self._announce_revoked(controller_id)
 
@@ -1114,6 +1136,7 @@ class ManagementService:
             session, tenant_id, {request.controller_id}
         )
         await session.commit()
+        self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, result.agent_id)
         await self._bind(session, tenant_id, row)
         self._nudge(revisions)
         logger.info(
@@ -1266,6 +1289,7 @@ class ManagementService:
                 )
         revisions = await self._bump_and_collect(session, tenant_id, affected)
         await session.commit()
+        self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, agent.id)
         await self._bind(session, tenant_id, row)
         self._nudge(revisions)
         agent = await self._owned_agent(session, owner_id, agent.id)
@@ -1290,6 +1314,7 @@ class ManagementService:
             session, tenant_id, {row.controller_id}
         )
         await session.commit()
+        self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, agent_id)
         self.presence.unbind(agent_id, DETACH_UNASSIGNED)
         self._nudge(revisions)
 
@@ -1315,6 +1340,7 @@ class ManagementService:
             session, tenant_id, {row.controller_id}
         )
         await session.commit()
+        self.user_changes.publish(tenant_id, row.owner_id, MANAGED_AGENT, agent_id)
         self.presence.unbind(agent_id, DETACH_DELETED)
         self._nudge(revisions)
         logger.info("Stopped managing agent %s, which is being deleted", agent_id)
@@ -1495,3 +1521,29 @@ def _known_agent_registration(
     metadata["known_agent_type"] = known_type
     metadata["known_agent_options"] = options.model_dump()
     return spec, options, metadata
+
+
+# Status fields that change on every report whether or not anything happened.
+_VOLATILE_MACHINE = ("disk_free_bytes", "mem_free_bytes")
+
+
+def _status_signature(status: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A status report without the fields that move on every report, so two
+    reports compare equal when nothing a person would see has changed."""
+    if status is None:
+        return None
+    signature = {k: v for k, v in status.items() if k not in ("seq", "observed_at")}
+    machine = signature.get("machine")
+    if isinstance(machine, dict):
+        signature["machine"] = {
+            k: v for k, v in machine.items() if k not in _VOLATILE_MACHINE
+        }
+    providers = signature.get("providers")
+    if isinstance(providers, list):
+        signature["providers"] = [
+            {k: v for k, v in p.items() if k != "checked_at"}
+            if isinstance(p, dict)
+            else p
+            for p in providers
+        ]
+    return signature
