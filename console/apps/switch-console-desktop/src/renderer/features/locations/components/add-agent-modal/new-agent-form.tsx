@@ -676,6 +676,8 @@ export const NewAgentForm = observer(function NewAgentForm({
       queryKey: ['cloud-agent-connections', pickState.serverId],
     });
     void queryClient.invalidateQueries({ queryKey: ['cloud-agent-github', pickState.serverId] });
+    // Service access reads the connection by workspace.
+    void queryClient.invalidateQueries({ queryKey: ['workspace-github'] });
     setConnectingProvider(false);
     setConnectingGitHub(false);
   };

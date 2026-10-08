@@ -17,7 +17,11 @@ import {
   skillContext,
 } from './service-access';
 import type { ServiceEndpointServer } from './service-endpoint';
-import { githubSessionEnvironment, writeGitHubWrapper } from './service-github';
+import {
+  githubSessionEnvironment,
+  machineGitHubHelpers,
+  writeGitHubWrapper,
+} from './service-github';
 
 export const sharedConfigSchema = z.strictObject({
   session: sessionSchema,
@@ -85,8 +89,8 @@ export type ServiceHelpers = {
 
 /**
  * Whether the session gets Switch's Git credential helper and `gh` wrapper:
- * for a GitHub grant, and when the grants could not be read, so that the
- * helpers refuse rather than leave git and gh to this machine's own sign-in.
+ * for a GitHub grant, and when the grants could not be read, so that falling
+ * back to this machine's own sign-in is said, not silent.
  */
 export function needsGitHubHelpers(services: SessionServices): boolean {
   return (
@@ -99,7 +103,7 @@ export function servicesUnavailableNotice(reason: string): string {
   return (
     `Switch could not load the services granted to this agent when this session started (${reason}). ` +
     "Their skills and access (GitHub's, for one) are not set up in this session, so do not rely on " +
-    "them, and say so when a task needs one: git and gh refuse GitHub through Switch here rather than use this machine's own sign-in. " +
+    "them, and say so when a task needs one: git and gh use this machine's own GitHub sign-in here, if it has one, rather than the agent's grant. " +
     'They are loaded again when the session next starts.'
   );
 }
@@ -120,6 +124,8 @@ export async function prepareSharedConfig(
 ) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
+  // What the session's owner should see about its services, beyond the log.
+  const notices: string[] = [];
   let agentApiUrl = process.env.SWITCH_API_ENDPOINT;
   let token = process.env.SWITCH_API_TOKEN;
   const input = structuredClone(config.start.input);
@@ -172,6 +178,9 @@ export async function prepareSharedConfig(
         execPath: helpers.execPath,
         entrypoint: helpers.entrypoint,
       });
+      // A cloud deployment keeps every other credential helper out; elsewhere
+      // the machine's own follow Switch's, for when Switch gives no token.
+      const isolate = process.env.SWITCH_HOSTED_BOOTSTRAP === '1';
       input.env = {
         ...input.env,
         ...githubSessionEnvironment({
@@ -179,18 +188,18 @@ export async function prepareSharedConfig(
           execPath: helpers.execPath,
           entrypoint: helpers.entrypoint,
           wrapperDirectory,
-          // A cloud deployment keeps every other credential helper out.
-          isolate: process.env.SWITCH_HOSTED_BOOTSTRAP === '1',
+          isolate,
+          machineHelpers: isolate ? [] : await machineGitHubHelpers(input.env, input.cwd),
         }),
         SWITCH_SERVICE_ENDPOINT: helpers.endpoint.url,
-        SWITCH_SERVICE_TOKEN: helpers.endpoint.token,
+        SWITCH_SERVICE_BEARER: helpers.endpoint.token,
       };
     }
   }
   input.mcpServers.switch = runtime;
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
-  return { agentApiUrl, token, input };
+  return { agentApiUrl, token, input, notices };
 }
 
 /**

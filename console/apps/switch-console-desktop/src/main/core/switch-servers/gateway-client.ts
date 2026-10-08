@@ -2488,11 +2488,10 @@ export async function servesServiceConnections(server: SwitchServer): Promise<bo
   }
 }
 
-/** An agent's service grants, with any it works without; its owner's alone to read. */
 /**
- * The agent's grants, or null when the gateway answers that it is not the
- * signed-in person's agent (a 404): only its owner sees them. Any other
- * failure is thrown, for the caller to show.
+ * An agent's service grants, with any it works without, or null when the
+ * gateway answers that it is not the signed-in person's agent (a 404): only
+ * its owner sees them. Any other failure is thrown, for the caller to show.
  */
 export async function fetchServiceGrants(
   server: SwitchServer,

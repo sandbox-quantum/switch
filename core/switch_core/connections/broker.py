@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import select, text
+from sqlalchemy import exists, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
@@ -51,7 +51,8 @@ from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
-    HostedLaunch,
+    AgentController,
+    AgentDefinition,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
@@ -62,6 +63,8 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import (
     ServiceConnectionBusy,
     ServiceConnectionStore,
+    cloud_launch_status,
+    cloud_launches_of,
 )
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
@@ -95,6 +98,13 @@ TOKEN_LIFETIME = timedelta(hours=1)
 TOKEN_LEEWAY = timedelta(seconds=60)
 REFRESH_BEFORE = timedelta(minutes=5)
 REVOCATION_BATCH = 8
+# How long one revocation call keeps taking batches before it leaves the rest
+# to the next: a bulk change (a stop, a disconnect, a member removed) queues
+# more than one batch, and a token left for the five-minute tick may outlive
+# its own hour before it is reached. Short of a request's own timeout
+# (Console waits 30 s), with a batch's vendor calls (8 s) on top, so a slow
+# disconnect or stop does not read as failed when it worked.
+REVOCATION_BUDGET_SECONDS = 10.0
 REVOCATION_CLAIM = timedelta(seconds=90)
 VENDOR_CALL_SECONDS = 8
 ACCESS_WARNING = "Some access already given out may remain for up to 1 hour."
@@ -233,6 +243,9 @@ class ServiceBroker:
         self._adapters = adapters
         self._store = store
         self._token_retention = token_retention
+        # The access token being fetched for each connection, by (tenant,
+        # owner, service), for callers that ask while it is.
+        self._fetching: dict[tuple[str, str, str], asyncio.Task[str]] = {}
 
     def _entry(self, service: str) -> Connection:
         entry = self._catalog.get(service)
@@ -319,24 +332,23 @@ class ServiceBroker:
                 "This agent's owner is no longer a member of the workspace.",
                 retryable=False,
             )
-        launches = list(
-            await session.execute(
-                select(HostedLaunch.desired_state, HostedLaunch.state).where(
-                    HostedLaunch.tenant_id == tenant_id,
-                    HostedLaunch.agent_id == agent_id,
-                    HostedLaunch.state != "deleted",
+        statuses = {
+            cloud_launch_status(*launch)
+            for launch in await session.execute(cloud_launches_of(agent_id))
+        }
+        if statuses and "running" not in statuses:
+            if "starting" in statuses:
+                raise ServiceError(
+                    503,
+                    INTERNAL,
+                    f"Agent {agent.name}'s cloud machine is starting. Please retry.",
+                    retryable=True,
                 )
-            )
-        )
-        if launches and not any(
-            desired == "running" and state not in ("error", "deleting")
-            for desired, state in launches
-        ):
             raise ServiceError(
                 403,
                 FORBIDDEN,
-                f"Agent {agent.name} is a cloud agent whose launch is not running, "
-                f"so it is issued no {name} token.",
+                f"Agent {agent.name} is a cloud agent whose launch or machine is not "
+                f"running, so it is issued no {name} token.",
                 retryable=False,
             )
 
@@ -359,6 +371,28 @@ class ServiceBroker:
                 retryable=False,
             )
         _require_owners_controller(principal, owner_id)
+        if principal.kind == "controller" and not await session.scalar(
+            select(
+                exists().where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.id == principal.controller_id,
+                    AgentController.revoked_at.is_(None),
+                )
+                & exists().where(
+                    AgentDefinition.tenant_id == tenant_id,
+                    AgentDefinition.agent_id == agent_id,
+                    AgentDefinition.controller_id == principal.controller_id,
+                )
+            )
+        ):
+            # Checked again as the token is recorded, so a revocation or a
+            # move that lands while it is issued takes it back.
+            raise ServiceError(
+                403,
+                FORBIDDEN,
+                "This controller is revoked, or no longer hosts the agent.",
+                retryable=False,
+            )
 
         connection = await self._store.get_connection(session, owner_id, service)
         if connection is None:
@@ -644,10 +678,30 @@ class ServiceBroker:
         In a transaction of its own, which outlives the caller being
         cancelled: a rotating refresh spends the old refresh token, so the new
         one must be stored once the vendor has returned it.
+
+        Callers asking for one connection at once share one fetch. The
+        connection's lock still serialises refreshes, but every agent of an
+        owner renewing together would otherwise each hold a database
+        connection queued on that lock while one refresh takes its time, and
+        give up at the lock's timeout.
         """
-        return await finish_shielded(
-            self._fresh_access_token(require_tenant_id(), owner_id, service, adapter)
-        )
+        key = (require_tenant_id(), owner_id, service)
+        fetching = self._fetching.get(key)
+        if fetching is None:
+            fetching = asyncio.create_task(self._fresh_access_token(*key, adapter))
+            self._fetching[key] = fetching
+            fetching.add_done_callback(lambda done: self._fetched(key, done))
+        return await asyncio.shield(fetching)
+
+    def _fetched(self, key: tuple[str, str, str], done: asyncio.Task[str]) -> None:
+        if self._fetching.get(key) is done:
+            del self._fetching[key]
+        # Its callers see a failure; one none of them stayed to see is logged.
+        if not done.cancelled() and (error := done.exception()) is not None:
+            if not isinstance(error, ServiceError):
+                logger.error(
+                    "Fetching a %s access token failed", key[2], exc_info=error
+                )
 
     async def _fresh_access_token(
         self, tenant_id: str, owner_id: str, service: str, adapter: ServiceAdapter
@@ -1240,11 +1294,23 @@ class ServiceBroker:
         """
         if session.in_transaction():
             raise RuntimeError("Commit the access change before revoking its tokens.")
+        deadline = time.monotonic() + REVOCATION_BUDGET_SECONDS
         try:
             async with tenant_session(
                 self._session_factory, require_tenant_id()
             ) as own:
-                return await self._revoke_pending(own, conditions)
+                # Batch after batch, until none remain, a batch revokes nothing
+                # (what is left keeps failing: the tick tries again), or a
+                # whole batch's vendor calls no longer fit in the time. A
+                # failed token sorts last, by its attempts.
+                while True:
+                    revoked, pending = await self._revoke_pending(own, conditions)
+                    if (
+                        not pending
+                        or not revoked
+                        or time.monotonic() + VENDOR_CALL_SECONDS > deadline
+                    ):
+                        return pending
         except Exception as error:
             logger.error(
                 "Service token revocation is pending after a failed pass: "
@@ -1255,11 +1321,12 @@ class ServiceBroker:
 
     async def _revoke_pending(
         self, session: AsyncSession, conditions: tuple[Any, ...]
-    ) -> bool:
+    ) -> tuple[int, bool]:
+        """One batch: how many it revoked, and whether any remain."""
         # Most workspaces hold no token at any moment: one read, and done.
         if not await self._store.holds_tokens(session):
             await session.commit()
-            return False
+            return 0, False
         tenant_id = require_tenant_id()
         now = datetime.now(UTC)
         await session.execute(text("SET LOCAL lock_timeout = '2s'"))
@@ -1312,7 +1379,7 @@ class ServiceBroker:
         )
         pending = await self._store.revocation_pending(session, conditions)
         await session.commit()
-        return pending
+        return len(revoked), pending
 
     async def prune(self, session: AsyncSession) -> int:
         """Delete the bound tenant's issuance records past retention; commits."""

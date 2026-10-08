@@ -34,7 +34,10 @@ from switch_core.connections.maintenance import maintain_once
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
+    AgentController,
+    AgentDefinition,
     HostedLaunch,
+    HostedMachine,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
@@ -157,6 +160,30 @@ async def _world(
         return World(owner, agent, grant)
 
 
+async def _hosted_by(
+    session_factory: async_sessionmaker[AsyncSession], world: World, controller_id: str
+) -> None:
+    """A live controller of the owner's, which the agent's definition places it on."""
+    async with session_factory() as session:
+        session.add(
+            AgentController(
+                id=controller_id, owner_id=world.owner.id, name="laptop", kind="console"
+            )
+        )
+        await session.flush()
+        session.add(
+            AgentDefinition(
+                agent_id=world.agent.id,
+                owner_id=world.owner.id,
+                controller_id=controller_id,
+                revision=1,
+                desired_state="running",
+                definition={},
+            )
+        )
+        await session.commit()
+
+
 async def _issue(
     broker: ServiceBroker,
     session_factory: async_sessionmaker[AsyncSession],
@@ -205,6 +232,7 @@ class TestIssue:
         self, broker, session_factory, vendor, registry
     ) -> None:
         world = await _world(session_factory)
+        await _hosted_by(session_factory, world, "controller-1")
         principal = Principal.controller("controller-1", world.owner.id)
         token = await _issue(broker, session_factory, world.agent.id, principal)
 
@@ -269,6 +297,28 @@ class TestIssue:
             "ghr_refresh_1",
         )
         assert stored["login"] == "ada-gh"
+
+    async def test_issues_at_once_share_one_fetch_rather_than_queue_on_the_lock(
+        self, broker, session_factory, vendor, monkeypatch
+    ) -> None:
+        world = await _world(session_factory, expires_in=60)
+        locked = 0
+        lock = ServiceConnectionStore.lock_connection
+
+        async def counting(self, session, user_id, service):
+            nonlocal locked
+            locked += 1
+            await lock(self, session, user_id, service)
+
+        monkeypatch.setattr(ServiceConnectionStore, "lock_connection", counting)
+        issued = await asyncio.gather(
+            *(_issue(broker, session_factory, world.agent.id) for _ in range(6))
+        )
+
+        assert vendor.refreshes == 1
+        assert len({token.token for token in issued}) == 6
+        # One for the shared fetch, one per record.
+        assert locked == 1 + 6
 
     async def test_a_refused_refresh_needs_reauthorization_with_the_fix(
         self, broker, session_factory, vendor
@@ -503,15 +553,17 @@ async def _launch(
     *,
     state: str,
     desired_state: str,
+    machine_state: str = "ready",
+    machine_desired: str = "running",
 ) -> str:
     async with session_factory() as session:
         machine = await seed_machine(
             session,
             owner_id=world.owner.id,
             slot_id="slot-a",
-            state="ready",
-            desired_state="running",
-            stop_reason=None,
+            state=machine_state,
+            desired_state=machine_desired,
+            stop_reason=None if machine_desired == "running" else "idle",
             revision=1,
             generation=1,
         )
@@ -551,9 +603,72 @@ class TestCloudLaunch:
         await _launch(session_factory, world, state=state, desired_state=desired_state)
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code) == (403, "forbidden")
-        assert "launch is not running" in refused.message
+        assert "launch or machine is not running" in refused.message
         assert vendor.issued == []
         assert await _issuances(session_factory) == []
+
+    @pytest.mark.parametrize(
+        ("machine_state", "machine_desired"),
+        [("ready", "stopped"), ("stopped", "stopped"), ("error", "running")],
+        ids=["stopping", "asleep", "failed"],
+    )
+    async def test_a_cloud_agent_whose_machine_is_not_running_is_refused(
+        self, broker, session_factory, vendor, machine_state, machine_desired
+    ) -> None:
+        world = await _world(session_factory)
+        await _launch(
+            session_factory,
+            world,
+            state="ready",
+            desired_state="running",
+            machine_state=machine_state,
+            machine_desired=machine_desired,
+        )
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code) == (403, "forbidden")
+        assert "launch or machine is not running" in refused.message
+        assert vendor.issued == []
+
+    @pytest.mark.parametrize(
+        "machine_state", ["stopped", "retained"], ids=["waking", "reclaimed"]
+    )
+    async def test_a_waking_machine_is_asked_to_retry_not_refused(
+        self, broker, session_factory, vendor, machine_state
+    ) -> None:
+        world = await _world(session_factory)
+        await _launch(
+            session_factory,
+            world,
+            state="ready",
+            desired_state="running",
+            machine_state=machine_state,
+            machine_desired="running",
+        )
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code, refused.retryable) == (
+            503,
+            "internal",
+            True,
+        )
+        assert "starting" in refused.message
+        assert vendor.issued == []
+
+    async def test_a_machine_stopped_after_issuing_has_its_tokens_revoked(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        await _launch(session_factory, world, state="ready", desired_state="running")
+        token = await _issue(broker, session_factory, world.agent.id)
+        async with session_factory() as session:
+            await session.execute(
+                update(HostedMachine).values(
+                    desired_state="stopped", stop_reason="idle"
+                )
+            )
+            await session.commit()
+        async with session_factory() as session:
+            await broker.revoke_pending(session, ())
+        assert vendor.revoked == [token.token]
 
     async def test_a_launch_stopped_while_issuing_takes_the_token_back(
         self, broker, session_factory, vendor
@@ -574,12 +689,28 @@ class TestCloudLaunch:
 
         vendor.during_issue = stop_the_launch
         refused = await _refused(broker, session_factory, world.agent.id)
-        assert "launch is not running" in refused.message
+        assert "launch or machine is not running" in refused.message
         assert vendor.revoked == [vendor.issued[0][1]]
         assert await _issuances(session_factory) == []
 
 
 class TestRevocation:
+    async def test_one_call_revokes_more_than_one_batch(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        tokens = [
+            (await _issue(broker, session_factory, world.agent.id)).token
+            for _ in range(20)
+        ]
+        async with session_factory() as session:
+            grant = await STORE.get_grant(session, world.agent.id, "github")
+            assert grant is not None
+            warning = await broker.revoke_grant(session, grant, world.owner.id)
+
+        assert warning is None
+        assert sorted(vendor.revoked) == sorted(tokens)
+
     async def test_removing_a_grant_revokes_its_tokens_at_once(
         self, broker, session_factory, vendor
     ) -> None:

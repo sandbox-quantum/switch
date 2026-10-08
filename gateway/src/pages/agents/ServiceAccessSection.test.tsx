@@ -62,6 +62,8 @@ function mockServer(grants: ServiceGrants | null) {
       if (path === "/gateway/provider-connections/github") return json(GITHUB);
       if (path === "/gateway/agents/a1/service-grants/github" && method === "PUT")
         return json({ grant: {}, warning: null });
+      if (path === "/gateway/agents/a1/service-grants/github" && method === "DELETE")
+        return json({ warning: null });
       if (path === "/gateway/agents/a1/addressing-policy") return json(agent);
       return json({ detail: "Not Found" }, 404);
     }),
@@ -107,6 +109,21 @@ describe("ServiceAccessSection", () => {
       path: "/gateway/agents/a1/addressing-policy",
       method: "PUT",
       body: { policy: OWNER_ONLY_POLICY },
+    });
+  });
+
+  it("says what removing a grant does, and does not, on the agent's own machine", async () => {
+    const calls = mockServer(GRANTED);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    const remove = await screen.findByRole("button", { name: "Remove" });
+    expect(remove.getAttribute("title")).toMatch(/may still use the machine's own sign-in/);
+
+    fireEvent.click(remove);
+    expect(await screen.findByText(/Removing a grant stops Switch giving this access/)).toBeTruthy();
+    expect(calls).toContainEqual({
+      path: "/gateway/agents/a1/service-grants/github",
+      method: "DELETE",
+      body: null,
     });
   });
 

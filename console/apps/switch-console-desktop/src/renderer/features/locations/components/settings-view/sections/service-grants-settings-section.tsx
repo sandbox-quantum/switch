@@ -20,6 +20,7 @@ import { OWNER_ONLY_POLICY, type ServiceGrant } from '@shared/core/switch-server
 import {
   CLOUD_GITHUB_GRANT_NOTES,
   GITHUB_GRANT_NOTES,
+  REMOVED_GRANT_NOTE,
   grantedRepositoryIds,
   grantedRepositoryNames,
 } from './service-grants';
@@ -194,10 +195,16 @@ export function ServiceGrantsRow({
           github={github.data}
           busy={change.isPending}
           onChange={grant.service === 'github' ? () => setEditing(true) : null}
+          removeNote={cloud ? null : REMOVED_GRANT_NOTE}
           onRemove={() =>
-            change.mutate(() =>
-              rpc.workspaces.removeServiceGrant({ workspaceId, agentId, service: grant.service })
-            )
+            change.mutate(async () => {
+              const warning = await rpc.workspaces.removeServiceGrant({
+                workspaceId,
+                agentId,
+                service: grant.service,
+              });
+              return [warning, cloud ? null : REMOVED_GRANT_NOTE].filter(Boolean).join(' ') || null;
+            })
           }
         />
       ))}
@@ -226,12 +233,15 @@ function GrantCard({
   github,
   busy,
   onChange,
+  removeNote,
   onRemove,
 }: {
   grant: ServiceGrant;
   github: GitHubConnection | undefined;
   busy: boolean;
   onChange: (() => void) | null;
+  /** What removing it does on the owner's own machine; null in the cloud. */
+  removeNote: string | null;
   onRemove: () => void;
 }) {
   return (
@@ -244,7 +254,13 @@ function GrantCard({
             Change
           </Button>
         )}
-        <Button size="sm" variant="ghost" disabled={busy} onClick={onRemove}>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          title={removeNote ?? undefined}
+          onClick={onRemove}
+        >
           Remove
         </Button>
       </div>

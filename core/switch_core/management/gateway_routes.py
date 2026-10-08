@@ -227,10 +227,17 @@ async def patch_managed_agent(
 
 @router.delete("/agents/{agent_id}")
 async def delete_managed_agent(
-    agent_id: str, session: Session, user: CurrentUser, management: Management
+    agent_id: str,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+    broker: Broker,
 ) -> dict[str, bool]:
     await management.delete_managed_agent(
         session, require_tenant_id(), user.id, agent_id
+    )
+    await _revoke_controller_tokens(
+        session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
     return {"ok": True}
 

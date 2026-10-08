@@ -19,6 +19,8 @@ import {
   type RoomAttachmentSource,
 } from './room-prompt';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
+import { githubRepositoryVisible } from './service-github';
+import { serviceFallbackNotice, ServiceNotices } from './service-notices';
 import {
   connectParent,
   type BusyReason,
@@ -80,6 +82,8 @@ export type SharedHostOptions = {
   instructions: string | null;
   /** The service tokens this session has been handed, scrubbed from every event it records. */
   redactions: Redactions;
+  /** Its services falling back to the machine's own sign-in, shown in the session once it is up. */
+  serviceNotices: ServiceNotices;
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
@@ -352,6 +356,8 @@ export async function runSharedHost(
       },
       adapter
     );
+
+    options.serviceNotices.attach((message) => host!.serviceFallback(message));
 
     // ── What the host reports ────────────────────────────────────────────────
     const reporter = await ActivityReporter.load(options.root);
@@ -910,13 +916,20 @@ export async function hostSessionProcess(input: {
   const mcp = await startSessionMcp(parent);
   const redactions = new Redactions();
   parent.onRedactions((values) => redactions.addListed(values));
+  const serviceNotices = new ServiceNotices();
+  // A cloud deployment has no sign-in of the machine's to fall back to.
+  const fallback = process.env.SWITCH_HOSTED_BOOTSTRAP !== '1';
   let endpoint: ServiceEndpointServer | null = null;
   try {
     const { grants, unavailable } = input.services;
+    if (unavailable !== null)
+      serviceNotices.raise(
+        serviceFallbackNotice('github', `its grants could not be read: ${unavailable}`, fallback)
+      );
     if (needsGitHubHelpers(input.services)) {
       if (process.platform === 'win32')
-        console.warn(
-          `Session ${config.session.sessionId}'s agent ${unavailable === null ? 'has a GitHub grant' : 'may have a GitHub grant'}, but Switch's GitHub helpers do not run on Windows: git and gh use this machine's own sign-in, if any.`
+        serviceNotices.raise(
+          serviceFallbackNotice('github', "Switch's GitHub helpers do not run on Windows yet", true)
         );
       else
         endpoint = await startServiceEndpoint({
@@ -924,6 +937,9 @@ export async function hostSessionProcess(input: {
           unavailable,
           ask: parent.ask,
           redactions,
+          notices: serviceNotices,
+          fallback,
+          repositoryVisible: githubRepositoryVisible,
         });
     }
     const prepared = await prepareSharedConfig(
@@ -933,6 +949,7 @@ export async function hostSessionProcess(input: {
       input.services,
       endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint }
     );
+    for (const notice of prepared.notices) serviceNotices.raise(notice);
     const authenticate = input.authenticate;
     await runSharedHost(
       {
@@ -949,6 +966,7 @@ export async function hostSessionProcess(input: {
         parkAfterMs: parkAfterMs(),
         instructions: config.execution?.instructions ?? null,
         redactions,
+        serviceNotices,
       },
       input.adapter,
       input.signal

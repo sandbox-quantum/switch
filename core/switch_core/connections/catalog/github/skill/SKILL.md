@@ -18,14 +18,20 @@ nothing to set up or renew.
 - Only the granted repositories. Issues, Actions, check runs, commit statuses
   and workflow files are out of reach: a push that adds or changes a file under
   `.github/workflows/` is rejected. Other repositories, organization settings
-  and your owner's own account are out of reach too.
+  and your owner's own account are out of the grant's reach too.
 - That is the scope, not a fault. When something is refused, tell the user what
   you could not do rather than retrying or looking for other credentials.
 - If `git` or `gh` says GitHub refused its credentials, Switch replaces them:
-  run the command once more. If Switch then says the grant was removed or
-  changed, stop and tell the user; your owner has to grant it again.
-- Pushes, pull requests, comments and reviews appear as the Switch GitHub App's
-  bot, not as your owner.
+  run the command once more.
+- If `git` or `gh` says Switch gave no token (the repository is not in the
+  grant, or Switch could not give one), it tried this machine's own GitHub
+  sign-in instead, if there is one. If the command then succeeded, tell the
+  user it acted as your owner's own account, not the Switch GitHub App, and
+  outside the grant. If it failed, there was nothing to fall back to: tell the
+  user what you could not do. If Switch says the grant was removed or
+  changed, your owner has to grant it again.
+- Through the grant, pushes, pull requests, comments and reviews appear as the
+  Switch GitHub App's bot, not as your owner.
 - Never print, log or store a credential, and leave git's credential settings
   and `gh`'s sign-in alone.
 

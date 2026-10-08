@@ -45,16 +45,35 @@ def _repo(repo_id: int) -> dict:
     }
 
 
-def _serve(monkeypatch, installations: dict[int, int]) -> list[str]:
-    """Answer `/user/installations/{id}/repositories` for installations of the
-    given sizes, numbering each one's repositories from id*100_000; anything
-    else is a 404. Returns the URLs asked for."""
+def _serve(
+    monkeypatch, installations: dict[int, int], suspended: frozenset[int] = frozenset()
+) -> list[str]:
+    """Answer `/user/installations`, and `/user/installations/{id}/repositories`
+    for installations of the given sizes, numbering each one's repositories
+    from id*100_000; anything else is a 404. Returns the repository URLs asked
+    for."""
     asked: list[str] = []
 
     async def request(_client, method, url, **kwargs):
-        asked.append(url)
         parts = urlsplit(url)
         segments = parts.path.strip("/").split("/")
+        if segments == ["user", "installations"]:
+            return httpx.Response(
+                200,
+                json={
+                    "installations": [
+                        {
+                            "id": i,
+                            "account": {"login": "example-org"},
+                            "suspended_at": "2026-10-01T00:00:00Z"
+                            if i in suspended
+                            else None,
+                        }
+                        for i in installations
+                    ]
+                },
+            )
+        asked.append(url)
         if segments[:2] != ["user", "installations"] or len(segments) != 4:
             return httpx.Response(404)
         installation_id = int(segments[2])
@@ -113,6 +132,16 @@ async def test_an_installation_the_person_no_longer_reaches_is_none(
     _serve(monkeypatch, {1: 3})
 
     assert await github.installation_repositories("gho_user", 9, {900_000}) is None
+
+
+async def test_a_suspended_installation_is_refused_with_its_reason(
+    github, monkeypatch
+) -> None:
+    asked = _serve(monkeypatch, {1: 3}, suspended=frozenset({1}))
+
+    with pytest.raises(GitHubError, match="example-org is suspended"):
+        await github.installation_repositories("gho_user", 1, {100_000})
+    assert asked == []
 
 
 async def test_an_installation_beyond_the_cap_fails_loudly(github, monkeypatch) -> None:

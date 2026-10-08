@@ -137,6 +137,23 @@ it('makes the agent owner-only from the warning', async () => {
   );
 });
 
+it('says what removing a grant does, and does not, on your computer', async () => {
+  workspaces.getServiceGrants.mockResolvedValue(GRANTED);
+  const el = await render();
+
+  await vi.waitFor(() => expect(button(el, 'Remove')).toBeDefined());
+  expect(button(el, 'Remove')!.title).toContain('may still use your own sign-in');
+  await act(async () => button(el, 'Remove')!.click());
+  await vi.waitFor(() =>
+    expect(el.textContent).toContain('Removing a grant stops Switch giving this access.')
+  );
+  expect(workspaces.removeServiceGrant).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    agentId: 'agent',
+    service: 'github',
+  });
+});
+
 it("restores a cloud agent's missing repository grant in one click", async () => {
   workspaces.getServiceGrants.mockResolvedValue({
     grants: [],

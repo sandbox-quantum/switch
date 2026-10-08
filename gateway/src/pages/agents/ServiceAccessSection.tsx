@@ -201,7 +201,13 @@ export default function ServiceAccessSection({
                 size="small"
                 color="error"
                 disabled={busy}
-                onClick={() => void act(() => removeServiceGrant(agent.id, grant.service))}
+                title={REMOVED_NOTE}
+                onClick={() =>
+                  void act(async () => {
+                    const { warning } = await removeServiceGrant(agent.id, grant.service);
+                    return { warning: [warning, REMOVED_NOTE].filter(Boolean).join(" ") };
+                  })
+                }
               >
                 Remove
               </Button>
@@ -339,12 +345,20 @@ function GitHubGrantForm({
   );
 }
 
+/** What removing a grant does, and what it does not. */
+export const REMOVED_NOTE =
+  "Removing a grant stops Switch giving this access. On a laptop or server, the agent may still use the machine's own sign-in, and the session says so when it does.";
+
 /** What a GitHub grant changes on the machine the agent runs on, and what it does not. */
 export function GitHubNotes() {
   return (
     <Box component="ul" sx={{ m: 0, pl: 2.5, color: "text.secondary", typography: "body2" }}>
       <li>Pushes, pull requests and comments show as the Switch GitHub App, not you.</li>
-      <li>Replaces your GitHub login for this agent over HTTPS. SSH still uses your keys.</li>
+      <li>
+        Used first for this agent over HTTPS. For repositories outside the grant, or if Switch
+        can&apos;t provide it, your own GitHub login is used and the session says so. SSH still uses
+        your keys.
+      </li>
       <li>On your computer, the agent can still use anything you&apos;re signed in to.</li>
       <li>Not available on Windows yet.</li>
     </Box>
