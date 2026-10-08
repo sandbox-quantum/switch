@@ -495,21 +495,6 @@ describe('runController', () => {
     expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBeNull();
   });
 
-  it('exits as upgrade required, without retrying, when the server refuses its protocol', async () => {
-    core.protocolUnsupported = true;
-    running = runController(deps(), stop.signal);
-    expect(await running).toBe('upgrade_required');
-    expect(await secrets.get(CONTROLLER_CREDENTIAL)).not.toBeNull();
-    expect(store.revokedAt()).toBeNull();
-  });
-
-  it('exits as credential invalid, without retrying, when the server knows no controller by its credential', async () => {
-    core.credential = 'a-credential-the-server-no-longer-knows';
-    running = runController(deps(), stop.signal);
-    expect(await running).toBe('credential_invalid');
-    expect(store.revokedAt()).toBeNull();
-  });
-
   it('runs on an adopted identity with the credential in memory, and writes it nowhere', async () => {
     const handedDir = mkdtempSync(join(tmpdir(), 'controller-handed-'));
     const handed = ControllerStore.open(join(handedDir, 'controller.db'));

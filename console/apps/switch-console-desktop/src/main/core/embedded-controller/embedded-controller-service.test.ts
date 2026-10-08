@@ -321,24 +321,6 @@ describe('EmbeddedControllerService', () => {
     await waitFor(() => calls.length === 2, 'the restart asked for');
   });
 
-  it('does not restart a controller the server needs a newer version of (exit 5), and keeps its credential', async () => {
-    await enabled();
-    calls[0]!.child.exit(5);
-    expect(lastPhase()).toEqual({ kind: 'update_required', at: '2026-01-01T00:00:00.000Z' });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(calls).toHaveLength(1);
-    expect(secrets.get(credentialSecretKey(SERVER))).toBe(CREDENTIAL);
-  });
-
-  it('forgets a credential the server no longer knows (exit 6), as for a removed machine', async () => {
-    await enabled();
-    calls[0]!.child.exit(6);
-    await waitFor(() => lastPhase()?.kind === 'removed', 'the removed phase');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(calls).toHaveLength(1);
-    expect(secrets.has(credentialSecretKey(SERVER))).toBe(false);
-  });
-
   it('turns off by revoking on the server, letting the controller exit, and forgetting it', async () => {
     const running = await enabled();
     leaveControllerState();

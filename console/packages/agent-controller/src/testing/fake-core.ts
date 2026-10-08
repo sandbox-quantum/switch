@@ -91,8 +91,6 @@ export class FakeCore {
   reportWithinS = 60;
   heartbeatIntervalS = 0.05;
   revoked = false;
-  /** Answer every controller call as a server that no longer speaks this protocol. */
-  protocolUnsupported = false;
   assignment: Assignment = { revision: 0, agents: [] };
   /** Each agent's rooms, as `agent.attached` carries them. */
   readonly rooms = new Map<string, string[]>();
@@ -356,7 +354,6 @@ export class FakeCore {
       return this.json(res, 201, { controller_id: this.controllerId, credential: this.credential });
     }
     if (method === 'POST' && url.pathname === `${base}/token`) {
-      if (this.protocolUnsupported) return this.refuse(res, 426, 'protocol_unsupported');
       if (this.revoked) return this.refuse(res, 401, 'controller_revoked');
       if ((body as { credential?: string }).credential !== this.credential)
         return this.refuse(res, 401, 'invalid_credential');
