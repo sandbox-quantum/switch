@@ -11,6 +11,7 @@ import { provider as opencode } from './impl/opencode';
 
 export const pluginRegistry = createPluginRegistry<CLIAgentPluginProvider>();
 
-for (const p of [antigravity, claude, codex, cursor, opencode]) {
+// Registration order is the order the desktop app lists providers in.
+for (const p of [codex, claude, antigravity, cursor, opencode]) {
   pluginRegistry.register(p);
 }

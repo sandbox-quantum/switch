@@ -37,6 +37,24 @@ const metadataSchema = z.object({
   description: z.string(),
   websiteUrl: z.string(),
   compatibleVersions: z.string().optional(),
+  /**
+   * What to tell someone to install, where the product name alone would be
+   * ambiguous ("Cursor CLI" rather than the editor). Defaults to `name`.
+   */
+  cliLabel: z.string().optional(),
+  /**
+   * The Switch gateway's known-agent type for this provider, sent when an agent
+   * registers. Must be a key the gateway's known-agent list accepts. Defaults to
+   * `id`.
+   */
+  knownAgentType: z.string().optional(),
+  /**
+   * Whether starting a session may sign the CLI in — opening a browser when it
+   * holds no usable token. Listing a provider's models starts a session, so
+   * when this is set the app asks the read-only sign-in check first and lists
+   * models only once that says signed in. Defaults to false.
+   */
+  sessionStartMaySignIn: z.boolean().optional(),
 });
 
 export type CLIAgentPluginMetadata = z.infer<typeof metadataSchema>;

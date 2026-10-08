@@ -14,6 +14,7 @@ export const plugin = definePlugin(
     description:
       'CLI that uses Anthropic Claude for code edits, explanations, and structured refactors in the terminal.',
     websiteUrl: 'https://code.claude.com/docs/en/quickstart',
+    knownAgentType: 'claude-code',
   },
   {
     autoApprove: {

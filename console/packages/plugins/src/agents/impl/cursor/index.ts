@@ -10,8 +10,9 @@ export const plugin = definePlugin(
     id: 'cursor',
     name: 'Cursor',
     description:
-      "Cursor's agent CLI; provides editor-style, project-aware assistance from the shell.",
+      "Cursor's agent CLI; provides editor-style, location-aware assistance from the shell.",
     websiteUrl: 'https://cursor.com/docs/cli/overview',
+    cliLabel: 'Cursor CLI',
   },
   {
     autoApprove: {
