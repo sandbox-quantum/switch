@@ -8,7 +8,7 @@ or an issued token.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
@@ -33,27 +33,34 @@ from switch_core.db.stores.hosted_machine_store import lock_launch
 MACHINE_DOWN = ("stopping", "stopped", "error", "retained", "deleting", "deleted")
 
 
-def cloud_launch_running(
+def cloud_launch_status(
     launch_desired: str,
     launch_state: str,
     machine_desired: str | None,
     machine_state: str | None,
-) -> bool:
-    """Whether a cloud launch's worker may be given service tokens: the launch
-    meant to run and not failed, on a machine (if it has one yet) meant to run
-    and not down."""
-    return (
-        launch_desired == "running"
-        and launch_state not in ("error", "deleting", "deleted")
-        and (
-            machine_desired is None
-            or (machine_desired == "running" and machine_state not in MACHINE_DOWN)
-        )
-    )
+) -> Literal["running", "starting", "down"]:
+    """Whether a cloud launch's worker may be given service tokens: `running`
+    when the launch is meant to run and not failed, on a machine (if it has
+    one yet) meant to run and up; `starting` when that machine is meant to run
+    but not up yet (waking), which a retry gets past; `down` otherwise."""
+    if launch_desired != "running" or launch_state in ("error", "deleting", "deleted"):
+        return "down"
+    if machine_desired is None:
+        return "running"
+    if machine_desired != "running" or machine_state in (
+        "error",
+        "retained",
+        "deleting",
+        "deleted",
+    ):
+        return "down"
+    if machine_state in ("stopping", "stopped"):
+        return "starting"
+    return "running"
 
 
 def cloud_launches_of(agent_id: Any) -> Any:
-    """The agent's cloud launches with their machines, as `cloud_launch_running` reads them."""
+    """The agent's cloud launches with their machines, as `cloud_launch_status` reads them."""
     return (
         select(
             HostedLaunch.desired_state,

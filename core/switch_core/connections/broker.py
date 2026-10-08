@@ -63,7 +63,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import (
     ServiceConnectionBusy,
     ServiceConnectionStore,
-    cloud_launch_running,
+    cloud_launch_status,
     cloud_launches_of,
 )
 from switch_core.keys import Keyring
@@ -332,8 +332,18 @@ class ServiceBroker:
                 "This agent's owner is no longer a member of the workspace.",
                 retryable=False,
             )
-        launches = list(await session.execute(cloud_launches_of(agent_id)))
-        if launches and not any(cloud_launch_running(*launch) for launch in launches):
+        statuses = {
+            cloud_launch_status(*launch)
+            for launch in await session.execute(cloud_launches_of(agent_id))
+        }
+        if statuses and "running" not in statuses:
+            if "starting" in statuses:
+                raise ServiceError(
+                    503,
+                    INTERNAL,
+                    f"Agent {agent.name}'s cloud machine is starting. Please retry.",
+                    retryable=True,
+                )
             raise ServiceError(
                 403,
                 FORBIDDEN,
@@ -1290,11 +1300,16 @@ class ServiceBroker:
                 self._session_factory, require_tenant_id()
             ) as own:
                 # Batch after batch, until none remain, a batch revokes nothing
-                # (what is left keeps failing: the tick tries again), or the
-                # time is up. A failed token sorts last, by its attempts.
+                # (what is left keeps failing: the tick tries again), or a
+                # whole batch's vendor calls no longer fit in the time. A
+                # failed token sorts last, by its attempts.
                 while True:
                     revoked, pending = await self._revoke_pending(own, conditions)
-                    if not pending or not revoked or time.monotonic() >= deadline:
+                    if (
+                        not pending
+                        or not revoked
+                        or time.monotonic() + VENDOR_CALL_SECONDS > deadline
+                    ):
                         return pending
         except Exception as error:
             logger.error(

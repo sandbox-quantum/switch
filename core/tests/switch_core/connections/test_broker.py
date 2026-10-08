@@ -629,6 +629,27 @@ class TestCloudLaunch:
         assert "launch or machine is not running" in refused.message
         assert vendor.issued == []
 
+    async def test_a_waking_machine_is_asked_to_retry_not_refused(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        await _launch(
+            session_factory,
+            world,
+            state="ready",
+            desired_state="running",
+            machine_state="stopped",
+            machine_desired="running",
+        )
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code, refused.retryable) == (
+            503,
+            "internal",
+            True,
+        )
+        assert "starting" in refused.message
+        assert vendor.issued == []
+
     async def test_a_machine_stopped_after_issuing_has_its_tokens_revoked(
         self, broker, session_factory, vendor
     ) -> None:
