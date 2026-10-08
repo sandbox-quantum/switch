@@ -1,5 +1,5 @@
 import type { Command } from '@switch-console/shared/session-v1';
-import { Cpu, Loader2, Paperclip, X } from 'lucide-react';
+import { Cpu, Loader2, Paperclip, Users, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { heldStatusText } from '@renderer/features/sessions/components/transcript/held-message';
@@ -17,6 +17,7 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { ACTIVITY_UNAVAILABLE_TEXT } from '@shared/core/chats/activity';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
+import { mentionAgentIdFor, ROOM_ONLY } from '../addressee';
 import { snippetOf } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
@@ -76,8 +77,9 @@ export const ChatComposer = observer(function ChatComposer({
   serverId: string;
   timeline: ChatTimeline;
   agents: ChatAgent[];
-  /** The selected agent's activity. */
+  /** The selected agent's activity, or the chat's own agent's when room-only. */
   activity: AgentActivity | null;
+  /** An agent id, `ROOM_ONLY`, or null for the chat's first agent. */
   selectedAgentId: string | null;
   onSelectAgent: (agentId: string) => void;
   replyTo: ChatMessage | null;
@@ -93,7 +95,10 @@ export const ChatComposer = observer(function ChatComposer({
   const [controlError, setControlError] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
-  const selected = agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null;
+  const roomOnly = agents.length > 1 && selectedAgentId === ROOM_ONLY;
+  const selected = roomOnly
+    ? null
+    : (agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null);
   const session = activity?.session ?? null;
   const runningTurn = activity?.runningTurn ?? null;
   const target = activity?.target ?? null;
@@ -114,7 +119,7 @@ export const ChatComposer = observer(function ChatComposer({
     timeline.send({
       body,
       threadRootId: replyTo?.messageId ?? null,
-      mentionAgentId: agents.length > 1 ? (selected?.id ?? null) : null,
+      mentionAgentId: mentionAgentIdFor(agents, selectedAgentId),
       files: files.map(({ file }) => chatFile(file)),
     });
     setDraft('');
@@ -217,31 +222,40 @@ export const ChatComposer = observer(function ChatComposer({
             onRemove={(id) => setFiles((current) => current.filter((each) => each.id !== id))}
           />
           <PromptInputTextarea
-            aria-label={`Message ${selected ? chatAgentLabel(selected) : 'the chat'}`}
-            placeholder={disabled ?? `Message ${selected ? chatAgentLabel(selected) : 'the chat'}…`}
+            aria-label={`Message ${selected ? chatAgentLabel(selected) : 'the room'}`}
+            placeholder={disabled ?? `Message ${selected ? chatAgentLabel(selected) : 'the room'}…`}
             value={draft}
             disabled={disabled !== null}
             onChange={(event) => setDraft(event.target.value)}
           />
           <PromptInputFooter>
             <PromptInputTools>
-              {agents.length > 1 && selected && (
+              {agents.length > 1 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     render={<Button variant="ghost" size="sm" />}
                     className="h-7 gap-1.5 px-2 text-xs font-normal text-foreground-muted"
                     aria-label="Agent to address"
                   >
-                    <AgentAvatar
-                      name={chatAgentLabel(selected)}
-                      iconUrl={selected.iconUrl}
-                      size={14}
-                    />
-                    {chatAgentLabel(selected)}
+                    {selected ? (
+                      <>
+                        <AgentAvatar
+                          name={chatAgentLabel(selected)}
+                          iconUrl={selected.iconUrl}
+                          size={14}
+                        />
+                        {chatAgentLabel(selected)}
+                      </>
+                    ) : (
+                      <>
+                        <Users className="size-3.5" />
+                        Room only
+                      </>
+                    )}
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start">
                     <DropdownMenuRadioGroup
-                      value={selected.id}
+                      value={selected?.id ?? ROOM_ONLY}
                       onValueChange={(value) => onSelectAgent(String(value))}
                     >
                       {agents.map((agent) => (
@@ -249,6 +263,9 @@ export const ChatComposer = observer(function ChatComposer({
                           {chatAgentLabel(agent)}
                         </DropdownMenuRadioItem>
                       ))}
+                      <DropdownMenuRadioItem value={ROOM_ONLY}>
+                        Room only (no agent)
+                      </DropdownMenuRadioItem>
                     </DropdownMenuRadioGroup>
                   </DropdownMenuContent>
                 </DropdownMenu>

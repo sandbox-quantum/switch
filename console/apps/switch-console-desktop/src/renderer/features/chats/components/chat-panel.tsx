@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
+import { ROOM_ONLY } from '../addressee';
 import { agentActivities } from '../stores/activities';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline } from '../stores/chat-timeline-store';
@@ -117,12 +118,14 @@ export const ChatPanel = observer(function ChatPanel({
     return () => clearInterval(timer);
   }, [activities, working, messageCount, turnIdsKey]);
 
+  // Room-only addresses no agent; the controls then act on the chat's own.
+  const controlledAgentId =
+    selectedAgentId === ROOM_ONLY
+      ? (agentId ?? chat?.agents[0]?.id)
+      : (selectedAgentId ?? chat?.agents[0]?.id);
   const selectedActivity = useMemo(
-    () =>
-      activities.find(
-        (activity) => activity.agentId === (selectedAgentId ?? chat?.agents[0]?.id)
-      ) ?? null,
-    [activities, selectedAgentId, chat]
+    () => activities.find((activity) => activity.agentId === controlledAgentId) ?? null,
+    [activities, controlledAgentId]
   );
 
   if (lost)
