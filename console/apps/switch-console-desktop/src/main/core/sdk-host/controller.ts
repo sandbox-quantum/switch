@@ -16,6 +16,7 @@ import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
 import { sessionIssue, sessionStartupStatus } from './host-failures';
 import { transcriptSource } from './host-journal';
 import { placeSession } from './place-session';
+import { listReasoning } from './reasoning';
 import {
   reconcileSessionCommand,
   sessionCommandStatus,
@@ -51,6 +52,8 @@ export const sdkHostController = createRPCController({
     reconcileSessionCommand(agentId, command),
   sessionCommandStatus: (agentId: string, sessionId: string, commandId: string) =>
     sessionCommandStatus(agentId, sessionId, commandId),
+  reasoningList: (agentId: string, sessionId: string, turnIds: string[] | null) =>
+    listReasoning(agentId, sessionId, turnIds),
   cloudAgents: (serverId: string) => listCloudAgents(serverId),
   cloudMachines: (serverId: string) => listServerCloudMachines(serverId),
   cloudSessions: (agentId: string) => listCloudSessions(agentId),
