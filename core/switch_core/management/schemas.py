@@ -392,7 +392,7 @@ class CreateManagedAgentRequest(_GatewayBody):
     name: str
     description: str
     display_name: str | None = None
-    # Null for the robot its name generates (`agent_icon.generated_icon_url`).
+    # Null for the icon its name generates (`agent_icon.generated_icon_url`).
     icon_url: str | None = None
     controller_id: str | None
     desired_state: DesiredState

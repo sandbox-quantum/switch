@@ -231,6 +231,17 @@ DELIVERY_FAILURES = _spec(
     "loop it was.",
     "actor",
 )
+OBSERVER_FAILURES = _spec(
+    "switch.messages.observer_failures",
+    "sum",
+    "{failure}",
+    "Reports about a message that raised: the transport telling its observer "
+    "after the commit, or an agent's consumer reporting a message addressed to "
+    "it. The message is unaffected and only the report is lost, so these are "
+    "caught by design and invisible without a counter. `actor` is who was "
+    "writing or reading.",
+    "actor",
+)
 DELIVERY_LAG = _spec(
     "switch.messages.delivery_lag",
     "histogram",
@@ -550,6 +561,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         MESSAGES_DELIVERED,
         SEND_FAILURES,
         DELIVERY_FAILURES,
+        OBSERVER_FAILURES,
         DELIVERY_LAG,
         DELIVERY_CACHE_READS,
         DELIVERY_CACHE_FILLS,

@@ -17,12 +17,12 @@ const TABS: readonly { value: PickerTab; label: string }[] = [
 ];
 
 /**
- * Choose an agent's picture (CHOO-2171): one of a set of generated bots, or a
+ * Choose an agent's picture (CHOO-2171): one of a set of generated avatars, or a
  * link to an image of the reader's own.
  *
  * `iconUrl` is null when nothing has been chosen, and the agent then wears the
  * avatar its name generates — the state the ✕ returns to. A new agent does not
- * start there: it opens on a concrete random bot, since an unnamed agent has no
+ * start there: it opens on a concrete random avatar, since an unnamed agent has no
  * name to draw from.
  */
 export function AgentIconPicker({
@@ -50,7 +50,7 @@ export function AgentIconPicker({
   const [urlError, setUrlError] = useState<string | null>(null);
 
   // An unnamed agent still needs something to seed the grid, or every tile is
-  // the same bot drawn from the empty string.
+  // the same face drawn from the empty string.
   const seedName = name.trim() || 'agent';
   // The server generates the icons on offer, so every client offers the same
   // ones and an agent created anywhere looks the same.

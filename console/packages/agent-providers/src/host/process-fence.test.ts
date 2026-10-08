@@ -90,6 +90,27 @@ it('waits for confirmed exit after a transient permission error during group tea
   }
 });
 
+const throws = (code: string) => () => {
+  throw Object.assign(new Error(code), { code });
+};
+
+// macOS answers EPERM for a group left with only unreaped members, as it can
+// be the moment a host exits.
+it.each([
+  ['checking it', [throws('EPERM')]],
+  ['killing it', [(): true => true, throws('EPERM')]],
+])('waits out a group that answers EPERM when %s', async (_when, answers) => {
+  const kill = vi.spyOn(process, 'kill');
+  for (const answer of [throws('ESRCH'), ...answers, throws('ESRCH')])
+    kill.mockImplementationOnce(answer);
+  try {
+    await expect(fenceDeadOwner(12345, 12345)).resolves.toBeUndefined();
+    expect(kill).toHaveBeenLastCalledWith(-12345, 0);
+  } finally {
+    kill.mockRestore();
+  }
+});
+
 it('does not assume a group is gone when permission stays denied', async () => {
   const gone = Object.assign(new Error('Process exited'), { code: 'ESRCH' });
   const denied = Object.assign(new Error('Permission denied'), { code: 'EPERM' });

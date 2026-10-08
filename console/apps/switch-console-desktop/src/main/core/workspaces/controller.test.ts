@@ -4,9 +4,15 @@ import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
 const trackEvent = vi.hoisted(() => vi.fn());
 const createRoomOnServer = vi.hoisted(() => vi.fn());
-const deleteBridge = vi.hoisted(() => vi.fn());
+const disconnectBridgeOnServer = vi.hoisted(() => vi.fn());
+const bridgeInstallState = vi.hoisted(() => vi.fn());
 const deleteRoom = vi.hoisted(() => vi.fn());
 const fetchBridges = vi.hoisted(() => vi.fn());
+const fetchBridgeTeams = vi.hoisted(() => vi.fn());
+const addBridgeTeam = vi.hoisted(() => vi.fn());
+const removeBridgeTeam = vi.hoisted(() => vi.fn());
+const updateBridgeOnServer = vi.hoisted(() => vi.fn());
+const saveTeamsPackage = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const requireWorkspace = vi.hoisted(() => vi.fn());
@@ -46,17 +52,22 @@ vi.mock('@main/core/switch-servers/backfill-agent-icons', () => ({ backfillAgent
 vi.mock('@main/core/switch-servers/bridge-home-url', () => ({ withResolvedHomeUrls: vi.fn() }));
 vi.mock('@main/core/switch-servers/create-bridge', () => ({ createBridgeOnServer: vi.fn() }));
 vi.mock('@main/core/switch-servers/create-room', () => ({ createRoomOnServer }));
+vi.mock('@main/core/switch-servers/disconnect-bridge', () => ({
+  disconnectBridgeOnServer,
+  bridgeInstallState,
+}));
 vi.mock('@main/core/switch-servers/identities', () => ({
   claimIdentityOnServer: vi.fn(),
   searchDirectoryOnServer: vi.fn(),
 }));
-vi.mock('@main/core/switch-servers/update-bridge', () => ({ updateBridgeOnServer: vi.fn() }));
+vi.mock('@main/core/switch-servers/teams-package', () => ({ saveTeamsPackage }));
+vi.mock('@main/core/switch-servers/update-bridge', () => ({ updateBridgeOnServer }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
+  addBridgeTeam,
   addRoomAgents: vi.fn(),
   agentExistsOnServer: vi.fn(),
   createRoomFromTemplate: vi.fn(),
   decodeJwtTenantId: vi.fn(() => null),
-  deleteBridge,
   deleteRoom,
   fetchAddressingPolicy: vi.fn(),
   fetchAgentDetail: vi.fn(),
@@ -64,6 +75,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchAgents: vi.fn(),
   fetchAllExternalUsers: vi.fn(),
   fetchBridges,
+  fetchBridgeTeams,
   fetchBridgeTypes: vi.fn(),
   fetchMyIdentities: vi.fn(),
   fetchRoomAgentIds: vi.fn(),
@@ -75,6 +87,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: class GatewayError extends Error {},
   ownsOwnerAddressedAgent: vi.fn(),
   releaseBridgeIdentity: vi.fn(),
+  removeBridgeTeam,
   removeRoomAgent: vi.fn(),
   switchTenant,
   updateAddressingPolicy: vi.fn(),
@@ -126,7 +139,7 @@ describe('disconnecting a bridge', () => {
   });
 
   it('reports a disconnection the gateway carried out', async () => {
-    deleteBridge.mockResolvedValue({ kind: 'deleted' });
+    disconnectBridgeOnServer.mockResolvedValue({ kind: 'deleted' });
 
     await workspacesController.deleteBridge({ workspaceId: 'ws', bridgeId: 'b1' });
 
@@ -141,7 +154,7 @@ describe('disconnecting a bridge', () => {
   it('reports a refusal as a failure rather than as a disconnection', async () => {
     // Admin-only, and the gateway hands back the refusal instead of throwing
     // it — so the await returns exactly as it does for a bridge that went.
-    deleteBridge.mockResolvedValue({ kind: 'forbidden' });
+    disconnectBridgeOnServer.mockResolvedValue({ kind: 'forbidden' });
 
     await workspacesController.deleteBridge({ workspaceId: 'ws', bridgeId: 'b1' });
 
@@ -151,6 +164,111 @@ describe('disconnecting a bridge', () => {
         outcome: 'failure',
       })
     );
+  });
+});
+
+describe('distributed Microsoft Teams team placement', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+  });
+
+  it('reads whether a bridge is backed by a live install, scoped to the workspace’s server', async () => {
+    bridgeInstallState.mockResolvedValue('installed');
+
+    await expect(
+      workspacesController.bridgeInstallState({ workspaceId: 'ws', bridgeId: 'b1' })
+    ).resolves.toBe('installed');
+
+    expect(bridgeInstallState).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'b1');
+  });
+
+  it('lists a bridge’s team placement', async () => {
+    const result = {
+      kind: 'listed' as const,
+      teams: [],
+      defaultTeamId: null,
+      inCatalog: true,
+      catalogProblem: null,
+    };
+    fetchBridgeTeams.mockResolvedValue(result);
+
+    await expect(
+      workspacesController.listBridgeTeams({ workspaceId: 'ws', bridgeId: 'b1' })
+    ).resolves.toEqual(result);
+
+    expect(fetchBridgeTeams).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'b1');
+  });
+
+  it('adds Switch to a team', async () => {
+    addBridgeTeam.mockResolvedValue({ kind: 'added' });
+
+    await expect(
+      workspacesController.addBridgeTeam({ workspaceId: 'ws', bridgeId: 'b1', teamId: 't1' })
+    ).resolves.toEqual({ kind: 'added' });
+
+    expect(addBridgeTeam).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'b1', 't1');
+  });
+
+  it('removes Switch from a team', async () => {
+    removeBridgeTeam.mockResolvedValue({ kind: 'removed' });
+
+    await expect(
+      workspacesController.removeBridgeTeam({ workspaceId: 'ws', bridgeId: 'b1', teamId: 't1' })
+    ).resolves.toEqual({ kind: 'removed' });
+
+    expect(removeBridgeTeam).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'b1',
+      't1'
+    );
+  });
+
+  it('chooses a default team by editing the bridge, turning channel creation on with it', async () => {
+    const updated = { kind: 'updated' as const, bridge: { id: 'b1' } as never };
+    updateBridgeOnServer.mockResolvedValue(updated);
+
+    await expect(
+      workspacesController.setDefaultTeamsTeam({ workspaceId: 'ws', bridgeId: 'b1', teamId: 't1' })
+    ).resolves.toEqual(updated);
+
+    expect(updateBridgeOnServer).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), {
+      bridgeId: 'b1',
+      channelCreationEnabled: true,
+      connectionConfig: { team_id: 't1' },
+    });
+  });
+
+  it('saves the Teams app package to disk under the chosen file name', async () => {
+    saveTeamsPackage.mockResolvedValue('/tmp/switch-teams.zip');
+
+    await expect(
+      workspacesController.downloadTeamsPackage({
+        workspaceId: 'ws',
+        bridgeId: 'b1',
+        defaultFileName: 'switch-teams.zip',
+      })
+    ).resolves.toBe('/tmp/switch-teams.zip');
+
+    expect(saveTeamsPackage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'b1',
+      'switch-teams.zip'
+    );
+  });
+
+  it('reports a cancelled save as null rather than a path', async () => {
+    saveTeamsPackage.mockResolvedValue(null);
+
+    await expect(
+      workspacesController.downloadTeamsPackage({
+        workspaceId: 'ws',
+        bridgeId: 'b1',
+        defaultFileName: 'switch-teams.zip',
+      })
+    ).resolves.toBeNull();
   });
 });
 

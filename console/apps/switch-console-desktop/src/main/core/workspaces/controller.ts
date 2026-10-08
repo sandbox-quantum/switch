@@ -3,12 +3,16 @@ import { withResolvedHomeUrls } from '@main/core/switch-servers/bridge-home-url'
 import { createBridgeOnServer } from '@main/core/switch-servers/create-bridge';
 import { createRoomOnServer } from '@main/core/switch-servers/create-room';
 import {
+  bridgeInstallState,
+  disconnectBridgeOnServer,
+} from '@main/core/switch-servers/disconnect-bridge';
+import {
+  addBridgeTeam,
   addRoomAgents,
   agentExistsOnServer,
   changeTemplateRun,
   createRoomFromTemplate,
   createTemplate,
-  deleteBridge,
   deleteRoom,
   deleteTemplate,
   exportRoomYaml,
@@ -18,6 +22,7 @@ import {
   fetchAgents,
   fetchAllExternalUsers,
   fetchBridges,
+  fetchBridgeTeams,
   beginMessagingAppInstall,
   fetchBridgeTypes,
   fetchInstallablePlatforms,
@@ -34,6 +39,7 @@ import {
   GatewayError,
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
+  removeBridgeTeam,
   removeRoomAgent,
   type StoredTemplateDetail,
   type StoredTemplateSummary,
@@ -54,6 +60,7 @@ import {
 } from '@main/core/switch-servers/identities';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
+import { saveTeamsPackage } from '@main/core/switch-servers/teams-package';
 import { updateBridgeOnServer } from '@main/core/switch-servers/update-bridge';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
@@ -67,7 +74,9 @@ import type {
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type {
+  BridgeInstallState,
   AddressingPolicy,
+  AddTeamsTeamResult,
   AgentIconBackfill,
   AgentVerifyResult,
   BridgeDirectorySearchResult,
@@ -89,7 +98,9 @@ import type {
   RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
+  RemoveTeamsTeamResult,
   SwitchServer,
+  TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
   UpdateRoomParams,
@@ -331,10 +342,16 @@ export const workspacesController = createRPCController({
     ),
 
   /**
-   * Disconnect a messaging app from the chosen workspace. Admin-only, and the
-   * gateway deletes every Switch room on the bridge on the way — see
-   * `deleteBridge`. The renderer owns the confirmation; by the time this runs
-   * the rooms are being given up deliberately.
+   * Disconnect a messaging app from the chosen workspace. Admin-only.
+   *
+   * For a bridge created by pasting in credentials, the gateway deletes every
+   * Switch room on the bridge on the way — see `deleteBridge`. For one created
+   * by approving Switch's own app (an "install"), there are no rooms taken
+   * with it: `disconnectBridgeOnServer` ends the install instead, which only
+   * stops Switch listening in that organisation and leaves the rooms as
+   * internal-only. Either way the renderer owns the confirmation, with copy
+   * matching which of the two is about to happen; by the time this runs it is
+   * deliberate.
    */
   deleteBridge: (params: DeleteBridgeParams): Promise<DeleteBridgeResult> =>
     withReachableWorkspaceSession(params.workspaceId, async (server) => {
@@ -344,13 +361,85 @@ export const workspacesController = createRPCController({
       // workspace. A disconnect is a confirmed, destructive action, not a hot
       // path, so it can afford the round trip.
       const platform = await bridgePlatformOnServer(server, params.bridgeId);
-      const result = await deleteBridge(server, params.bridgeId);
+      const result = await disconnectBridgeOnServer(server, params.bridgeId);
       trackEvent('bridge_disconnected', {
         bridge_platform: platform,
         outcome: result.kind === 'deleted' ? 'success' : 'failure',
       });
       return result;
     }),
+
+  /** Whether a bridge is backed by a live install, which decides what the
+   * disconnect dialog says happens to its rooms. Admin-only. */
+  bridgeInstallState: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<BridgeInstallState> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      bridgeInstallState(server, params.bridgeId)
+    ),
+
+  /** A distributed Teams bridge's team placement — which teams Switch can see,
+   * which it is already in, and its chosen default. Admin-only. */
+  listBridgeTeams: (params: { workspaceId: string; bridgeId: string }): Promise<TeamsTeamsResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      fetchBridgeTeams(server, params.bridgeId)
+    ),
+
+  /** Add Switch's distributed app to a team. Admin-only. */
+  addBridgeTeam: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    teamId: string;
+  }): Promise<AddTeamsTeamResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addBridgeTeam(server, params.bridgeId, params.teamId)
+    ),
+
+  /** Remove Switch's distributed app from a team. Admin-only. */
+  removeBridgeTeam: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    teamId: string;
+  }): Promise<RemoveTeamsTeamResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removeBridgeTeam(server, params.bridgeId, params.teamId)
+    ),
+
+  /**
+   * Choose a distributed Teams bridge's default team — the one a channel
+   * lands in when a room is created without naming one. Picking a default
+   * also turns channel creation on: an installed bridge starts with it off,
+   * and a default team with no way to create a channel in it would be a
+   * setting with nothing it could do.
+   */
+  setDefaultTeamsTeam: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    teamId: string;
+  }): Promise<UpdateBridgeResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateBridgeOnServer(server, {
+        bridgeId: params.bridgeId,
+        channelCreationEnabled: true,
+        connectionConfig: { team_id: params.teamId },
+      })
+    ),
+
+  /**
+   * Save the distributed Teams app's install package to disk, for a Teams
+   * admin to upload by hand when the app is not yet in the organisation's
+   * catalogue. Returns the saved path, or null if the user cancelled the save
+   * dialog.
+   */
+  downloadTeamsPackage: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    defaultFileName: string;
+  }): Promise<string | null> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      saveTeamsPackage(server, params.bridgeId, params.defaultFileName)
+    ),
 
   /**
    * Create a room in the chosen workspace, owned by the signed-in user. Room

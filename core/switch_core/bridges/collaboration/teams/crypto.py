@@ -22,13 +22,23 @@ class ResourceDataError(RuntimeError):
     """A Graph change-notification resource payload failed to decrypt/verify."""
 
 
-def _load_private_key(pem: str) -> Any:
+def load_private_key(pem: str) -> rsa.RSAPrivateKey:
+    """Parse the PEM private key Graph's notifications are wrapped to.
+
+    Parsed once by whoever holds the key, not once per notification: a busy
+    deployment decrypts every captured message, and re-reading the PEM each
+    time is pure overhead on the loop every tenant shares.
+    """
     key = load_pem_private_key(pem.encode("utf-8"), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise ResourceDataError(
+            f"the notification private key must be RSA, got {type(key).__name__}"
+        )
     return key
 
 
 def decrypt_resource_data(
-    encrypted_content: dict[str, Any], private_key_pem: str
+    encrypted_content: dict[str, Any], private_key: rsa.RSAPrivateKey
 ) -> dict[str, Any]:
     """Decrypt and verify the ``encryptedContent`` of a Graph change notification.
 
@@ -52,7 +62,6 @@ def decrypt_resource_data(
     except (KeyError, ValueError, TypeError) as e:
         raise ResourceDataError(f"malformed encryptedContent: {e}") from e
 
-    private_key = _load_private_key(private_key_pem)
     symmetric_key = private_key.decrypt(
         data_key,
         asym_padding.OAEP(

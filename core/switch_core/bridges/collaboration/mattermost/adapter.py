@@ -29,7 +29,6 @@ from mattermostdriver.exceptions import (
 )
 from pydantic import field_validator
 
-from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivitySnapshot,
@@ -2357,11 +2356,6 @@ class MattermostAdapter(PlatformAdapter):
         )
 
     # ── Bot icons ────────────────────────────────────────────────────────────
-
-    def default_agent_icon(self, agent_name: str) -> str:
-        # Mattermost uploads the image itself rather than passing a link on, so
-        # the response has to be a PNG it can accept.
-        return default_icon_url(agent_name, image_format="png")
 
     async def _fetch_icon(self, url: str) -> bytes | None:
         """The icon's bytes, or None if it is larger than the ceiling."""

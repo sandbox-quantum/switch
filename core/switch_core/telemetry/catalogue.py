@@ -90,7 +90,9 @@ BRIDGE_PLATFORM = one_of(
     "slack", "mattermost", "discord", "teams", "telegram", "none", "unknown"
 )
 
-CHANNEL_TYPE = one_of("channel_public", "channel_private", "direct", "none")
+# `unknown` as for BRIDGE_PLATFORM: the room exists and the lookup that would
+# have named its type failed, which is not the same as it having none.
+CHANNEL_TYPE = one_of("channel_public", "channel_private", "direct", "none", "unknown")
 
 # All four connection models in `bridges/agent/protocol/types.py`. Missing one
 # drops the registration event for every agent that uses it.
@@ -103,7 +105,17 @@ AGENT_TYPE = one_of(
 # agent registered without declaring one at all.
 KNOWN_AGENT_TYPE = one_of("claude-code", "codex", "opencode", "other", "none")
 
+# The runtime as `agent_message_sent` reports it. That event looks the sending
+# agent up after the fact, so it has a third answer: `unknown`, for a lookup
+# that failed or found no agent.
+LOOKED_UP_AGENT_TYPE = one_of(*KNOWN_AGENT_TYPE.values, "unknown")
+
 ACTOR_KIND = one_of("user", "agent", "system")
+
+# Who said a message. `platform` is Switch itself speaking — a template's
+# kickoff, or a request it carries on a person's behalf — and `unknown` a
+# sender whose client could not be looked up.
+SENDER_KIND = one_of("user", "agent", "platform", "unknown")
 
 OUTCOME = one_of("success", "failure")
 
@@ -154,6 +166,8 @@ _SNAPSHOT_COUNTS = (
     # Switch accounts, not chat identities — see `chat_identity_*` for those.
     "user_active_1d",
     "user_active_7d",
+    "user_internal_active_1d",
+    "user_internal_active_7d",
     "chat_identity_count",
     "chat_identity_active_1d",
     "chat_identity_active_7d",
@@ -194,6 +208,17 @@ _SNAPSHOT_COUNTS = (
     "turn_human_to_agent_1d",
     "turn_agent_to_human_1d",
     "turn_agent_to_agent_1d",
+    # The tiers of activity, as chat identities. `chat_identity_active_*`
+    # above is the most active (spoke in a room with an agent in it);
+    # `chat_identity_posted_*` is anyone who said anything in any room;
+    # `chat_identity_in_room_count` is everyone Switch has seen in a room: a
+    # member of a live room, or anyone who posted in the last seven days. Not
+    # the channels' full audience — Switch records a person only once they
+    # post, are added by name, or join after the channel was adopted, so a
+    # member who has only ever read is not in it.
+    "chat_identity_posted_1d",
+    "chat_identity_posted_7d",
+    "chat_identity_in_room_count",
     "attachment_count_1d",
     # Stock rather than flow. The `*_attached_count` figures sit beside the
     # totals because the gap between made and used is the signal.
@@ -357,6 +382,56 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         # interesting of the two, because a timeout and a refusal look identical
         # in the failure code and nothing alike in the time.
         "duration_ms": NUMBER,
+    },
+    # ── Messages ─────────────────────────────────────────────────────────────
+    # One per message, unlike everything above. They carry no identifier, so
+    # they answer "how much, and between whom", never "who": distinct people
+    # come from the snapshot's `user_*` and `chat_identity_*` counts. A multi-file post is one
+    # message, not one per file.
+    #
+    # Everything a participant chose to say in a room — the population the
+    # tenant is metered for. Notices Switch posts on someone's behalf are not
+    # in it. The room sizes are its members right now, so averaging them over
+    # these events gives the room size a typical message is said to — once
+    # `bridge_platform = unknown` is filtered out, since a room that could not
+    # be read reports its sizes as -1.
+    "room_message_sent": {
+        "sender_kind": SENDER_KIND,
+        "bridge_platform": BRIDGE_PLATFORM,
+        "channel_type": CHANNEL_TYPE,
+        "room_user_count": NUMBER,
+        "room_agent_count": NUMBER,
+        "has_attachment": BOOLEAN,
+        "in_thread": BOOLEAN,
+    },
+    # A message an agent was asked to act on: addressed to it and let through
+    # its addressing policy and budget, whether or not the agent was there to
+    # take it. One per agent addressed, so a message naming two agents is two
+    # of these and one `room_message_sent`; a message a hosted agent's mailbox
+    # already holds is not counted again, nor a multi-file post delivered in
+    # two pieces. `agent_live` is whether the agent had a live session for the
+    # room when it arrived: false for one that was offline, still starting, or
+    # whose cloud worker refused the message, and always for a session_passive
+    # agent, which reads its messages later rather than live.
+    "agent_message_received": {
+        "sender_kind": SENDER_KIND,
+        "known_agent_type": KNOWN_AGENT_TYPE,
+        "bridge_platform": BRIDGE_PLATFORM,
+        "channel_type": CHANNEL_TYPE,
+        "has_attachment": BOOLEAN,
+        "agent_live": BOOLEAN,
+    },
+    # A message an agent posted: its replies, and anything else it chose to
+    # say. Also a `room_message_sent` with `sender_kind = agent`; a separate
+    # event so it can carry the runtime. `room_user_count` separates an agent
+    # answering people from agents talking among themselves.
+    "agent_message_sent": {
+        "known_agent_type": LOOKED_UP_AGENT_TYPE,
+        "bridge_platform": BRIDGE_PLATFORM,
+        "channel_type": CHANNEL_TYPE,
+        "room_user_count": NUMBER,
+        "has_attachment": BOOLEAN,
+        "in_thread": BOOLEAN,
     },
     # ── Resources, keys and groups ───────────────────────────────────────────
     # Creating is intent, attaching is use, and the gap between them is the

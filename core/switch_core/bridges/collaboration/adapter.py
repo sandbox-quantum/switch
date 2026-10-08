@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
-from switch_core.agent_icon import default_icon_url
+from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
@@ -207,6 +207,14 @@ class ChannelNotBindable(ValueError):
     """
 
 
+class ConfigEditRefused(ValueError):
+    """An edit of a connection's settings that the platform says is wrong.
+
+    A `ValueError` for the same reason as `ChannelNotBindable`: it is the
+    caller's input, answered as a bad request.
+    """
+
+
 class DirectorySearchBusy(RuntimeError):
     """The platform's directory is being searched too often to take one more.
 
@@ -324,7 +332,9 @@ class SupportsSharedConnection(Protocol):
     Structural on purpose: the lifecycle, the gateway and boot narrow to this
     with `isinstance` and stay ignorant of the concrete adapter, and an adapter
     with no shared connection (Slack, Mattermost, Teams, Telegram) never matches
-    and is left alone.
+    and is left alone. A bridge on the distributed Teams app shares the
+    deployment's app too, but has nothing to wait for: it is handed the app
+    before it starts, by its own bridge-starting listener, and never matches.
     """
 
     def attach_shared_connection(self, connection: Any) -> None: ...
@@ -525,6 +535,7 @@ class PlatformAdapter(ABC):
         self._resolve_agent_presentation: (
             Callable[[str], Awaitable[AgentPresentation | None]] | None
         ) = None
+        self._reported_missing_resolver = False
         # Inbound attachment size ceiling, set by the lifecycle service from
         # config.agent_media_max_bytes. Adapters check a platform-reported file
         # size against this before downloading so an oversize file is rejected
@@ -597,6 +608,20 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def editable_config_keys(
+        cls, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Which connection settings a workspace admin may change, or None for all.
+
+        None — the default — leaves every setting editable, which is right for a
+        bridge on the organisation's own app: its settings are theirs. A bridge
+        on an app the deployment owns may hold settings that decide where the
+        deployment's credential is pointed, and an adapter names here the few
+        that are safe to change; an edit to any other is refused.
+        """
+        return None
+
+    @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         """Prove the credentials work, before the bridge is persisted.
 
@@ -623,10 +648,32 @@ class PlatformAdapter(ABC):
     @abstractmethod
     async def stop(self) -> None: ...
 
+    async def withdraw(self) -> None:
+        """Let go of what this bridge holds on the platform, because it is being
+        removed for good.
+
+        Called once, while the bridge is still running, just before it is
+        stopped for the last time — never on a restart, which is what `stop`
+        alone is for. Most adapters hold nothing on the platform that outlives
+        them and have nothing to do; one that registered something there (a
+        subscription that keeps delivering, an app installed into a team) undoes
+        it here, so the platform stops sending traffic nobody will read.
+
+        Best effort: a removal is what someone asked for, and it goes ahead
+        whatever this manages. Raise to say what was left behind; the caller
+        logs it.
+        """
+        return None
+
     async def dispatch_event(
         self, *, envelope_type: str, payload: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Handle one event that arrived over the public webhook.
+
+        Returns the body to answer with for an event the platform waits on in
+        the response itself (`InboundWebhook.answers_inline`), and None for
+        every other — which is every event on a platform that acknowledges
+        first and handles after.
 
         Concrete on the base and raising, rather than abstract, because
         receiving events over HTTP is a property of a platform and of which app
@@ -1212,6 +1259,37 @@ class PlatformAdapter(ABC):
         of that platform."""
         return []
 
+    @property
+    def places_app_in_teams(self) -> bool:
+        """Whether Switch chooses which of the platform's teams its app is in.
+
+        True only for a bridge on an app the deployment owns and can add to,
+        and remove from, the organisation's teams itself (the distributed
+        Teams app). Everywhere else the app is added on the platform by
+        whoever owns it, and the dashboard offers nothing to choose.
+        """
+        return False
+
+    async def check_config_edit(self, connection_config: Mapping[str, object]) -> None:
+        """Raise `ConfigEditRefused` for an edit only the platform can tell is wrong.
+
+        Asked of the running bridge before an edit of its settings is stored,
+        with the settings as they would be after it. For what validating the
+        config cannot know by itself — whether a team it names is one the app
+        is in, say. Nothing, by default.
+        """
+        return None
+
+    async def attention(self) -> str | None:
+        """What a workspace admin has to do for this bridge to keep working.
+
+        Something only the platform's side can fix — an approval withdrawn, an
+        app blocked by the organisation's admin — found while the bridge runs,
+        in plain words fit to show on the connection. None while nothing is
+        known to be wrong, which is the default.
+        """
+        return None
+
     async def install_note(self) -> str | None:
         """What the links do not cover, in the platform's own terms.
 
@@ -1573,22 +1651,13 @@ class PlatformAdapter(ABC):
         message instead of at the next restart."""
         self._resolve_agent_presentation = resolver
 
-    def default_agent_icon(self, agent_name: str) -> str:
-        """The avatar for an agent that has set no icon.
+    def adapt_icon_url(self, icon_url: str) -> str:
+        """Turn the icon URL chosen for a sender into the one this platform
+        should be handed.
 
-        Overridable for a platform that needs the default in a particular shape
-        — Mattermost uploads the bytes rather than passing a link on, so it
-        pins the response format."""
-        return default_icon_url(agent_name)
-
-    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
-        """Turn the stored icon URL into the one this platform should be handed.
-
-        `raw` is the agent's own icon, or None when it has none and the
-        platform default stands in. Pure and synchronous so it composes with a
-        single lookup: an override adjusts the URL, it does not go looking for
-        one."""
-        return raw or self.default_agent_icon(agent_name)
+        Pure and synchronous so it composes with a single lookup: an override
+        adjusts the URL, it does not go looking for one."""
+        return icon_url
 
     def escape_label_for_body(self, label: str) -> str:
         """Neutralise a label's markup before it goes into message text.
@@ -1638,16 +1707,39 @@ class PlatformAdapter(ABC):
         that need one of them alone — an unescaped label is not among them:
         :attr:`AgentRendering.field_label` is reachable only alongside the
         escaped one, so choosing it is a choice."""
-        raw = AgentPresentation(display_name=None, icon_url=None)
-        if self._resolve_agent_presentation is not None:
+        # An agent with no icon wears the face its name generates; a name the
+        # resolver says is no agent keeps a lettered badge, so a person relayed
+        # from elsewhere is never drawn as an agent. The name is the sending
+        # actor's own (an agent's is its identifier, never a room alias), so a
+        # miss is a sender that is not an agent rather than an agent the lookup
+        # failed to recognise.
+        #
+        # Without a resolver nothing can say who is who. The senders an adapter
+        # draws are overwhelmingly agents, so it draws them as agents rather
+        # than turning every agent into a person. The bridge core installs one
+        # before the adapter starts, so a running bridge without it is a wiring
+        # fault, and said so once.
+        if self._resolve_agent_presentation is None:
+            if not self._reported_missing_resolver:
+                self._reported_missing_resolver = True
+                logger.warning(
+                    "%s has no agent presentation resolver: every sender is "
+                    "drawn as an agent under its identifier, people included",
+                    type(self).__name__,
+                )
+            label = agent_name
+            icon_url = generated_icon_url(agent_name)
+        else:
             found = await self._resolve_agent_presentation(agent_name)
-            if found is not None:
-                raw = found
-        label = raw.display_name or agent_name
+            label = (found.display_name if found else None) or agent_name
+            if found is None:
+                icon_url = initials_icon_url(agent_name)
+            else:
+                icon_url = found.icon_url or generated_icon_url(agent_name)
         return AgentRendering(
             field_label=label,
             body_label=self.escape_label_for_body(label),
-            icon_url=self.adapt_icon_url(raw.icon_url, agent_name),
+            icon_url=self.adapt_icon_url(icon_url),
         )
 
     async def agent_icon_url(self, agent_name: str) -> str:

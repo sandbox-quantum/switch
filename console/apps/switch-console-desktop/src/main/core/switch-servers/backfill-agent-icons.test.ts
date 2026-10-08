@@ -152,7 +152,7 @@ describe('backfillAgentIcons', () => {
   it('reports a server with no icon endpoint', async () => {
     // Every write 404ing means the route does not exist, not that the agents
     // vanished — they came from that same server one request earlier. The user
-    // has to be told, because the app draws its own bots and looks correct.
+    // has to be told, because the app draws its own avatars and looks correct.
     given([agent({ id: 'a-1' }), agent({ id: 'a-2' })]);
     updateAgentIcon.mockRejectedValue(new FakeGatewayError('http', 'not found', 404));
     const backfill = await loadFresh();
