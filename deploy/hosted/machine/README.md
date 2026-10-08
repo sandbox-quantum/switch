@@ -35,9 +35,12 @@ the owner gives the machine.
      of one machine is never used by another.
    - With a code, it enrolls the controller as `switch-controller` into
      `/data/.switch-controller`. The credential and the sealing key are kept
-     there, on the machine's own volume. A directory that still holds an
-     enrollment is set aside first: Switch handed over a code, so it holds no
-     live controller for this machine.
+     there, on the machine's own volume. The SHA-256 of the code is kept in
+     `/data/.switch-controller-code`. A directory that still holds an
+     enrollment made with another code is set aside first: Switch handed over
+     a new code, so it holds no live controller for this machine. One made
+     with this same code is kept: an earlier attempt of this boot enrolled,
+     then failed before Switch linked the controller.
    - Then, on every boot, it runs `switch-agent-controller install-service
      --separate-users` with the agents' directories in `/data/agents`. That
      command is idempotent, and the root volume can be new after an image

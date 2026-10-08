@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -39,6 +40,8 @@ MACHINE_CONFIG_PATH = Path("/etc/switch-hosted/machine.json")
 LOCK_PATH = Path("/run/lock/switch-machine-boot.lock")
 MARKER_NAME = ".switch-machine.json"
 CONTROLLER_DIR_NAME = ".switch-controller"
+# The SHA-256 of the code the enrollment in CONTROLLER_DIR_NAME was made with.
+CODE_RECORD_NAME = ".switch-controller-code"
 AGENTS_DIR_NAME = "agents"
 SYSTEMD_MOUNT = "/usr/bin/systemd-mount"
 VOLUME_RE = re.compile(r"^vol-[0-9a-f]{8,17}$")
@@ -421,15 +424,31 @@ def start_controller(
     if not data_dir.exists():
         data_dir.mkdir(mode=0o700)
         commands.run(["/usr/bin/chown", f"{config.controller_user}:", str(data_dir)])
-    if bundle.enrollment_code is not None:
+    record = DATA_MOUNT / CODE_RECORD_NAME
+    code = bundle.enrollment_code
+    if code is not None:
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
         if enrolled(commands, config, data_dir):
-            # Switch handed over a code, so it holds no live controller for
-            # this machine: whatever this directory holds was revoked there.
-            aside = DATA_MOUNT / f"{CONTROLLER_DIR_NAME}.replaced-{int(now())}"
-            logger.warning("Switch gave a new code; setting the old enrollment aside in %s", aside)
-            os.replace(data_dir, aside)
-            data_dir.mkdir(mode=0o700)
-            commands.run(["/usr/bin/chown", f"{config.controller_user}:", str(data_dir)])
+            if _recorded(record) == code_hash:
+                # An earlier attempt of this boot enrolled with this very code
+                # and failed later on. Switch has not linked the controller
+                # yet, so it still hands the code over, but the code is spent.
+                logger.info("The controller is already enrolled with this code")
+                code = None
+            else:
+                # A new code, so Switch holds no live controller for this
+                # machine: whatever this directory holds was revoked there.
+                aside = DATA_MOUNT / f"{CONTROLLER_DIR_NAME}.replaced-{int(now())}"
+                logger.warning(
+                    "Switch gave a new code; setting the old enrollment aside in %s", aside
+                )
+                os.replace(data_dir, aside)
+                data_dir.mkdir(mode=0o700)
+                commands.run(["/usr/bin/chown", f"{config.controller_user}:", str(data_dir)])
+    if code is not None:
+        # Recorded first: a crash right after enrolling must not leave an
+        # enrollment the next attempt would take for a revoked one.
+        _record(record, code_hash)
         logger.info("Enrolling the controller")
         commands.run(
             _as_controller(
@@ -440,7 +459,7 @@ def start_controller(
                     "--server",
                     bundle.api_endpoint,
                     "--code",
-                    bundle.enrollment_code,
+                    code,
                     "--name",
                     "Switch cloud",
                     "--data-dir",
@@ -451,7 +470,7 @@ def start_controller(
             ),
             env=_environment(config),
         )
-    elif not enrolled(commands, config, data_dir):
+    elif bundle.enrollment_code is None and not enrolled(commands, config, data_dir):
         raise BootError(
             "The data volume holds no live enrollment, and Switch gave no code to enroll "
             "with. Remove this machine's controller in the Machines page; the next start "
@@ -473,6 +492,22 @@ def start_controller(
         ],
         env=_environment(config),
     )
+
+
+def _recorded(path: Path) -> str | None:
+    try:
+        if path.is_symlink():
+            return None
+        return path.read_text().strip()
+    except FileNotFoundError:
+        return None
+
+
+def _record(path: Path, code_hash: str) -> None:
+    temporary = path.with_name(f"{path.name}.new")
+    temporary.write_text(code_hash)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
 
 
 def acquire_lock(path: Path = LOCK_PATH) -> Any:
