@@ -42,6 +42,7 @@ import {
   fetchChatMedia,
   fetchChatMembers,
   fetchChatMessages,
+  fetchTenantMembers,
   inviteChatMember,
   listChats,
   removeChatMember,
@@ -220,6 +221,14 @@ export const chatsController = createRPCController({
   },
   members: (serverId: string, roomId: string): Promise<ChatMember[]> =>
     onServer(serverId, (server) => fetchChatMembers(server, roomId)),
+  /** The workspace's members, for a manager's Invite. */
+  tenantMembers: async (serverId: string): Promise<{ userId: string; name: string }[]> => {
+    const workspace = await requireWorkspaceForServer(serverId);
+    if (!workspace.tenantId)
+      throw new Error('This workspace has not been matched to a tenant yet.');
+    const tenantId = workspace.tenantId;
+    return onServer(serverId, (server) => fetchTenantMembers(server, tenantId));
+  },
   invite: (serverId: string, roomId: string, userId: string): Promise<ChatMember[]> =>
     onServer(serverId, (server) => inviteChatMember(server, roomId, userId)),
   removeMember: (serverId: string, roomId: string, userId: string): Promise<void> =>

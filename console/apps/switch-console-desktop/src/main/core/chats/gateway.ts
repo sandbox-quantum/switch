@@ -1,4 +1,4 @@
-import type { z } from 'zod';
+import { z } from 'zod';
 import { GatewayError, gatewayFetch } from '@main/core/switch-servers/gateway-client';
 import {
   type ChatMember,
@@ -183,6 +183,23 @@ export async function setChatHidden(
 
 export async function archiveChat(server: SwitchServer, roomId: string): Promise<void> {
   await call(server, `${room(roomId)}/archive`, { method: 'POST' });
+}
+
+const tenantMembersSchema = z.array(
+  z.object({ user_id: z.string(), name: z.string(), email: z.string() })
+);
+
+/** The workspace's members, whom a chat's managers may invite. */
+export async function fetchTenantMembers(
+  server: SwitchServer,
+  tenantId: string
+): Promise<{ userId: string; name: string }[]> {
+  const members = await json(
+    server,
+    `/tenants/${encodeURIComponent(tenantId)}/members`,
+    tenantMembersSchema
+  );
+  return members.map((member) => ({ userId: member.user_id, name: member.name || member.email }));
 }
 
 /** Rename uses the room route: a chat's name is its room's name. */
