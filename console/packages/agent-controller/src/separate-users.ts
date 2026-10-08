@@ -358,6 +358,11 @@ export type SetupInput = {
   bundle: string;
   envFile: string | null;
   path: string;
+  /**
+   * Queue the controller's restart rather than wait for it: for a caller the
+   * controller's unit is ordered after, such as a machine's boot service.
+   */
+  noBlock: boolean;
 };
 
 export type SetupReport = { notes: string[] };
@@ -445,7 +450,13 @@ export async function installSeparateUsers(
   );
   await run('systemctl', ['daemon-reload'], null);
   await run('systemctl', ['enable', names.controllerUnit], null);
-  await run('systemctl', ['restart', names.controllerUnit], null);
+  await run(
+    'systemctl',
+    input.noBlock
+      ? ['restart', '--no-block', names.controllerUnit]
+      : ['restart', names.controllerUnit],
+    null
+  );
   return {
     notes: [
       `${config.agentUsers} agent users (${names.agentUser(1)}…), in the group ${names.group}.`,
