@@ -223,7 +223,6 @@ export function ConnectionsStep({
       />
     );
 
-  const githubConnected = catalog.github?.status === 'connected';
   return (
     <>
       <ConnectionsGrid catalog={catalog} query={query} onQueryChange={setQuery} onOpen={setOpen} />
@@ -234,7 +233,7 @@ export function ConnectionsStep({
         <Button variant="ghost" onClick={onSkip}>
           Set up later
         </Button>
-        {githubConnected && <Button onClick={onContinue}>Continue to agent</Button>}
+        <Button onClick={onContinue}>Continue to agent</Button>
       </DialogFooter>
     </>
   );

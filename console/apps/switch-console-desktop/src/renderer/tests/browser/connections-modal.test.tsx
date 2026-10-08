@@ -63,6 +63,7 @@ vi.mock('@renderer/lib/stores/use-remote-agents', () => ({
 }));
 
 import { runInAction } from 'mobx';
+import { ConnectionsStep } from '@renderer/features/switch-servers/connections-step';
 import { ConnectionsModal } from '@renderer/features/switch-servers/ConnectionsModal';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
 import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
@@ -324,4 +325,31 @@ it('shows Connected only once the live GitHub status confirms it', async () => {
 
   await vi.waitFor(() => expect(button(/GitHub/, modal)?.textContent).toMatch(/Connected/));
   expect(button(/GitHub/, modal)!.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('lets setup continue to the agent with GitHub not connected', async () => {
+  switchServers.getConnectionCatalog.mockResolvedValue(CATALOG);
+  const onContinue = vi.fn();
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      <Dialog open>
+        <DialogContent>
+          <ConnectionsStep
+            serverId="server"
+            onBack={() => {}}
+            onSkip={() => {}}
+            onContinue={onContinue}
+          />
+        </DialogContent>
+      </Dialog>
+    )
+  );
+  await vi.waitFor(() => expect(button(/GitHub/, dialog()!)?.textContent).toMatch(/Not connected/));
+
+  await act(async () => button(/continue to agent/i, dialog()!)!.click());
+  expect(onContinue).toHaveBeenCalledOnce();
+  expect(switchServers.getGitHubConnection).not.toHaveBeenCalled();
 });

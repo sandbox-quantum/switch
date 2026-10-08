@@ -4,8 +4,10 @@ import { z } from 'zod';
 export const MAX_GRANTED_REPOSITORIES = 500;
 
 /**
- * What a cloud agent can reach through one GitHub App installation: every
- * repository the installation shares, or the listed repositories by id.
+ * What a cloud agent can reach through one GitHub App installation: `all`,
+ * each repository of the installation the owner can push to (Switch names
+ * them in every token it mints, so at most `MAX_GRANTED_REPOSITORIES`), or
+ * the listed repositories by id.
  */
 export const installationGrantSchema = z.object({
   installation_id: z.number().int(),
