@@ -97,6 +97,9 @@ from switch_core.events import (
     TaskUpdate,
 )
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.observability.catalogue import OBSERVER_FAILURES
+from switch_core.observability.metrics import metrics
+from switch_core.observability.throttle import WarningThrottle
 from switch_core.transport import (
     InboundMedia,
     InboundMembership,
@@ -110,6 +113,10 @@ if TYPE_CHECKING:
     from switch_core.telemetry.messages import MessageTelemetry
 
 logger = logging.getLogger(__name__)
+
+# One for the process rather than one per consumer: every agent has a
+# consumer, and a telemetry bug breaks the report for all of them.
+_report_failures = WarningThrottle(60.0)
 
 # How long to hold an incomplete multi-attachment group before delivering the
 # parts that did arrive, flagged as incomplete. Groups normally complete in
@@ -1756,9 +1763,9 @@ class AgentConsumer(Consumer[AgentActor]):
         the rest arrives later: the post is counted with its first part, as
         the transport counts it, so it is one request however it is split.
 
-        Guarded like the transport's observer call: this runs on the delivery
-        path, ahead of the enqueue, and a telemetry bug must not cost the
-        agent the message.
+        Guarded like the transport's observer call, and counted the same way:
+        this runs on the delivery path, ahead of the enqueue, and a telemetry
+        bug must not cost the agent the message.
         """
         if self._triggered_by_auto_reply(event):
             return
@@ -1778,11 +1785,15 @@ class AgentConsumer(Consumer[AgentActor]):
                 has_attachment=has_attachment,
             )
         except Exception:
-            logger.exception(
-                "Could not report a message addressed to agent %s; it is still "
-                "delivered.",
-                self.agent.name,
-            )
+            metrics().increment(OBSERVER_FAILURES, {"actor": "agent"})
+            if (failures := _report_failures.note()) is not None:
+                logger.error(
+                    "Could not report a message addressed to agent %s; it is "
+                    "still delivered. %d failure(s) since the last error.",
+                    self.agent.name,
+                    failures,
+                    exc_info=True,
+                )
 
     async def _post_auto_reply(
         self,

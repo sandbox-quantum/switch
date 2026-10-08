@@ -52,9 +52,11 @@ from switch_core.observability.catalogue import (
     DELIVERY_LAG,
     MESSAGES_DELIVERED,
     MESSAGES_SENT,
+    OBSERVER_FAILURES,
     SEND_FAILURES,
 )
 from switch_core.observability.metrics import metrics
+from switch_core.observability.throttle import WarningThrottle
 from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.ephemeral import EphemeralBus
@@ -103,6 +105,10 @@ _MEDIA_MSGTYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
 # are the platform's own bookkeeping — reports, state, receipts — and charging
 # a tenant for them would bill it for how Switch works.
 _METERED_KINDS = frozenset({"message", "media"})
+
+# One for the process rather than one per transport: every client has a
+# transport, and an observer that breaks breaks for all of them.
+_observer_failures = WarningThrottle(60.0)
 
 
 def _sent_kind(event_type: str, content: dict[str, object]) -> str:
@@ -817,8 +823,10 @@ class PostgresTransport:
         """Tell the observer a participant said something.
 
         After the commit, so it never hears of a message that was rolled back.
-        Guarded because the message is already sent: an observer bug surfacing
-        here would make the sender believe it was not, and try again.
+        Guarded because the row is already committed: an exception leaving
+        `_send` now would tell the sender that a message in the room was not
+        sent, and its retry would post it twice. Counted, because a guard that
+        only logs leaves nothing to alert on.
         """
         group = parse_attachment_group(content)
         if group is not None and group[1] != 0:
@@ -837,7 +845,14 @@ class PostgresTransport:
                 )
             )
         except Exception:
-            logger.exception("Message observer failed; the message itself was sent.")
+            metrics().increment(OBSERVER_FAILURES, {"actor": self._actor_role})
+            if (failures := _observer_failures.note()) is not None:
+                logger.error(
+                    "Message observer failed; the message itself was sent. %d "
+                    "failure(s) since the last error.",
+                    failures,
+                    exc_info=True,
+                )
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:
         """Not carried. Composing state is presence, and nothing consumes it."""

@@ -289,9 +289,11 @@ async def _stop_management(management: Management) -> None:
 
 # The innermost of three nested budgets: under
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`, itself under
-# `_FORCED_EXIT_GRACE_SECONDS`. Split in two, so the per-message worker
-# running long can never cost the sink its final flush, which carries every
-# kind of event rather than only the per-message ones.
+# `_FORCED_EXIT_GRACE_SECONDS`. This and the log flush already fill that
+# window, so neither can grow. The per-message worker gets at most
+# `_MESSAGE_TELEMETRY_DRAIN_SECONDS` and the sink the rest, so a slow worker
+# can never cost the sink its final flush, which carries every kind of event,
+# and whatever the worker does not use is the sink's.
 _TELEMETRY_DRAIN_SECONDS = 1.0
 _MESSAGE_TELEMETRY_DRAIN_SECONDS = 0.4
 
@@ -306,17 +308,15 @@ async def _drain_telemetry(
     Never raises and never overruns: a relay that stopped answering must not
     hold the process past the point where it is killed.
     """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TELEMETRY_DRAIN_SECONDS
     # First, because what it still holds is emitted through the sink.
-    await _close_within(
+    await _close_by(
         message_telemetry.aclose(),
-        _MESSAGE_TELEMETRY_DRAIN_SECONDS,
+        loop.time() + _MESSAGE_TELEMETRY_DRAIN_SECONDS,
         "queued message events",
     )
-    await _close_within(
-        telemetry.aclose(),
-        _TELEMETRY_DRAIN_SECONDS - _MESSAGE_TELEMETRY_DRAIN_SECONDS,
-        "buffered telemetry events",
-    )
+    await _close_by(telemetry.aclose(), deadline, "buffered telemetry events")
     if http_client is not None:
         try:
             await http_client.aclose()
@@ -324,19 +324,16 @@ async def _drain_telemetry(
             logger.warning("Telemetry HTTP client did not close.", exc_info=True)
 
 
-async def _close_within(
-    closing: Coroutine[object, object, None], seconds: float, what: str
+async def _close_by(
+    closing: Coroutine[object, object, None], deadline: float, what: str
 ) -> None:
-    """Await one telemetry shutdown step under its own budget. Never raises."""
+    """Await one telemetry shutdown step until `deadline`, on the loop's clock.
+    Never raises. The step logs how much it lost itself."""
     try:
-        async with asyncio.timeout(seconds):
+        async with asyncio.timeout_at(deadline):
             await closing
     except TimeoutError:
-        logger.warning(
-            "Gave up waiting for %s after %.1fs at shutdown; they are lost.",
-            what,
-            seconds,
-        )
+        logger.warning("Gave up waiting for %s at shutdown.", what)
     except Exception:
         logger.warning(
             "Reporting %s at shutdown failed; continuing.", what, exc_info=True

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -25,8 +26,8 @@ from switch_core.observability.otlp import (
     build_logs_payload,
     otlp_attributes,
 )
+from switch_core.observability.throttle import WarningThrottle
 from switch_core.telemetry.catalogue import PropertyValue
-from switch_core.telemetry.throttle import WarningThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,12 @@ logger = logging.getLogger(__name__)
 _SEVERITY_INFO = 9
 
 _DROP_WARNING_INTERVAL_SECONDS = 60.0
+
+# How many batches shutdown posts at once. One at a time, a slow request
+# already in flight would hold every batch behind it until the budget ran out;
+# a handful rather than the fifty a full buffer makes, because the relay
+# rate-limits on the sender's address.
+_SHUTDOWN_CONCURRENCY = 4
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,11 @@ class OtlpRelaySink:
 
     No retry, matching the operational exporter, and the buffer is bounded: a
     relay that stops answering costs the events it misses, never memory.
+
+    **Shutdown** posts what is left several batches at once, beside any request
+    already in flight rather than behind it, and stops at the first batch the
+    relay refuses. Whatever the caller's timeout cuts off, buffered or
+    abandoned mid-request, is counted and logged.
     """
 
     def __init__(
@@ -112,9 +124,14 @@ class OtlpRelaySink:
         self._max_batch = max_batch
         self._max_buffered = max_buffered
         self._buffer: list[TelemetryRecord] = []
+        # Taken from the buffer, waiting for a post.
+        self._batches: deque[list[TelemetryRecord]] = deque()
+        # Records in posts that have not finished.
+        self._posting = 0
         self._wake = asyncio.Event()
         self._flusher: asyncio.Task[None] | None = None
         self._closing = False
+        self._refused_at_shutdown = False
         self._drops = WarningThrottle(_DROP_WARNING_INTERVAL_SECONDS)
         self._late = WarningThrottle(_DROP_WARNING_INTERVAL_SECONDS)
 
@@ -155,20 +172,33 @@ class OtlpRelaySink:
         )
 
     async def _run(self) -> None:
-        while not self._closing:
+        while True:
             try:
                 async with asyncio.timeout(self._flush_interval):
                     await self._wake.wait()
             except TimeoutError:
                 pass
             self._wake.clear()
-            await self._flush()
-        await self._flush()
+            if self._closing:
+                # `aclose` has taken the buffer and posts it.
+                return
+            self._take_buffer()
+            await self._post_waiting()
 
-    async def _flush(self) -> None:
+    def _take_buffer(self) -> None:
         pending, self._buffer = self._buffer, []
         for start in range(0, len(pending), self._max_batch):
-            batch = pending[start : start + self._max_batch]
+            self._batches.append(pending[start : start + self._max_batch])
+
+    async def _post_waiting(self) -> None:
+        """Post batches until none are waiting.
+
+        Outside shutdown only the flusher takes from the buffer, and only as a
+        flush begins, so this posts what that flush took and no more.
+        """
+        while self._batches and not self._refused_at_shutdown:
+            batch = self._batches.popleft()
+            self._posting += len(batch)
             try:
                 await self._post(batch)
             except Exception:
@@ -180,6 +210,10 @@ class OtlpRelaySink:
                     "Telemetry batch of %d event(s) could not be built; it is dropped.",
                     len(batch),
                 )
+            # Not in a `finally`: a post the shutdown timeout cancels did not
+            # send its records, and leaving them counted here is what reports
+            # them as unsent.
+            self._posting -= len(batch)
 
     async def _post(self, batch: Sequence[TelemetryRecord]) -> None:
         # Every record a service emits carries the same resource, so this is
@@ -230,21 +264,44 @@ class OtlpRelaySink:
                     names,
                     exc,
                 )
+                if self._closing:
+                    # Feeding the rest to a relay that has just refused would
+                    # spend the shutdown budget losing them more slowly.
+                    self._refused_at_shutdown = True
 
     async def aclose(self) -> None:
-        """Post everything still buffered.
+        """Post everything still buffered, under the caller's timeout.
 
         `telemetry/setup.py` opens the HTTP client and `main._drain_telemetry`
-        closes it, under a timeout shutdown depends on.
+        closes it, under a timeout shutdown depends on. The flusher is awaited
+        with the rest, so that timeout cancels it along with this call rather
+        than leaving it posting.
         """
         self._closing = True
         self._wake.set()
-        if self._flusher is None or self._flusher.done():
-            await self._flush()
-        else:
-            # Awaited directly, so the caller's timeout cancels the flusher
-            # along with this call rather than leaving it posting.
-            await self._flusher
+        try:
+            self._take_buffer()
+            posts: list[asyncio.Future[None]] = [
+                asyncio.ensure_future(self._post_waiting())
+                for _ in range(_SHUTDOWN_CONCURRENCY)
+            ]
+            if self._flusher is not None and not self._flusher.done():
+                posts.append(self._flusher)
+            await asyncio.gather(*posts)
+        finally:
+            self._report_unsent()
+
+    def _report_unsent(self) -> None:
+        """Say what shutdown could not post. Run from a `finally`: the caller's
+        timeout cutting `aclose` off is the case that loses the most."""
+        if unsent := self._posting + sum(len(batch) for batch in self._batches):
+            logger.warning(
+                "%d telemetry event(s) were never sent: %s.",
+                unsent,
+                "the relay refused a batch at shutdown, so the rest were not tried"
+                if self._refused_at_shutdown
+                else "shutdown ran out of time before they were posted",
+            )
         if dropped := self._drops.take_pending():
             self._warn_dropped(dropped)
         if late := self._late.take_pending():

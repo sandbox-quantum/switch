@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from switch_core.telemetry import throttle
-from switch_core.telemetry.throttle import WarningThrottle
+from switch_core.observability import throttle
+from switch_core.observability.throttle import WarningThrottle
 
 
 class _Clock:

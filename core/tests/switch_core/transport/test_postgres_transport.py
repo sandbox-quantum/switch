@@ -40,6 +40,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.observability.throttle import WarningThrottle
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
@@ -51,6 +52,7 @@ from switch_core.transport import (
     TransportError,
     TransportHandlers,
 )
+from switch_core.transport import postgres as postgres_module
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.observer import (
@@ -484,14 +486,25 @@ class TestTheParticipantMessageObserver:
         assert recorder.seen[0].has_attachment is True
 
     async def test_an_observer_that_raises_does_not_unsend_the_message(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # The row is committed before the observer hears of it, so a failure
-        # there must not tell the sender its message was lost.
+        """The row is committed before the observer hears of it, so a failure
+        there must not tell the sender its message was lost: the retry would
+        post it twice. Caught, so it is counted, and logged once rather than
+        once per message."""
+
         class _Broken:
             def observe(self, message: ParticipantMessage) -> None:
                 raise RuntimeError("observer bug")
 
+        registry = MetricsRegistry()
+        install(registry)
+        monkeypatch.setattr(
+            postgres_module, "_observer_failures", WarningThrottle(60.0)
+        )
         async with session_factory() as session:
             room_id, transport_room_id, client_id, user_id = await _make_room(session)
             await session.commit()
@@ -502,16 +515,39 @@ class TestTheParticipantMessageObserver:
             message_observer=_Broken(),
         )
 
-        result = await transport.send_message(
-            transport_room_id, "still sent", sender_name="a", metered=True
-        )
+        try:
+            with caplog.at_level("ERROR"):
+                results = [
+                    await transport.send_message(
+                        transport_room_id, body, sender_name="a", metered=True
+                    )
+                    for body in ("still sent", "and this")
+                ]
+            failures = next(
+                p
+                for p in registry.collect()
+                if p.name == "switch.messages.observer_failures"
+            )
+        finally:
+            uninstall()
 
-        assert result.event_id
+        assert all(result.event_id for result in results)
         async with session_factory() as session:
             stored = await session.scalars(
-                select(Message).where(Message.room_id == room_id)
+                select(Message).where(Message.room_id == room_id).order_by(Message.seq)
             )
-            assert [m.body for m in stored] == ["still sent"]
+            assert [m.body for m in stored] == ["still sent", "and this"]
+        assert failures.numbers[0].value == 2.0
+        assert (
+            len(
+                [
+                    r
+                    for r in caplog.records
+                    if "Message observer failed" in r.getMessage()
+                ]
+            )
+            == 1
+        )
 
 
 class TestSending:

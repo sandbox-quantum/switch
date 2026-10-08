@@ -1,9 +1,9 @@
 """A condition that can hold for every message, logged at most once a minute.
 
-The per-message telemetry runs once per message, so a condition that persists
-— a full buffer, a database that will not answer — would otherwise write one
-warning per message and bury the server's own log at the moment an operator
-needs it most.
+Code on the message path runs once per message, so a condition that persists
+— a full buffer, a database that will not answer, an observer that raises —
+would otherwise write one warning per message and bury the server's own log
+at the moment an operator needs it most.
 """
 
 from __future__ import annotations

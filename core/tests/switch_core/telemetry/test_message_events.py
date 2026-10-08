@@ -405,13 +405,13 @@ class TestAgentMessageReceived:
 
 
 class TestFailingLookups:
-    async def test_a_failed_lookup_pauses_the_rest_and_warns_once(
+    async def test_a_room_whose_lookup_failed_is_not_retried_and_warns_once(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """During a database incident the worker must not retry the struggling
-        database, and log a traceback, once per message."""
+        """A busy room whose lookup fails must not cost a query, and a
+        traceback, for every message said in it."""
         world = await _world(session_factory)
         sink = _RecordingSink()
         service = _service(sink)
@@ -436,6 +436,104 @@ class TestFailingLookups:
             len([r for r in caplog.records if "could not look up" in r.getMessage()])
             == 1
         )
+
+    async def test_one_failing_room_does_not_blank_the_others(self) -> None:
+        """The pause is the failing key's: one tenant or room that keeps
+        failing must not turn every other room's events into `unknown`."""
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        attempts: list[tuple[str, str]] = []
+
+        async def _bad_room_fails(tenant_id: str, room_id: str) -> _RoomFacts:
+            attempts.append((tenant_id, room_id))
+            if room_id == "bad":
+                raise ConnectionError("this room's lookup fails")
+            return await _a_slack_room(tenant_id, room_id)
+
+        messages._load_room_facts = _bad_room_fails  # type: ignore[method-assign]
+        other_tenant = str(uuid.uuid4())
+
+        messages.observe(_said_in("bad"))
+        messages.observe(_said_in("good"))
+        messages.observe(
+            ParticipantMessage(
+                tenant_id=other_tenant,
+                room_id="elsewhere",
+                sender_client_id="someone",
+                sender_role="human",
+                has_attachment=False,
+                in_thread=False,
+            )
+        )
+        messages.observe(_said_in("bad"))
+        reported = await _reported(messages, service, sink)
+
+        assert [p["bridge_platform"] for _, p in reported] == [
+            "unknown",
+            "slack",
+            "slack",
+            "unknown",
+        ]
+        assert attempts == [
+            (TENANT_ZERO, "bad"),
+            (TENANT_ZERO, "good"),
+            (other_tenant, "elsewhere"),
+        ]
+
+    async def test_failures_in_a_row_pause_every_lookup(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Failing for several different keys with nothing succeeding between
+        is the database, not a bad row: then every lookup waits."""
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        attempts: list[str] = []
+
+        async def _broken(tenant_id: str, room_id: str) -> None:
+            attempts.append(room_id)
+            raise ConnectionError("database unreachable")
+
+        messages._load_room_facts = _broken  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING"):
+            for room in ("a", "b", "c", "d", "e"):
+                messages.observe(_said_in(room))
+            reported = await _reported(messages, service, sink)
+
+        assert attempts == ["a", "b", "c"]
+        assert [p["bridge_platform"] for _, p in reported] == ["unknown"] * 5
+        assert "failed 3 times in a row, so every lookup pauses" in caplog.text
+
+    async def test_a_lookup_that_succeeds_resets_the_count(self) -> None:
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        attempts: list[str] = []
+
+        async def _only_good_answers(tenant_id: str, room_id: str) -> _RoomFacts:
+            attempts.append(room_id)
+            if room_id != "good":
+                raise ConnectionError("this room's lookup fails")
+            return await _a_slack_room(tenant_id, room_id)
+
+        messages._load_room_facts = _only_good_answers  # type: ignore[method-assign]
+
+        for room in ("a", "b", "good", "c", "d"):
+            messages.observe(_said_in(room))
+        await _reported(messages, service, sink)
+
+        assert attempts == ["a", "b", "good", "c", "d"]
 
 
 class TestCaching:
@@ -641,7 +739,7 @@ class TestFailingSenderAndRuntimeLookups:
         )
         messages._load_room_facts = _a_slack_room  # type: ignore[method-assign]
 
-        for sender in ("@alice:test", "@bob:test"):
+        for sender in ("@alice:test", "@alice:test"):
             messages.agent_addressed(
                 tenant_id=TENANT_ZERO,
                 room_id="room",
@@ -868,7 +966,9 @@ class TestShutdown:
         assert len(late) == 2
         assert "2 more message event(s)" in late[1]
 
-    async def test_closing_stays_inside_the_callers_timeout(self) -> None:
+    async def test_closing_stays_inside_the_callers_timeout(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """The worker is cancelled mid-lookup and its cleanup outlasts the
         shutdown budget. The caller's timeout must still fire: swallowing its
         cancellation would let shutdown run past the forced-exit grace."""
@@ -902,12 +1002,17 @@ class TestShutdown:
         await looking_up.wait()
 
         started = time.monotonic()
-        with pytest.raises(TimeoutError):
+        with caplog.at_level("WARNING"), pytest.raises(TimeoutError):
             async with asyncio.timeout(0.7):
                 await messages.aclose()
         elapsed = time.monotonic() - started
 
         assert elapsed < 0.9
+        # The one the worker was cancelled in the middle of is not in the
+        # queue any more, and is still lost.
+        assert "1 message event(s) still queued at shutdown were dropped" in (
+            caplog.text
+        )
         assert messages._worker is not None
         await asyncio.wait({messages._worker})
 

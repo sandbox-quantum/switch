@@ -12,13 +12,15 @@ from switch_core import main
 
 
 class _Step:
-    def __init__(self, *, hangs: bool) -> None:
+    def __init__(self, *, hangs: bool, takes: float = 0.0) -> None:
         self.hangs = hangs
+        self.takes = takes
         self.closed = False
 
     async def aclose(self) -> None:
         if self.hangs:
             await asyncio.sleep(10)
+        await asyncio.sleep(self.takes)
         self.closed = True
 
 
@@ -43,6 +45,23 @@ async def test_a_message_worker_that_overruns_does_not_cost_the_sink_its_flush()
     assert telemetry.closed
     assert http.closed
     assert elapsed < main._TELEMETRY_DRAIN_SECONDS + 0.2
+
+
+async def test_the_sink_has_the_time_the_message_worker_did_not_use() -> None:
+    """A fixed split would cut the sink off at its share however little of
+    the second the worker took."""
+    sink_takes = (
+        main._TELEMETRY_DRAIN_SECONDS - main._MESSAGE_TELEMETRY_DRAIN_SECONDS + 0.2
+    )
+    telemetry = _Step(hangs=False, takes=sink_takes)
+
+    await main._drain_telemetry(
+        telemetry,  # type: ignore[arg-type]
+        _Step(hangs=False),  # type: ignore[arg-type]
+        None,
+    )
+
+    assert telemetry.closed
 
 
 async def test_the_whole_drain_stays_inside_its_budget() -> None:

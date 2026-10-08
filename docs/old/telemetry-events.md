@@ -666,10 +666,12 @@ rather than something the product wants to know.
 All three come from `telemetry/messages.py`, reported off the sender's path as
 described [above](#message-events-and-what-they-cannot-tell-you). A post with
 several files is one message. Room facts are cached for five minutes, so a
-member count can be that far behind. After a lookup fails, lookups pause for
-five seconds and the events in that window report what they could not look up
-as `unknown`, so a database incident shows in the charts as a burst of
-`unknown` rather than as missing messages.
+member count can be that far behind. A room, sender or agent whose lookup
+fails is not looked up again for five seconds, and its events report it as
+`unknown` meanwhile; every other room carries on. Three failures in a row,
+with no lookup succeeding between them, pause every lookup for five seconds.
+Either way a database incident shows in the charts as a burst of `unknown`
+rather than as missing messages.
 
 **`room_message_sent`** — everything a participant chose to say in a room: the
 population the tenant is metered for, reported by the transport after the
@@ -848,9 +850,10 @@ once per event into a log nobody is reading.
 
 Product events are batched: they arrive at the sink up to five seconds after
 they happen, several to a request. Whatever is buffered at shutdown is posted
-on the way out, in the 0.6 seconds a one-second shutdown budget leaves after
-the message worker's drain; what cannot be posted in that time is lost, with a
-warning in the server log.
+on the way out, several batches at once, within a one-second shutdown budget:
+the message worker's drain takes at most 0.4 seconds of it and the sink has
+the rest. What cannot be posted in that time is lost, and the server log says
+how many events that was.
 
 The same sink serves the operational export, so one process shows both streams. Every event is printed as it arrives, decoded, with all of its
 properties. Create a room, register an

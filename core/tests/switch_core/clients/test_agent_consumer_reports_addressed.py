@@ -12,6 +12,9 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+from switch_core.clients import agent_consumer as agent_consumer_module
 from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.agent_consumer import (
     AUTO_REPLY_FLAG,
@@ -20,6 +23,8 @@ from switch_core.clients.agent_consumer import (
     _GateOutcome,
 )
 from switch_core.clients.room_meta import RoomMeta
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.observability.throttle import WarningThrottle
 from switch_core.transport import InboundMessage, RoomRef
 
 
@@ -244,10 +249,41 @@ async def test_a_redelivery_the_mailbox_already_holds_is_not_counted_again() -> 
     assert consumer._message_telemetry.addressed == []
 
 
-async def test_a_telemetry_failure_does_not_cost_the_agent_the_message() -> None:
+async def test_a_telemetry_failure_does_not_cost_the_agent_the_message(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Caught, so it is counted, and logged once rather than once per
+    message."""
     consumer = _consumer(addressed=True)
     consumer._message_telemetry = _BrokenMessageTelemetry()
+    registry = MetricsRegistry()
+    install(registry)
+    monkeypatch.setattr(
+        agent_consumer_module, "_report_failures", WarningThrottle(60.0)
+    )
 
-    await _deliver(consumer, _message())
+    try:
+        with caplog.at_level("ERROR"):
+            await _deliver(consumer, _message())
+            await _deliver(consumer, _message())
+        failures = next(
+            p
+            for p in registry.collect()
+            if p.name == "switch.messages.observer_failures"
+        )
+    finally:
+        uninstall()
 
-    assert len(consumer.enqueued) == 1
+    assert len(consumer.enqueued) == 2
+    assert failures.numbers[0].value == 2.0
+    assert dict(failures.numbers[0].attributes) == {"actor": "agent"}
+    assert (
+        len(
+            [
+                r
+                for r in caplog.records
+                if "Could not report a message addressed" in r.getMessage()
+            ]
+        )
+        == 1
+    )
