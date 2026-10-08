@@ -1382,6 +1382,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- **A machine whose controller Switch refuses for good says so instead of
+  restarting it forever.** When the server needs a newer agents controller than
+  Console carries, "This computer as a machine" shows that Console needs an
+  update and stops restarting the controller. When the server no longer knows
+  its credential, Console forgets it as it does for a removed machine, and
+  enrolls the machine again on the next check. SSH hosts set up by Console
+  stop restarting on either and enroll again on the second.
 - **A Claude Code session is no longer parked while its background subagents
   are still working.** The idle timer only looked at turns, so a session whose
   turn had ended with subagents still running in the background was stopped
@@ -3045,6 +3052,16 @@ The headless agents controller, `switch-agent-controller`
 tags; see RELEASING.md.
 
 ### [Unreleased]
+
+#### Fixed
+- **A refusal that cannot pass stops the controller instead of retrying it
+  forever.** The server answers `protocol_unsupported` when it no longer speaks
+  the controller's protocol and `invalid_credential` when it knows no controller
+  by its credential, and marks both not retryable. The controller retried them
+  every few seconds for as long as it ran. It now stops its agents and exits
+  with a new code, `5` (update the controller) or `6` (enroll the machine
+  again), and the systemd unit and launchd job it installs do not restart it on
+  either.
 
 ### [0.1.1] - 2026-10-07
 

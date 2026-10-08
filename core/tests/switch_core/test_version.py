@@ -11,7 +11,14 @@ from pathlib import Path
 import pytest
 
 from switch_core import version as version_module
-from switch_core.version import server_declaration, switch_core_version
+from switch_core.version import (
+    COMMIT_ENV,
+    REPOSITORY_URL_ENV,
+    server_declaration,
+    switch_core_commit,
+    switch_core_repository_url,
+    switch_core_version,
+)
 
 PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
@@ -19,6 +26,8 @@ PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 @pytest.fixture(autouse=True)
 def _clear_cache() -> None:
     switch_core_version.cache_clear()
+    switch_core_commit.cache_clear()
+    switch_core_repository_url.cache_clear()
 
 
 def _raise_not_found(name: str) -> str:
@@ -96,3 +105,33 @@ def test_db_schema_cannot_ride_alongside_a_public_contract() -> None:
     """The likelier mistake than asking for it alone."""
     with pytest.raises(ValueError, match="internal to switch-core"):
         server_declaration("gateway-api", "db-schema")
+
+
+def test_the_commit_comes_from_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(COMMIT_ENV, "0123456789ABCDEF0123456789abcdef01234567\n")
+    assert switch_core_commit() == "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_an_unstamped_build_has_no_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(COMMIT_ENV, raising=False)
+    assert switch_core_commit() is None
+    switch_core_commit.cache_clear()
+    monkeypatch.setenv(COMMIT_ENV, "")
+    assert switch_core_commit() is None
+
+
+def test_a_commit_that_is_not_a_hash_is_refused_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv(COMMIT_ENV, "main")
+    with caplog.at_level(logging.WARNING, logger="switch_core.version"):
+        assert switch_core_commit() is None
+    assert COMMIT_ENV in caplog.text
+
+
+def test_the_repository_comes_from_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(REPOSITORY_URL_ENV, "https://github.com/example/switch")
+    assert switch_core_repository_url() == "https://github.com/example/switch"
+    switch_core_repository_url.cache_clear()
+    monkeypatch.setenv(REPOSITORY_URL_ENV, " ")
+    assert switch_core_repository_url() is None

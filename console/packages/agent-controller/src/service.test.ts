@@ -20,7 +20,7 @@ describe('systemdUnit', () => {
     );
     expect(unit).toContain('Environment="PATH=/home/me/.local/bin:/usr/bin:/bin"');
     expect(unit).toContain('Restart=on-failure');
-    expect(unit).toContain('RestartPreventExitStatus=2 3 4');
+    expect(unit).toContain('RestartPreventExitStatus=2 3 4 5 6');
     expect(unit).not.toContain('--launchd');
   });
 });

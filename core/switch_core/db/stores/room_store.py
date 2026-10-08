@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, insert, or_, select, update
@@ -333,6 +334,36 @@ class RoomStore:
         )
         return list(result.scalars().all())
 
+    async def agent_ids_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, list[str]]:
+        """`get_agent_ids` for many rooms in one query, keyed by room id.
+
+        A room with no agents has no key. For a list of rooms, which would
+        otherwise read each room's members on a connection it holds for every
+        round trip.
+        """
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(room_agents.c.room_id, room_agents.c.agent_id).where(
+                room_agents.c.room_id.in_(room_ids)
+            )
+        )
+        by_room: dict[str, list[str]] = {}
+        for room_id, agent_id in result.all():
+            by_room.setdefault(room_id, []).append(agent_id)
+        return by_room
+
+    async def get_many(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, Room]:
+        """The rooms among `room_ids` that exist, keyed by id, in one query."""
+        if not room_ids:
+            return {}
+        result = await session.execute(select(Room).where(Room.id.in_(room_ids)))
+        return {room.id: room for room in result.scalars().all()}
+
     async def get_alias(
         self, session: AsyncSession, room_id: str, agent_id: str
     ) -> str | None:
@@ -444,6 +475,23 @@ class RoomStore:
             select(ClientRoom.client_id).where(ClientRoom.room_id == room_id)
         )
         return list(result.scalars().all())
+
+    async def client_ids_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, list[str]]:
+        """`get_client_ids` for many rooms in one query, keyed by room id. A
+        room with no client members has no key."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(ClientRoom.room_id, ClientRoom.client_id).where(
+                ClientRoom.room_id.in_(room_ids)
+            )
+        )
+        by_room: dict[str, list[str]] = {}
+        for room_id, client_id in result.all():
+            by_room.setdefault(room_id, []).append(client_id)
+        return by_room
 
     async def get_member_agent_clients(
         self, session: AsyncSession, room_id: str

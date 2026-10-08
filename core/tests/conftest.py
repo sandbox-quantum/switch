@@ -30,6 +30,7 @@ from switch_core.db.runtime_role import grant_runtime_role
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.pool_checkouts import PoolCheckouts
+from tests.switch_core.statement_counts import StatementCounts
 
 # Production configures this in `main.run()`; every test that touches a
 # connection config needs the same, and none needs a particular key.
@@ -190,6 +191,20 @@ def pool_checkouts(
         yield tracker
     finally:
         tracker.close()
+
+
+@pytest.fixture
+def statement_counts(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Iterator[StatementCounts]:
+    """SQL statements run against `session_factory`'s engine, counted per
+    request. Wrap an app under test with `statement_counts.wrap(app)`; see
+    `statement_counts.py`."""
+    counts = StatementCounts(session_factory.kw["bind"])
+    try:
+        yield counts
+    finally:
+        counts.close()
 
 
 @dataclass(frozen=True)

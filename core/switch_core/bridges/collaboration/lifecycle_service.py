@@ -49,6 +49,7 @@ from switch_core.telemetry.deployment import (
 )
 from switch_core.telemetry.snapshot import PLATFORMS, normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
+from switch_core.trust.client import NullTrustClient, TrustClient
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -306,6 +307,7 @@ class BridgeStartGuard(Protocol):
 class CollaborationBridgeLifecycleService:
     # See RoomService: a test may assemble this without `__init__`.
     _telemetry: TelemetryService | None = None
+    _trust_client: TrustClient = NullTrustClient()
     _connect_failures: dict[str, int] = {}
     _bridge_facts: dict[str, tuple[str, object]] = {}
     _preconfigured: set[str] = set()
@@ -330,6 +332,7 @@ class CollaborationBridgeLifecycleService:
         session_activity_service: AgentSessionActivityService,
         connections: AgentConnectionRegistry,
         telemetry: TelemetryService | None = None,
+        trust_client: TrustClient = NullTrustClient(),
     ) -> None:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
@@ -339,6 +342,7 @@ class CollaborationBridgeLifecycleService:
         self._client_store = client_store
         self._client_lifecycle = client_lifecycle
         self._telemetry = telemetry
+        self._trust_client = trust_client
         self._room_service = room_service
         self._provisioning = provisioning
         self._session_factory = session_factory
@@ -1026,6 +1030,7 @@ class CollaborationBridgeLifecycleService:
                 session_activity_listener=self._session_activity_listener,
                 session_activity_service=self._session_activity_service,
                 connections=self._connections,
+                trust_client=self._trust_client,
             )
 
             workspace_consumer = WorkspaceConsumer(

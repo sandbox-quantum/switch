@@ -107,6 +107,21 @@ stable identifiers and wire shapes, not as a sign that Matrix is in use. In
 Python they are `transport_room_id` / `transport_user_id`, and the server name
 is `ID_SERVER_NAME` (`MATRIX_SERVER_NAME` is still read, with a warning).
 
+**The message bus is PostgreSQL** (`transport/postgres.py`). Switch once ran on a
+Matrix homeserver; that is gone, and no Matrix server or client library is
+involved. A send is an `INSERT` into `messages`, with a per-room advisory lock
+assigning `seq` (`db/stores/message_store.py`). The `messages_notify` trigger
+calls `pg_notify('switch_message', …)` with the room, `seq` and row id, delivered
+on commit (`db/notify_ddl.py`). One `MessageListener` (`messages/notify.py`)
+holds a dedicated `LISTEN` connection and wakes the subscribers for that room;
+each client then reads the rows after its own cursor, 200 at a time. The
+notification is a wake-up, never the payload. Invites and presence travel over
+in-process buses (`transport/invites.py`, `transport/ephemeral.py`), which is
+part of why switch-core runs as a single replica. Names such as
+`matrix_room_id`, `matrix_user_id`, `MATRIX_SERVER_NAME`, the `@localpart:server`
+id shape and `m.room.message` content types are kept as stable identifiers and
+wire shapes, not as a sign that Matrix is in use.
+
 ## The Switch skill
 
 Every agent session is started by Switch Console or its sidecar; there are no

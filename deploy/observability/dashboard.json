@@ -491,7 +491,7 @@
       "layout": {
         "x": 0,
         "y": 38,
-        "width": 4,
+        "width": 3,
         "height": 3
       }
     },
@@ -508,9 +508,9 @@
         ]
       },
       "layout": {
-        "x": 4,
+        "x": 3,
         "y": 38,
-        "width": 4,
+        "width": 3,
         "height": 3
       }
     },
@@ -527,9 +527,32 @@
         ]
       },
       "layout": {
-        "x": 8,
+        "x": 6,
         "y": 38,
-        "width": 4,
+        "width": 3,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Garbage-collection pause p99 / max (ms) by generation. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p99:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 9,
+        "y": 38,
+        "width": 3,
         "height": 3
       }
     },

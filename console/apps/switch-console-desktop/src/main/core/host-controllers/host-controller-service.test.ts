@@ -192,7 +192,7 @@ describe('making an SSH host a machine', () => {
     expect(unit).toContain(`"/home/ada/.local/state/switch/agent-controller/console-${SERVER}"`);
     expect(unit).toContain('--shared-host-bundle');
     expect(unit).toContain('Restart=on-failure');
-    expect(unit).toContain('RestartPreventExitStatus=2 3 4');
+    expect(unit).toContain('RestartPreventExitStatus=2 3 4 5 6');
     expect(unit).toContain('"PATH=/home/ada/.local/bin:/usr/bin"');
     expect(records.get(`${HOST}|${SERVER}`)).toMatchObject({
       controllerId: 'controller-7',

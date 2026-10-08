@@ -75,7 +75,7 @@ export function systemdUnit(spec: ServiceSpec): string {
     `Environment=${quote(`PATH=${spec.path}`)}`,
     'Restart=on-failure',
     'RestartSec=5',
-    'RestartPreventExitStatus=2 3 4',
+    'RestartPreventExitStatus=2 3 4 5 6',
     '',
     '[Install]',
     'WantedBy=default.target',
@@ -134,7 +134,7 @@ ${strings(runArguments(spec, true))}
 }
 
 /** The exit codes `--launchd` turns into 0, so launchd does not restart into the same failure. */
-export const LAUNCHD_FINAL_EXIT_CODES: readonly number[] = [2, 3, 4];
+export const LAUNCHD_FINAL_EXIT_CODES: readonly number[] = [2, 3, 4, 5, 6];
 
 /** Where the service's files are, for this user. */
 export type ServicePaths = {

@@ -31,6 +31,7 @@ from switch_core.management import tokens
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.wiring import create_management
 from switch_core.tenant_context import current_tenant_id
+from switch_core.trust.client import NullTrustClient
 from tests.switch_core.management.harness import (
     TOKEN_SECRET,
     Harness,
@@ -309,6 +310,7 @@ class TestTheFlagOff:
             config=_Config(),  # type: ignore[arg-type]
             approval_outcomes=object(),  # type: ignore[arg-type]
             controller_auth=None,
+            trust_client=NullTrustClient(),
         )
         paths = [getattr(route, "path", "") for route in app.routes]
         assert paths

@@ -1,6 +1,14 @@
 import type { OpenAgentStream } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
-import { AccessTokens, ControllerClient, type Fetch, isRevoked, type OpenWebSocket } from './api';
+import {
+  AccessTokens,
+  ControllerClient,
+  type Fetch,
+  isCredentialRefused,
+  isRevoked,
+  isUpgradeRequired,
+  type OpenWebSocket,
+} from './api';
 import { ConfigurationError } from './errors';
 import { HubSocket } from './hub-socket';
 import { errorMessage, type Logger } from './log';
@@ -85,8 +93,18 @@ export type ControllerDeps = {
  * `taken_over`: another instance of this controller opened the controller
  * stream after this one. Restarting would take it straight back, so this one
  * ends instead.
+ *
+ * `upgrade_required` and `credential_invalid`: the server refused this
+ * controller's protocol, or knows no controller by its credential. Both are
+ * refusals the server marks not retryable, and asking again cannot change
+ * them, so this one ends rather than retrying forever.
  */
-export type ControllerExit = 'stopped' | 'revoked' | 'taken_over';
+export type ControllerExit =
+  | 'stopped'
+  | 'revoked'
+  | 'taken_over'
+  | 'upgrade_required'
+  | 'credential_invalid';
 
 /**
  * Makes an agent's credentials file name the relay, its hub, and a token the
@@ -295,11 +313,20 @@ export async function runController(
     return revocation;
   };
 
+  /** Set when a refusal that cannot pass ends the run. */
+  let refused: 'upgrade_required' | 'credential_invalid' | null = null;
+  const refuse = (ending: 'upgrade_required' | 'credential_invalid') => {
+    refused ??= ending;
+    stop.abort();
+  };
+
   const failed = (what: string, error: unknown) => {
     if (isRevoked(error)) {
       void revoke();
       return;
     }
+    if (isUpgradeRequired(error)) return refuse('upgrade_required');
+    if (isCredentialRefused(error)) return refuse('credential_invalid');
     log.warn(`${what} failed; it is retried on the next nudge, reconnect or resync.`, {
       error: errorMessage(error),
     });
@@ -538,6 +565,15 @@ export async function runController(
       log.error(
         'Another instance of this controller took over its connection to Switch; this one stops its agents and exits.'
       );
+    if (ending === 'upgrade_required' || ending === 'credential_invalid') refused ??= ending;
+    if (refused === 'upgrade_required')
+      log.error(
+        'Switch does not speak this controller’s protocol; it stops its agents and exits. Update the controller.'
+      );
+    if (refused === 'credential_invalid')
+      log.error(
+        'Switch knows no controller by this credential; it stops its agents and exits. Enroll this machine again.'
+      );
   } finally {
     clearInterval(resync);
     clearInterval(poll);
@@ -552,7 +588,7 @@ export async function runController(
       await relay.close();
     }
   }
-  return revocation ? 'revoked' : ending;
+  return revocation ? 'revoked' : (refused ?? ending);
 }
 
 /**

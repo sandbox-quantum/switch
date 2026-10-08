@@ -44,6 +44,7 @@ from switch_core.observability.catalogue import (
     BRIDGE_EVENTS_IN,
 )
 from switch_core.observability.metrics import metrics
+from switch_core.trust.client import GuardrailBlockedError
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,8 @@ async def post_operation(
         raise HTTPException(status_code=403, detail=exc.detail) from exc
     except BudgetExceeded as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except GuardrailBlockedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

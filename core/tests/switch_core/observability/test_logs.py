@@ -17,6 +17,8 @@ RESOURCE = OtlpResource(
     service_version="1.0.0",
     environment="pilot",
     deployment_id="0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10",
+    commit_sha=None,
+    repository_url=None,
 )
 
 

@@ -13,7 +13,7 @@ import {
   normalizeServerUrl,
   nodeWebSocket,
 } from './api';
-import { DEFAULT_TIMING, runController } from './controller';
+import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
 import { formatChecks, runDoctor } from './doctor';
 import { readEnvFile } from './env-file';
@@ -23,6 +23,8 @@ import {
   EXIT_OK,
   EXIT_REVOKED,
   EXIT_TAKEN_OVER,
+  EXIT_UPGRADE_REQUIRED,
+  EXIT_CREDENTIAL_INVALID,
   exitCodeFor,
   isParseArgsError,
 } from './exit-codes';
@@ -122,8 +124,17 @@ The shared host bundle defaults to SWITCH_CONTROLLER_SHARED_HOST_BUNDLE, then
 the one built in the workspace.
 Log level: SWITCH_CONTROLLER_LOG_LEVEL (debug, info, warn, error; default info).
 Exit codes: 0 stopped, 1 error that may pass, 2 configuration error,
-3 revoked, 4 taken over by another instance.
+3 revoked, 4 taken over by another instance, 5 the server needs a newer
+controller, 6 the server knows no controller by this credential.
 `;
+
+const EXIT_CODE_FOR: Record<ControllerExit, number> = {
+  stopped: EXIT_OK,
+  revoked: EXIT_REVOKED,
+  taken_over: EXIT_TAKEN_OVER,
+  upgrade_required: EXIT_UPGRADE_REQUIRED,
+  credential_invalid: EXIT_CREDENTIAL_INVALID,
+};
 
 function bundlePath(flag: string | undefined): string {
   return resolveSharedHostBundle(flag, process.env, defaultSharedHostBundle);
@@ -386,7 +397,7 @@ async function runCommand(args: string[]): Promise<number> {
       },
       stop.signal
     );
-    return exit === 'revoked' ? EXIT_REVOKED : exit === 'taken_over' ? EXIT_TAKEN_OVER : EXIT_OK;
+    return EXIT_CODE_FOR[exit];
   } finally {
     for (const signal of SIGNALS) process.off(signal, onSignal);
     store.close();

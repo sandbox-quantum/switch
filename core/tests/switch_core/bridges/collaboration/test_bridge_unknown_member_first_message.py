@@ -10,6 +10,7 @@ from switch_core.bridges.collaboration import (
 )
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
+from switch_core.trust.client import NullTrustClient
 
 # CHOO-1781: the first message from a channel member not yet known to the room
 # must not be dropped. Provisioning invites the external user's human actor and
@@ -201,6 +202,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         _handle_text_answer=_no_text_answer,
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
+        _trust_client=NullTrustClient(),
     )
 
     await CollaborationCore._handle_inbound_message(
@@ -246,6 +248,7 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         _handle_text_answer=_no_text_answer,
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
+        _trust_client=NullTrustClient(),
     )
 
     await CollaborationCore._handle_inbound_message(

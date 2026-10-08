@@ -53,6 +53,7 @@ from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
 from switch_core.telemetry import TelemetryService
+from switch_core.trust.client import TrustClient
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ def create_agent_bridge_app(
     config: SwitchConfig,
     approval_outcomes: ApprovalOutcomes,
     controller_auth: ControllerAuthenticator | None,
+    trust_client: TrustClient,
     connections: AgentConnectionRegistry | None = None,
     telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, AgentCore]:
@@ -111,6 +113,7 @@ def create_agent_bridge_app(
         session_factory=session_factory,
         config=config,
         approval_outcomes=approval_outcomes,
+        trust_client=trust_client,
         telemetry=telemetry,
     )
 

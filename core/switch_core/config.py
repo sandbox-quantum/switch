@@ -445,6 +445,27 @@ class SwitchConfig(BaseSettings):
     # move every deeplink along with it.
     messaging_public_url: str | None = None
 
+    # Switch Trust: a guardrails service that checks a message against a
+    # policy before it is sent, blocking it on a BLOCKED verdict. Base URL,
+    # no path — `/guardrails/check` (the check-only route added in
+    # https://github.com/sandbox-quantum/hoot/pull/2397) is appended, the same
+    # convention `otlp_endpoint`/`telemetry_endpoint` follow. Defaults to the
+    # company API; override for a different deployment or a local stack.
+    switch_trust_endpoint: str = "https://api.flintai.dev"
+
+    # Authenticates with Switch Trust and names which policy to run. Both
+    # unset (the default) is what turns the whole feature off — see
+    # `trust_enabled` — and setting one without the other is a startup error,
+    # the same all-or-nothing shape as the distributed Slack/Discord app
+    # config above.
+    switch_trust_api_key: str | None = None
+    switch_trust_policy_id: str | None = None
+
+    # How long to wait on a check before giving up and letting the message
+    # through unchecked (fail open — see `trust/client.py`). Short, because
+    # this gates every message Switch sends.
+    switch_trust_timeout_seconds: float = 2.0
+
     # Upper bound on a single attachment an agent may post to a room (and that
     # a collaboration bridge will relay out). Uploads over this raise instead
     # of being truncated or silently dropped.
@@ -1066,6 +1087,56 @@ class SwitchConfig(BaseSettings):
                 "the app."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_switch_trust(self) -> "SwitchConfig":
+        required = (self.switch_trust_api_key, self.switch_trust_policy_id)
+        set_count = sum(1 for value in required if value)
+        if 0 < set_count < len(required):
+            raise ValueError(
+                "Partial Switch Trust config: set both SWITCH_TRUST_API_KEY "
+                "and SWITCH_TRUST_POLICY_ID, or neither."
+            )
+        if self.switch_trust_endpoint != self.switch_trust_endpoint.strip():
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT has leading or trailing whitespace: "
+                f"{self.switch_trust_endpoint!r}."
+            )
+        endpoint = urlsplit(self.switch_trust_endpoint)
+        if endpoint.scheme not in ("http", "https"):
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT must be an http(s) URL, got "
+                f"{self.switch_trust_endpoint!r}."
+            )
+        if not endpoint.netloc:
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT must include a host, got "
+                f"{self.switch_trust_endpoint!r}."
+            )
+        if endpoint.path.strip("/"):
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT is the service's base URL and "
+                "/guardrails/check is appended to it, so it must have no path "
+                f"of its own. Got {self.switch_trust_endpoint!r} — drop the "
+                f"{endpoint.path!r}."
+            )
+        if endpoint.query or endpoint.fragment:
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT must be a bare base URL: a query or "
+                "fragment is dropped when /guardrails/check is appended, so "
+                f"it would silently never be sent. Got "
+                f"{self.switch_trust_endpoint!r}."
+            )
+        if self.switch_trust_timeout_seconds <= 0:
+            raise ValueError(
+                "SWITCH_TRUST_TIMEOUT_SECONDS must be positive, got "
+                f"{self.switch_trust_timeout_seconds!r}."
+            )
+        return self
+
+    @property
+    def trust_enabled(self) -> bool:
+        return bool(self.switch_trust_api_key and self.switch_trust_policy_id)
 
     @property
     def gateway_oidc_enabled(self) -> bool:

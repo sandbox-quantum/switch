@@ -122,13 +122,15 @@ class OtlpResource:
     ``service_version`` is ``None`` when switch-core cannot read its own
     version, and is then omitted rather than placeheld — a dashboard filtered
     by version should show the record missing, not attribute it to a release
-    nobody built.
+    nobody built. ``commit_sha`` and ``repository_url`` follow the same rule.
     """
 
     service_name: str
     service_version: str | None
     environment: str | None
     deployment_id: str
+    commit_sha: str | None
+    repository_url: str | None
 
     def attributes(self) -> dict[str, AttributeValue]:
         values: dict[str, AttributeValue] = {
@@ -142,6 +144,12 @@ class OtlpResource:
         if self.environment:
             # Datadog maps this onto `env`.
             values["deployment.environment"] = self.environment
+        # The names Datadog reads for deployment tracking and for linking a
+        # stack trace to its source.
+        if self.commit_sha:
+            values["git.commit.sha"] = self.commit_sha
+        if self.repository_url:
+            values["git.repository_url"] = self.repository_url
         return values
 
 

@@ -1,3 +1,5 @@
+from collections.abc import Collection
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,17 @@ class CollaborationBridgeStore:
         self, session: AsyncSession, bridge_id: str
     ) -> CollaborationBridge | None:
         return await session.get(CollaborationBridge, bridge_id)
+
+    async def get_many(
+        self, session: AsyncSession, bridge_ids: Collection[str]
+    ) -> list[CollaborationBridge]:
+        """The bridges among `bridge_ids` that exist, in one query."""
+        if not bridge_ids:
+            return []
+        result = await session.execute(
+            select(CollaborationBridge).where(CollaborationBridge.id.in_(bridge_ids))
+        )
+        return list(result.scalars().all())
 
     async def get_all(self, session: AsyncSession) -> list[CollaborationBridge]:
         result = await session.execute(select(CollaborationBridge))

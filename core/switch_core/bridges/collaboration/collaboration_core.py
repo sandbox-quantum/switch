@@ -83,6 +83,12 @@ from switch_core.transport import (
     RoomRef,
     TransportError,
 )
+from switch_core.trust.client import (
+    NullTrustClient,
+    TrustClient,
+    check_message,
+    trust_annotation,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -183,6 +189,7 @@ class CollaborationCore:
         session_activity_listener: AgentSessionActivityListener,
         session_activity_service: AgentSessionActivityService,
         connections: AgentConnectionRegistry,
+        trust_client: TrustClient = NullTrustClient(),
         gateway_public_url: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
@@ -211,6 +218,7 @@ class CollaborationCore:
             workspace_consumer_transport_user_id
         )
         self._max_attachment_bytes = max_attachment_bytes
+        self._trust_client = trust_client
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
         self._room_to_channel: dict[tuple[str, str], str] = {}
@@ -945,6 +953,30 @@ class CollaborationCore:
             content = f"{content}\n{notes}" if content.strip() else notes
 
         if not msg.attachments:
+            check = await check_message(
+                self._trust_client, role="user", content=content
+            )
+            if check.blocked:
+                logger.warning(
+                    "[BRIDGE-IN] message from %s blocked by Switch Trust "
+                    "(policy=%s) — not relayed into room %s",
+                    msg.sender_name,
+                    check.policy_id,
+                    transport_room_id,
+                )
+                await self._adapter.admin_message(
+                    msg.channel_id,
+                    "🚫 Your message was blocked by Switch Trust and was not "
+                    "delivered.",
+                    msg.root_id or msg.message_ref,
+                    message_type=AdminMessageType.TRUST_BLOCKED.value,
+                )
+                return
+            if check.redacted_content is not None:
+                content = check.redacted_content
+            annotation = trust_annotation(check)
+            if annotation is not None:
+                content = f"{content}\n\n{annotation}"
             event_id = await human_actor.send_message(
                 transport_room_id,
                 content,
