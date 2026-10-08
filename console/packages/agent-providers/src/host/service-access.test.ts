@@ -38,7 +38,47 @@ describe("a token's expiry", () => {
 
   it("is taken as given when Switch's answer carries no date", async () => {
     const issued = await issue(null);
-    expect(issued).toMatchObject({ expiresAt: Date.parse('2026-10-08T13:00:00Z') });
+    expect(issued).toMatchObject({
+      expiresAt: Date.parse('2026-10-08T13:00:00Z'),
+      useUntil: Date.parse('2026-10-08T13:00:00Z'),
+    });
+  });
+
+  const answered = (body: object) =>
+    issueServiceToken(
+      { endpoint: 'https://switch.example.test/api', token: 'agent-key', agentId: 'agent' },
+      'example',
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch
+    );
+
+  it('is timed from the answer by Switch’s count, and used until Switch says', async () => {
+    // This machine's clock is a day off Switch's, which no longer matters.
+    vi.useFakeTimers({ now: Date.parse('2026-10-09T12:00:00Z'), toFake: ['Date'] });
+    try {
+      const issued = await answered({
+        token: 'synthetic-owner-token',
+        expires_at: '2026-10-08T16:00:00Z',
+        expires_in: 4 * 3600,
+        use_until: '2026-10-08T13:00:00Z',
+      });
+      expect(issued).toMatchObject({
+        expiresAt: Date.parse('2026-10-09T15:59:59Z'),
+        useUntil: Date.parse('2026-10-09T12:59:59Z'),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a use_until after the token expires', async () => {
+    await expect(
+      answered({
+        token: 'synthetic-owner-token',
+        expires_at: '2026-10-08T13:00:00Z',
+        expires_in: 3600,
+        use_until: '2026-10-08T14:00:00Z',
+      })
+    ).rejects.toThrow('not one');
   });
 });
 
@@ -59,6 +99,7 @@ const GITHUB: ServiceGrant = {
     content:
       '---\nname: github\ndescription: Work in granted repositories.\n---\n\n# GitHub\n\nUse gh.\n',
   },
+  mcp_servers: [],
 };
 
 const answering = (status: number, body: unknown) =>

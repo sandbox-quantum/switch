@@ -17,7 +17,7 @@ All files fetched 2026-09-29.
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
 | `github.svg` | GitHub | [Simple Icons](https://simpleicons.org) 16.33.0, `github` | CC0-1.0 ([Simple Icons disclaimer](https://github.com/simple-icons/simple-icons/blob/develop/DISCLAIMER.md)); brand guidelines https://github.com/logos | theme foreground |
-| `jira.svg` | Jira | Simple Icons 16.33.0, `jira` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |
+| `atlassian.svg` | Jira, for the Atlassian connection (Jira only) | Simple Icons 16.33.0, `jira` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |
 | `bitbucket.svg` | Bitbucket | Simple Icons 16.33.0, `bitbucket` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |
 | `asana.svg` | Asana | Simple Icons 16.33.0, `asana` | CC0-1.0; guidelines https://asana.com/brand | `#F06A6A` |
 | `gitlab.svg` | GitLab | Simple Icons 16.33.0, `gitlab` | CC0-1.0; guidelines https://about.gitlab.com/press/press-kit/ | `#FC6D26` |

@@ -1,0 +1,50 @@
+slug: atlassian
+name: Atlassian
+category: Project management
+description: Read and update Jira issues and projects, as you.
+enabled: true
+adapter: oauth-mcp
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Atlassian offers no client to configure: Core registers one itself.
+    registration: dynamic
+    # It returns a sign-in to Core's own address only where a site admin has
+    # added it, so sign-ins come back to Switch Console, on a port registered
+    # with the client: Atlassian matches the port exactly.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Without it, consenting to the Jira scopes alone fails after Accept.
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Atlassian's MCP access tokens live 8 hours; agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: atlassian, url: "https://mcp.atlassian.com/v2/mcp" }
+access:
+  # The identity scopes are needed for consent; search:jira carries JQL search.
+  # Atlassian hides the write tools from a read-only sign-in.
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:jira:agent-interface
+      - search:jira:agent-interface
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:jira:agent-interface
+      - search:jira:agent-interface
+      - write:jira:agent-interface
+tools: { mode: pass_through }

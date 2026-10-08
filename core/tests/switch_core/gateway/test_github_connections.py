@@ -95,6 +95,7 @@ async def github_app(tmp_path, session_factory):
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters={"github": GitHubAdapter(github, AsyncMock())},
+        disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
     )

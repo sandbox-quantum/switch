@@ -21,6 +21,14 @@ export const serviceGrantSchema = z.object({
   tools: z.array(z.string()),
   resources: z.record(z.string(), z.unknown()),
   skill: z.object({ name: z.string().regex(SLUG), content: z.string() }).nullable(),
+  /**
+   * The vendor's MCP servers a session calls for this service, each under its
+   * own name. Empty for a service whose tools are not MCP (GitHub's are git
+   * and gh), and from a Switch that predates them.
+   */
+  mcp_servers: z
+    .array(z.object({ name: z.string().regex(SLUG), url: z.string().url() }))
+    .default([]),
 });
 export type ServiceGrant = z.infer<typeof serviceGrantSchema>;
 
@@ -103,10 +111,22 @@ export const serviceTokenAnswerSchema = z.discriminatedUnion('kind', [
 ]);
 export type ServiceTokenAnswer = z.infer<typeof serviceTokenAnswerSchema>;
 
-export type IssuedServiceToken = { token: string; expiresAt: number };
+/**
+ * A token as this machine holds it, both times on this machine's clock:
+ * `expiresAt` when the vendor stops taking it, and `useUntil` when Switch
+ * must be asked again (at most an hour after the issue, so its checks run
+ * at least hourly whatever the vendor's lifetime).
+ */
+export type IssuedServiceToken = { token: string; expiresAt: number; useUntil: number };
 export type ServiceRefusal = { code: string; message: string; retryable: boolean };
 
-const issuedSchema = z.object({ token: z.string(), expires_at: z.string() });
+const issuedSchema = z.object({
+  token: z.string(),
+  expires_at: z.string(),
+  // Additive in contract §5; absent from a Switch that predates them.
+  expires_in: z.number().int().nonnegative().optional(),
+  use_until: z.string().optional(),
+});
 const refusalSchema = z.object({
   error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }),
 });
@@ -148,9 +168,29 @@ export async function issueServiceToken(
   }
   const issued = issuedSchema.safeParse(await response.json().catch(() => null));
   const expiresAt = issued.success ? Date.parse(issued.data.expires_at) : Number.NaN;
-  if (!issued.success || !validServiceToken(issued.data.token) || !Number.isFinite(expiresAt))
+  const useUntil =
+    issued.success && issued.data.use_until !== undefined
+      ? Date.parse(issued.data.use_until)
+      : expiresAt;
+  if (
+    !issued.success ||
+    !validServiceToken(issued.data.token) ||
+    !Number.isFinite(expiresAt) ||
+    !Number.isFinite(useUntil) ||
+    useUntil > expiresAt
+  )
     throw new Error(`Switch answered a ${service} token request with something that is not one.`);
-  return { token: issued.data.token, expiresAt: onLocalClock(expiresAt, response) };
+  // Timed from when the answer arrived, by Switch's own count, so this
+  // machine's clock is never compared with Switch's.
+  const localExpiry =
+    issued.data.expires_in !== undefined
+      ? Date.now() + issued.data.expires_in * 1000 - 1000
+      : onLocalClock(expiresAt, response);
+  return {
+    token: issued.data.token,
+    expiresAt: localExpiry,
+    useUntil: localExpiry - (expiresAt - useUntil),
+  };
 }
 
 /**

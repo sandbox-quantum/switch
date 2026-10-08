@@ -3325,6 +3325,30 @@ class ServiceConnection(TenantScoped, Base):
     )
 
 
+class ServiceOAuthClient(Base):
+    """The OAuth client Core registered for itself at a service's vendor.
+
+    Dynamic client registration (RFC 7591), for a vendor that offers no other
+    way to have a client: one row per deployment and service, written on the
+    first connect. Deployment-wide, because the vendor sees one Switch, and
+    every workspace's connections sign in through it. `encrypted_secret` is
+    keyring-encrypted JSON of the vendor's registration answer, its
+    `client_secret` included where the vendor issued one;
+    `registration_endpoint` is where it was registered, so a vendor that moves
+    it gets a new registration rather than an unknown client.
+    """
+
+    __tablename__ = "service_oauth_clients"
+
+    service: Mapped[str] = mapped_column(Text, primary_key=True)
+    registration_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    oauth_client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ServiceGrant(TenantScoped, Base):
     """An agent may use its owner's connection to a service.
 

@@ -113,14 +113,17 @@ export function servicesUnavailableNotice(reason: string): string {
  * server this host serves on loopback: no Switch credential, connection or
  * session name reaches the CLI or its environment. With `helpers`, an agent
  * granted GitHub gets Git's credential helper and the `gh` wrapper, which ask
- * the session's service endpoint for the token.
+ * the session's service endpoint for the token. `vendors` are the granted
+ * vendors' MCP servers this host serves on loopback (`vendor-mcp.ts`), given
+ * to the CLI beside Switch's own under their own names.
  */
 export async function prepareSharedConfig(
   root: string,
   config: SharedHostConfig,
   runtime: HttpMcpServerSpec,
   services: SessionServices,
-  helpers: ServiceHelpers | null
+  helpers: ServiceHelpers | null,
+  vendors: Record<string, HttpMcpServerSpec>
 ) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
@@ -195,6 +198,11 @@ export async function prepareSharedConfig(
         SWITCH_SERVICE_BEARER: helpers.endpoint.token,
       };
     }
+  }
+  for (const [name, spec] of Object.entries(vendors)) {
+    if (name === 'switch' || name in input.mcpServers)
+      throw new Error(`A granted service's MCP server is named ${name}, which is taken.`);
+    input.mcpServers[name] = spec;
   }
   input.mcpServers.switch = runtime;
   if (!agentApiUrl || !token)

@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from switch_core.config import SwitchConfig
 from switch_core.connections.adapters import (
+    AccessToken,
     ConnectionSecret,
     IssueRequest,
     ReauthorizationRequiredError,
@@ -212,7 +213,7 @@ class TestIssue:
         self, adapter: GitHubAdapter, signer: AsyncMock, github: AsyncMock
     ) -> None:
         issued = await adapter.issue(
-            "gho_user",
+            AccessToken("gho_user", datetime.now(UTC) + timedelta(hours=8)),
             _request("read", {"installation_id": 456, "repository_ids": [789]}),
         )
         github.installation_repositories.assert_awaited_once_with(
@@ -230,7 +231,7 @@ class TestIssue:
     ) -> None:
         with pytest.raises(ServiceAdapterError):
             await adapter.issue(
-                "gho_user",
+                AccessToken("gho_user", datetime.now(UTC) + timedelta(hours=8)),
                 _request("write", {"installation_id": 456, "repository_ids": [790]}),
             )
         signer.mint.assert_not_called()

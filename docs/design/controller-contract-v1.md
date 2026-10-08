@@ -198,29 +198,35 @@ Claim leases last 5 minutes and are renewed by `progress`. Every operation reach
 
 ### Service tokens (Core)
 
-Service tokens are issued on agent routes (§7), so one route serves a controller acting as an agent and a directly connected agent using its own key. Implementation: `service-connections-v1.md`.
+Service tokens are issued on agent routes (§7), so one route serves a controller acting as an agent and a directly connected agent using its own key. Implementation: `service-connections-v1.md`, and `service-connections-v2.md` for services beyond GitHub.
 
 ```
 GET /agents/{agent_id}/service-grants                auth: controller token acting as the agent (§7), or the agent's own key
   → 200 { grants: ServiceGrant[] }
 
 POST /agents/{agent_id}/service-tokens/{service}     auth: as above. No body
-  → 200 { token: string, expires_at: Time, resources: ServiceResources }   // ≤ 1h, Cache-Control: no-store. Every issuance is recorded
-  → 403 grant_missing | not_assigned | forbidden
+  → 200 { token: string, expires_at: Time, expires_in: number, use_until: Time, resources: ServiceResources }
+                                                     // Cache-Control: no-store. Every issuance is recorded
+  → 403 grant_missing | not_assigned | forbidden     // forbidden also: the service is switched off on this server
   → 404 connector_not_connected | not_found          // not_found: no such service
   → 409 connector_revoked | grant_account_changed | managed_by_controller
-  → 500 internal                                     // the vendor's token outlived an hour; not retryable
+  → 500 internal                                     // the vendor's token outlived its catalog lifetime; not retryable
   → 503 internal                                     // the vendor or the connection is unavailable
 ```
 
+- **`expires_in`** is the token's remaining life in seconds, as Core counts it. Time the token from when the answer arrived, not by comparing `expires_at` with your own clock.
+- **`use_until`** is when to ask again: `expires_at`, or an hour after the issue if that is sooner. A token may outlive it (a service whose tokens live longer than an hour), but it is not used past it, so Core's checks run at least hourly. Both fields are additive; a holder that predates them keeps using `expires_at`.
+- **Minted and pass-through tokens.** GitHub's token is minted for the one request and lives at most an hour. A pass-through service hands out its owner's own access token, shared by every agent they grant; it cannot be revoked per agent, and Core renews it while at least 15 minutes remain.
+
 ```ts
 type ServiceGrant = {
-  service: string                     // catalog slug: "github"; later "jira", "google-workspace", …
+  service: string                     // catalog slug: "github", "atlassian"; later "google-workspace", …
   access: "read" | "write"
   tool_mode: "allow" | "deny"         // allow: only `tools`; deny: every tool of the level except `tools`
   tools: string[]
   resources: ServiceResources
   skill: { name: string; content: string } | null   // the service's SKILL.md
+  mcp_servers: { name: string; url: string }[]       // the vendor's MCP servers a session calls; [] for GitHub. Additive
 }
 
 type ServiceResources =
@@ -229,9 +235,9 @@ type ServiceResources =
 ```
 
 - **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
-- **When grants are read.** The agent's host reads its grants when a session starts, and a change applies from the next session. No stream frame announces a change: a removed grant fails the next fetch, and a GitHub token already issued is revoked at once.
+- **When grants are read.** The agent's host reads its grants when a session starts, and a change applies from the next session. No stream frame announces a change: a removed grant fails the next fetch, and a GitHub token already issued is revoked at once. A pass-through service's token is its owner's own and cannot be revoked alone, so a removed grant stops a running session by `use_until`, within the hour, and a token already handed out stays valid at the vendor until it expires.
 - **`credential.revoked` is not used for grants.** It revokes the controller itself.
-- **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper.
+- **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper. A service with `mcp_servers` never reaches the CLI at all: the session's host serves each of them to the CLI on loopback, behind a key made for the run, asks for the token on each call and calls the vendor itself.
 
 ### Provider logins (Management)
 

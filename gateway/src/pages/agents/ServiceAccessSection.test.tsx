@@ -1,6 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type AgentDetail, OWNER_ONLY_POLICY, type ServiceGrants } from "../../data/api";
+import {
+  type AgentDetail,
+  OWNER_ONLY_POLICY,
+  type ServiceConnection,
+  type ServiceGrants,
+} from "../../data/api";
 import ServiceAccessSection from "./ServiceAccessSection";
 
 const agent: AgentDetail = {
@@ -47,7 +52,7 @@ const GITHUB = {
 
 type Call = { path: string; method: string; body: unknown };
 
-function mockServer(grants: ServiceGrants | null) {
+function mockServer(grants: ServiceGrants | null, services: ServiceConnection[] = []) {
   const calls: Call[] = [];
   vi.stubGlobal(
     "fetch",
@@ -60,6 +65,11 @@ function mockServer(grants: ServiceGrants | null) {
       if (path === "/gateway/agents/a1/service-grants")
         return grants ? json(grants) : json({ detail: "Agent not found." }, 404);
       if (path === "/gateway/provider-connections/github") return json(GITHUB);
+      if (path === "/gateway/service-connections") return json({ connections: services });
+      if (path === "/gateway/agents/a1/service-grants/example" && method === "PUT")
+        return json({ grant: {}, warning: null });
+      if (path === "/gateway/agents/a1/service-grants/example" && method === "DELETE")
+        return json({ warning: null });
       if (path === "/gateway/agents/a1/service-grants/github" && method === "PUT")
         return json({ grant: {}, warning: null });
       if (path === "/gateway/agents/a1/service-grants/github" && method === "DELETE")
@@ -175,5 +185,90 @@ describe("ServiceAccessSection", () => {
       <ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />,
     );
     await waitFor(() => expect(container.textContent).toBe(""));
+  });
+
+  const onOff = (
+    status: ServiceConnection["status"],
+    overrides: Partial<ServiceConnection> = {},
+  ): ServiceConnection => ({
+    slug: "example",
+    name: "Example",
+    category: "Project management",
+    description: "Example work items.",
+    enabled: true,
+    connectable: true,
+    unavailable_reason: null,
+    status,
+    pass_through: true,
+    token_lifetime: 3600,
+    ...overrides,
+  });
+  const NONE: ServiceGrants = { grants: [], missing: [], addressing_open: false };
+
+  it("turns a connected on/off service on with no level to choose", async () => {
+    const calls = mockServer(NONE, [onOff("active")]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    const toggle = await screen.findByLabelText("Example for helper");
+    expect(screen.getByText(/helper acts as you at Example/)).toBeTruthy();
+    expect(screen.getByText(/within an hour/)).toBeTruthy();
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "/gateway/agents/a1/service-grants/example",
+        method: "PUT",
+        body: { resources: {} },
+      }),
+    );
+  });
+
+  it("turns an on/off grant off, and says a longer-lived token outlasts it", async () => {
+    const calls = mockServer(
+      {
+        grants: [
+          {
+            service: "example",
+            name: "Example",
+            access: "write",
+            tool_mode: "deny",
+            tools: [],
+            effective_tools: [],
+            resources: {},
+            summary: "helper reads and writes Example as you.",
+          },
+        ],
+        missing: [],
+        addressing_open: false,
+      },
+      [onOff("active", { token_lifetime: 24 * 3600 })],
+    );
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText("helper reads and writes Example as you.")).toBeTruthy();
+    expect(screen.getByText(/stays valid at Example until it expires/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    fireEvent.click(screen.getByLabelText("Example for helper"));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "/gateway/agents/a1/service-grants/example",
+        method: "DELETE",
+        body: null,
+      }),
+    );
+  });
+
+  it("says why a service cannot be turned on: not connected, or not available here", async () => {
+    mockServer(NONE, [
+      onOff("not_connected"),
+      onOff("active", {
+        slug: "other",
+        name: "Other",
+        unavailable_reason: "Coming to this server soon.",
+      }),
+    ]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    const example = await screen.findByLabelText("Example for helper");
+    expect((example as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText(/first connect it from Switch Console/)).toBeTruthy();
+    expect(screen.getByText("Coming to this server soon.")).toBeTruthy();
+    expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
   });
 });

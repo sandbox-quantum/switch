@@ -8,7 +8,7 @@ import {
   type ServiceTokenAnswer,
 } from './service-access';
 
-/** A token is asked for again this long before it expires. */
+/** A token is asked for again this long before it must be (`useUntil`). */
 export const REFRESH_BEFORE_MS = 5 * 60_000;
 /** After a rejected token is replaced, another rejection is not acted on for this long. */
 export const REJECTION_WINDOW_MS = 60_000;
@@ -18,8 +18,9 @@ const STILL_USABLE_MS = 60_000;
 /**
  * The service tokens of one agent's sessions on this machine: one per
  * service, shared by the sessions, asked for on first use and again five
- * minutes before it expires. Every token is added to `redactions` as it
- * arrives.
+ * minutes before Switch said to stop using it (`useUntil`: its expiry, or an
+ * hour after it was issued if that is sooner). Every token is added to
+ * `redactions` as it arrives.
  *
  * A session's helper reports a token the service refused (Git erasing it,
  * `gh` told 401): it is a token Switch revoked when the grant changed, and is
@@ -57,7 +58,7 @@ export class AgentServiceTokens {
       this.cached.delete(service);
       cached = undefined;
     }
-    if (cached && cached.expiresAt - now > REFRESH_BEFORE_MS) return tokenAnswer(cached);
+    if (cached && cached.useUntil - now > REFRESH_BEFORE_MS) return tokenAnswer(cached);
 
     let outcome: IssuedServiceToken | ServiceRefusal;
     try {
@@ -72,9 +73,9 @@ export class AgentServiceTokens {
     if ('token' in outcome) return tokenAnswer(outcome);
     const final = endsServiceUse(outcome.code);
     if (final) this.cached.delete(service);
-    else if (cached && cached.expiresAt - this.deps.now() > STILL_USABLE_MS) {
+    else if (cached && cached.useUntil - this.deps.now() > STILL_USABLE_MS) {
       console.warn(
-        `Switch could not renew this agent's ${service} token (${outcome.message}); handing out the current one, which expires at ${new Date(cached.expiresAt).toISOString()}.`
+        `Switch could not renew this agent's ${service} token (${outcome.message}); handing out the current one, which is used until ${new Date(cached.useUntil).toISOString()}.`
       );
       return tokenAnswer(cached);
     }

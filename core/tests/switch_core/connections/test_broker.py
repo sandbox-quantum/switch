@@ -11,16 +11,19 @@ import asyncio
 import hashlib
 import json
 import logging
+import shutil
 import time
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import delete, event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
+    ConnectionSecret,
     ReauthorizationRequiredError,
     ServiceAdapterError,
 )
@@ -29,7 +32,7 @@ from switch_core.connections.broker import (
     ServiceBroker,
     ServiceError,
 )
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.maintenance import maintain_once
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -48,6 +51,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
+from tests.switch_core.connections.test_loader import OAUTH_MCP_ENTRY, _write_example
 from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
@@ -69,6 +73,7 @@ def broker(
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters={"github": vendor},
+        disabled={},
         store=STORE,
         token_retention=timedelta(days=30),
     )
@@ -438,6 +443,7 @@ class TestChecks:
             keyring=TEST_KEYRING,
             catalog=CATALOG,
             adapters={},
+            disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
         )
@@ -868,6 +874,7 @@ class TestConnectOnly:
             keyring=TEST_KEYRING,
             catalog=CATALOG,
             adapters={"github": vendor},
+            disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
         )
@@ -876,7 +883,7 @@ class TestConnectOnly:
         reason = broker.availability("github")
         assert reason is not None and "not granted to agents" in reason
         assert broker.connectable("github") is True
-        assert broker.connectable("jira") is False
+        assert broker.connectable("asana") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             503,
@@ -926,3 +933,319 @@ class TestLaunchChangesInFlight:
         )
         assert vendor.revoked == [vendor.issued[0][1]]
         assert await _issuances(session_factory) == []
+
+
+def _switched_off(
+    session_factory: async_sessionmaker[AsyncSession],
+    vendor: FakeVendor,
+    disabled: dict[str, str],
+) -> ServiceBroker:
+    return ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=CATALOG,
+        adapters={"github": vendor},
+        disabled=disabled,
+        store=STORE,
+        token_retention=timedelta(days=30),
+    )
+
+
+class TestSwitchedOff:
+    async def test_a_switched_off_service_says_why_and_is_neither_connected_nor_granted(
+        self, session_factory, vendor
+    ) -> None:
+        reason = "Coming to this server soon."
+        broker = _switched_off(session_factory, vendor, {"github": reason})
+        world = await _world(session_factory)
+
+        assert broker.availability("github") == reason
+        assert broker.connectable("github") is False
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code, refused.retryable) == (
+            403,
+            "forbidden",
+            False,
+        )
+        assert refused.message == reason
+        assert vendor.issued == [] and vendor.refreshes == 0
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            with pytest.raises(ServiceError) as caught:
+                await broker.set_grant(
+                    session,
+                    agent=agent,
+                    actor_id=world.owner.id,
+                    service="github",
+                    access="read",
+                    tool_mode=None,
+                    tools=None,
+                    resources=RESOURCES,
+                )
+            assert (caught.value.status_code, caught.value.message) == (422, reason)
+            with pytest.raises(ServiceError) as caught:
+                await broker.connect(
+                    session,
+                    user_id=world.owner.id,
+                    service="github",
+                    consent="write",
+                    granted_scopes=[],
+                    account_id="1001",
+                    external_identity="ada-gh",
+                    secret=ConnectionSecret(_secret(expires_in=3600)),
+                )
+            assert (caught.value.status_code, caught.value.message) == (403, reason)
+
+    async def test_disconnecting_a_switched_off_service_still_works(
+        self, session_factory, vendor
+    ) -> None:
+        broker = _switched_off(session_factory, vendor, {"github": ""})
+        world = await _world(session_factory)
+        async with session_factory() as session:
+            await broker.disconnect(session, world.owner.id, "github")
+        assert await _connection(session_factory, world.owner.id) is None
+        assert len(vendor.connections_revoked) == 1
+
+    async def test_an_empty_reason_reads_switched_off(
+        self, session_factory, vendor
+    ) -> None:
+        broker = _switched_off(session_factory, vendor, {"github": ""})
+        assert broker.availability("github") == "Switched off on this server."
+
+    async def test_a_service_outside_the_catalog_stops_the_server(
+        self, session_factory, vendor
+    ) -> None:
+        with pytest.raises(ValueError, match="not in the catalog: \\['nowhere'\\]"):
+            _switched_off(session_factory, vendor, {"nowhere": ""})
+
+
+def pass_through_catalog(root: Path, *, max_lifetime: int = 3600) -> dict:
+    """The shipped catalog and `example`, a pass-through OAuth/MCP vendor."""
+    shutil.copytree(CATALOG_ROOT, root)
+    _write_example(
+        root,
+        OAUTH_MCP_ENTRY.replace("max_lifetime: 3600", f"max_lifetime: {max_lifetime}"),
+    )
+    return load_catalog(root)
+
+
+class PassThrough:
+    def __init__(self, broker: ServiceBroker, vendor: FakeVendor, world: World) -> None:
+        self.broker = broker
+        self.vendor = vendor
+        self.world = world
+
+
+async def _pass_through(
+    session_factory: async_sessionmaker[AsyncSession],
+    root: Path,
+    *,
+    expires_in: float,
+    max_lifetime: int = 3600,
+) -> PassThrough:
+    vendor = FakeVendor()
+    vendor.pass_through = True
+    vendor.revocable = False
+    vendor.refreshed_lifetime = timedelta(hours=1)
+    broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=pass_through_catalog(root, max_lifetime=max_lifetime),
+        adapters={"example": vendor},
+        disabled={},
+        store=STORE,
+        token_retention=timedelta(days=30),
+    )
+    async with session_factory() as session:
+        owner = await _user(session, "ada")
+        agent = await add_agent(session, name="planner", owner_id=owner.id)
+        await STORE.save_connection(
+            session,
+            user_id=owner.id,
+            service="example",
+            consent="write",
+            granted_scopes=["read:items", "write:items"],
+            account_id="acct-1",
+            external_identity="ada@example.test",
+            encrypted_secret=TEST_KEYRING.encrypt(
+                json.dumps(
+                    {
+                        "access_token": "owner_access_0",
+                        "expires_at": time.time() + expires_in,
+                        "refresh_token": "owner_refresh_0",
+                    }
+                )
+            ),
+        )
+        grant = await STORE.save_grant(
+            session,
+            agent_id=agent.id,
+            owner_id=owner.id,
+            service="example",
+            access="write",
+            tool_mode="deny",
+            tools=[],
+            resources={},
+            account_id="acct-1",
+            created_by=owner.id,
+        )
+        await session.commit()
+    return PassThrough(broker, vendor, World(owner, agent, grant))
+
+
+class TestPassThrough:
+    async def test_the_grant_names_the_vendors_mcp_servers_and_skill(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        assert grant["mcp_servers"] == [
+            {"name": "example", "url": "https://mcp.example.test/v1/mcp"}
+        ]
+        assert grant["skill"]["name"] == "example"
+
+    async def test_hands_out_the_owners_token_unrevocable_with_its_own_expiry(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        token = await _issue(
+            pt.broker, session_factory, pt.world.agent.id, service="example"
+        )
+        assert token.token == "owner_access_0"
+        assert pt.vendor.refreshes == 0
+        remaining = (token.expires_at - datetime.now(UTC)).total_seconds()
+        assert 49 * 60 < remaining <= 50 * 60
+        assert token.use_until == token.expires_at
+        [record] = await _issuances(session_factory)
+        assert record.encrypted_token is None
+        assert record.token_sha256 == hashlib.sha256(b"owner_access_0").hexdigest()
+
+    async def test_renews_while_fifteen_minutes_remain_where_minted_waits_for_five(
+        self, session_factory, tmp_path, broker, vendor
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=10 * 60)
+        token = await _issue(
+            pt.broker, session_factory, pt.world.agent.id, service="example"
+        )
+        assert pt.vendor.refreshes == 1
+        assert token.token == "gho_access_1"
+
+        world = await _world(session_factory, expires_in=10 * 60)
+        await _issue(broker, session_factory, world.agent.id)
+        assert vendor.refreshes == 0
+
+    async def test_refuses_a_token_past_the_catalogs_lifetime_and_revokes_nothing(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=2 * 3600)
+        refused = await _refused(
+            pt.broker, session_factory, pt.world.agent.id, service="example"
+        )
+        assert (refused.status_code, refused.code, refused.retryable) == (
+            500,
+            "internal",
+            False,
+        )
+        assert "does not expire within an hour" in refused.message
+        assert pt.vendor.revoked == []
+
+    async def test_a_longer_lived_token_is_used_for_an_hour_at_most(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=100 * 60, max_lifetime=7200
+        )
+        token = await _issue(
+            pt.broker, session_factory, pt.world.agent.id, service="example"
+        )
+        now = datetime.now(UTC)
+        assert (token.expires_at - now).total_seconds() > 99 * 60
+        assert 59 * 60 < (token.use_until - now).total_seconds() <= 3600
+
+    async def test_an_adapter_offering_the_owners_token_as_revocable_is_refused(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        pt.vendor.revocable = True
+        refused = await _refused(
+            pt.broker, session_factory, pt.world.agent.id, service="example"
+        )
+        assert (refused.status_code, refused.code) == (500, "internal")
+        assert "as revocable" in refused.message
+        assert pt.vendor.revoked == []
+        assert await _issuances(session_factory) == []
+
+    async def test_a_grant_is_on_at_the_connections_level_with_no_choice(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        async with session_factory() as session:
+            planner = await add_agent(
+                session, name="writer", owner_id=pt.world.owner.id
+            )
+            await session.commit()
+            grant, warning = await pt.broker.set_grant(
+                session,
+                agent=planner,
+                actor_id=pt.world.owner.id,
+                service="example",
+                access=None,
+                tool_mode=None,
+                tools=None,
+                resources={},
+            )
+        assert (grant.access, grant.resources, warning) == ("write", {}, None)
+
+        async with session_factory() as session:
+            for access, tools in (("read", None), (None, ["search_items"])):
+                with pytest.raises(ServiceError) as caught:
+                    await pt.broker.set_grant(
+                        session,
+                        agent=planner,
+                        actor_id=pt.world.owner.id,
+                        service="example",
+                        access=access,  # type: ignore[arg-type]
+                        tool_mode=None,
+                        tools=tools,
+                        resources={},
+                    )
+                assert caught.value.status_code == 422
+                assert "on or off" in caught.value.message
+
+    async def test_a_connection_made_read_only_narrows_every_grant_at_once(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        async with session_factory() as session:
+            decided = await pt.broker.decide(
+                session, pt.world.agent.id, Principal.agent_key(), "example"
+            )
+            assert decided.access == "write"
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == pt.world.owner.id)
+                .values(consent="read")
+            )
+            await session.commit()
+            decided = await pt.broker.decide(
+                session, pt.world.agent.id, Principal.agent_key(), "example"
+            )
+        assert (decided.access, decided.reach) == ("read", {"scopes": ["read:items"]})
+
+    async def test_removing_the_grant_or_the_sweep_never_revokes_the_owners_token(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            grant = await STORE.get_grant(session, pt.world.agent.id, "example")
+            assert grant is not None
+            warning = await pt.broker.revoke_grant(session, grant, pt.world.owner.id)
+        assert warning is None
+        await maintain_once(session_factory, pt.broker, prune=False)
+        assert pt.vendor.revoked == []
+        assert pt.vendor.connections_revoked == []

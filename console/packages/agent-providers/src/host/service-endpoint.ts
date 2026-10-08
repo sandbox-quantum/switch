@@ -15,6 +15,13 @@ const ASK_TIMEOUT_MS = 90_000;
 const MAX_BODY_BYTES = 32 * 1024;
 const PATH = /^\/services\/([a-z0-9][a-z0-9-]{0,62})\/token$/;
 
+/**
+ * The services whose token a helper on the machine needs (`service-github.ts`).
+ * Any other service's token stays in the session host, which calls the vendor
+ * itself, so it is never served here, granted or not.
+ */
+export const MACHINE_HELPER_SERVICES: ReadonlySet<string> = new Set(['github']);
+
 /** The session's endpoint as its helpers find it, in `SWITCH_SERVICE_ENDPOINT` and `SWITCH_SERVICE_BEARER`. */
 export type ServiceEndpointServer = { url: string; token: string; close: () => Promise<void> };
 
@@ -22,8 +29,8 @@ export type ServiceEndpointServer = { url: string; token: string; close: () => P
  * Where the helpers a session's CLI starts (Git's credential helper, the `gh`
  * wrapper) get the agent's service tokens: on loopback, behind a bearer
  * minted for this run, serving only the services granted when the session
- * started. Each ask goes up the pipe to the agent host, which holds the
- * tokens. A refusal that ends the service's use (the grant gone, the
+ * started that have a machine helper (`MACHINE_HELPER_SERVICES`). Each ask
+ * goes up the pipe to the agent host, which holds the tokens. A refusal that ends the service's use (the grant gone, the
  * connection changed) is final for the rest of this session: the helper is
  * told Switch's reason, then and every time after.
  *
@@ -80,6 +87,13 @@ export async function startServiceEndpoint(input: {
         status: 404,
         body: {
           error: `This agent had no ${service} grant when this session started. A grant made since reaches the session when it next starts.`,
+        },
+      };
+    if (!MACHINE_HELPER_SERVICES.has(service))
+      return {
+        status: 404,
+        body: {
+          error: `Switch hands no ${service} token to the tools a session runs.`,
         },
       };
     const reason = ended.get(service);

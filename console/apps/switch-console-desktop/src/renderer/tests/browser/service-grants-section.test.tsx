@@ -9,11 +9,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { OWNER_ONLY_POLICY, type ServiceGrants } from '@shared/core/switch-servers/service-grants';
 
 const agents = vi.hoisted(() => ({ getAgents: vi.fn() }));
 const workspaces = vi.hoisted(() => ({
   getServiceGrants: vi.fn(),
+  getServiceConnections: vi.fn(),
   getGitHubConnection: vi.fn(),
   setServiceGrant: vi.fn(),
   removeServiceGrant: vi.fn(),
@@ -75,6 +77,7 @@ beforeEach(() => {
     },
   ]);
   workspaces.getGitHubConnection.mockResolvedValue(GITHUB);
+  workspaces.getServiceConnections.mockResolvedValue([]);
   workspaces.setServiceGrant.mockResolvedValue(null);
   workspaces.removeServiceGrant.mockResolvedValue(null);
   workspaces.updateAddressingPolicy.mockResolvedValue(undefined);
@@ -260,4 +263,116 @@ it("says only what applies to a cloud agent's GitHub grant", async () => {
   expect(container!.textContent).toContain('show as the Switch GitHub App');
   expect(container!.textContent).not.toContain('Not available on Windows yet');
   expect(container!.textContent).not.toContain('On your computer');
+});
+
+function onOff(
+  status: ConnectionCatalogEntry['status'],
+  overrides: Partial<ConnectionCatalogEntry> = {}
+): ConnectionCatalogEntry {
+  return {
+    slug: 'example',
+    name: 'Example',
+    category: 'Project management',
+    description: 'Example work items.',
+    enabled: true,
+    auth_type: 'oauth',
+    connectable: true,
+    status,
+    unavailable_reason: null,
+    pass_through: true,
+    token_lifetime: 3600,
+    loopback_ports: null,
+    ...overrides,
+  };
+}
+
+function exampleSwitch(el: HTMLElement): HTMLElement | null {
+  return el.querySelector<HTMLElement>('[aria-label="Example for helper"]');
+}
+
+it('turns a connected on/off service on with no level to choose', async () => {
+  workspaces.getServiceGrants.mockResolvedValue({
+    grants: [],
+    missing: [],
+    addressing_open: false,
+  });
+  workspaces.getServiceConnections.mockResolvedValue([onOff('connected')]);
+  const el = await render();
+
+  await vi.waitFor(() => expect(exampleSwitch(el)).not.toBeNull());
+  expect(el.textContent).toContain('Off');
+  expect(el.textContent).toContain('helper acts as you at Example');
+  expect(el.textContent).toContain('within an hour');
+  expect(el.textContent).not.toContain('stays valid at Example');
+  await act(async () => exampleSwitch(el)!.click());
+  await vi.waitFor(() =>
+    expect(workspaces.setServiceGrant).toHaveBeenCalledWith({
+      workspaceId: 'workspace',
+      agentId: 'agent',
+      service: 'example',
+      access: null,
+      resources: {},
+    })
+  );
+  expect(workspaces.getServiceConnections).toHaveBeenCalledWith('workspace');
+});
+
+it('turns an on/off grant off, and says a longer-lived token outlasts it', async () => {
+  workspaces.getServiceGrants.mockResolvedValue({
+    grants: [
+      {
+        service: 'example',
+        name: 'Example',
+        access: 'write',
+        resources: {},
+        summary: 'helper reads and writes Example as you.',
+      },
+    ],
+    missing: [],
+    addressing_open: false,
+  });
+  workspaces.getServiceConnections.mockResolvedValue([
+    onOff('connected', { token_lifetime: 24 * 3600 }),
+  ]);
+  const el = await render();
+
+  await vi.waitFor(() =>
+    expect(el.textContent).toContain('helper reads and writes Example as you.')
+  );
+  expect(el.textContent).toContain('stays valid at Example until it expires or you disconnect');
+  // Its grant is the switch, not a card with Change and Remove.
+  expect(button(el, 'Remove')).toBeUndefined();
+  await act(async () => exampleSwitch(el)!.click());
+  await vi.waitFor(() =>
+    expect(workspaces.removeServiceGrant).toHaveBeenCalledWith({
+      workspaceId: 'workspace',
+      agentId: 'agent',
+      service: 'example',
+    })
+  );
+});
+
+it('cannot turn on a service that is not connected, or not available, and says why', async () => {
+  workspaces.getServiceGrants.mockResolvedValue({
+    grants: [],
+    missing: [],
+    addressing_open: false,
+  });
+  workspaces.getServiceConnections.mockResolvedValue([
+    onOff('not_connected'),
+    onOff('connected', {
+      slug: 'other',
+      name: 'Other',
+      unavailable_reason: 'Switched off on this server.',
+    }),
+  ]);
+  const el = await render();
+
+  await vi.waitFor(() => expect(exampleSwitch(el)).not.toBeNull());
+  expect(exampleSwitch(el)!.getAttribute('aria-disabled') ?? '').not.toBe('false');
+  expect(el.textContent).toContain("first connect it from the server's Connections");
+  expect(el.textContent).toContain('Switched off on this server.');
+  await act(async () => exampleSwitch(el)!.click());
+  await act(async () => el.querySelector<HTMLElement>('[aria-label="Other for helper"]')!.click());
+  expect(workspaces.setServiceGrant).not.toHaveBeenCalled();
 });

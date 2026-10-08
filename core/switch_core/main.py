@@ -90,14 +90,14 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
-from switch_core.connections.adapters import ServiceAdapter
-from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
+from switch_core.connections.adapters.github import GitHubApp
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.github_move import move_github_connections
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
@@ -164,6 +164,7 @@ from switch_core.observability.bootstrap import (
 from switch_core.observability.pool import install_pool_watermark, pool_stats
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
+from switch_core.outbound import guarded_async_client
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -837,21 +838,27 @@ async def run(config: SwitchConfig) -> None:
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
-    # A service is issued only where this server is set up for it: GitHub with
-    # a GitHub App and its signing key. With the App alone, GitHub can be
-    # connected but not granted. Without any, the broker's upkeep still revokes
-    # and prunes whatever records exist.
+    # A service is issued only where this server is set up for it, as its
+    # catalog entry's adapter says (`connections/registry.py`). Without any,
+    # the broker's upkeep still revokes and prunes whatever records exist.
     github_app: GitHubApp | None = gateway_app.state.github_app
-    adapters: dict[str, ServiceAdapter] = (
-        {"github": GitHubAdapter(github_app.connections, github_app.signer)}
-        if github_app is not None
-        else {}
-    )
     service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=config.keyring,
         catalog=CATALOG,
-        adapters=adapters,
+        adapters=build_adapters(
+            CATALOG,
+            github_app=github_app,
+            environ=os.environ,
+            http=guarded_async_client(config.outbound_policy, timeout=20),
+            registration=ClientRegistration(
+                session_factory=session_factory,
+                keyring=config.keyring,
+                public_url=config.gateway_public_url,
+                server_name=config.id_server_name,
+            ),
+        ),
+        disabled=config.disabled_services,
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=config.service_token_retention_days),
     )

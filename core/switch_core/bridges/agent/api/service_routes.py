@@ -10,6 +10,7 @@ key, and left the agent in `scope["agent"]` and the controller, if any, in
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -91,12 +92,21 @@ async def service_token(
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, Any]:
-    """A token for `service`, valid for at most an hour. Each call issues one."""
+    """A token for `service`, to use until `use_until`, at most an hour away.
+    Each call issues one.
+
+    `expires_in` is the token's remaining life in seconds as Core counts it,
+    so the holder can time its cache from when the answer arrived rather than
+    compare `expires_at` with a clock of its own.
+    """
     response.headers.update(NO_STORE)
     _require_path_agent(agent, agent_id)
     token = await broker.issue(session, agent_id, _principal(request), service)
+    now = datetime.now(UTC)
     return {
         "token": token.token,
         "expires_at": token.expires_at.isoformat(),
+        "expires_in": max(0, int((token.expires_at - now).total_seconds())),
+        "use_until": token.use_until.isoformat(),
         "resources": token.resources,
     }

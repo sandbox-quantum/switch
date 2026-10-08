@@ -66,12 +66,15 @@ def statuses(response):
     return {entry["slug"]: entry["status"] for entry in response.json()["connections"]}
 
 
-async def test_catalog_lists_github_and_placeholders(catalog_app):
+async def test_catalog_lists_github_atlassian_and_placeholders(catalog_app):
     client, _ = catalog_app
     response = await client.get("/gateway/provider-connections/catalog")
     result = statuses(response)
     assert result.pop("github") == "not_connected"
-    assert len(result) == 14
+    # A Console this older route serves connects GitHub alone, whatever else
+    # is enabled.
+    assert result.pop("atlassian") == "not_connected"
+    assert len(result) == 13
     assert set(result.values()) == {"coming_soon"}
     github = next(
         entry for entry in response.json()["connections"] if entry["slug"] == "github"

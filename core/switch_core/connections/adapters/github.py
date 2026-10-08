@@ -19,6 +19,7 @@ from typing import Any
 
 from switch_core.config import SwitchConfig
 from switch_core.connections.adapters import (
+    AccessToken,
     ConnectionSecret,
     IssuedToken,
     IssueRequest,
@@ -182,8 +183,8 @@ class GitHubAdapter:
                 )
         return {"installation_id": installation_id, "repository_ids": repository_ids}
 
-    async def issue(self, access_token: str, request: IssueRequest) -> IssuedToken:
-        resources = await self.check_grant(access_token, request)
+    async def issue(self, access: AccessToken, request: IssueRequest) -> IssuedToken:
+        resources = await self.check_grant(access.token, request)
         permissions = request.reach.get("permissions")
         if not isinstance(permissions, dict):
             raise ServiceAdapterError("GitHub grants name App permissions.")

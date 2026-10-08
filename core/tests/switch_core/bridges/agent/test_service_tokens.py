@@ -83,6 +83,9 @@ class TestIssuing:
         body = response.json()
         assert body["resources"] == RESOURCES
         assert body["token"] == vendor.issued[0][1]
+        # A minted hour: asked again by its expiry, timed by Core's own count.
+        assert 3540 <= body["expires_in"] <= 3600
+        assert body["use_until"] <= body["expires_at"]
         [record] = await _records(harness)
         assert (record.agent_id, record.principal, record.controller_id) == (
             agent_id,
@@ -131,6 +134,8 @@ class TestIssuing:
         assert grant["resources"] == RESOURCES
         assert grant["skill"]["name"] == "github"
         assert "name: github" in grant["skill"]["content"]
+        # GitHub's tools are git and gh, not MCP servers a session calls.
+        assert grant["mcp_servers"] == []
 
 
 class TestRefusals:

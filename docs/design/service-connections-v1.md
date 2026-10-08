@@ -4,8 +4,8 @@ Status: proposed. This is the implementation spec for connecting a person's own
 accounts on outside services and granting them to that person's agents. It
 covers the Core foundation (tables, the credential broker, the agent routes and
 the gateway API), the agent host that every Console provider runs in, and
-moving GitHub onto all of it. Jira and Google Workspace come next, on the same
-foundation, in their own change.
+moving GitHub onto all of it. Services beyond GitHub come next, on the same
+foundation: see [`service-connections-v2.md`](service-connections-v2.md).
 
 The target contract is `controller-contract-v1.md`; its §5 is amended alongside
 this spec, and the deviations are listed below.

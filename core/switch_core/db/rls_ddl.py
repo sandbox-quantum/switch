@@ -127,6 +127,11 @@ POLICY_NAME = "tenant_isolation"
 # which reports counts and never an identifier — and scoping them would be
 # incoherent: a deployment running three tenants has one identity, not three,
 # and a milestone reported once per tenant would not be once-ever at all.
+#
+# `service_oauth_clients` holds the OAuth client Core registered for itself at
+# a vendor that offers no other way to have one. The vendor sees one Switch,
+# so there is one client per deployment and service, shared by every tenant's
+# sign-ins; it holds no person's account, only the deployment's own client.
 GLOBAL_TABLES = frozenset(
     {
         "users",
@@ -135,6 +140,7 @@ GLOBAL_TABLES = frozenset(
         "deployment_identity",
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
+        "service_oauth_clients",
     }
 )
 

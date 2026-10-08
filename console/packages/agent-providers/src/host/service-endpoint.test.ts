@@ -74,6 +74,13 @@ describe('the session service endpoint', () => {
     ]);
   });
 
+  it('serves no service without a machine helper, even one granted', async () => {
+    const e = await endpoint([], ['github', 'jira']);
+    const response = await e.post('jira', { rejected: null });
+    expect(response.status).toBe(404);
+    expect(e.asked).toEqual([]);
+  });
+
   it('serves only the services granted when the session started', async () => {
     const e = await endpoint([]);
     const response = await e.post('jira', { rejected: null });

@@ -20,6 +20,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.adapters.github import load_github_app
+from switch_core.connections.flows import ServiceFlows
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
@@ -68,6 +69,7 @@ from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
 )
+from switch_core.gateway.service_flows import router as service_flows_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
@@ -169,6 +171,8 @@ def create_gateway_app(
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
     app.include_router(service_connections_router, tags=["service-connections"])
+    app.state.service_flows = ServiceFlows(config.gateway_public_url)
+    app.include_router(service_flows_router, tags=["service-connections"])
     app.state.claude_verifier = (
         ClaudeVerifier(config.hosted_claude_verifier_path)
         if config.hosted_claude_verifier_path

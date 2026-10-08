@@ -53,6 +53,14 @@ class ConnectionSecret:
 
 
 @dataclass(frozen=True)
+class AccessToken:
+    """The owner's access token for a connection, fresh, and when it expires."""
+
+    token: str = field(repr=False)
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
 class IssueRequest:
     """What one issue is for: the grant's level, what it reaches, and where."""
 
@@ -91,8 +99,10 @@ class ServiceAdapter(Protocol):
         against what the owner can reach; ServiceAdapterError says what not."""
         ...
 
-    async def issue(self, access_token: str, request: IssueRequest) -> IssuedToken:
-        """A token for the request, valid for at most an hour."""
+    async def issue(self, access: AccessToken, request: IssueRequest) -> IssuedToken:
+        """A token for the request, living no longer than the catalog entry's
+        `token.max_lifetime`. A `pass_through` entry's adapter hands out the
+        owner's own token, which it cannot revoke alone: never `revocable`."""
         ...
 
     async def revoke_issued(self, token: str) -> None: ...
