@@ -43,8 +43,8 @@ function migrationTagFromKey(key: string): string | null {
 /**
  * The database has migrations applied that this build does not know about: it
  * was last opened by a newer build, or one that diverged from this one —
- * typically Canary, which shares the stable channel's data directory, or a
- * stable hotfix tagged off main (CHOO-3384).
+ * Canary or a build from source, which share the stable channel's data
+ * directory, or a stable hotfix tagged off main (CHOO-3384).
  *
  * Opening it anyway means booting on a schema this build was not written for:
  * the first query that touches a changed table fails, and the renderer is left

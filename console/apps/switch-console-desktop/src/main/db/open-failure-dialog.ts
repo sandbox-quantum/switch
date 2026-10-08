@@ -1,7 +1,12 @@
 import { DatabaseFromNewerBuildError } from './initialize';
 
-const NEWER_BUILD_CAUSE =
-  'The database was last opened by a newer or different build of the app, most often a Canary build, which shares this database with the stable app. This version cannot read it, and has not changed it. Open the build that last used it, and keep using that one until a release of this version includes its changes.';
+function newerBuildCause(dataPath: string): string {
+  return [
+    'The database was last opened by a newer or different build of the app (a Canary build, or one built from source, which share this folder), so this version cannot read it. It has not been changed.',
+    'Open the build that last used it. If there is none to go back to, quit and move this folder aside to start empty; what was saved in it will not carry over:',
+    dataPath,
+  ].join('\n');
+}
 
 const GENERIC_CAUSE =
   'The usual causes are another copy of the app already running, a full disk, or the database file having been moved or made read-only. Closing the other copy and reopening is worth trying first.';
@@ -16,9 +21,11 @@ const GENERIC_CAUSE =
 export function databaseOpenFailureDialog(
   error: unknown,
   productName: string,
+  dataPath: string,
   logPath: string | null | undefined
 ): { title: string; body: string } {
-  const cause = error instanceof DatabaseFromNewerBuildError ? NEWER_BUILD_CAUSE : GENERIC_CAUSE;
+  const cause =
+    error instanceof DatabaseFromNewerBuildError ? newerBuildCause(dataPath) : GENERIC_CAUSE;
   return {
     title: `${productName} could not open its database`,
     body: [

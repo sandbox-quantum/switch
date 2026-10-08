@@ -2,11 +2,13 @@
  * A build must refuse a database migrated by a build it does not match
  * (CHOO-3384), and must never skip a migration it has not applied.
  *
- * Stable and Canary share one data directory. Canary 0.39's 0051_workspaces
- * rebuilds `agents` without `server_id`; stable 0.38.2 then skipped every
- * migration at or below the newest applied timestamp, applied nothing, reported
- * success and booted on the newer schema. `getAgents` selected
- * `agents.server_id` and the renderer was left on a blank window.
+ * Every build on a machine writes the same data directory: stable, Canary, any
+ * build packaged from source, and drizzle-kit (only `pnpm dev` keeps to
+ * `switchdash-dev`). 0051_workspaces (Canary 0.39, and main) rebuilds
+ * `agents` without `server_id`. Stable 0.38.2 skipped every migration at or
+ * below the newest applied timestamp, so on such a database it applied
+ * nothing, reported success and booted on the newer schema; `getAgents`
+ * selected `agents.server_id` and the renderer was left on a blank window.
  *
  * The old build is simulated by running the real runner against the journal
  * truncated before 0051 — exactly what a 0.38.2 bundle contains. A stable
@@ -91,7 +93,7 @@ describe('database migrated by a newer build', () => {
 
   it('is refused by the older build instead of booting on the newer schema', () => {
     db = new Database(':memory:');
-    applyMigrations(db, allEntries, sqlFiles); // the newer build (Canary)
+    applyMigrations(db, allEntries, sqlFiles); // a newer build (Canary, or one from main)
 
     const error = refusal(() => applyMigrations(db, olderEntries, olderSqlFiles));
     expect(error.message).toMatch(/last opened by a newer or different version/);

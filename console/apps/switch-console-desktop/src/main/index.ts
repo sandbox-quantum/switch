@@ -120,7 +120,12 @@ void app.whenReady().then(async () => {
     }
   } catch (error) {
     log.error('Failed to initialize database:', error);
-    const { title, body } = databaseOpenFailureDialog(error, PRODUCT_NAME, getLogFilePath());
+    const { title, body } = databaseOpenFailureDialog(
+      error,
+      PRODUCT_NAME,
+      app.getPath('userData'),
+      getLogFilePath()
+    );
     dialog.showErrorBox(title, body);
     app.quit();
     return;
