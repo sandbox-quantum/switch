@@ -89,31 +89,46 @@ export type AgentMigrationState = {
 /** A move that went through. `untold` lists the rooms where a turn was cut that could not be told so, and why. */
 export type MoveToManagedResult = { untold: { roomId: string; reason: string }[] };
 
-/** One agent of a "Move all" that did not move, and why. */
-export type MoveAllResult = {
-  moved: { agentId: string; name: string }[];
-  skipped: { agentId: string; name: string; reason: string }[];
-  failed: { agentId: string; name: string; message: string }[];
-};
-
-/** One machine's agents in "Move all"; see `AgentMigrationService.moveAllProgress`. */
-export type MoveAllMachine = {
-  kind: 'this-computer' | 'ssh-host';
-  /** "This computer", or the SSH host's name. */
+/** An agent the automatic move to managed could not move, and why. */
+export type MigrationProblem = {
+  agentId: string;
   name: string;
-  total: number;
-  managed: number;
-  /** Moving, or coming back, right now. */
-  moving: number;
-  /** Not managed, and kept from moving by something other than the machine not being set up. */
-  blocked: number;
-  /** The commonest reason among the blocked ones; null when none is. */
-  reason: string | null;
-  /** The machine is not running managed agents yet, and "Move all" turns it on. */
-  setUpOnMove: boolean;
+  /** "this computer", or the SSH host's name. */
+  machine: string;
+  message: string;
 };
 
-export type MoveAllProgress = { machines: MoveAllMachine[] };
+/** The controller one machine runs for one server, as the last automatic pass found it. */
+export type MigrationControllerState =
+  | { kind: 'ready' }
+  /** The server cannot take this Console's controller; its agents are left as they are. */
+  | { kind: 'incompatible'; reason: string }
+  | { kind: 'failed'; reason: string };
+
+/** One machine's agents for one server: how many moved, and what keeps the rest. */
+export type MigrationMachine = {
+  /** "this computer", or the SSH host's name. */
+  machine: string;
+  sshHost: string | null;
+  serverId: string;
+  total: number;
+  moved: number;
+  /** Null until a pass has looked at the machine. */
+  controller: MigrationControllerState | null;
+  checkedAt: string | null;
+  problems: MigrationProblem[];
+};
+
+/** Where the automatic move to managed agents stands. */
+export type MigrationOverview = {
+  machines: MigrationMachine[];
+  /** Agents left as they are: someone else's, or on a server without agent management. */
+  leftAlone: number;
+  /** Agents whose server could not be asked whether they can move; tried again later. */
+  unasked: number;
+  running: boolean;
+  lastPassAt: string | null;
+};
 
 export type AgentMigrationEvent = {
   agentId: string;

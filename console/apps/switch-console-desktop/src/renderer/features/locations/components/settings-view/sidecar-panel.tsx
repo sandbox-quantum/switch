@@ -1,14 +1,12 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
-import {
-  ManagedAgentSection,
-  useAgentMigrationState,
-} from '@renderer/features/agent-migration/managed-agent-section';
+import { useEffect } from 'react';
 import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import { SidecarSettingsSection } from '@renderer/features/locations/components/settings-view/sections/sidecar-settings-section';
-import { rpc } from '@renderer/lib/ipc';
+import { events, rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 
 export const SidecarPanel = observer(function SidecarPanel() {
   const {
@@ -37,15 +35,35 @@ export const SidecarPanel = observer(function SidecarPanel() {
   return (
     <section className="flex flex-col gap-4">
       <SectionLabel>Room watcher</SectionLabel>
-      <ManagedAgentSection agentId={agent.id} onReturned={null} />
       <ConsoleWatcher agentId={agent.id} />
     </section>
   );
 });
 
-/** This Console's own watcher for the agent, which a managed agent does not have. */
+/**
+ * This Console's own watcher for the agent. A managed agent has none: Switch
+ * runs it on a machine's agents controller.
+ */
 function ConsoleWatcher({ agentId }: { agentId: string }) {
-  const migration = useAgentMigrationState(agentId);
-  if (migration.data?.runner === 'managed') return null;
+  const queryClient = useQueryClient();
+  const runner = useQuery({
+    queryKey: ['agent-runner', agentId],
+    queryFn: () => rpc.agentMigration.getRunner(agentId),
+  });
+  useEffect(
+    () =>
+      events.on(agentMigrationChannel, (event) => {
+        if (event.agentId === agentId)
+          queryClient.setQueryData(['agent-runner', agentId], event.runner);
+      }),
+    [agentId, queryClient]
+  );
+  if (runner.data === 'managed')
+    return (
+      <p className="text-sm text-foreground-muted">
+        Switch runs this agent on a machine’s agents controller, so this Console does not watch its
+        rooms.
+      </p>
+    );
   return <SidecarSettingsSection agentId={agentId} />;
 }

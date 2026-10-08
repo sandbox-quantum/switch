@@ -50,7 +50,7 @@ export type ManagedMachine = {
   id: string;
   name: string;
   kind: string;
-  state: 'online' | 'unknown' | 'revoked';
+  state: 'online' | 'offline' | 'unknown' | 'revoked';
 };
 
 /** A provider on a machine, as the machine last reported it. */

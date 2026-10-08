@@ -255,7 +255,7 @@ export class EmbeddedControllerService {
     const moved = await this.deps.movedAgents(serverId);
     if (moved.length)
       throw new MovedAgentsHereError(
-        `This computer runs ${moved.join(', ')} for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.`,
+        `This computer runs ${moved.join(', ')} as managed agents for this Console. Delete those agents before turning it off.`,
         moved
       );
     await this.turnOff(serverId);
@@ -287,6 +287,42 @@ export class EmbeddedControllerService {
         serverId,
       });
     });
+  }
+
+  /**
+   * Enrolls this computer afresh when the server no longer knows the machine
+   * it was enrolled as: its database was reset or restored, say. The old
+   * controller is stopped and its identity forgotten (there is nothing on the
+   * server to revoke), then this computer enrolls again in the same
+   * workspace. Refused while the server still lists the machine, which is
+   * turned off and on instead.
+   */
+  async enrollAgain(serverId: string): Promise<void> {
+    const record = await this.deps.records.get(serverId);
+    if (record?.kind !== 'enrolled')
+      throw new Error('This computer is not enrolled to run managed agents for this server.');
+    const remote = await this.deps.management.read(record.workspaceId, record.controllerId);
+    if (remote.kind !== 'ok')
+      throw new Error(
+        remote.kind === 'error'
+          ? `Switch could not be asked about this computer: ${remote.message}`
+          : 'This server no longer has agent management turned on.'
+      );
+    if (remote.controller && remote.controller.state !== 'revoked')
+      throw new Error(
+        'Switch still lists this computer as a machine. Turn it off and on again instead.'
+      );
+    await this.exclusive(serverId, async () => {
+      const runner = this.runners.get(serverId);
+      this.runners.delete(serverId);
+      if (runner) await runner.supervisor.stop(this.deps.stopTimeoutMs);
+      await this.forget(serverId);
+      this.deps.log.warn('The server no longer knew this computer as a machine; enrolling again', {
+        serverId,
+        controllerId: record.controllerId,
+      });
+    });
+    await this.enable(serverId, record.workspaceId);
   }
 
   /**

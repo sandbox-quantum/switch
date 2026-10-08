@@ -199,6 +199,8 @@ async def _control(
                 "template, or an admin can do that."
             ),
         )
+    # Not held across set_state, which opens its own session and posts in every room.
+    await session.commit()
     try:
         await service.set_state(
             root_id,

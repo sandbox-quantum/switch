@@ -2392,6 +2392,37 @@ class TelemetrySnapshotWatermark(Base):
     )
 
 
+# ── Switch-core processes ────────────────────────────────────────────────────
+
+
+class SwitchCoreProcess(Base):
+    """A running switch-core process's lease (`management/process_lease.py`).
+
+    Each process holding controller sockets claims a row at startup, renews
+    `beat_at` every few seconds, and sets `stopped_at` as it shuts down. A
+    controller connection whose holding process's lease is stale, stopped or
+    gone reads as offline, which is how a process that died without writing
+    its connections' closings is noticed. One write per process per renewal,
+    however many machines it holds.
+
+    Not tenant-scoped: a process serves every tenant. Rows long stale are
+    pruned by the live processes.
+    """
+
+    __tablename__ = "switch_core_processes"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    beat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    stopped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── Messages ─────────────────────────────────────────────────────────────────
 
 
@@ -2446,12 +2477,25 @@ class Message(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    # Position within the room, from 1, and the cursor the read path pages on.
-    # Assigned by MessageStore.create under a per-room lock rather than by a
-    # sequence: a sequence hands out numbers when a statement runs, not when it
-    # commits, so a row can commit after one with a higher number and a reader
-    # paging on `seq > n` would step straight over it. See the store for the
-    # argument in full.
+    # The message's position in its room's log: the room's offset, in Kafka
+    # terms (room = partition, seq = offset, a reader's cursor = its consumer
+    # offset). It means something only within its room: unique per room, and
+    # two rooms can each have a message 5.
+    #
+    # Live messages (MessageStore.create) count up from 1 with no gaps, in
+    # commit order, and a number is never renumbered or reused. Reconstructed
+    # history (MessageStore.create_historical) counts down from -1, below the
+    # room's oldest, so seq can be negative and ordering by it still walks the
+    # room in the order things happened.
+    #
+    # A reader's cursor is the last seq it has, and it reads `seq > cursor`.
+    # Commit order is what makes that safe: nothing can later commit behind a
+    # cursor. A Postgres sequence would not give it, because it hands out
+    # numbers when a statement runs rather than when it commits. See
+    # MessageStore._next_seq for the argument in full.
+    #
+    # Not the `sequence` an agent sees on its event stream: that one is the
+    # event buffer's, numbered per agent across all its rooms.
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
     # Global on purpose: a random, globally-unique identifier — scoping it
@@ -3048,6 +3092,17 @@ class AgentController(TenantScoped, Base):
     `status_seq` its sequence number: a report with a sequence at or below it is
     ignored. `assignment_revision` bumps on every change to the set of agents
     the controller should run, and is what its ETag carries.
+
+    The `connection_*`, `connected_at` and `disconnect*` columns are the
+    controller's socket as the switch-core process holding it last recorded it
+    (`management/connection_ledger.py`): which connection, which process holds
+    it (`connection_process_id`, a `switch_core_processes` row), when its
+    socket attached, and when and why it went. Only transitions are written,
+    never heartbeats; a process that dies without writing the closing is
+    caught by its lease in `switch_core_processes` going stale. They describe
+    the current connection, or the last one once it has closed; a new one
+    replaces them. Every replica reads them, so whether the machine is
+    connected does not depend on which process holds its socket.
     """
 
     __tablename__ = "agent_controllers"
@@ -3087,6 +3142,19 @@ class AgentController(TenantScoped, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Not a foreign key: a lease row is pruned once long stale, and a
+    # connection naming a process with no lease reads as lost.
+    connection_process_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    disconnected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # `socket_closed`, `heartbeat_lapsed`, `taken_over`, `revoked` or
+    # `server_shutdown`.
+    disconnect_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

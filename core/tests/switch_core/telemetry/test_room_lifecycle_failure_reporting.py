@@ -49,6 +49,7 @@ def _room_service() -> RoomService:
         collab_bridge_store=None,  # type: ignore[arg-type]
         resource_service=None,  # type: ignore[arg-type]
         session_factory=_broken_session_factory,  # type: ignore[arg-type]
+        room_cache=None,  # type: ignore[arg-type]
         telemetry=object(),  # type: ignore[arg-type]
     )
 

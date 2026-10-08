@@ -76,8 +76,11 @@ export type LaunchOptions = {
   clearTakenOver: boolean;
 };
 
-/** What an agent host reads to reach Switch: the controller's relay, and a token for it. */
-export type RelayCredentials = { endpoint: string; token: string };
+/**
+ * What an agent host reads to reach Switch: the controller's relay, a token
+ * for it, and the hub an agent host in a process of its own hears its events on.
+ */
+export type RelayCredentials = { endpoint: string; token: string; hub: string };
 
 /** Runs agent hosts one way: in this controller's process, or each in a process of its own. */
 export interface AgentRunner {
@@ -112,6 +115,22 @@ export interface AgentRuntime extends AgentRunner {
 /** How long an agent host asked to stop is given; each session host is allowed 20 s of it. */
 export const STOP_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 90_000;
+
+/** Asks a provider's CLI, through the shared-host bundle's `--probe`, whether it is signed in. */
+export async function probeProvider(
+  bundlePath: string,
+  provider: Provider,
+  binaryPath: string,
+  cwd: string
+): Promise<ProviderReadiness> {
+  const { stdout } = await execute(
+    process.execPath,
+    [bundlePath, '--probe', provider, cwd, binaryPath],
+    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env: process.env }
+  );
+  const line = stdout.trim().split('\n').at(-1) ?? '';
+  return providerReadinessSchema.parse(JSON.parse(line));
+}
 /** Failures an agent host is started again after, within `CRASH_WINDOW_MS`. */
 const MAX_CRASHES = 3;
 const CRASH_WINDOW_MS = 10 * 60 * 1000;
@@ -286,8 +305,12 @@ export class InProcessRuntime implements AgentRuntime {
       const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
       const endpoint = env.SWITCH_API_ENDPOINT;
       const token = env.SWITCH_API_TOKEN;
+      // Written before the hub: an empty one, which no relay names, so the file is written again.
+      const hub = typeof env.SWITCH_AGENT_HUB === 'string' ? env.SWITCH_AGENT_HUB : '';
       if (env.SWITCH_AGENT_ID !== agentId) return null;
-      return typeof endpoint === 'string' && typeof token === 'string' ? { endpoint, token } : null;
+      return typeof endpoint === 'string' && typeof token === 'string'
+        ? { endpoint, token, hub }
+        : null;
     } catch {
       return null;
     }
@@ -302,6 +325,7 @@ export class InProcessRuntime implements AgentRuntime {
           SWITCH_API_ENDPOINT: credentials.endpoint,
           SWITCH_API_TOKEN: credentials.token,
           SWITCH_AGENT_ID: agentId,
+          SWITCH_AGENT_HUB: credentials.hub,
         },
       })
     );
@@ -527,14 +551,8 @@ export class InProcessRuntime implements AgentRuntime {
     }
   }
 
-  async probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
-    const { stdout } = await execute(
-      process.execPath,
-      [this.deps.bundlePath, '--probe', provider, cwd, binaryPath],
-      { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env: process.env }
-    );
-    const line = stdout.trim().split('\n').at(-1) ?? '';
-    return providerReadinessSchema.parse(JSON.parse(line));
+  probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
+    return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd);
   }
 
   private async writeFlags(root: string, flags: WatchFlags): Promise<void> {

@@ -1,7 +1,7 @@
 """Drop the feature_flags table: flags are set when the server is deployed.
 
 Revision ID: 9c4e7a1f2b38
-Revises: eb24eafa59a0
+Revises: fabf9b9bff78
 Create Date: 2026-10-07 00:00:00.000000
 
 Flags used to be rows anyone holding an agent token could flip. They now come
@@ -18,7 +18,7 @@ from alembic import op
 logger = logging.getLogger("alembic.runtime.migration")
 
 revision = "9c4e7a1f2b38"
-down_revision = "eb24eafa59a0"
+down_revision = "fabf9b9bff78"
 branch_labels = None
 depends_on = None
 

@@ -38,7 +38,8 @@ where it deliberately stops short.
   when the flag is on**: a model validator raises if it is missing or shorter than 32 chars. It is
   separate from `jwt_secret_key` on purpose.
 - `controller_status_interval_seconds: int = 60`. Returned to controllers as `report_within_s`.
-  A controller is `unknown` after 3 intervals without a status.
+  Placement needs a status within 3 intervals. Whether a machine is online is read from its
+  recorded connection instead (see "Liveness" below).
 
 With the flag off, none of the routes below are mounted, and the middleware branch is
 inactive.
@@ -50,7 +51,13 @@ inactive.
     `version` null, `public_key` null.
   - `api_key_id`: the credential, an `api_keys` row of type `controller`, holding the hash only.
   - `assignment_revision` int default 0, `status_seq` bigint null, `status` JSONB null.
-  - `last_seen_at` null, `revoked_at` null, `created_at`, `updated_at`.
+  - `last_seen_at` null (the last status), `revoked_at` null, `created_at`, `updated_at`.
+  - The connection, as the switch-core process holding its socket last recorded it (all null
+    until the first): `connection_id`, `connection_process_id`, `connected_at`,
+    `disconnected_at`, `disconnect_reason` (`socket_closed`, `server_shutdown`,
+    `heartbeat_lapsed`, `taken_over`, `revoked`).
+- `switch_core_processes` (global, no tenant): each switch-core process's lease, `id`,
+  `started_at`, `beat_at`, `stopped_at` null.
 - `agent_controller_enrollment_codes`: `id`, `owner_id`, `api_key_id` (an `api_keys` row of
   type `controller_enrollment`, so the existing global hash → tenant lookup works),
   `expires_at`, `used_at` null, `controller_id` null, `created_at`.
@@ -88,6 +95,11 @@ Public (they authenticate through the body):
 
 Controller access token (`{id}` must match the token's `cid`, otherwise `403 forbidden`):
 - `POST /v1/management/controllers/{id}/credential/rotate` returns `{credential}`.
+- `PATCH /v1/management/controllers/{id}`
+  - Body: `{name?, description?}`, at least one: the controller renames its own machine
+    (`switch-agent-controller set-info`). The same validation and effects as the owner's
+    `PATCH /gateway/management/controllers/{id}`, including the rename reaching Core's
+    bindings. Returns the controller as the owner's list shows it.
 - `GET  /v1/management/controllers/{id}/assignment`
   - Honours `If-None-Match`; returns `200` with an `ETag` header, or `304`.
 - `PUT  /v1/management/controllers/{id}/status`
@@ -124,8 +136,12 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
   - Body: `{name, description?, kind:"console", platform, version, public_key?}`.
   - Returns `{controller_id, credential}`.
 - `GET    /gateway/management/controllers`
-  - Returns the list, each with its `description`, derived `state` (`online|unknown|revoked`),
-    `last_seen_at`, its last `status`, and `workspaces_dir`: the directory the controller makes
+  - Returns the list, each with its `description`, derived `state`
+    (`online|offline|unknown|revoked`, see "Liveness" below), `last_seen_at` (its last status),
+    `connection` (`{connected_at, disconnected_at, disconnect_reason}` or null when it never
+    connected; `disconnect_reason` is also `server_shutdown` or `server_lost` when the row
+    shows it open but the process holding it stopped or died), its last `status`, and
+    `workspaces_dir`: the directory the controller makes
     agents' workspaces in, from that status (`machine.workspaces_dir`), null when it has not
     reported one.
 - `PATCH  /gateway/management/controllers/{id}`
@@ -157,7 +173,8 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 
 **Placement checks** run on create, adopt and move, and on a change to `running`. Each failure returns `409` with a reason:
 - `controller_revoked`
-- `controller_offline`: no status, or the last status is stale
+- `controller_offline`: not online (never connected, its socket went, or the process
+  holding it stopped), or no status, or the last status is stale
 - `provider_not_installed`
 - `provider_login_missing` or `provider_login_expired`
 
@@ -280,18 +297,26 @@ exactly the answer a missing one does.
 
 ## Headless agents controller (`console/packages/agent-controller`)
 
-- CLI `switch-agent-controller`:
-  - `enroll --server <agent-bridge-url> --code <code> [--name] [--description] [--data-dir]`
-  - `run [--data-dir]`
+- CLI `switch-agent-controller`, released as its own npm package on
+  `switch-agent-controller-v*` GitHub releases, with an `install.sh` (see RELEASING.md):
+  - `enroll --server <agent-bridge-url> --code <code> [--name] [--description] [--data-dir] [--secret-store]`
+  - `run [--data-dir] [--env-file]`
+  - `set-info [--name] [--description] [--data-dir]`: renames the machine and/or changes its
+    description on the server, with the controller's own credential, and records the new name
+    locally.
   - `status [--data-dir]`
+  - `install-service` / `uninstall-service`: a systemd user unit or a launchd agent
+  - `doctor`: what the machine lacks to run agents
+  - `update [--check]`: the newest release, from GitHub
 - **Data dir:** `SWITCH_CONTROLLER_DATA_DIR`, otherwise the OS default.
   - macOS: `~/Library/Application Support/Switch/agent-controller`
   - Linux: `$XDG_STATE_HOME/switch/agent-controller`, or `~/.local/state/switch/agent-controller`
   - Mode 0700.
 - **Store:** `node:sqlite`, one file. It holds identity, the assignment cache, per-agent applied revision and
   runtime state, and the status seq. It is a cache that can be rebuilt from the server.
-- **Secrets:** behind a `SecretStore` interface. v1 ships a file backend (0600) that **logs a
-  warning at startup**, saying no OS keychain backend is in use.
+- **Secrets:** behind a `SecretStore` interface: the macOS keychain (the default on a Mac), the
+  desktop keyring through `secret-tool` (on request), or a file backend (0600, the default on
+  Linux) that **logs a warning at startup**. The data directory records which one `enroll` used.
 - **Run loop:**
   1. Exchange the token, refreshing it before expiry. On `controller_revoked`: stop all agents, wipe the credential, and exit non-zero.
   2. Open the nudge stream, reconnecting with jittered backoff capped at 8 s and
@@ -386,10 +411,9 @@ stream. The flag and everything else above stay as they are.
 
 ### Agent hosts in the controller's process, and the local relay
 - Each agent's definition says where its agent host runs: `isolation: "shared"` (the default)
-  in the controller's process, as below; `isolated` in a process of its own, served the
-  per-agent agent protocol by the relay (its own event stream, heartbeat, placements and room
-  claims), as before agent hosts moved in-process. Cloud machines run every agent isolated, as
-  a systemd unit. Changing an agent's isolation restarts it the other way.
+  in the controller's process, as below; `isolated` in a process of its own, which reaches
+  the same hub over a WebSocket on the relay's port (`/hub`). Cloud machines run every agent
+  isolated, as a systemd unit. Changing an agent's isolation restarts it the other way.
 - One upstream stream. Each agent's agent host runs inside the controller's process and is handed
   its events from that stream directly (`AgentHub`): in order, filtered to what addresses the
   agent, with gaps, resets, room controls and approval outcomes. Events that arrive while its
@@ -397,13 +421,15 @@ stream. The flag and everything else above stay as they are.
   event. The agent host states its sessions' rooms in memory, for the relay and for routing
   session commands; none of it is sent upstream.
 - The shared agent host code (`runAgentHost`) takes the function that opens its event stream: the
-  controller passes its hub, while Console and the shared daemon pass the agent host's own
-  connection to Switch.
+  controller passes its hub, an isolated agent host the hub over its WebSocket
+  (`openHubStream`, chosen by `SWITCH_AGENT_HUB` in its credentials), while Console passes the
+  agent host's own connection to Switch. Only the controller holds the agent protocol's
+  connection to Switch; nothing on the machine imitates it.
 - A loopback HTTP relay (`127.0.0.1`, a per-agent bearer token minted locally) is what each
   agent host uses as `SWITCH_API_ENDPOINT` for its calls to Switch. It forwards everything with the
   controller access token, the `X-Switch-Agent-Id` header, and `X-Switch-Room-Id` resolved from
-  the placements. It serves no event stream and no connection bookkeeping. The credentials file
-  names the relay and its local token, never a Switch credential.
+  the placements. It serves no event stream and no connection bookkeeping of its own. The
+  credentials file names the relay, its hub and its local token, never a Switch credential.
 
 ### Core implementation notes (decisions the spec left open)
 
@@ -434,8 +460,25 @@ stream. The flag and everything else above stay as they are.
   offered the terminal command or told to open Switch Console.
   In-room session commands (`!reset`, `!compact`) are still relayed on the
   controller's stream with the room, and the controller picks the session.
-- **Liveness** is "stream attached and beat within 6 s"; the connection sweep
-  closes lapsed controller connections.
+- **Liveness** is "socket attached and a pong within 6 s"; the connection sweep
+  closes lapsed controller connections. Heartbeats stay in the memory of the
+  process holding the socket.
+- **Recorded transitions.** `ControllerPresence` stays the in-memory fast path for
+  routing and agent presence, and tells a ledger (`ControllerConnectionLedger`, Core's
+  port, implemented by `management/connection_ledger.py`) of each transition, once:
+  the socket attaching to a connection that had none, and the socket going, with why
+  (`socket_closed`, `server_shutdown`, `heartbeat_lapsed`, `taken_over`, `revoked`).
+  The ledger writes them to the controller's row from one background task, never
+  per beat. A connecting replaces the row; a closing is written only while the row
+  still names that connection, so a process closing a connection the controller has
+  since replaced through another process leaves the replacement standing.
+- **Process lease.** Each switch-core process renews a lease in
+  `switch_core_processes` every 5 s (`management/process_lease.py`), one write per
+  process however many machines it holds, and marks it stopped as it shuts down.
+  A machine is online while its socket is recorded attached and its holding
+  process's lease was renewed within 15 s and is not stopped; so a process that
+  dies without writing its closings takes its machines offline within 15 s.
+  Leases are written and compared on the database's clock.
 - **Holder id.** A controller-backed agent holds things under
   `controller:{controller_id}:{agent_id}`: the operation caller's session key
   and session id, the reader of its unread counts, and the holder of a role

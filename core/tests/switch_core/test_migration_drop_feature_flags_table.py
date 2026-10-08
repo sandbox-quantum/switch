@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 _CORE = Path(__file__).resolve().parents[2]
 _MIGRATION_DB = "migration_drop_feature_flags_table"
 
-_PRE_MIGRATION_REVISION = "eb24eafa59a0"
+_PRE_MIGRATION_REVISION = "fabf9b9bff78"
 _MIGRATION_UNDER_TEST = "9c4e7a1f2b38"
 
 

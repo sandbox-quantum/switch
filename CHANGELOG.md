@@ -3038,6 +3038,45 @@ per-release notes on their GitHub Releases (`switch-console-v*` tags).
 
 ---
 
+## agent-controller
+
+The headless agents controller, `switch-agent-controller`
+(`console/packages/agent-controller/`), released on `switch-agent-controller-v*`
+tags; see RELEASING.md.
+
+### [Unreleased]
+
+### [0.1.1] - 2026-10-07
+
+#### Fixed
+- **Installer falls back to `~/.local`** when it can't write to a system prefix, and
+  takes a `--data-dir` to place the controller's data directory explicitly.
+
+### [0.1.0] - 2026-10-07
+
+#### Added
+- **Installable on its own.** Each release publishes one npm package (the CLI and
+  the shared-host bundle, no dependencies) and an `install.sh`, which checks Node,
+  installs the newest release, and can enroll the machine and install the service
+  in one go.
+- **`install-service` / `uninstall-service`:** runs the controller as a systemd user
+  unit on Linux or a launchd agent on macOS, restarted only after an error that may
+  pass.
+- **`doctor`:** checks Node, enrollment, the credential, the server (including a
+  proxy that does not route `/v1` to switch-core), each provider CLI and its
+  sign-in, the service, and updates.
+- **`update`:** installs the newest release and restarts the service. `run` logs
+  when a newer one exists.
+- **`run --env-file` and `install-service --env-file`:** environment for the agents,
+  such as provider API keys or Vertex AI and Bedrock settings. Sessions now inherit
+  the Vertex and Bedrock variables Claude Code reads (`ANTHROPIC_VERTEX_PROJECT_ID`,
+  `CLOUD_ML_REGION`, `ANTHROPIC_BEDROCK_BASE_URL`, …).
+- **`enroll --secret-store`:** keeps the controller credential in the macOS keychain
+  (the default on a Mac) or the desktop keyring, as well as in owner-only files (the
+  default elsewhere).
+
+---
+
 ## agent-runtime
 
 The Switch protocol client and MCP runtime

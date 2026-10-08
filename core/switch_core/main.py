@@ -32,6 +32,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
@@ -144,14 +145,19 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.logging_config import configure_logging
-from switch_core.management.wiring import create_management
+from switch_core.management.wiring import Management, create_management
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
     Observability,
     RuntimeProbes,
     start_observability,
 )
-from switch_core.observability.pool import install_pool_watermark, pool_stats
+from switch_core.observability.pool import (
+    WaitTimedQueuePool,
+    install_hold_timer,
+    install_pool_watermark,
+    pool_stats,
+)
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
@@ -169,6 +175,7 @@ from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -250,6 +257,32 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
                 )
         except Exception:
             logger.exception("AgentConnection sweep failed")
+
+
+# Under `_FORCED_EXIT_GRACE_SECONDS`, and first in the teardown: what it
+# writes is what lets every other process see this one's machines go offline
+# now rather than when its lease lapses.
+_MANAGEMENT_STOP_SECONDS = 1.0
+
+
+async def _stop_management(management: Management) -> None:
+    """Record the controller sockets that went and mark this process's lease
+    stopped. Never raises: if it fails, the lease lapses on its own."""
+    try:
+        async with asyncio.timeout(_MANAGEMENT_STOP_SECONDS):
+            await management.stop()
+    except TimeoutError:
+        logger.warning(
+            "Gave up recording controller disconnections after %.1fs; their "
+            "machines read offline once this process's lease lapses.",
+            _MANAGEMENT_STOP_SECONDS,
+        )
+    except Exception:
+        logger.warning(
+            "Recording controller disconnections at shutdown failed; their "
+            "machines read offline once this process's lease lapses.",
+            exc_info=True,
+        )
 
 
 # The innermost of three nested budgets: under
@@ -396,7 +429,7 @@ async def run(config: SwitchConfig) -> None:
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
     encrypted_json.configure(config.keyring)
-    engine = create_engine_from_config(config)
+    engine = create_engine_from_config(config, poolclass=WaitTimedQueuePool)
     tenants_isolated = await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
     # Wired here rather than inside the engine factory, so the database layer
@@ -408,6 +441,7 @@ async def run(config: SwitchConfig) -> None:
     # not change how queries execute.
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
+    install_hold_timer(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -531,6 +565,18 @@ async def run(config: SwitchConfig) -> None:
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = AgentConnectionRegistry()
 
+    # One shared read per room for every client in this process.
+    room_cache = RoomDeliveryCache(
+        session_factory=session_factory,
+        message_store=message_store,
+        limits=RoomCacheLimits(
+            max_bytes=config.room_delivery_cache_max_bytes,
+            max_rooms=config.room_delivery_cache_max_rooms,
+            max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
+            max_age_seconds=config.room_delivery_cache_max_age_seconds,
+        ),
+    )
+
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
         client_store=client_store,
@@ -543,6 +589,7 @@ async def run(config: SwitchConfig) -> None:
         listener=message_listener,
         invites=invites,
         ephemeral=ephemeral,
+        room_cache=room_cache,
     )
     client_factory.register(
         "agent",
@@ -608,6 +655,7 @@ async def run(config: SwitchConfig) -> None:
         resource_service=resource_service,
         session_factory=session_factory,
         telemetry=telemetry,
+        room_cache=room_cache,
     )
     collab_lifecycle._room_service = room_service
 
@@ -802,6 +850,7 @@ async def run(config: SwitchConfig) -> None:
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
+        await management.start()
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
@@ -817,8 +866,9 @@ async def run(config: SwitchConfig) -> None:
         consumers_running=client_lifecycle.running_count,
         connectors_running=connector_lifecycle.running_count,
         connectors_configured=connector_lifecycle.expected_count,
-        agents_connected=lambda: len(connections.live_agent_ids()),
+        agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
+        room_cache_stats=room_cache.stats,
     )
 
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
@@ -841,6 +891,7 @@ async def run(config: SwitchConfig) -> None:
                 version=switch_core_version(),
                 session_factory=session_factory,
                 probes=probes,
+                db_server_engine=lambda: create_unpooled_engine(config),
             )
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
@@ -851,6 +902,11 @@ async def run(config: SwitchConfig) -> None:
             )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
+            )
+            management_task = (
+                asyncio.create_task(management.run())
+                if management is not None
+                else None
             )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
@@ -869,6 +925,10 @@ async def run(config: SwitchConfig) -> None:
                 connection_sweep_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
+                if management is not None:
+                    assert management_task is not None
+                    management_task.cancel()
+                    await _stop_management(management)
                 await message_listener.stop()
                 await session_activity_listener.stop()
                 # Before the operational flush, and bounded: the whole
@@ -959,6 +1019,7 @@ async def run(config: SwitchConfig) -> None:
             lambda: asyncio.create_task(
                 _shutdown(
                     server,
+                    connections.controllers,
                     client_lifecycle,
                     collab_lifecycle,
                     connector_lifecycle,
@@ -1406,6 +1467,7 @@ async def _bootstrap_key_tenant(
 
 async def _shutdown(
     server: uvicorn.Server,
+    controllers: ControllerPresence,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
@@ -1414,6 +1476,9 @@ async def _shutdown(
     discord_gateway_task: asyncio.Task[None] | None,
 ) -> None:
     logger.info("Shutting down...")
+    # Before uvicorn closes the sockets, so the controllers' are recorded as
+    # closed by the server.
+    controllers.begin_shutdown()
     server.should_exit = True
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()

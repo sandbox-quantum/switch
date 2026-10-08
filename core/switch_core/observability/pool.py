@@ -12,11 +12,27 @@ absent one.
 
 from __future__ import annotations
 
+import logging
+import os
+import sys
 import threading
+import time
 from dataclasses import dataclass
+from types import FrameType
+from typing import Any
 
+import greenlet
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.pool import AsyncAdaptedQueuePool, ConnectionPoolEntry
+
+from switch_core.observability.catalogue import (
+    DB_POOL_HOLD_DURATION,
+    DB_POOL_WAIT_DURATION,
+)
+from switch_core.observability.metrics import metrics
+
+logger = logging.getLogger(__name__)
 
 
 class PoolInUseWatermark:
@@ -99,3 +115,166 @@ def _overflow_beyond_nominal(raw: int) -> int:
     approaching `size`.
     """
     return max(0, raw)
+
+
+# ── Who holds a connection, and for how long ─────────────────────────────────
+
+# A hold this long is code that awaited something else with a connection in
+# hand: the slowest query on this schema is a few hundred milliseconds.
+LONG_HOLD_SECONDS = 1.0
+# One warning per caller per window, so a storm of long holds is a line per
+# culprit rather than one per request.
+_LONG_HOLD_LOG_INTERVAL_SECONDS = 60.0
+# Frames shown with a long-hold warning, innermost first.
+_LONG_HOLD_STACK_DEPTH = 6
+
+_PACKAGE_MARKER = f"{os.sep}switch_core{os.sep}"
+# Frames that are the plumbing every borrow passes through, not the borrower.
+_PLUMBING = (
+    f"{_PACKAGE_MARKER}observability{os.sep}",
+    f"{_PACKAGE_MARKER}db{os.sep}engine.py",
+    f"{_PACKAGE_MARKER}db{os.sep}session_scope.py",
+    f"{_PACKAGE_MARKER}db{os.sep}tenant_session.py",
+)
+# A test tree mirrors the package path, so its frames would otherwise pass as ours.
+_TESTS_MARKER = f"{os.sep}tests{os.sep}"
+_HOLD_KEY = "_switch_hold"
+UNKNOWN_CALLER = "unknown"
+
+
+@dataclass(frozen=True)
+class _Hold:
+    started: float
+    caller: str
+    stack: tuple[str, ...]
+
+
+def _frames_of_borrower() -> list[FrameType]:
+    """The call stack of the code borrowing a connection, innermost first.
+
+    A checkout on the async engine runs inside SQLAlchemy's greenlet, whose
+    own stack starts at the greenlet and knows nothing of the coroutine that
+    awaited it. That coroutine is suspended in the parent greenlet, so the
+    walk continues from the parent's frame when the local one runs out.
+    """
+    frames: list[FrameType] = []
+    frame: FrameType | None = sys._getframe(1)
+    while frame is not None:
+        frames.append(frame)
+        frame = frame.f_back
+    current = greenlet.getcurrent()
+    parent = current.parent
+    if parent is not None and parent.gr_frame is not None:
+        frame = parent.gr_frame
+        while frame is not None:
+            frames.append(frame)
+            frame = frame.f_back
+    return frames
+
+
+def _ours(frame: FrameType) -> bool:
+    filename = frame.f_code.co_filename
+    return (
+        _PACKAGE_MARKER in filename
+        and _TESTS_MARKER not in filename
+        and not any(p in filename for p in _PLUMBING)
+    )
+
+
+def _module(frame: FrameType) -> str:
+    filename = frame.f_code.co_filename
+    tail = filename.rsplit(_PACKAGE_MARKER, 1)[-1]
+    return "switch_core." + tail.removesuffix(".py").replace(os.sep, ".")
+
+
+def describe_borrower() -> tuple[str, tuple[str, ...]]:
+    """`module:function` of the innermost switch_core frame, and a short stack.
+
+    The label is bounded by the code rather than the traffic, so it can be a
+    metric attribute. Asked on every checkout: walking a few dozen frames is
+    microseconds against a round trip of a hundred or more.
+    """
+    ours = [f for f in _frames_of_borrower() if _ours(f)]
+    if not ours:
+        return UNKNOWN_CALLER, ()
+    caller = f"{_module(ours[0])}:{ours[0].f_code.co_name}"
+    stack = tuple(
+        f"{_module(f)}:{f.f_code.co_name}:{f.f_lineno}"
+        for f in ours[:_LONG_HOLD_STACK_DEPTH]
+    )
+    return caller, stack
+
+
+class _LongHoldLog:
+    """Rate-limits the long-hold warning per caller."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last: dict[str, float] = {}
+        self._suppressed: dict[str, int] = {}
+
+    def report(self, hold: _Hold, held_seconds: float) -> None:
+        now = time.monotonic()
+        with self._lock:
+            last = self._last.get(hold.caller)
+            if last is not None and now - last < _LONG_HOLD_LOG_INTERVAL_SECONDS:
+                self._suppressed[hold.caller] = self._suppressed.get(hold.caller, 0) + 1
+                return
+            self._last[hold.caller] = now
+            suppressed = self._suppressed.pop(hold.caller, 0)
+        logger.warning(
+            "A database connection was held for %.2f s by %s (%d more long holds "
+            "by it in the last %d s). Stack: %s",
+            held_seconds,
+            hold.caller,
+            suppressed,
+            int(_LONG_HOLD_LOG_INTERVAL_SECONDS),
+            " < ".join(hold.stack) or "unknown",
+        )
+
+
+def install_hold_timer(engine: AsyncEngine) -> None:
+    """Time every checkout to its checkin, by the code that borrowed it.
+
+    The checkout event fires in the borrower's call, which is the only moment
+    its stack is there to read; the checkin fires wherever the connection
+    happens to be returned, so the borrower is stored on the connection
+    record in between.
+    """
+    long_holds = _LongHoldLog()
+
+    @event.listens_for(engine.sync_engine, "checkout")
+    def _on_checkout(_dbapi: object, record: Any, _proxy: object) -> None:
+        caller, stack = describe_borrower()
+        record.info[_HOLD_KEY] = _Hold(time.perf_counter(), caller, stack)
+
+    @event.listens_for(engine.sync_engine, "checkin")
+    def _on_checkin(_dbapi: object, record: Any) -> None:
+        hold = record.info.pop(_HOLD_KEY, None) if record is not None else None
+        if hold is None:
+            return
+        held = time.perf_counter() - hold.started
+        metrics().observe(DB_POOL_HOLD_DURATION, {"caller": hold.caller}, held * 1000.0)
+        if held >= LONG_HOLD_SECONDS:
+            long_holds.report(hold, held)
+
+
+class WaitTimedQueuePool(AsyncAdaptedQueuePool):
+    """The default async pool, timing how long each request waits for a
+    connection.
+
+    A subclass rather than an event because the pool has no event for the
+    request, only for the handover. Passed in by `main.py` as the engine's
+    `poolclass`, so the database layer stays unaware of any of this; a pool
+    rebuilt by `dispose()` keeps the class, and with it the timing.
+    """
+
+    def _do_get(self) -> ConnectionPoolEntry:
+        started = time.perf_counter()
+        try:
+            return super()._do_get()
+        finally:
+            # A wait that ends in a pool timeout is the one that matters most.
+            metrics().observe(
+                DB_POOL_WAIT_DURATION, {}, (time.perf_counter() - started) * 1000.0
+            )

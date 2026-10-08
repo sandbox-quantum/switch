@@ -31,6 +31,8 @@ from switch_core.db.tenant_lookup import (
     tenant_of_api_key,
 )
 from switch_core.logging_context import log_context
+from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
+from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -78,12 +80,17 @@ _NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
 # Registration: a controller registers nothing, so its token is refused here.
 _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # The connection surface a controller serves its agents itself, from its own
-# stream (`GET /v1/controllers/{id}/events`). A controller-backed agent has no
+# connection (`/v1/controllers/{id}/connection/ws`). A controller-backed agent has no
 # connection of its own, and the legacy heartbeats would make it look live from
 # a second source.
 _SERVED_ON_THE_CONTROLLER_STREAM = re.compile(
     r"/(events|notifications|rooms/[^/]+/events|connection/.*|watch/heartbeat)"
 )
+
+
+# The agent connection's socket, whose refusals are counted as connections
+# refused. Any other path's 401 is an ordinary failed request.
+_AGENT_CONNECTION_PATH = re.compile(r"^/agents/[^/]+/connection/ws$")
 
 
 class OIDCTokenValidator:
@@ -425,7 +432,7 @@ class BearerAuthMiddleware:
             await _controller_refusal(
                 MANAGED_BY_CONTROLLER,
                 "A controller receives its agents' events on its own stream, "
-                "GET /v1/controllers/{id}/events; this agent route is not "
+                "/v1/controllers/{id}/connection/ws; this agent route is not "
                 "served to it.",
                 409,
             )(scope, receive, send)
@@ -589,6 +596,8 @@ async def _unauthorized(
     connection uses for every refusal.
     """
     if scope["type"] == "websocket":
+        if _AGENT_CONNECTION_PATH.match(scope.get("path", "")):
+            metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": "unauthorized"})
         await receive()  # the client's websocket.connect
         await send({"type": "websocket.accept"})
         await send({"type": "websocket.close", "code": 4401, "reason": reason})

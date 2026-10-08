@@ -45,6 +45,7 @@ import {
 } from '@shared/core/switch-rooms/connection-health';
 import { type AgentPresence, SidebarAgentRow } from './agent-row';
 import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
+import { MigrationProblemIndicator } from './migration-problem-indicator';
 import { SidebarItemMiniButton } from './sidebar-primitives';
 import { agentExpandKey } from './sidebar-store';
 
@@ -154,6 +155,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                 agentId={agent.providerId ?? null}
               />
               <DiscoveryFailureIndicator agentId={agent.id} label={label} />
+              <MigrationProblemIndicator agentId={agent.id} label={label} />
               {agent.providerId && (
                 <ProviderIssueIndicator
                   providerId={agent.providerId}

@@ -19,6 +19,7 @@ from switch_core.transport import MessageTransport
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.postgres import PostgresTransport
+from switch_core.transport.room_cache import RoomDeliveryCache
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class ClientFactory:
         listener: MessageListener,
         invites: InviteBus,
         ephemeral: EphemeralBus,
+        room_cache: RoomDeliveryCache,
     ) -> None:
         self._client_store = client_store
         self._session_factory = session_factory
@@ -48,6 +50,8 @@ class ClientFactory:
         self._listener = listener
         self._invites = invites
         self._ephemeral = ephemeral
+        # One for the process, so every member of a room shares it.
+        self._room_cache = room_cache
         self._registry: dict[
             str,
             tuple[
@@ -122,4 +126,5 @@ class ClientFactory:
             listener=self._listener,
             invites=self._invites,
             ephemeral=self._ephemeral,
+            room_cache=self._room_cache,
         )

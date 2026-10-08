@@ -257,6 +257,11 @@ class AutoSessionWatcher {
     this.retries.delete(agentId);
   }
 
+  /** Stops retrying the agent's watcher, for a caller that turns it off by other means. */
+  forgetRetries(agentId: string): void {
+    this.cancelRetry(agentId);
+  }
+
   stopForAgent(agentId: string): Promise<void> {
     this.cancelRetry(agentId);
     return configureAgentHost(agentId, { connected: false, spawning: false }, 'restore');
