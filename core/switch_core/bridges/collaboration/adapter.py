@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
-from switch_core.agent_icon import default_icon_url
+from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
@@ -525,6 +525,7 @@ class PlatformAdapter(ABC):
         self._resolve_agent_presentation: (
             Callable[[str], Awaitable[AgentPresentation | None]] | None
         ) = None
+        self._reported_missing_resolver = False
         # Inbound attachment size ceiling, set by the lifecycle service from
         # config.agent_media_max_bytes. Adapters check a platform-reported file
         # size against this before downloading so an oversize file is rejected
@@ -1573,22 +1574,13 @@ class PlatformAdapter(ABC):
         message instead of at the next restart."""
         self._resolve_agent_presentation = resolver
 
-    def default_agent_icon(self, agent_name: str) -> str:
-        """The avatar for an agent that has set no icon.
+    def adapt_icon_url(self, icon_url: str) -> str:
+        """Turn the icon URL chosen for a sender into the one this platform
+        should be handed.
 
-        Overridable for a platform that needs the default in a particular shape
-        — Mattermost uploads the bytes rather than passing a link on, so it
-        pins the response format."""
-        return default_icon_url(agent_name)
-
-    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
-        """Turn the stored icon URL into the one this platform should be handed.
-
-        `raw` is the agent's own icon, or None when it has none and the
-        platform default stands in. Pure and synchronous so it composes with a
-        single lookup: an override adjusts the URL, it does not go looking for
-        one."""
-        return raw or self.default_agent_icon(agent_name)
+        Pure and synchronous so it composes with a single lookup: an override
+        adjusts the URL, it does not go looking for one."""
+        return icon_url
 
     def escape_label_for_body(self, label: str) -> str:
         """Neutralise a label's markup before it goes into message text.
@@ -1638,16 +1630,39 @@ class PlatformAdapter(ABC):
         that need one of them alone — an unescaped label is not among them:
         :attr:`AgentRendering.field_label` is reachable only alongside the
         escaped one, so choosing it is a choice."""
-        raw = AgentPresentation(display_name=None, icon_url=None)
-        if self._resolve_agent_presentation is not None:
+        # An agent with no icon wears the face its name generates; a name the
+        # resolver says is no agent keeps a lettered badge, so a person relayed
+        # from elsewhere is never drawn as an agent. The name is the sending
+        # actor's own (an agent's is its identifier, never a room alias), so a
+        # miss is a sender that is not an agent rather than an agent the lookup
+        # failed to recognise.
+        #
+        # Without a resolver nothing can say who is who. The senders an adapter
+        # draws are overwhelmingly agents, so it draws them as agents rather
+        # than turning every agent into a person. The bridge core installs one
+        # before the adapter starts, so a running bridge without it is a wiring
+        # fault, and said so once.
+        if self._resolve_agent_presentation is None:
+            if not self._reported_missing_resolver:
+                self._reported_missing_resolver = True
+                logger.warning(
+                    "%s has no agent presentation resolver: every sender is "
+                    "drawn as an agent under its identifier, people included",
+                    type(self).__name__,
+                )
+            label = agent_name
+            icon_url = generated_icon_url(agent_name)
+        else:
             found = await self._resolve_agent_presentation(agent_name)
-            if found is not None:
-                raw = found
-        label = raw.display_name or agent_name
+            label = (found.display_name if found else None) or agent_name
+            if found is None:
+                icon_url = initials_icon_url(agent_name)
+            else:
+                icon_url = found.icon_url or generated_icon_url(agent_name)
         return AgentRendering(
             field_label=label,
             body_label=self.escape_label_for_body(label),
-            icon_url=self.adapt_icon_url(raw.icon_url, agent_name),
+            icon_url=self.adapt_icon_url(icon_url),
         )
 
     async def agent_icon_url(self, agent_name: str) -> str:

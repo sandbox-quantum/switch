@@ -16,7 +16,7 @@ import { PALETTE_ITEM_CLASS } from './palette-item-styles';
  * A row of its own rather than a branch of `PaletteKindIcon`, because the
  * chosen icon comes from a query keyed by workspace and a hook cannot be called
  * from inside a switch. An agent this app does not hold — a hit whose local row
- * has gone — still gets the bot drawn from its name, which is the same face the
+ * has gone — still gets the avatar drawn from its name, which is the same face the
  * Switch bridges show.
  */
 export const PaletteAgentItem = observer(function PaletteAgentItem({

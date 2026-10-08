@@ -13,7 +13,9 @@ from switch_core.agent_icon import (
     InvalidIconUrl,
     generated_icon_choices,
     generated_icon_url,
+    initials_icon_url,
     normalise_icon_url,
+    upgrade_legacy_icon_url,
     validate_icon_url,
 )
 
@@ -147,11 +149,93 @@ def test_normalise_validates_a_present_url() -> None:
         normalise_icon_url("http://10.0.0.1/i.png")
 
 
-def test_generated_icon_is_a_stable_raster_robot_per_seed() -> None:
+def test_generated_icon_is_a_stable_raster_gaze_per_seed() -> None:
+    # Switch Console builds the same URL (`agent-avatar.ts`) and its test pins
+    # this same string: change one and the other has to follow, or an agent
+    # wears a different face in the app than on the chat platforms.
     url = generated_icon_url("pm-agent")
-    assert url == "https://api.dicebear.com/9.x/bottts/png?seed=pm-agent&size=256"
+    assert (
+        url == "https://api.dicebear.com/10.x/gaze/png?seed=pm-agent&size=256&scale=1.1"
+    )
     assert generated_icon_url("pm-agent") == url
     assert validate_icon_url(url) == url
+
+
+@pytest.mark.parametrize(
+    ("stored", "seed"),
+    [
+        # Switch's own robot, and Switch Console's (same shape).
+        ("https://api.dicebear.com/9.x/bottts/png?seed=pm-agent&size=256", "pm-agent"),
+        (
+            "https://api.dicebear.com/9.x/bottts/png?seed=0b6c4f0e-8e1a-4f7e-9d65-0c2b5a3e9f11&size=256",
+            "0b6c4f0e-8e1a-4f7e-9d65-0c2b5a3e9f11",
+        ),
+        (
+            "https://api.dicebear.com/9.x/bottts/png?seed=pm-agent-1-4&size=256",
+            "pm-agent-1-4",
+        ),
+    ],
+)
+def test_a_generated_robot_is_upgraded_to_gaze_for_its_seed(
+    stored: str, seed: str
+) -> None:
+    assert upgrade_legacy_icon_url(stored) == generated_icon_url(seed)
+    assert normalise_icon_url(stored) == generated_icon_url(seed)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Options of its own: someone built this by hand.
+        "https://api.dicebear.com/9.x/bottts/png?seed=x&size=256&backgroundColor=ff0000",
+        "https://api.dicebear.com/9.x/bottts/png?seed=x&size=128",
+        "https://api.dicebear.com/9.x/bottts/png?seed=&size=256",
+        "https://api.dicebear.com/9.x/bottts/png?size=256",
+        "https://api.dicebear.com/9.x/bottts/svg?seed=x&size=256",
+        "https://api.dicebear.com/9.x/bottts/png?seed=x&size=256#frag",
+        # Same fields, another order: no client built it this way.
+        "https://api.dicebear.com/9.x/bottts/png?size=256&seed=x",
+        "https://API.dicebear.com/9.x/bottts/png?seed=x&size=256",
+        # Another style, another host, or a lookalike host.
+        "https://api.dicebear.com/9.x/identicon/png?seed=x&size=256",
+        "https://cdn.example.com/9.x/bottts/png?seed=x&size=256",
+        "https://api.dicebear.com.example/9.x/bottts/png?seed=x&size=256",
+    ],
+)
+def test_anything_but_the_generated_robot_is_left_alone(url: str) -> None:
+    assert upgrade_legacy_icon_url(url) == url
+
+
+def test_a_robot_is_converted_before_it_is_validated() -> None:
+    # Surrounding whitespace is stripped first, so it does not hide a robot.
+    stored = " https://api.dicebear.com/9.x/bottts/png?seed=pm-agent&size=256 "
+    assert normalise_icon_url(stored) == generated_icon_url("pm-agent")
+
+
+def test_a_robot_whose_gaze_form_is_over_the_limit_is_refused() -> None:
+    # The robot fits, but the gaze URL it becomes is longer. Checking before
+    # converting would store it over the limit.
+    seed = "a" * 1990
+    robot = f"https://api.dicebear.com/9.x/bottts/png?seed={seed}&size=256"
+    assert len(robot) <= MAX_ICON_URL_LENGTH < len(generated_icon_url(seed))
+    with pytest.raises(InvalidIconUrl, match="at most"):
+        normalise_icon_url(robot)
+
+
+def test_the_gaze_icon_is_left_alone() -> None:
+    url = generated_icon_url("pm-agent")
+    assert upgrade_legacy_icon_url(url) == url
+
+
+def test_initials_badge_reads_underscores_as_word_breaks() -> None:
+    # Two words, so the badge draws two letters for `switch_worker`.
+    assert "name=switch+worker&" in initials_icon_url("switch_worker")
+    assert initials_icon_url("worker") != initials_icon_url("manager")
+
+
+def test_generated_icon_escapes_the_seed() -> None:
+    url = generated_icon_url("a&b=c d")
+    assert "seed=a%26b%3Dc%20d&" in url
 
 
 def test_generated_choices_lead_with_the_name_and_stay_put() -> None:

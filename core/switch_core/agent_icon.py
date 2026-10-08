@@ -2,9 +2,12 @@
 
 Switch stores a link to an agent's icon, never the image bytes. The picture may
 come from an operator's own host or anywhere else the client chooses; an agent
-created without one gets a generated robot (`generated_icon_url`), the same set
+created without one gets a generated icon (`generated_icon_url`), the same set
 every client offers, so it looks alike in the gateway, Console and every
-platform.
+platform. An agent with no icon stored at all is drawn with the one its name
+generates, so it looks the same as one that was given it. A sender that is not
+an agent at all keeps a lettered badge (`initials_icon_url`), so a person never
+wears an agent's face.
 
 That makes the URL attacker-controlled input with two distinct consumers, and
 the rules below exist for the second one:
@@ -23,8 +26,9 @@ rather than treating storage validation as sufficient.
 """
 
 import ipaddress
+import re
 from typing import NoReturn
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote_plus, urlencode, urlsplit
 
 # Long enough for a generated-avatar link carrying a full set of style options,
 # short enough that the column cannot be used to smuggle a payload.
@@ -109,40 +113,79 @@ def validate_icon_url(url: str) -> str:
     return candidate
 
 
-def default_icon_url(agent_name: str, *, image_format: str | None = None) -> str:
-    """The initials avatar shown for an agent that has set no icon of its own.
-
-    Unchanged from what the collaboration bridges have always generated — this
-    is the picture agents already have on Slack, Mattermost, Discord and Teams,
-    and it stays the default so nothing regresses for an agent nobody has given
-    an icon to. It is gathered here only so the four bridges stop each keeping
-    their own copy of the URL.
-
-    `image_format` forces a response format for a caller that needs real bytes
-    rather than a link to hand onward (Mattermost uploads the image itself).
-    """
-    # Escape first, substitute second. The `+` stands in for a space so the
-    # avatar draws two initials for `switch_worker`; percent-encoding it after
-    # the fact turns it back into a literal plus and the agent renders with one
-    # initial instead. Agent names are already restricted to characters that
-    # need no escaping, so `quote` is only a guard against a name that somehow
-    # got past that.
-    name = quote(agent_name).replace("_", "+")
-    url = f"https://ui-avatars.com/api/?name={name}&background=random&size=128"
-    return f"{url}&format={image_format}" if image_format else url
-
-
 # Generated icons. The URL is all Switch stores; the picture is DiceBear's
-# "bottts" robot, raster because Slack, Discord and Mattermost render no SVG,
-# and pinned to a major version because the drawing changes between majors.
-_GENERATED_ICON_BASE = "https://api.dicebear.com/9.x/bottts/png"
+# "gaze", raster because Slack, Discord and Mattermost render no SVG, and pinned
+# to a major version because the drawing changes between majors.
+_GENERATED_ICON_BASE = "https://api.dicebear.com/10.x/gaze/png"
 _GENERATED_ICON_PIXELS = 256
+# A tenth larger than DiceBear draws it, which leaves the body small in its
+# frame at chat-avatar size. At that scale a round crop (Discord, Mattermost,
+# Teams) trims a sliver off the arch silhouette's bottom corners. That was
+# chosen over listing the other shapes: the list made the URL too long for
+# Slack's 255-character `icon_url`, and the only shorter form, a comma list,
+# breaks wherever the query is re-encoded.
+_GENERATED_ICON_SCALE = "1.1"
 GENERATED_ICON_CHOICES = 10
 
 
 def generated_icon_url(seed: str) -> str:
-    """The generated robot icon for `seed`: the same seed always draws the same robot."""
-    return f"{_GENERATED_ICON_BASE}?seed={quote(seed, safe='')}&size={_GENERATED_ICON_PIXELS}"
+    """The generated icon for `seed`: the same seed always draws the same face."""
+    query = [
+        ("seed", seed),
+        ("size", str(_GENERATED_ICON_PIXELS)),
+        ("scale", _GENERATED_ICON_SCALE),
+    ]
+    return f"{_GENERATED_ICON_BASE}?{urlencode(query, quote_via=quote)}"
+
+
+# The robot every client generated before gaze, in exactly the shape they built
+# it: a seed and this size, nothing else. A robot URL with anything more on it,
+# or in any other order, was put together by hand and is someone's choice, so it
+# is left alone. The migration that replaced stored robots (`2f6919dcdead`)
+# matches the same pattern, so a URL it left as a robot stays one when saved.
+_LEGACY_ICON = re.compile(
+    r"^https://api\.dicebear\.com/9\.x/bottts/png\?seed=([^&#]+)&size=256$"
+)
+
+
+def upgrade_legacy_icon_url(url: str) -> str:
+    """`url`, or the gaze icon for its seed when it is a generated robot.
+
+    Switch Console builds from before gaze still generate the robot for a new
+    agent and for one with no icon, and send it here to be stored. Converting it
+    on the way in means those clients cannot reintroduce robots after the
+    migration that replaced every stored one.
+    """
+    match = _LEGACY_ICON.match(url)
+    if match is None:
+        return url
+    return generated_icon_url(unquote_plus(match.group(1)))
+
+
+def prepare_icon_url(url: str) -> str:
+    """The icon URL to store for `url`, or raise `InvalidIconUrl`.
+
+    An older client's generated robot is converted first and the result is
+    what gets validated: the gaze URL is longer than the robot it replaces, so
+    checking before converting would let a robot near the length limit be
+    stored over it.
+    """
+    return validate_icon_url(upgrade_legacy_icon_url(url.strip()))
+
+
+def initials_icon_url(name: str) -> str:
+    """The lettered badge for a sender that is not an agent.
+
+    A person relayed from another platform, or a platform's own bot, is drawn
+    with initials rather than a generated face: the generated faces are what
+    agents wear, and a human drawn as one would read as an agent.
+    """
+    # Escape first, substitute second. The `+` stands in for a space so the
+    # badge draws two initials for `switch_worker`; percent-encoding it after
+    # the fact turns it back into a literal plus and the name renders with one
+    # initial instead.
+    escaped = quote(name).replace("_", "+")
+    return f"https://ui-avatars.com/api/?name={escaped}&background=random&size=128"
 
 
 def generated_icon_choices(agent_name: str, page: int) -> list[str]:
@@ -164,6 +207,8 @@ def normalise_icon_url(url: str | None) -> str | None:
     Callers accept `None` to mean "leave unset" and an empty string to mean
     "clear it"; both collapse to `None` so a cleared icon is stored as NULL
     rather than as an empty string the display layer would have to special-case.
+    A generated robot from an older client is stored as its gaze equivalent
+    (`prepare_icon_url`).
     """
     if url is None:
         return None
@@ -171,4 +216,4 @@ def normalise_icon_url(url: str | None) -> str | None:
     if not url.strip():
         return None
 
-    return validate_icon_url(url)
+    return prepare_icon_url(url)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from switch_core.agent_icon import default_icon_url
+from switch_core.agent_icon import generated_icon_url
 from switch_core.bridges.collaboration.adapter import AgentPresentation, AgentRendering
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 from switch_core.bridges.collaboration.teams.adapter import (
@@ -893,7 +893,7 @@ async def test_message_activity_falls_back_to_the_default_icon() -> None:
     activity = await adapter._message_activity("worker", "hello", [])
 
     image = activity["attachments"][0]["content"]["body"][0]["columns"][0]["items"][0]
-    assert image["url"] == default_icon_url("worker")
+    assert image["url"] == generated_icon_url("worker")
 
 
 def _card_text(activity: dict[str, Any]) -> str:

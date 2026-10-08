@@ -11,7 +11,7 @@ import { agentAvatarUrlForName, agentInitials } from '@shared/core/agents/agent-
  *
  * Three states, in order:
  *  - the icon its owner chose;
- *  - failing that, a bot drawn from its name, which is also what the Switch
+ *  - failing that, an avatar drawn from its name, which is also what the Switch
  *    bridges show, so the app and Slack agree;
  *  - failing *that* — an image that will not load, most often because the
  *    machine is offline — its initials. Deliberately visible rather than a
