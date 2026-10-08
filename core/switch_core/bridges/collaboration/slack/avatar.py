@@ -62,14 +62,22 @@ def on_slack_background(icon_url: str) -> str:
     return urlunsplit(parts._replace(query=query))
 
 
+# Oversized icon URLs already reported, so an agent posting every turn does
+# not repeat one unchanged condition on every post.
+_reported_oversized: set[str] = set()
+
+
 def slack_icon_argument(icon_url: str, agent_name: str) -> str | None:
     """The `icon_url` to hand Slack for a post, or None to send none.
 
     None when Slack would refuse the URL: the post then goes out under the
-    app's own icon rather than not at all.
+    app's own icon rather than not at all. Reported once per URL.
     """
     if len(icon_url) <= SLACK_ICON_URL_MAX:
         return icon_url
+    if icon_url in _reported_oversized:
+        return None
+    _reported_oversized.add(icon_url)
     logger.warning(
         "The icon URL for %s is %d characters, over Slack's limit of %d; "
         "posting under the Slack app's own icon instead.",

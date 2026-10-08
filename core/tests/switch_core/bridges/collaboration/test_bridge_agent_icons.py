@@ -8,8 +8,11 @@ between that answer and the icon the agent's name generates.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.adapter import (
@@ -100,6 +103,18 @@ class TestAdapterIconSelection:
         # mistake.
         adapter = _Adapter()
         assert await adapter.agent_icon_url("worker") == generated_icon_url("worker")
+
+    async def test_says_once_that_no_resolver_is_installed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        adapter = _Adapter()
+        with caplog.at_level(logging.WARNING):
+            await adapter.agent_icon_url("worker")
+            await adapter.agent_icon_url("manager")
+        reports = [
+            r for r in caplog.records if "no agent presentation resolver" in r.message
+        ]
+        assert len(reports) == 1
 
     async def test_prefers_the_agents_own_icon(self) -> None:
         adapter = _Adapter()

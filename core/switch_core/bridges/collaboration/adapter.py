@@ -525,6 +525,7 @@ class PlatformAdapter(ABC):
         self._resolve_agent_presentation: (
             Callable[[str], Awaitable[AgentPresentation | None]] | None
         ) = None
+        self._reported_missing_resolver = False
         # Inbound attachment size ceiling, set by the lifecycle service from
         # config.agent_media_max_bytes. Adapters check a platform-reported file
         # size against this before downloading so an oversize file is rejected
@@ -1636,11 +1637,19 @@ class PlatformAdapter(ABC):
         # miss is a sender that is not an agent rather than an agent the lookup
         # failed to recognise.
         #
-        # Without a resolver nothing can say who is who. Production installs
-        # one before the adapter starts, so this is a test double or a wiring
-        # fault; the senders an adapter draws are overwhelmingly agents, so it
-        # draws them as agents rather than turning every agent into a person.
+        # Without a resolver nothing can say who is who. The senders an adapter
+        # draws are overwhelmingly agents, so it draws them as agents rather
+        # than turning every agent into a person. The bridge core installs one
+        # before the adapter starts, so a running bridge without it is a wiring
+        # fault, and said so once.
         if self._resolve_agent_presentation is None:
+            if not self._reported_missing_resolver:
+                self._reported_missing_resolver = True
+                logger.warning(
+                    "%s has no agent presentation resolver: every sender is "
+                    "drawn as an agent under its identifier, people included",
+                    type(self).__name__,
+                )
             label = agent_name
             icon_url = generated_icon_url(agent_name)
         else:

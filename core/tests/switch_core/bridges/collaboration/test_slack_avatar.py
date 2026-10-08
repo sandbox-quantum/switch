@@ -1,5 +1,8 @@
 import asyncio
+import logging
 from urllib.parse import parse_qs, urlsplit
+
+import pytest
 
 from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.adapter import AgentPresentation
@@ -124,3 +127,12 @@ def test_sends_no_icon_url_past_slacks_limit() -> None:
     # Slack refuses the post itself over this, so the message would be lost.
     over = "https://example.com/" + "a" * (SLACK_ICON_URL_MAX - 19)
     assert slack_icon_argument(over, "worker") is None
+
+
+def test_an_oversized_icon_is_reported_once(caplog: pytest.LogCaptureFixture) -> None:
+    # An agent posts every turn; one unchanged condition is one warning.
+    oversized = "https://icons.example/" + "a" * 300 + "-once.png"
+    with caplog.at_level(logging.WARNING):
+        assert slack_icon_argument(oversized, "worker") is None
+        assert slack_icon_argument(oversized, "worker") is None
+    assert len([r for r in caplog.records if "over Slack's limit" in r.message]) == 1
