@@ -73,6 +73,12 @@ class _NoRows:
         self.asked.append(list(agent_ids))
         return set()
 
+    async def live_agent_ids_by_room(
+        self, _session: Any, agent_ids: list[str], _room_ids: list[str]
+    ) -> dict[str, set[str]]:
+        self.asked.append(list(agent_ids))
+        return {}
+
 
 def _bind(
     registry: AgentConnectionRegistry,

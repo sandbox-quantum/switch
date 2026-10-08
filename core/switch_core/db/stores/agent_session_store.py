@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, literal_column, select, update
@@ -237,3 +238,30 @@ class AgentSessionStore:
             .where(AgentSession.last_seen_at > cutoff)
         )
         return set(result.scalars().all())
+
+    async def live_agent_ids_by_room(
+        self,
+        session: AsyncSession,
+        agent_ids: Collection[str],
+        room_ids: Collection[str],
+    ) -> dict[str, set[str]]:
+        """`get_live_agent_ids` for many concrete rooms in one query.
+
+        Keyed by room id; a room where none of `agent_ids` is live has no key.
+        Room-scoped rows only, under `SESSION_TTL`, exactly as
+        `get_live_agent_ids` reads one room.
+        """
+        if not agent_ids or not room_ids:
+            return {}
+        cutoff = datetime.now(UTC) - self.SESSION_TTL
+        result = await session.execute(
+            select(AgentSession.room_id, AgentSession.agent_id)
+            .where(AgentSession.agent_id.in_(agent_ids))
+            .where(AgentSession.room_id.in_(room_ids))
+            .where(AgentSession.lifecycle == "heartbeat")
+            .where(AgentSession.last_seen_at > cutoff)
+        )
+        by_room: dict[str, set[str]] = {}
+        for room_id, agent_id in result.all():
+            by_room.setdefault(room_id, set()).add(agent_id)
+        return by_room
