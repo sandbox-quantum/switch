@@ -41,7 +41,7 @@ import { telemetryService } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
-import { initializeDatabase } from './db/initialize';
+import { DatabaseFromNewerBuildError, initializeDatabase } from './db/initialize';
 import { logAppExit, logAppStart, registerAppDiagnostics } from './lib/app-diagnostics';
 import {
   getLogFilePath,
@@ -123,12 +123,18 @@ void app.whenReady().then(async () => {
     // whatever the user needs to act has to be in this box. Name the likely
     // causes and where the log is, then the raw error under its own heading.
     const logPath = getLogFilePath();
+    // A database written by a newer build (Canary shares this data directory)
+    // has its own cause and remedy; the generic list below would mislead.
+    const cause =
+      error instanceof DatabaseFromNewerBuildError
+        ? 'The database was last opened by a newer version of the app, such as a Canary build, and this version cannot read it. Open the newer version, or update this one to the latest release.'
+        : 'The usual causes are another copy of the app already running, a full disk, or the database file having been moved or made read-only. Closing the other copy and reopening is worth trying first.';
     dialog.showErrorBox(
       `${PRODUCT_NAME} could not open its database`,
       [
         `${PRODUCT_NAME} cannot start without it, so it is closing.`,
         '',
-        'The usual causes are another copy of the app already running, a full disk, or the database file having been moved or made read-only. Closing the other copy and reopening is worth trying first.',
+        cause,
         logPath ? `\nFull details are in the log: ${logPath}` : '',
         '',
         `Error: ${error instanceof Error ? error.message : String(error)}`,
