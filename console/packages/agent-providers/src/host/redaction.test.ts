@@ -124,3 +124,55 @@ it('says how much of a text could still turn into a value', () => {
   // Every token's base64 form starts with that of `x-access-token:`.
   expect(redactions.unfinished('nothing here')).toBe(1);
 });
+
+describe('tokens no exact value catches', () => {
+  // Synthetic: the shape of a GitHub installation token, not a real one.
+  const installation = `ghs_${'A1b2C3d4E5'.repeat(3)}xyz789`;
+
+  it('redacts a GitHub token this process never issued, in each form', () => {
+    const redactions = new Redactions();
+    const [, , basic] = tokenForms(installation);
+
+    expect(redactions.text(`git push https://x-access-token:${installation}@github.com/o/r`)).toBe(
+      'git push https://x-access-token:[REDACTED]@github.com/o/r'
+    );
+    expect(redactions.value({ header: `Basic ${basic}`, n: 1 })).toEqual({
+      header: 'Basic [REDACTED]',
+      n: 1,
+    });
+  });
+
+  it('redacts what is left of a GitHub token cut short', () => {
+    const redactions = new Redactions();
+    expect(redactions.text(`git push https://x-access-token:${installation.slice(0, 20)}…`)).toBe(
+      'git push https://x-access-token:[REDACTED]…'
+    );
+  });
+
+  it('leaves prose that merely starts like a token', () => {
+    const redactions = new Redactions();
+    expect(redactions.text('ghost_writer gh_cli ghs_ab and gho_')).toBe(
+      'ghost_writer gh_cli ghs_ab and gho_'
+    );
+  });
+
+  it('redacts the cut-off start of an issued token at the end of a title', () => {
+    const redactions = new Redactions();
+    const token = 'synthetic-issued-token-with-no-shape-0123456789';
+    redactions.add(token);
+    // How the Claude adapter cuts a command title, through the token.
+    const title = `curl -H "Authorization: Bearer ${token.slice(0, 39)}…`;
+
+    const shown = redactions.value({ title }).title;
+
+    expect(shown).toBe('curl -H "Authorization: Bearer [REDACTED]…');
+    // The same cut without the ellipsis, as OpenCode's.
+    expect(redactions.text(title.slice(0, -1))).toBe('curl -H "Authorization: Bearer [REDACTED]');
+  });
+
+  it('leaves a title whose end shares only a few characters with a token', () => {
+    const redactions = new Redactions();
+    redactions.add('synthetic-issued-token');
+    expect(redactions.text('see the synth…')).toBe('see the synth…');
+  });
+});

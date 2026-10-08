@@ -904,6 +904,7 @@ export async function hostSessionProcess(input: {
   const parent = connectParent(input.port);
   const mcp = await startSessionMcp(parent);
   const redactions = new Redactions();
+  parent.onRedactions((values) => redactions.addListed(values));
   let endpoint: ServiceEndpointServer | null = null;
   try {
     const { grants } = input.services;

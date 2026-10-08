@@ -68,7 +68,28 @@ export function tokenForms(token: string): string[] {
   ];
 }
 
-/** The service tokens a process has handed out, in every form, to scrub wherever it writes. */
+/**
+ * GitHub's token shapes, matched whether or not this process issued the token:
+ * one a sibling session fetched, or fetched before this session resumed or its
+ * host restarted, or cut short in a title, all of which an exact value misses.
+ * Four characters after the prefix tell a cut token from prose.
+ */
+const TOKEN_SHAPES = [
+  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{4,}/g,
+  // `x-access-token:<token>` in base64, as Git sends it and a Git trace shows it.
+  /eC1hY2Nlc3MtdG9rZW46[A-Za-z0-9+/]*={0,2}/g,
+];
+
+const CUT_TAIL_MIN = 8;
+
+function redactShapes(text: string): string {
+  return TOKEN_SHAPES.reduce((output, shape) => output.replace(shape, '[REDACTED]'), text);
+}
+
+/**
+ * The service tokens a process has handed out, in every form, to scrub wherever
+ * it writes, and anything shaped like a GitHub token besides.
+ */
 export class Redactions {
   private readonly values = new Set<string>();
 
@@ -76,12 +97,33 @@ export class Redactions {
     for (const form of tokenForms(token)) this.values.add(form);
   }
 
+  /** Values another holder listed, already in every form: a session takes its host's. */
+  addListed(values: readonly string[]): void {
+    for (const value of values) if (value) this.values.add(value);
+  }
+
   list(): string[] {
     return [...this.values];
   }
 
   text(input: string): string {
-    return this.values.size ? redactText(input, this.list()) : input;
+    if (!this.values.size) return redactShapes(input);
+    return redactShapes(this.cutTail(redactText(input, this.list())));
+  }
+
+  /**
+   * `input` with its end redacted when that end is the start of a value held
+   * here, before a closing ellipsis or not: what a title cut short through a
+   * token leaves, which no exact match finds. Eight characters or more, so
+   * ordinary text that happens to end the way a token begins is left alone.
+   */
+  private cutTail(input: string): string {
+    const ellipsis = input.endsWith('…') ? '…' : '';
+    const body = ellipsis ? input.slice(0, -1) : input;
+    const held = this.unfinished(body);
+    return held >= CUT_TAIL_MIN
+      ? `${body.slice(0, body.length - held)}[REDACTED]${ellipsis}`
+      : input;
   }
 
   /**
@@ -102,10 +144,8 @@ export class Redactions {
 
   /** `input` with every string in it redacted: for JSON values, such as a tool call's arguments. */
   value<T>(input: T): T {
-    if (!this.values.size) return input;
-    const values = this.list();
     const walk = (value: unknown): unknown => {
-      if (typeof value === 'string') return redactText(value, values);
+      if (typeof value === 'string') return this.text(value);
       if (Array.isArray(value)) return value.map(walk);
       if (value !== null && typeof value === 'object')
         return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item)]));
