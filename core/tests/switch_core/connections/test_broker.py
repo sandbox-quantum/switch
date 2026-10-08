@@ -237,7 +237,7 @@ class TestIssue:
         assert {
             tuple(sorted(point.attributes.items())): point.value
             for point in payload.numbers
-        } == {(("outcome", "issued"), ("service", "github")): 1}
+        } == {(("connector", "github"), ("outcome", "issued")): 1}
 
     async def test_a_token_the_vendor_cannot_revoke_is_recorded_without_it(
         self, broker, session_factory, vendor

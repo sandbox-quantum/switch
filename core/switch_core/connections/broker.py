@@ -443,7 +443,7 @@ class ServiceBroker:
             metrics().increment(
                 SERVICE_TOKEN_REQUESTS,
                 {
-                    "service": service if service in self._catalog else "unknown",
+                    "connector": service if service in self._catalog else "unknown",
                     "outcome": outcome,
                 },
             )
