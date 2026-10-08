@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { pickDeeplinkTarget } from './session-deeplink-resolve';
+import { deeplinkDestination, pickDeeplinkTarget } from './session-deeplink-resolve';
 
 type Match = { locationId: string; sessionId: string };
 
@@ -43,5 +43,12 @@ describe('pickDeeplinkTarget', () => {
         () => byRoom
       )
     ).toBe(byRoom);
+  });
+});
+
+describe('deeplinkDestination', () => {
+  it('opens the chat for a room and the transcript without one', () => {
+    expect(deeplinkDestination('room-1')).toBe('chat');
+    expect(deeplinkDestination('')).toBe('transcript');
   });
 });

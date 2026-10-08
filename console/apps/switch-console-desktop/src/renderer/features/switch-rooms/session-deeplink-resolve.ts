@@ -12,3 +12,12 @@ export function pickDeeplinkTarget<T>(
 ): T | null {
   return sessionId ? resolveById() : resolveByRoom();
 }
+
+/**
+ * Where a deeplink opens: a link naming a room opens that room's chat, where
+ * the agent's work shows beside the conversation; one without a room (a
+ * session attending none) opens the session's transcript.
+ */
+export function deeplinkDestination(roomId: string): 'chat' | 'transcript' {
+  return roomId ? 'chat' : 'transcript';
+}
