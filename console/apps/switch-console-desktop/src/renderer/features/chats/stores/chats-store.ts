@@ -135,6 +135,8 @@ export class ChatsStore {
     if (serverId !== this.serverId) return;
     this.timelines.peek(serverId, message.roomId)?.apply(message);
     const chat = this.chats.get(message.roomId);
+    // The feed follows hidden chats too; a message in one is what brings it back.
+    if (!chat && !this.removed.has(message.roomId)) void this.relist(serverId);
     if (chat && (chat.lastMessage === null || chat.lastMessage.seq < message.seq))
       this.chats.set(message.roomId, {
         ...chat,
@@ -145,6 +147,27 @@ export class ChatsStore {
           senderName: message.sender.name,
         },
       });
+  }
+
+  private relisting = false;
+
+  private async relist(serverId: string): Promise<void> {
+    if (this.relisting) return;
+    this.relisting = true;
+    try {
+      const chats = await this.api.list(serverId);
+      if (serverId !== this.serverId) return;
+      runInAction(() => {
+        for (const chat of chats) if (!this.chats.has(chat.roomId)) this.upsert(chat);
+      });
+    } catch (error) {
+      if (serverId !== this.serverId) return;
+      runInAction(() => {
+        this.listError = failureText(error, 'Your chats could not be listed.');
+      });
+    } finally {
+      this.relisting = false;
+    }
   }
 
   remove(roomId: string): void {
