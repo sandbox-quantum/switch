@@ -111,6 +111,8 @@ signals tell it apart, none of them an identifier:
   server Console runs for the user is given Console's answer.
 - **`user_internal_count`** in the daily snapshot: accounts on those domains,
   so a deployment that serves both staff and customers can be split.
+  `user_internal_active_1d` / `_7d` do the same for the active counts, so
+  customer activity is `user_active_*` minus them.
 - Each deployment's `flint.client_id`, for the company's own deployments by
   name.
 
@@ -325,6 +327,8 @@ never invisible.
 | `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
 | `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account |
 | `user_active_7d` | number | same over 7 days |
+| `user_internal_active_1d` | number | of `user_active_1d`, accounts on the company's own email domains |
+| `user_internal_active_7d` | number | same over 7 days |
 | `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
 | `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d` |
 | `chat_identity_active_7d` | number | same over 7 days |

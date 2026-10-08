@@ -154,6 +154,8 @@ _SNAPSHOT_COUNTS = (
     # Switch accounts, not chat identities — see `chat_identity_*` for those.
     "user_active_1d",
     "user_active_7d",
+    "user_internal_active_1d",
+    "user_internal_active_7d",
     "chat_identity_count",
     "chat_identity_active_1d",
     "chat_identity_active_7d",
