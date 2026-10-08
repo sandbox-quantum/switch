@@ -87,7 +87,9 @@ async def connections(
 ) -> dict | JSONResponse:
     """The connections granted to the agent, with each GitHub installation's
     account and the names of the repositories a list grants, read live with
-    the owner's GitHub sign-in."""
+    the owner's GitHub sign-in. A granted installation whose grant no longer
+    holds is listed with `error` in place of `repositories` (and a null
+    `account` when the owner no longer sees it), so the others stay usable."""
     response.headers["Cache-Control"] = "no-store"
     _, github = _hosted_settings(config, request)
     row, grants = await _cloud_grants(session, agent, request.scope["controller"])
@@ -104,25 +106,40 @@ async def connections(
         return _reconnect("The owner must reconnect GitHub.")
     try:
         visible = await github.repositories(saved_github[0]["access_token"])
-        installations = []
-        for grant in github_grant["installations"]:
-            installation = visible_installation(visible, grant["installation_id"])
-            selected = granted_repositories(installation, grant["repositories"])
-            installations.append(
-                {
-                    "installation_id": grant["installation_id"],
-                    "account": installation["account"],
-                    "repositories": "all"
-                    if grant["repositories"] == "all"
-                    else [repo["name"] for repo in selected],
-                }
-            )
     except GitHubAuthorizationError as error:
         return _reconnect(str(error))
     except GitHubUnavailableError as error:
         raise HTTPException(503, str(error)) from None
     except GitHubError as error:
         raise HTTPException(422, str(error)) from None
+    installations: list[dict] = []
+    for grant in github_grant["installations"]:
+        installation_id = grant["installation_id"]
+        account = next(
+            (item["account"] for item in visible if item["id"] == installation_id),
+            None,
+        )
+        try:
+            installation = visible_installation(visible, installation_id)
+            selected = granted_repositories(installation, grant["repositories"])
+        except GitHubError as error:
+            installations.append(
+                {
+                    "installation_id": installation_id,
+                    "account": account,
+                    "error": str(error),
+                }
+            )
+            continue
+        installations.append(
+            {
+                "installation_id": installation_id,
+                "account": account,
+                "repositories": "all"
+                if grant["repositories"] == "all"
+                else [repo["name"] for repo in selected],
+            }
+        )
     return {"connections": [{"slug": "github", "installations": installations}]}
 
 

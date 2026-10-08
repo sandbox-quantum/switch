@@ -166,14 +166,6 @@ export async function withoutHostedGitHubEnvironment(
   return next;
 }
 
-export function githubRedactions(token: string): string[] {
-  return [
-    token,
-    encodeURIComponent(token),
-    Buffer.from(`x-access-token:${token}`).toString('base64'),
-  ];
-}
-
 /**
  * The fields of a Git credential request this helper answers: only `get`,
  * only HTTPS github.com, well formed. Null for anything else.
@@ -206,11 +198,30 @@ export type GitHubInstallation = {
   repositories: 'all' | string[];
 };
 
-const githubInstallationSchema = z.object({
-  installation_id: z.number().int().positive(),
-  account: z.string().min(1),
-  repositories: z.union([z.literal('all'), z.array(z.string().min(1))]),
-});
+/**
+ * A granted installation whose grant no longer holds, with Switch's reason;
+ * `account` is null when the owner no longer sees the installation.
+ */
+export type UnavailableGitHubInstallation = {
+  installation_id: number;
+  account: string | null;
+  error: string;
+};
+
+export type GrantedGitHubInstallation = GitHubInstallation | UnavailableGitHubInstallation;
+
+const githubInstallationSchema = z.union([
+  z.object({
+    installation_id: z.number().int().positive(),
+    account: z.string().min(1),
+    repositories: z.union([z.literal('all'), z.array(z.string().min(1))]),
+  }),
+  z.object({
+    installation_id: z.number().int().positive(),
+    account: z.string().min(1).nullable(),
+    error: z.string().min(1),
+  }),
+]);
 
 const hostedConnectionsSchema = z.object({
   connections: z.array(z.object({ slug: z.string(), installations: z.unknown() })),
@@ -283,24 +294,43 @@ export function repoCommandArgument(args: string[]): string | undefined {
   return undefined;
 }
 
-function grantedAccounts(installations: GitHubInstallation[]): string {
+function label(installation: GrantedGitHubInstallation): string {
+  return installation.account ?? `installation ${installation.installation_id}`;
+}
+
+function grantedAccounts(installations: GrantedGitHubInstallation[]): string {
   return installations.length === 0
     ? 'none'
-    : installations.map((installation) => installation.account).join(', ');
+    : installations
+        .map((installation) =>
+          'error' in installation
+            ? `${label(installation)} (unavailable: ${installation.error})`
+            : installation.account
+        )
+        .join(', ');
 }
 
 /** The granted installation for `owner`, matched as GitHub does, without regard to case. */
 export function installationForOwner(
-  installations: GitHubInstallation[],
+  installations: GrantedGitHubInstallation[],
   owner: string
-): GitHubInstallation | null {
+): GrantedGitHubInstallation | null {
   const wanted = owner.toLowerCase();
   return (
-    installations.find((installation) => installation.account.toLowerCase() === wanted) ?? null
+    installations.find((installation) => installation.account?.toLowerCase() === wanted) ?? null
   );
 }
 
-function notGranted(installations: GitHubInstallation[], owner: string): Error {
+/** `installation`, or the error Switch gave for a grant that no longer holds. */
+export function usableInstallation(installation: GrantedGitHubInstallation): GitHubInstallation {
+  if ('error' in installation)
+    throw new Error(
+      `GitHub access to ${label(installation)} granted to this agent is unavailable: ${installation.error}`
+    );
+  return installation;
+}
+
+function notGranted(installations: GrantedGitHubInstallation[], owner: string): Error {
   return new Error(
     `GitHub account '${owner}' is not granted to this agent. Granted accounts: ${grantedAccounts(installations)}.`
   );
@@ -313,7 +343,7 @@ function notGranted(installations: GitHubInstallation[], owner: string): Error {
  * names the granted accounts.
  */
 export async function selectCliInstallation(input: {
-  installations: GitHubInstallation[];
+  installations: GrantedGitHubInstallation[];
   args: string[];
   ghRepo: string | undefined;
   originUrl: () => Promise<string | null>;
@@ -328,9 +358,9 @@ export async function selectCliInstallation(input: {
   if (owner !== null) {
     const installation = installationForOwner(installations, owner);
     if (installation === null) throw notGranted(installations, owner);
-    return installation;
+    return usableInstallation(installation);
   }
-  if (installations.length === 1) return installations[0]!;
+  if (installations.length === 1) return usableInstallation(installations[0]!);
   throw new Error(
     `Several GitHub accounts are granted to this agent (${grantedAccounts(installations)}); pass -R owner/repo to choose one (or set GH_REPO=owner/repo for a command without -R, such as gh api).`
   );
@@ -353,6 +383,47 @@ async function switchEndpoint(credentialsPath: string): Promise<SwitchEndpoint> 
   )
     throw new Error();
   return { base: endpoint.href.replace(/\/$/, ''), token: env.SWITCH_API_TOKEN };
+}
+
+/**
+ * A call Switch refused: its status, and the `code` and `detail` Switch
+ * gave, which name the reason (an installation not granted, a GitHub
+ * connection the owner must reconnect) and never carry a credential.
+ */
+class SwitchRefusal extends Error {}
+
+const MAX_REFUSAL_DETAIL = 400;
+
+function refusalText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(/[\p{Cc}\p{Cf}\s]+/gu, ' ').trim();
+  if (text === '') return null;
+  return text.length > MAX_REFUSAL_DETAIL ? `${text.slice(0, MAX_REFUSAL_DETAIL)}…` : text;
+}
+
+async function refusal(response: Response): Promise<SwitchRefusal> {
+  let body: unknown = null;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    // Not Switch's JSON error (a proxy page, say): only the status is reported.
+  }
+  const fields = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  const code = refusalText(fields.code);
+  const detail = refusalText(fields.detail);
+  let message = `Switch answered ${response.status}${code ? ` (${code})` : ''}`;
+  if (detail) message += `: ${detail}`;
+  if (code === 'github_reconnect_required')
+    message += " The agent's owner must reconnect GitHub in Switch.";
+  return new SwitchRefusal(message);
+}
+
+function failure(summary: string, error: unknown): Error {
+  return new Error(
+    error instanceof SwitchRefusal
+      ? `${summary}: ${error.message}`
+      : `${summary}. Check the owner’s GitHub connection.`
+  );
 }
 
 /** Calls Switch once, and once more after a pause for a retryable 409 or 503. */
@@ -378,17 +449,14 @@ async function callSwitch(
     await delay(1_000);
     response = await request();
   }
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error();
-  }
+  if (!response.ok) throw await refusal(response);
   return response.json();
 }
 
 /** The GitHub installations granted to the agent whose Switch credentials are at `credentialsPath`. */
 export async function listGitHubInstallations(
   credentialsPath: string
-): Promise<GitHubInstallation[]> {
+): Promise<GrantedGitHubInstallation[]> {
   try {
     const listing = hostedConnectionsSchema.parse(
       await callSwitch(await switchEndpoint(credentialsPath), '/hosted/connections', {
@@ -399,10 +467,8 @@ export async function listGitHubInstallations(
     return github === undefined
       ? []
       : z.array(githubInstallationSchema).parse(github.installations);
-  } catch {
-    throw new Error(
-      'Could not read the GitHub access granted to this agent. Check the owner’s GitHub connection.'
-    );
+  } catch (error) {
+    throw failure('Could not read the GitHub access granted to this agent', error);
   }
 }
 
@@ -429,8 +495,8 @@ export async function renewGitHubCredential(
     )
       throw new Error();
     return credential.token;
-  } catch {
-    throw new Error('Could not renew GitHub access. Check the owner’s GitHub connection.');
+  } catch (error) {
+    throw failure('Could not renew GitHub access', error);
   }
 }
 
@@ -463,7 +529,10 @@ export async function runGitHubCredentialHelper(operation: string | undefined): 
     console.error(`Switch: ${notGranted(installations, owner).message}`);
     return;
   }
-  const token = await renewGitHubCredential(credentialsPath, installation.installation_id);
+  const token = await renewGitHubCredential(
+    credentialsPath,
+    usableInstallation(installation).installation_id
+  );
   process.stdout.write(gitHubCredentialResponse(operation, input, token));
 }
 
@@ -478,10 +547,12 @@ export async function runGitHubList(): Promise<void> {
   }
   for (const installation of installations)
     console.log(
-      `${installation.account}: ${
-        installation.repositories === 'all'
-          ? 'all repositories'
-          : installation.repositories.join(', ')
+      `${label(installation)}: ${
+        'error' in installation
+          ? `unavailable: ${installation.error}`
+          : installation.repositories === 'all'
+            ? 'all repositories'
+            : installation.repositories.join(', ')
       }`
     );
 }

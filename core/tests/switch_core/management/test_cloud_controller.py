@@ -1194,7 +1194,9 @@ class TestConnectionCredentials:
         assert response.json() == {"connections": []}
         cloud.repositories.assert_not_awaited()
 
-    async def test_a_stale_grant_is_listed_as_an_error(self, cloud: Cloud) -> None:
+    async def test_a_stale_grant_is_listed_as_an_error_beside_the_others(
+        self, cloud: Cloud
+    ) -> None:
         owner = await add_member(cloud.factory, "ada")
         await _connect_github(cloud, owner)
         controller = await cloud.cloud_controller(owner)
@@ -1203,8 +1205,41 @@ class TestConnectionCredentials:
 
         response = await self._list(cloud, controller, agent_id)
 
-        assert response.status_code == 422, response.text
-        assert "installation 321" in response.json()["detail"]
+        assert response.status_code == 200, response.text
+        healthy, stale = response.json()["connections"][0]["installations"]
+        assert healthy == {
+            "installation_id": 123,
+            "account": "example",
+            "repositories": ["Example/Project"],
+        }
+        assert set(stale) == {"installation_id", "account", "error"}
+        assert stale["installation_id"] == 321
+        assert stale["account"] is None
+        assert "installation 321" in stale["error"]
+        assert (await self._fetch(cloud, controller, agent_id, 123)).status_code == 200
+
+    async def test_a_grant_the_owner_can_no_longer_push_to_names_its_account(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        controller = await cloud.cloud_controller(owner)
+        agent_id = await self._agent(cloud, controller, connections=[ALL_GRANT])
+        for installation in cloud.repositories.return_value:
+            if installation["id"] == 321:
+                for repo in installation["repositories"]:
+                    repo["permissions"] = {
+                        "push": False,
+                        "maintain": False,
+                        "admin": False,
+                    }
+
+        response = await self._list(cloud, controller, agent_id)
+
+        assert response.status_code == 200, response.text
+        stale = response.json()["connections"][0]["installations"][1]
+        assert stale["account"] == "other"
+        assert "cannot push" in stale["error"]
 
     @pytest.mark.parametrize(
         ("installation_id", "repositories"), [(123, [456]), (321, "all")]

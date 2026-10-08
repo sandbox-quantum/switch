@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type GitHubInstallation,
+  type GrantedGitHubInstallation,
   githubLaunchEnvironment,
-  githubRedactions,
   gitHubCredentialResponse,
   hostedGitHubEnvironment,
   listGitHubInstallations,
@@ -17,10 +17,10 @@ import {
   readGitHubCredential,
   renewGitHubCredential,
   repoArgument,
+  runGitHubList,
   selectCliInstallation,
   validateGitHubCredential,
 } from './hosted-github';
-import { redactHostedText } from './hosted-log';
 
 const roots: string[] = [];
 const token = 'synthetic-github-credential';
@@ -47,9 +47,7 @@ it('provides credentials only for the exact GitHub HTTPS host', () => {
   expect(gitHubCredentialResponse('erase', 'protocol=https\nhost=github.com\n', token)).toBe('');
 });
 
-it('keeps raw and common transport encodings out of redacted output', () => {
-  const secrets = githubRedactions(token);
-  for (const value of secrets) expect(redactHostedText(value, secrets)).toBe('[REDACTED]');
+it('puts no credential in the launch environment', () => {
   expect(JSON.stringify(githubLaunchEnvironment())).not.toContain(token);
 });
 
@@ -182,7 +180,21 @@ const INSTALLATIONS: GitHubInstallation[] = [
   { installation_id: 456, account: 'example-user', repositories: ['example-user/demo'] },
 ];
 
-function listing(installations: GitHubInstallation[] = INSTALLATIONS) {
+const UNAVAILABLE: GrantedGitHubInstallation[] = [
+  ...INSTALLATIONS,
+  {
+    installation_id: 789,
+    account: 'stale-org',
+    error: 'Your GitHub account cannot push to any repository of stale-org.',
+  },
+  {
+    installation_id: 321,
+    account: null,
+    error: 'Your GitHub account no longer has access to GitHub installation 321.',
+  },
+];
+
+function listing(installations: GrantedGitHubInstallation[] = INSTALLATIONS) {
   return { connections: [{ slug: 'github', installations }] };
 }
 
@@ -227,6 +239,77 @@ describe('listing and renewal through Switch', () => {
       'https://switch.example.com/api/agent/hosted/connections',
       expect.objectContaining({ method: 'GET', redirect: 'error' }),
     ]);
+  });
+
+  it('lists a granted installation Switch could not confirm with its reason', async () => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(listing(UNAVAILABLE))))
+    );
+    expect(await listGitHubInstallations(credentials)).toEqual(UNAVAILABLE);
+  });
+
+  it.each([
+    [
+      403,
+      { detail: 'This GitHub installation is not granted to the agent.' },
+      'Could not renew GitHub access: Switch answered 403: This GitHub installation is not granted to the agent.',
+    ],
+    [
+      422,
+      { detail: 'The owner must reconnect GitHub.', code: 'github_reconnect_required' },
+      "Could not renew GitHub access: Switch answered 422 (github_reconnect_required): The owner must reconnect GitHub. The agent's owner must reconnect GitHub in Switch.",
+    ],
+    [
+      409,
+      { detail: 'The agent or its GitHub connection changed.\nPlease retry.' },
+      'Could not renew GitHub access: Switch answered 409: The agent or its GitHub connection changed. Please retry.',
+    ],
+  ])('names the reason Switch gives for refusing with %s', async (status, body, message) => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(body), { status }))
+    );
+    await expect(renewGitHubCredential(credentials, 123)).rejects.toThrow(message);
+  });
+
+  it('names the status, and only the status, when Switch gives no JSON reason', async () => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('<html>remote-secret-body</html>', { status: 503 }))
+    );
+    const failure = listGitHubInstallations(credentials);
+    await expect(failure).rejects.toThrow(
+      'Could not read the GitHub access granted to this agent: Switch answered 503'
+    );
+    await expect(failure).rejects.not.toThrow('remote-secret-body');
+  });
+
+  it('prints each granted account for --list, with the reason for one that is unavailable', async () => {
+    vi.stubEnv(
+      'SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS',
+      await switchCredentials('https://switch.example.com/api/agent')
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(listing(UNAVAILABLE))))
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runGitHubList();
+      expect(log.mock.calls.map(([line]) => line)).toEqual([
+        'acme: all repositories',
+        'example-user: example-user/demo',
+        'stale-org: unavailable: Your GitHub account cannot push to any repository of stale-org.',
+        'installation 321: unavailable: Your GitHub account no longer has access to GitHub installation 321.',
+      ]);
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 
   it('lists nothing when GitHub is not among the grants', async () => {
@@ -376,7 +459,7 @@ describe('selectCliInstallation', () => {
     args?: string[];
     ghRepo?: string;
     origin?: string | null;
-    installations?: GitHubInstallation[];
+    installations?: GrantedGitHubInstallation[];
   }) => {
     const originUrl = vi.fn(async () => input.origin ?? null);
     return {
@@ -440,6 +523,30 @@ describe('selectCliInstallation', () => {
     );
   });
 
+  it("fails with Switch's reason for a granted installation it could not confirm", async () => {
+    await expect(
+      select({ installations: UNAVAILABLE, args: ['pr', 'list', '-R', 'Stale-Org/x'] }).result
+    ).rejects.toThrow(
+      'GitHub access to stale-org granted to this agent is unavailable: Your GitHub account cannot push to any repository of stale-org.'
+    );
+    await expect(select({ installations: [UNAVAILABLE[3]!] }).result).rejects.toThrow(
+      'GitHub access to installation 321 granted to this agent is unavailable'
+    );
+  });
+
+  it('still picks a healthy installation beside one Switch could not confirm', async () => {
+    const { result } = select({ installations: UNAVAILABLE, ghRepo: 'acme/x' });
+    expect((await result).installation_id).toBe(123);
+  });
+
+  it('names an installation Switch could not confirm among the granted accounts', async () => {
+    await expect(
+      select({ installations: UNAVAILABLE, args: ['pr', 'list', '-R', 'other/x'] }).result
+    ).rejects.toThrow(
+      'Granted accounts: acme, example-user, stale-org (unavailable: Your GitHub account cannot push to any repository of stale-org.), installation 321 (unavailable: Your GitHub account no longer has access to GitHub installation 321.).'
+    );
+  });
+
   it('fails when no installation is granted', async () => {
     await expect(select({ installations: [] }).result).rejects.toThrow(
       'No GitHub account is granted to this agent.'
@@ -448,7 +555,7 @@ describe('selectCliInstallation', () => {
 });
 
 describe('the git credential helper against a relay', () => {
-  async function relay(installations: GitHubInstallation[] = INSTALLATIONS) {
+  async function relay(installations: GrantedGitHubInstallation[] = INSTALLATIONS) {
     const requests: { method: string; url: string; body: string; auth: string }[] = [];
     const server = createServer(async (req: IncomingMessage, res) => {
       let body = '';
@@ -526,5 +633,25 @@ describe('the git credential helper against a relay', () => {
       "GitHub account 'other' is not granted to this agent. Granted accounts: acme, example-user."
     );
     expect(requests.map((request) => request.method)).toEqual(['GET']);
+  });
+
+  it("answers nothing for an installation Switch could not confirm, and gives Switch's reason", async () => {
+    const { requests, credentials } = await relay(UNAVAILABLE);
+    const git = await helperGit(credentials);
+    const result = await git('url=https://github.com/stale-org/project.git\n\n');
+    expect(result.code).toBe(1);
+    expect(result.stdout).not.toContain('password=');
+    expect(result.stderr).toContain(
+      'GitHub access to stale-org granted to this agent is unavailable: Your GitHub account cannot push to any repository of stale-org.'
+    );
+    expect(requests.map((request) => request.method)).toEqual(['GET']);
+  });
+
+  it('answers a healthy installation beside one Switch could not confirm', async () => {
+    const { credentials } = await relay(UNAVAILABLE);
+    const git = await helperGit(credentials);
+    const result = await git('url=https://github.com/acme/project.git\n\n');
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`password=${token}-123`);
   });
 });

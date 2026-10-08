@@ -225,7 +225,10 @@ gets an installation token for one granted installation from
 controller acting for the agent (its access token and `X-Switch-Agent-Id`). The token reaches
 the listed repositories, or for `"all"` each repository of the installation the owner can push
 to, with contents and pull request write access. An installation that is not granted is
-refused with 403.
+refused with 403. The listing gives a granted installation whose grant no longer holds (the
+owner no longer sees it or can push to none of its repositories) an `error` in place of
+`repositories`, with a null `account` when the owner no longer sees it; the other
+installations stay usable.
 
 ### Reason codes
 These are the codes from the contract, plus `forbidden`, `invalid_credential`, `enrollment_code_invalid`, `github_reconnect_required`,
