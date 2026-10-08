@@ -364,8 +364,29 @@ class GitHubConnections:
         the App, or None when they no longer reach the installation.
 
         Pages only that installation, and stops once every one of `wanted` is
-        found, so a large installation elsewhere costs nothing.
+        found, so a large installation elsewhere costs nothing. A suspended
+        installation is refused with its own reason, as the full listing
+        passes over one.
         """
+        installation = next(
+            (
+                item
+                for item in await self.pages(
+                    "/user/installations", "installations", token
+                )
+                if isinstance(item, dict) and item.get("id") == installation_id
+            ),
+            None,
+        )
+        if installation is None:
+            return None
+        if installation.get("suspended_at"):
+            account = installation.get("account")
+            login = account.get("login") if isinstance(account, dict) else None
+            raise GitHubError(
+                f"The GitHub App's installation on {login or 'this account'} is "
+                "suspended. Unsuspend it in GitHub's settings to use it."
+            )
         missing = set(wanted)
         found: list[dict] = []
         for page in range(1, INSTALLATION_PAGES + 1):
