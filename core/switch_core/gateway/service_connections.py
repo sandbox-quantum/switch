@@ -27,6 +27,7 @@ from switch_core.connections.broker import (
 )
 from switch_core.connections.loader import CATALOG, AccessLevel
 from switch_core.db.models import Agent, ServiceGrant, User, require_tenant_id
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
@@ -151,8 +152,26 @@ async def list_service_grants(
     return {
         "grants": [_grant_view(broker, agent, grant) for grant in grants],
         "missing": await _missing_grants(session, agent, user, grants),
-        "addressing_open": parse_policy(agent.addressing_policy).is_open(),
+        "addressing_open": await _others_can_address(session, agent, user),
     }
+
+
+async def _others_can_address(session: AsyncSession, agent: Agent, owner: User) -> bool:
+    """Whether someone other than the owner, or another person's agent, may
+    address the agent: what makes its grants usable by them."""
+    policy = parse_policy(agent.addressing_policy)
+    if policy.is_open():
+        return True
+    identities = await ExternalUserStore().get_by_user(session, owner.id)
+    own_agents = await session.scalars(
+        select(Agent.id).where(
+            Agent.tenant_id == require_tenant_id(), Agent.owner_id == owner.id
+        )
+    )
+    return policy.admits_others(
+        owner_identity_ids={identity.id for identity in identities},
+        owner_agent_ids=set(own_agents),
+    )
 
 
 async def _missing_grants(

@@ -609,6 +609,53 @@ class TestRequiresOwnerIdentity:
         assert owner_only_policy([]).requires_owner_identity() is True
 
 
+class TestAdmitsOthers:
+    """Whether anyone but the owner and their own agents can address the agent."""
+
+    OWN = {"owner_identity_ids": {"ext-owner"}, "owner_agent_ids": {"own-agent"}}
+
+    def test_open_policy_admits_others(self) -> None:
+        assert AddressingPolicy().admits_others(**self.OWN) is True
+
+    def test_owner_and_owner_agents_do_not(self) -> None:
+        assert owner_and_owner_agents_policy().admits_others(**self.OWN) is False
+        assert owner_only_policy([]).admits_others(**self.OWN) is False
+        assert owner_only_policy(["own-agent"]).admits_others(**self.OWN) is False
+
+    def test_anyone_in_one_room_does(self) -> None:
+        policy = AddressingPolicy(
+            rules=[
+                *owner_and_owner_agents_policy().rules,
+                AddressingRule(rooms=["room-x"], users="*", agents=[]),
+            ]
+        )
+        assert policy.admits_others(**self.OWN) is True
+
+    def test_another_persons_identity_or_agent_does(self) -> None:
+        assert (
+            AddressingPolicy(
+                rules=[AddressingRule(users=["ext-other"], agents=[])]
+            ).admits_others(**self.OWN)
+            is True
+        )
+        assert owner_only_policy(["their-agent"]).admits_others(**self.OWN) is True
+
+    def test_the_owners_own_identity_does_not(self) -> None:
+        policy = AddressingPolicy(
+            rules=[AddressingRule(users=["ext-owner"], agents=[])]
+        )
+        assert policy.admits_others(**self.OWN) is False
+
+    def test_a_platform_rule_does_not(self) -> None:
+        policy = AddressingPolicy(
+            rules=[
+                *owner_and_owner_agents_policy().rules,
+                *platform_allowed_policy().rules,
+            ]
+        )
+        assert policy.admits_others(**self.OWN) is False
+
+
 class TestValidation:
     def test_rejects_bad_dimension_scalar(self) -> None:
         with pytest.raises(ValidationError):

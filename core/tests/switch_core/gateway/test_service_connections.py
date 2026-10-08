@@ -13,6 +13,11 @@ import pytest
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import (
+    AddressingPolicy,
+    AddressingRule,
+    owner_and_owner_agents_policy,
+)
 from switch_core.connections.adapters import ServiceAdapterError
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
@@ -192,6 +197,43 @@ class TestGrants:
         assert listed.status_code == 200, listed.text
         assert listed.json()["addressing_open"] is True
         assert [g["service"] for g in listed.json()["grants"]] == ["github"]
+
+    @pytest.mark.parametrize(
+        ("policy", "warned"),
+        [
+            (owner_and_owner_agents_policy(), False),
+            (
+                AddressingPolicy(
+                    rules=[
+                        *owner_and_owner_agents_policy().rules,
+                        AddressingRule(rooms=["room-x"], users="*", agents=[]),
+                    ]
+                ),
+                True,
+            ),
+        ],
+        ids=["owner-and-their-agents", "anyone-in-one-room"],
+    )
+    async def test_the_warning_follows_who_else_can_address_the_agent(
+        self, harness: Harness, policy: AddressingPolicy, warned: bool
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(Agent)
+                .where(Agent.id == agent_id)
+                .values(addressing_policy=policy.model_dump())
+            )
+            await session.commit()
+
+        async with harness.client() as client:
+            listed = await client.get(
+                f"/gateway/agents/{agent_id}/service-grants",
+                cookies=cookies_for(owner),
+            )
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["addressing_open"] is warned
 
     async def test_a_cloud_agent_without_its_repository_grant_is_shown_it(
         self, harness: Harness
