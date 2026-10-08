@@ -36,7 +36,7 @@ _UNTOUCHED: dict[str, str | None] = {
     "robot-size-first": f"{_ROBOT}?size=256&seed=x",
     "robot-unseeded": f"{_ROBOT}?size=256",
     # Fits as a robot, but its gaze form would be over the 2048-character limit.
-    "robot-near-limit": f"{_ROBOT}?seed={'a' * 1900}&size=256",
+    "robot-near-limit": f"{_ROBOT}?seed={'a' * 1990}&size=256",
     "none": None,
 }
 

@@ -119,37 +119,21 @@ def validate_icon_url(url: str) -> str:
 _GENERATED_ICON_BASE = "https://api.dicebear.com/10.x/gaze/png"
 _GENERATED_ICON_PIXELS = 256
 # A tenth larger than DiceBear draws it, which leaves the body small in its
-# frame at chat-avatar size. At that scale the arch is the one silhouette a round
-# crop (Discord, Mattermost, Teams) cuts into, so it is left out of the draw.
+# frame at chat-avatar size. At that scale a round crop (Discord, Mattermost,
+# Teams) trims a sliver off the arch silhouette's bottom corners. That was
+# chosen over listing the other shapes: the list made the URL too long for
+# Slack's 255-character `icon_url`, and the only shorter form, a comma list,
+# breaks wherever the query is re-encoded.
 _GENERATED_ICON_SCALE = "1.1"
-_GENERATED_ICON_SHAPES = (
-    "circle",
-    "column",
-    "diamond",
-    "egg",
-    "hexagon",
-    "octagon",
-    "pentagon",
-    "pill",
-    "square",
-    "triangle",
-)
 GENERATED_ICON_CHOICES = 10
 
 
 def generated_icon_url(seed: str) -> str:
-    """The generated icon for `seed`: the same seed always draws the same face.
-
-    Each shape is its own `shapeVariant` parameter rather than one comma list.
-    DiceBear refuses a list whose commas arrive percent-encoded, and anything
-    that re-encodes the query, as the Slack bridge does to add a background,
-    encodes them.
-    """
+    """The generated icon for `seed`: the same seed always draws the same face."""
     query = [
         ("seed", seed),
         ("size", str(_GENERATED_ICON_PIXELS)),
         ("scale", _GENERATED_ICON_SCALE),
-        *(("shapeVariant", shape) for shape in _GENERATED_ICON_SHAPES),
     ]
     return f"{_GENERATED_ICON_BASE}?{urlencode(query, quote_via=quote)}"
 

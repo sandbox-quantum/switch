@@ -154,12 +154,8 @@ def test_generated_icon_is_a_stable_raster_gaze_per_seed() -> None:
     # this same string: change one and the other has to follow, or an agent
     # wears a different face in the app than on the chat platforms.
     url = generated_icon_url("pm-agent")
-    assert url == (
-        "https://api.dicebear.com/10.x/gaze/png?seed=pm-agent&size=256&scale=1.1"
-        "&shapeVariant=circle&shapeVariant=column&shapeVariant=diamond"
-        "&shapeVariant=egg&shapeVariant=hexagon&shapeVariant=octagon"
-        "&shapeVariant=pentagon&shapeVariant=pill&shapeVariant=square"
-        "&shapeVariant=triangle"
+    assert (
+        url == "https://api.dicebear.com/10.x/gaze/png?seed=pm-agent&size=256&scale=1.1"
     )
     assert generated_icon_url("pm-agent") == url
     assert validate_icon_url(url) == url
@@ -219,7 +215,7 @@ def test_a_robot_is_converted_before_it_is_validated() -> None:
 def test_a_robot_whose_gaze_form_is_over_the_limit_is_refused() -> None:
     # The robot fits, but the gaze URL it becomes is longer. Checking before
     # converting would store it over the limit.
-    seed = "a" * 1900
+    seed = "a" * 1990
     robot = f"https://api.dicebear.com/9.x/bottts/png?seed={seed}&size=256"
     assert len(robot) <= MAX_ICON_URL_LENGTH < len(generated_icon_url(seed))
     with pytest.raises(InvalidIconUrl, match="at most"):

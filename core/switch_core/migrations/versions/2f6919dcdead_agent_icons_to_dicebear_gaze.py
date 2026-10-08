@@ -38,13 +38,7 @@ depends_on: str | Sequence[str] | None = None
 _ROBOT = "https://api.dicebear.com/9.x/bottts/png?seed="
 _GAZE = "https://api.dicebear.com/10.x/gaze/png?seed="
 
-_GAZE_QUERY_AFTER_SEED = (
-    "&size=256&scale=1.1"
-    "&shapeVariant=circle&shapeVariant=column&shapeVariant=diamond"
-    "&shapeVariant=egg&shapeVariant=hexagon&shapeVariant=octagon"
-    "&shapeVariant=pentagon&shapeVariant=pill&shapeVariant=square"
-    "&shapeVariant=triangle"
-)
+_GAZE_QUERY_AFTER_SEED = "&size=256&scale=1.1"
 
 # The whole stored URL has to be the generated robot, so the pattern is
 # anchored at both ends and the seed is the only part allowed to vary.

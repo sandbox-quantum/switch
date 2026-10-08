@@ -47,19 +47,16 @@ def test_keeps_the_rest_of_the_url_intact() -> None:
     } == _options(DICEBEAR)
 
 
-def test_writes_the_shapes_as_one_comma_list() -> None:
-    # Spelled out one parameter per shape, a generated icon runs past the 255
-    # characters Slack accepts, and Slack refuses the whole post. DiceBear
-    # draws the same image from the list, which is kept unencoded.
-    adapted = on_slack_background(DICEBEAR)
-    assert "%2C" not in adapted
-    assert parse_qs(urlsplit(adapted).query)["shapeVariant"] == [
-        ",".join(_options(DICEBEAR)["shapeVariant"])
-    ]
+def test_appends_the_background_without_re_encoding_the_query() -> None:
+    # A DiceBear URL someone wrote with a comma list keeps its commas: encoded
+    # as `%2C` the list is refused, and the avatar fails to load.
+    chosen = "https://api.dicebear.com/10.x/gaze/png?seed=x&shapeVariant=circle,square"
+    assert on_slack_background(chosen) == f"{chosen}&backgroundColor={SLACK_SURFACE}"
 
 
 def test_a_generated_icon_for_a_uuid_seed_fits_slacks_limit() -> None:
-    # Console seeds a new agent's icon with a UUID.
+    # Console seeds a new agent's icon with a UUID. Slack refuses the whole
+    # post when its icon URL is longer than 255 characters.
     adapted = on_slack_background(
         generated_icon_url("0faf365b-e9bc-4d38-8438-ab50087065eb")
     )

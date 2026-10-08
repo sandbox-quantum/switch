@@ -30,23 +30,9 @@ const DICEBEAR_STYLE = 'gaze';
 const AVATAR_PIXELS = 256;
 
 /** Drawn a tenth larger than DiceBear's default, which leaves the body small
- * at chat-avatar size. */
+ * at chat-avatar size. Every shape is allowed: listing all but the arch (the
+ * one a round crop trims at this scale) made the URL too long for Slack. */
 const AVATAR_SCALE = '1.1';
-
-/** Every gaze silhouette but the arch: at the scale above it is the one shape
- * a round crop (Discord, Mattermost, Teams) cuts into. */
-const AVATAR_SHAPES = [
-  'circle',
-  'column',
-  'diamond',
-  'egg',
-  'hexagon',
-  'octagon',
-  'pentagon',
-  'pill',
-  'square',
-  'triangle',
-] as const;
 
 /** How many avatars the picker shows at once. */
 export const AVATAR_CHOICE_COUNT = 10;
@@ -54,14 +40,9 @@ export const AVATAR_CHOICE_COUNT = 10;
 /**
  * The avatar URL for an arbitrary seed. Any string works; the same string
  * always draws the same face.
- *
- * Each shape is its own `shapeVariant` parameter rather than one comma list:
- * DiceBear refuses a list whose commas arrive percent-encoded, which is what
- * `URLSearchParams` (and the Switch server's Slack bridge) would make of one.
  */
 export function agentAvatarUrlForSeed(seed: string): string {
   const params = new URLSearchParams({ seed, size: String(AVATAR_PIXELS), scale: AVATAR_SCALE });
-  for (const shape of AVATAR_SHAPES) params.append('shapeVariant', shape);
   return `https://api.dicebear.com/${DICEBEAR_VERSION}/${DICEBEAR_STYLE}/png?${params.toString()}`;
 }
 

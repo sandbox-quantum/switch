@@ -51,17 +51,14 @@ describe('agentAvatarUrlForSeed', () => {
     // same string. Drift between the two and an agent with no icon stored wears
     // one face here and another on every chat platform.
     expect(agentAvatarUrlForSeed('pm-agent')).toBe(
-      'https://api.dicebear.com/10.x/gaze/png?seed=pm-agent&size=256&scale=1.1' +
-        '&shapeVariant=circle&shapeVariant=column&shapeVariant=diamond' +
-        '&shapeVariant=egg&shapeVariant=hexagon&shapeVariant=octagon' +
-        '&shapeVariant=pentagon&shapeVariant=pill&shapeVariant=square' +
-        '&shapeVariant=triangle'
+      'https://api.dicebear.com/10.x/gaze/png?seed=pm-agent&size=256&scale=1.1'
     );
   });
 
-  it('never percent-encodes a comma into the shape list', () => {
-    // DiceBear refuses `shapeVariant=a%2Cb`; the shapes must stay separate.
-    expect(agentAvatarUrlForSeed('worker')).not.toContain('%2C');
+  it('stays short enough for Slack with a UUID seed', () => {
+    // Slack refuses a whole post whose icon URL is over 255 characters, and
+    // the server adds a background parameter of about 25 more on the way.
+    expect(agentAvatarUrlForSeed(crypto.randomUUID()).length).toBeLessThan(200);
   });
 
   it('escapes a seed that would otherwise break the query string', () => {

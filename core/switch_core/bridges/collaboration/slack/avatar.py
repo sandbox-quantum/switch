@@ -14,13 +14,12 @@ guess would be worse than leaving it alone. Such an icon keeps whatever
 background it was authored with, transparent included.
 
 Slack also refuses a post outright when its `icon_url` is too long, so an
-avatar URL that runs over loses the message, not just the picture. A DiceBear
-URL is written as compactly as DiceBear reads it; one that still does not fit
-is not sent, and Slack shows the app's own icon for that post.
+avatar URL that runs over loses the message, not just the picture. One that does
+not fit is not sent, and Slack shows the app's own icon for that post.
 """
 
 import logging
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -41,25 +40,25 @@ _BACKGROUND_PARAM = "backgroundColor"
 def on_slack_background(icon_url: str) -> str:
     """Return `icon_url` drawn on Slack's background, when that is possible.
 
-    A DiceBear URL with no background of its own gains one, and an option it
-    repeats is written once as a comma list, which DiceBear reads as the same
-    image at a fraction of the length. A background chosen deliberately is
-    kept. Any other host is returned untouched.
+    A DiceBear URL with no background of its own gains one. Anything else —
+    another host, or a DiceBear URL whose background was chosen deliberately —
+    is returned untouched.
+
+    The background is appended to the query as it stands rather than the
+    query being rebuilt: re-encoding it would turn a comma list's commas into
+    `%2C`, which DiceBear refuses.
     """
     parts = urlsplit(icon_url)
     if (parts.hostname or "").lower() != _DICEBEAR_HOST:
         return icon_url
 
-    options: dict[str, list[str]] = {}
-    for key, value in parse_qsl(parts.query, keep_blank_values=True):
-        options.setdefault(key, []).append(value)
-    options.setdefault(_BACKGROUND_PARAM, [SLACK_SURFACE])
-    query = urlencode(
-        [(key, ",".join(values)) for key, values in options.items()],
-        safe=",",
-        quote_via=quote,
-    )
-    return urlunsplit(parts._replace(query=query))
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    if any(key == _BACKGROUND_PARAM for key, _ in query):
+        return icon_url
+
+    background = f"{_BACKGROUND_PARAM}={SLACK_SURFACE}"
+    joined = f"{parts.query}&{background}" if parts.query else background
+    return urlunsplit(parts._replace(query=joined))
 
 
 # Oversized icon URLs already reported, so an agent posting every turn does
