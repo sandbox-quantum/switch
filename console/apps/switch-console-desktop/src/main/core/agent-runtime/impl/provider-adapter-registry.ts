@@ -1,11 +1,4 @@
-import {
-  createClaudeAdapter,
-  createCodexAdapter,
-  createAntigravityAdapter,
-  createCursorAdapter,
-  createOpencodeAdapter,
-  type ProviderAdapter,
-} from '@switch-console/agent-providers';
+import { type ProviderAdapter, providerRuntime } from '@switch-console/agent-providers';
 import { log } from '@main/lib/logger';
 import { supportsProviderRuntime } from '@shared/core/agents/agent-provider-config';
 
@@ -43,21 +36,11 @@ class ProviderAdapterRegistry {
       warn: (message: string, meta?: Record<string, unknown>) => log.warn(message, meta),
       error: (message: string, meta?: Record<string, unknown>) => log.error(message, meta),
     };
-    if (providerId === 'opencode') {
-      return createOpencodeAdapter({ logger });
-    }
-    if (providerId === 'claude') {
-      // No executable is configured, so the adapter takes the `claude` on the
-      // session's own PATH — the CLI the user logged in with. It falls back to
-      // the one the SDK bundles, and says so on the transcript when it does.
-      return createClaudeAdapter({ logger });
-    }
-    if (providerId === 'cursor') return createCursorAdapter({ logger });
-    if (providerId === 'antigravity') return createAntigravityAdapter({ logger });
-    if (providerId === 'codex') return createCodexAdapter({ logger });
-    throw new Error(
-      `No provider adapter for '${providerId}'. Supported providers are OpenCode, Claude Code, Codex, Cursor CLI and Antigravity CLI.`
-    );
+    if (!this.supports(providerId))
+      throw new Error(`No provider adapter for '${providerId}': this build has no such provider.`);
+    // No executable is configured, so each adapter takes the CLI on the
+    // session's own PATH — the one the user signed in with.
+    return providerRuntime(providerId).createAdapter({ binaryPath: undefined, logger, skill: '' });
   }
 }
 
