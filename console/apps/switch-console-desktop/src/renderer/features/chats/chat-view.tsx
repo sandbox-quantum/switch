@@ -2,7 +2,7 @@ import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { ChatHeader } from './components/chat-header';
+import { ChatHeaderControls, ChatHeaderTitle } from './components/chat-header';
 import { ChatPanel, useAgentActivities } from './components/chat-panel';
 import { chatsStore } from './stores/chats';
 
@@ -16,13 +16,18 @@ const ChatTitlebar = observer(function ChatTitlebar() {
   return (
     <Titlebar
       leftSlot={
-        <div className="flex min-w-0 flex-1 items-center pr-2">
+        <div className="flex min-w-0 items-center pr-2">
           {chat ? (
-            <ChatHeader serverId={params.serverId} chat={chat} activities={activities} />
+            <ChatHeaderTitle chat={chat} />
           ) : (
             <span className="text-sm text-foreground-muted">Chat</span>
           )}
         </div>
+      }
+      rightSlot={
+        chat && (
+          <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities} />
+        )
       }
     />
   );

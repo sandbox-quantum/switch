@@ -31,7 +31,7 @@ export function Titlebar({ leftSlot, rightSlot }: { leftSlot?: ReactNode; rightS
       <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1">
         {!isLeftOpen && <div className="[-webkit-app-region:no-drag]"></div>}
         <div className="flex w-full items-center justify-between">
-          <div className="flex items-center justify-start [-webkit-app-region:no-drag]">
+          <div className="flex min-w-0 items-center justify-start [-webkit-app-region:no-drag]">
             {!isLeftOpen && (
               <div className="ml-2 flex items-center gap-0.5 [-webkit-app-region:no-drag]">
                 <Tooltip>
