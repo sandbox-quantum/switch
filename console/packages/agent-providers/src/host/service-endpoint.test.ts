@@ -9,11 +9,16 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.close();
 });
 
-async function endpoint(answers: (ServiceTokenAnswer | Error)[], services = ['github']) {
+async function endpoint(
+  answers: (ServiceTokenAnswer | Error)[],
+  services = ['github'],
+  unavailable: string | null = null
+) {
   const asked: HostAsk[] = [];
   const redactions = new Redactions();
   const server = await startServiceEndpoint({
     services,
+    unavailable,
     redactions,
     ask: async (ask) => {
       asked.push(ask);
@@ -65,6 +70,16 @@ describe('the session service endpoint', () => {
     expect(e.asked).toEqual([]);
   });
 
+  it('refuses every request, asking nothing, when the grants could not be read', async () => {
+    const e = await endpoint([], [], 'Switch refused (HTTP 503)');
+    const response = await e.post('github', { rejected: null });
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { error: string }).error).toContain(
+      'Switch refused (HTTP 503)'
+    );
+    expect(e.asked).toEqual([]);
+  });
+
   it("stops serving a service for the session on Switch's final refusal", async () => {
     const e = await endpoint([
       {
@@ -107,6 +122,7 @@ describe('the session service endpoint', () => {
     try {
       const server = await startServiceEndpoint({
         services: ['github'],
+        unavailable: null,
         redactions: new Redactions(),
         ask: () => new Promise(() => {}),
       });

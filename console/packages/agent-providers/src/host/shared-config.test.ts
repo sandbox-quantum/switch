@@ -369,6 +369,29 @@ describe('the skills of the agent’s service grants', () => {
     }
   });
 
+  it('set up the (refusing) GitHub helpers when they could not be loaded', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      const prepared = await prepareSharedConfig(
+        root,
+        await configFor(root, 'claude'),
+        runtime,
+        { grants: [], unavailable: 'Switch refused (HTTP 503).' },
+        {
+          endpoint: { url: 'http://127.0.0.1:5555', token: 'per-session-bearer' },
+          execPath: '/usr/bin/node',
+          entrypoint: '/opt/switch/shared-host.mjs',
+        }
+      );
+      // Git and gh ask the endpoint, which refuses, rather than this machine's sign-in.
+      expect(prepared.input.env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
+      expect(prepared.input.env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
+      expect(await readFile(join(root, 'bin', 'gh'), 'utf8')).toContain('--github-cli');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('set up GitHub for a session with a service endpoint and a GitHub grant', async () => {
     const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
     try {

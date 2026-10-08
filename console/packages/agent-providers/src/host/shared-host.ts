@@ -29,7 +29,12 @@ import {
 import { HostedSession } from './session-host';
 import { startSessionMcp } from './session-mcp';
 import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
-import { prepareSharedConfig, type SessionServices, type SharedHostConfig } from './shared-config';
+import {
+  needsGitHubHelpers,
+  prepareSharedConfig,
+  type SessionServices,
+  type SharedHostConfig,
+} from './shared-config';
 import { SharedState } from './shared-state';
 import {
   instructionsChangedNote,
@@ -907,15 +912,16 @@ export async function hostSessionProcess(input: {
   parent.onRedactions((values) => redactions.addListed(values));
   let endpoint: ServiceEndpointServer | null = null;
   try {
-    const { grants } = input.services;
-    if (grants.some((grant) => grant.service === 'github')) {
+    const { grants, unavailable } = input.services;
+    if (needsGitHubHelpers(input.services)) {
       if (process.platform === 'win32')
         console.warn(
-          `Session ${config.session.sessionId}'s agent has a GitHub grant, but Switch's GitHub helpers do not run on Windows: git and gh use this machine's own sign-in, if any.`
+          `Session ${config.session.sessionId}'s agent ${unavailable === null ? 'has a GitHub grant' : 'may have a GitHub grant'}, but Switch's GitHub helpers do not run on Windows: git and gh use this machine's own sign-in, if any.`
         );
       else
         endpoint = await startServiceEndpoint({
           services: grants.map((grant) => grant.service),
+          unavailable,
           ask: parent.ask,
           redactions,
         });

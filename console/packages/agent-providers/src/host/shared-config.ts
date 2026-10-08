@@ -83,12 +83,24 @@ export type ServiceHelpers = {
   entrypoint: string;
 };
 
+/**
+ * Whether the session gets Switch's Git credential helper and `gh` wrapper:
+ * for a GitHub grant, and when the grants could not be read, so that the
+ * helpers refuse rather than leave git and gh to this machine's own sign-in.
+ */
+export function needsGitHubHelpers(services: SessionServices): boolean {
+  return (
+    services.unavailable !== null || services.grants.some((grant) => grant.service === 'github')
+  );
+}
+
 /** What a session is told when its agent's grants could not be read as it started. */
 export function servicesUnavailableNotice(reason: string): string {
   return (
     `Switch could not load the services granted to this agent when this session started (${reason}). ` +
     "Their skills and access (GitHub's, for one) are not set up in this session, so do not rely on " +
-    'them, and say so when a task needs one. They are loaded again when the session next starts.'
+    "them, and say so when a task needs one: git and gh refuse GitHub through Switch here rather than use this machine's own sign-in. " +
+    'They are loaded again when the session next starts.'
   );
 }
 
@@ -153,7 +165,7 @@ export async function prepareSharedConfig(
     ]
       .filter(Boolean)
       .join('\n\n');
-    if (helpers && services.grants.some((grant) => grant.service === 'github')) {
+    if (helpers && needsGitHubHelpers(services)) {
       const wrapperDirectory = join(root, 'bin');
       await writeGitHubWrapper({
         directory: wrapperDirectory,

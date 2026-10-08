@@ -21,9 +21,14 @@ export type ServiceEndpointServer = { url: string; token: string; close: () => P
  * tokens. A refusal that ends the service's use (the grant gone, the
  * connection changed) is final for the rest of this session: the helper is
  * told Switch's reason, then and every time after.
+ *
+ * With `unavailable`, why the grants could not be read as the session
+ * started, every request is refused with that reason: the helpers stay in
+ * place, so nothing falls through to this machine's own sign-in instead.
  */
 export async function startServiceEndpoint(input: {
   services: string[];
+  unavailable: string | null;
   ask: (ask: HostAsk) => Promise<unknown>;
   redactions: Redactions;
 }): Promise<ServiceEndpointServer> {
@@ -35,6 +40,13 @@ export async function startServiceEndpoint(input: {
     service: string,
     rejected: string | null
   ): Promise<{ status: number; body: Record<string, unknown> }> => {
+    if (input.unavailable !== null)
+      return {
+        status: 403,
+        body: {
+          error: `Switch could not load this agent's grants when this session started (${input.unavailable}), so it hands out no ${service} token in this session. A new session loads them again.`,
+        },
+      };
     if (!input.services.includes(service))
       return {
         status: 404,

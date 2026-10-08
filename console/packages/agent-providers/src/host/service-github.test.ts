@@ -76,6 +76,7 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
     const tokens = ['synthetic-first', 'synthetic-second'];
     const endpoint = await startServiceEndpoint({
       services: ['github'],
+      unavailable: null,
       redactions: new Redactions(),
       ask: async (ask) => {
         asks.push(ask);
