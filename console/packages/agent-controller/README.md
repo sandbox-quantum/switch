@@ -220,9 +220,10 @@ Each agent claims a free user from the pool when it is first started, and runs a
 agent:
 
 - sees only its own directory, always at `/var/lib/switch-agents/<uid>/agent`,
-  whichever user it runs as, with its `home` and its `workspace` in it. A
-  definition with no directory works in that `workspace`. A definition naming a
-  directory outside it is refused (`definition_invalid`);
+  whichever user it runs as, with its `home` and its `workspace` in it. The
+  controller reports that path as its workspaces folder, so an agent created
+  with no directory works in a folder named after it there. A definition naming
+  a directory outside it is refused (`definition_invalid`);
 - cannot see the home directories, the controller's data directory, the other
   agents' processes, or the cloud instance metadata address, and the rest of the
   system is read-only to it;
