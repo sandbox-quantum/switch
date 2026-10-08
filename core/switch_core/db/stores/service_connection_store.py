@@ -16,12 +16,14 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
+    HostedLaunch,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
     TenantMember,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_machine_store import lock_launch
 
 
 class ServiceConnectionBusy(Exception):
@@ -55,6 +57,37 @@ class ServiceConnectionStore:
             if getattr(error.orig, "sqlstate", None) == "55P03":
                 raise ServiceConnectionBusy(
                     "The connection is busy. Please retry."
+                ) from None
+            raise
+
+    async def lock_cloud_launches(self, session: AsyncSession, agent_id: str) -> None:
+        """Hold the agent's cloud launches against a lifecycle change, for this
+        transaction.
+
+        Taken before the connection lock: a lifecycle step holds its launch's
+        lock while it deletes the agent, and the agent's grants with it.
+        """
+        launch_ids = list(
+            await session.scalars(
+                select(HostedLaunch.id)
+                .where(
+                    HostedLaunch.tenant_id == require_tenant_id(),
+                    HostedLaunch.agent_id == agent_id,
+                    HostedLaunch.state != "deleted",
+                )
+                .order_by(HostedLaunch.id)
+            )
+        )
+        if not launch_ids:
+            return
+        await session.execute(text("SET LOCAL lock_timeout = '25s'"))
+        try:
+            for launch_id in launch_ids:
+                await lock_launch(session, launch_id)
+        except DBAPIError as error:
+            if getattr(error.orig, "sqlstate", None) == "55P03":
+                raise ServiceConnectionBusy(
+                    "The agent's cloud launch is busy. Please retry."
                 ) from None
             raise
 

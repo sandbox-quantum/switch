@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
@@ -34,6 +34,7 @@ from switch_core.connections.maintenance import maintain_once
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
+    HostedLaunch,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
@@ -45,6 +46,7 @@ from switch_core.observability.metrics import MetricsRegistry, install, uninstal
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.gateway.agent_route_harness import add_agent
+from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
 STORE = ServiceConnectionStore()
 RESOURCES = {"installation_id": 7, "repository_ids": [70, 71]}
@@ -493,6 +495,88 @@ class TestChecks:
         assert record.permissions == {
             "permissions": {"contents": "read", "pull_requests": "read"}
         }
+
+
+async def _launch(
+    session_factory: async_sessionmaker[AsyncSession],
+    world: World,
+    *,
+    state: str,
+    desired_state: str,
+) -> str:
+    async with session_factory() as session:
+        machine = await seed_machine(
+            session,
+            owner_id=world.owner.id,
+            slot_id="slot-a",
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        launch = await seed_launch(
+            session,
+            machine=machine,
+            request_id=str(uuid.uuid4()),
+            name=world.agent.name,
+            state=state,
+            desired_state=desired_state,
+            revision=1,
+            agent_id=world.agent.id,
+            spec={"installation_id": 7, "repository_id": 70},
+        )
+        await session.commit()
+        return launch.id
+
+
+class TestCloudLaunch:
+    async def test_a_running_cloud_agent_is_issued(
+        self, broker, session_factory
+    ) -> None:
+        world = await _world(session_factory)
+        await _launch(session_factory, world, state="ready", desired_state="running")
+        token = await _issue(broker, session_factory, world.agent.id)
+        assert token.resources == RESOURCES
+
+    @pytest.mark.parametrize(
+        ("state", "desired_state"),
+        [("ready", "stopped"), ("error", "running"), ("deleting", "running")],
+        ids=["stopped", "error", "deleting"],
+    )
+    async def test_a_cloud_agent_whose_launch_is_not_running_is_refused(
+        self, broker, session_factory, vendor, state, desired_state
+    ) -> None:
+        world = await _world(session_factory)
+        await _launch(session_factory, world, state=state, desired_state=desired_state)
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code) == (403, "forbidden")
+        assert "launch is not running" in refused.message
+        assert vendor.issued == []
+        assert await _issuances(session_factory) == []
+
+    async def test_a_launch_stopped_while_issuing_takes_the_token_back(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        launch_id = await _launch(
+            session_factory, world, state="ready", desired_state="running"
+        )
+
+        async def stop_the_launch() -> None:
+            async with session_factory() as session:
+                await session.execute(
+                    update(HostedLaunch)
+                    .where(HostedLaunch.id == launch_id)
+                    .values(desired_state="stopped")
+                )
+                await session.commit()
+
+        vendor.during_issue = stop_the_launch
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert "launch is not running" in refused.message
+        assert vendor.revoked == [vendor.issued[0][1]]
+        assert await _issuances(session_factory) == []
 
 
 class TestRevocation:

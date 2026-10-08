@@ -51,6 +51,7 @@ from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
+    HostedLaunch,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
@@ -308,6 +309,26 @@ class ServiceBroker:
                 "This agent's owner is no longer a member of the workspace.",
                 retryable=False,
             )
+        launches = list(
+            await session.execute(
+                select(HostedLaunch.desired_state, HostedLaunch.state).where(
+                    HostedLaunch.tenant_id == tenant_id,
+                    HostedLaunch.agent_id == agent_id,
+                    HostedLaunch.state != "deleted",
+                )
+            )
+        )
+        if launches and not any(
+            desired == "running" and state not in ("error", "deleting")
+            for desired, state in launches
+        ):
+            raise ServiceError(
+                403,
+                FORBIDDEN,
+                f"Agent {agent.name} is a cloud agent whose launch is not running, "
+                f"so it is issued no {name} token.",
+                retryable=False,
+            )
 
         grant = await (
             self._store.get_grant_to_record if to_record else self._store.get_grant
@@ -481,9 +502,11 @@ class ServiceBroker:
 
         A disconnect or a removed grant takes the same lock, so either it
         commits first, the checks below fail and the token is discarded, or
-        this record commits first and its revocation covers the token.
+        this record commits first and its revocation covers the token. A cloud
+        launch's stop or removal is ordered the same way by its launch lock.
         """
         try:
+            await self._store.lock_cloud_launches(session, decision.agent_id)
             await self._store.lock_connection(
                 session, decision.owner_id, decision.service
             )

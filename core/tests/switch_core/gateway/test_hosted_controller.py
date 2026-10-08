@@ -1640,7 +1640,7 @@ async def test_worker_token_is_revoked_when_authorization_changes_during_issue(
     if change == "revoke_failure":
         github_vendor.revoke_issued = unreachable  # type: ignore[method-assign]
     response = await client.post("/hosted/github-credential")
-    expected = {"stop": 409, "revoke_failure": 409, "relink": 409, "disconnect": 403}
+    expected = {"stop": 403, "revoke_failure": 403, "relink": 409, "disconnect": 403}
     assert response.status_code == expected[change], response.text
     [(_, token)] = github_vendor.issued
     assert token not in response.text

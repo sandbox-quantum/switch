@@ -1157,5 +1157,6 @@ async def test_a_stop_does_not_wait_on_a_refresh_and_takes_back_its_token(
         release.set()
     with pytest.raises(ServiceError) as caught:
         await issuing
-    assert caught.value.code == "internal" and caught.value.retryable
+    # Final, not retryable: the launch it was for is stopped.
+    assert caught.value.code == "forbidden" and not caught.value.retryable
     assert github_vendor.revoked == [github_vendor.issued[0][1]]
