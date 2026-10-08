@@ -35,6 +35,7 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
     HostedLaunch,
+    HostedMachine,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
@@ -525,15 +526,17 @@ async def _launch(
     *,
     state: str,
     desired_state: str,
+    machine_state: str = "ready",
+    machine_desired: str = "running",
 ) -> str:
     async with session_factory() as session:
         machine = await seed_machine(
             session,
             owner_id=world.owner.id,
             slot_id="slot-a",
-            state="ready",
-            desired_state="running",
-            stop_reason=None,
+            state=machine_state,
+            desired_state=machine_desired,
+            stop_reason=None if machine_desired == "running" else "idle",
             revision=1,
             generation=1,
         )
@@ -573,9 +576,48 @@ class TestCloudLaunch:
         await _launch(session_factory, world, state=state, desired_state=desired_state)
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code) == (403, "forbidden")
-        assert "launch is not running" in refused.message
+        assert "launch or machine is not running" in refused.message
         assert vendor.issued == []
         assert await _issuances(session_factory) == []
+
+    @pytest.mark.parametrize(
+        ("machine_state", "machine_desired"),
+        [("ready", "stopped"), ("stopped", "stopped"), ("error", "running")],
+        ids=["stopping", "asleep", "failed"],
+    )
+    async def test_a_cloud_agent_whose_machine_is_not_running_is_refused(
+        self, broker, session_factory, vendor, machine_state, machine_desired
+    ) -> None:
+        world = await _world(session_factory)
+        await _launch(
+            session_factory,
+            world,
+            state="ready",
+            desired_state="running",
+            machine_state=machine_state,
+            machine_desired=machine_desired,
+        )
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code) == (403, "forbidden")
+        assert "launch or machine is not running" in refused.message
+        assert vendor.issued == []
+
+    async def test_a_machine_stopped_after_issuing_has_its_tokens_revoked(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        await _launch(session_factory, world, state="ready", desired_state="running")
+        token = await _issue(broker, session_factory, world.agent.id)
+        async with session_factory() as session:
+            await session.execute(
+                update(HostedMachine).values(
+                    desired_state="stopped", stop_reason="idle"
+                )
+            )
+            await session.commit()
+        async with session_factory() as session:
+            await broker.revoke_pending(session, ())
+        assert vendor.revoked == [token.token]
 
     async def test_a_launch_stopped_while_issuing_takes_the_token_back(
         self, broker, session_factory, vendor
@@ -596,7 +638,7 @@ class TestCloudLaunch:
 
         vendor.during_issue = stop_the_launch
         refused = await _refused(broker, session_factory, world.agent.id)
-        assert "launch is not running" in refused.message
+        assert "launch or machine is not running" in refused.message
         assert vendor.revoked == [vendor.issued[0][1]]
         assert await _issuances(session_factory) == []
 

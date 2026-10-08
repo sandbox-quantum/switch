@@ -149,6 +149,9 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
+        "ix_hosted_launches_agent", "hosted_launches", ["tenant_id", "agent_id"]
+    )
+    op.create_index(
         "ix_service_grants_connection",
         "service_grants",
         ["tenant_id", "owner_id", "service"],
@@ -210,5 +213,6 @@ def downgrade() -> None:
     )
     op.drop_table("service_token_issuances")
     op.drop_index("ix_service_grants_connection", table_name="service_grants")
+    op.drop_index("ix_hosted_launches_agent", table_name="hosted_launches")
     op.drop_table("service_grants")
     op.drop_table("service_connections")

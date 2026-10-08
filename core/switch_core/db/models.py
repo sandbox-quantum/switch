@@ -426,6 +426,8 @@ class HostedLaunch(TenantScoped, Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "id"),
         UniqueConstraint("tenant_id", "name", name="uq_hosted_launch_name"),
+        # Every service token issue and revocation pass looks an agent's launch up.
+        Index("ix_hosted_launches_agent", "tenant_id", "agent_id"),
         CheckConstraint(
             "state IN ('queued', 'provisioning', 'ready', 'error', 'stopping', 'stopped', 'deleting', 'deleted')",
             name="ck_hosted_launch_state",

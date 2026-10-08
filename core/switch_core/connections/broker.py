@@ -51,7 +51,6 @@ from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
-    HostedLaunch,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
@@ -62,6 +61,8 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import (
     ServiceConnectionBusy,
     ServiceConnectionStore,
+    cloud_launch_running,
+    cloud_launches_of,
 )
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
@@ -327,24 +328,13 @@ class ServiceBroker:
                 "This agent's owner is no longer a member of the workspace.",
                 retryable=False,
             )
-        launches = list(
-            await session.execute(
-                select(HostedLaunch.desired_state, HostedLaunch.state).where(
-                    HostedLaunch.tenant_id == tenant_id,
-                    HostedLaunch.agent_id == agent_id,
-                    HostedLaunch.state != "deleted",
-                )
-            )
-        )
-        if launches and not any(
-            desired == "running" and state not in ("error", "deleting")
-            for desired, state in launches
-        ):
+        launches = list(await session.execute(cloud_launches_of(agent_id)))
+        if launches and not any(cloud_launch_running(*launch) for launch in launches):
             raise ServiceError(
                 403,
                 FORBIDDEN,
-                f"Agent {agent.name} is a cloud agent whose launch is not running, "
-                f"so it is issued no {name} token.",
+                f"Agent {agent.name} is a cloud agent whose launch or machine is not "
+                f"running, so it is issued no {name} token.",
                 retryable=False,
             )
 
