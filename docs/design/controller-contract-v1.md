@@ -198,7 +198,7 @@ Claim leases last 5 minutes and are renewed by `progress`. Every operation reach
 
 ### Service tokens (Core)
 
-Service tokens are issued on agent routes (§7), so one route serves a controller acting as an agent and a directly connected agent using its own key. Implementation: `service-connections-v1.md`.
+Service tokens are issued on agent routes (§7), so one route serves a controller acting as an agent and a directly connected agent using its own key. Implementation: `service-connections-v1.md`, and `service-connections-v2.md` for services beyond GitHub.
 
 ```
 GET /agents/{agent_id}/service-grants                auth: controller token acting as the agent (§7), or the agent's own key
@@ -235,7 +235,7 @@ type ServiceResources =
 ```
 
 - **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
-- **When grants are read.** The agent's host reads its grants when a session starts, and a change applies from the next session. No stream frame announces a change: a removed grant fails the next fetch, and a GitHub token already issued is revoked at once.
+- **When grants are read.** The agent's host reads its grants when a session starts, and a change applies from the next session. No stream frame announces a change: a removed grant fails the next fetch, and a GitHub token already issued is revoked at once. A pass-through service's token is its owner's own and cannot be revoked alone, so a removed grant stops a running session by `use_until`, within the hour, and a token already handed out stays valid at the vendor until it expires.
 - **`credential.revoked` is not used for grants.** It revokes the controller itself.
 - **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper. A service with `mcp_servers` never reaches the CLI at all: the session's host serves each of them to the CLI on loopback, behind a key made for the run, asks for the token on each call and calls the vendor itself.
 

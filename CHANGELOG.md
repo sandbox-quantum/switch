@@ -57,6 +57,32 @@ version of their own to them without also giving them a release of their own.
   for agents and their controllers, and `/gateway/service-connections` and
   `/gateway/agents/{id}/service-grants` for people. Pushes, pull requests and
   comments made this way appear as the GitHub App.
+- **Agents can use their owner's Jira, through the Atlassian connection.** A
+  person connects Atlassian from Switch Console; nothing needs configuring on
+  the server, which registers its own OAuth client with Atlassian on the first
+  connect. An agent's owner then turns Atlassian on for it: on or off, at the
+  level the person consented to when connecting (read, or read and write).
+  The agent acts as its owner in Jira, through Atlassian's MCP tools, which its
+  sessions call without the token ever reaching the coding tool. Only Jira's
+  scopes are asked for. Connecting from the web dashboard is not possible yet.
+- **Services beyond GitHub from the catalog.** A catalog entry can name the
+  generic OAuth/MCP adapter: its sign-in, the vendor's MCP servers, and whether
+  its tokens are minted per issue or the owner's own, passed through with a
+  lifetime cap. A service whose OAuth client the operator registers reads it
+  from the JSON file `<PREFIX>_CLIENT_CONFIG_PATH` names; unset, the service is
+  shown as not set up on this server, and set but unusable, the server does not
+  start. Connecting goes through `/gateway/service-connections/{service}/flows`.
+- **`DISABLED_SERVICES`** switches catalog services off on a server, as JSON
+  mapping each to the reason people are shown (an empty one reads "Switched off
+  on this server."). A switched-off service is listed with its reason and
+  cannot be connected, granted or issued a token; disconnecting still works.
+- The service token answer gains `expires_in` and `use_until`: a holder asks
+  again by `use_until`, at most an hour away, whatever the vendor's token
+  lifetime. The grants answer gains each service's `mcp_servers`. Both are
+  additive.
+- The dashboard's Service access shows services such as Atlassian as on/off
+  switches beside GitHub's grant, and says why one cannot be turned on: not
+  connected yet, or switched off or not set up on this server.
 - **`GITHUB_APP_CONFIG_PATH` and `GITHUB_APP_PRIVATE_KEY_PATH`** configure the
   GitHub App (both or neither; the key path absolute).
   `SERVICE_TOKEN_RETENTION_DAYS` (default 30) sets how long issue records are
@@ -90,6 +116,10 @@ version of their own to them without also giving them a release of their own.
   expire, within the hour, as nothing is left to revoke them.
 - The machine agent list sends cloud workers an empty `skills` list: sessions
   now take skills from their agent's grants.
+- A new migration adds `service_oauth_clients`, where the server keeps the
+  OAuth clients it registered with vendors such as Atlassian, encrypted with
+  the server keys and re-encrypted when they rotate. Downgrading it drops the
+  table; the server registers again on the next connect.
 
 #### Deprecated
 - `HOSTED_GITHUB_CONFIG_PATH` and the hosted controller file's
@@ -1440,6 +1470,20 @@ version of their own to them without also giving them a release of their own.
   is told when its agent's grants could not be loaded.
 - A server's Connections show a connection that needs reconnecting, and why a
   service cannot be granted on that server.
+- **Connect Atlassian, and any other service the server offers, from
+  Connections.** Signing in happens in your browser and comes back to Switch
+  Console, which confirms the account with you before the server keeps it.
+  Atlassian takes a sign-in back only on a few fixed ports on your computer;
+  if all are in use, Switch Console says which to free.
+- **Agents granted a service such as Atlassian get its tools in every
+  session,** as an MCP server of their own beside Switch's. The session host
+  calls the service with your token, which never reaches the coding tool, and
+  scrubs it from everything the session records. A service that is slow or
+  failing shows as one failed server, and Switch's tools keep working. Only
+  text from a service's tools is passed on; anything else is replaced by a
+  line saying what was left out.
+- Service access in an agent's settings shows services such as Atlassian as an
+  on/off switch, saying what on means and how soon off takes effect.
 
 #### Changed
 - Cloud agents clone their repository with a token from the agent's GitHub
@@ -1451,6 +1495,8 @@ version of their own to them without also giving them a release of their own.
   timeout, or `off` to never park.
 
 #### Fixed
+- A session's helper endpoint for GitHub no longer hands out the token of any
+  other service the agent was granted.
 - **A Claude Code session is no longer parked while its background subagents
   are still working.** The idle timer only looked at turns, so a session whose
   turn had ended with subagents still running in the background was stopped
