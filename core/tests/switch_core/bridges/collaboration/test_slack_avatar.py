@@ -120,6 +120,10 @@ def test_hands_slack_an_icon_url_up_to_its_limit() -> None:
     assert slack_icon_argument(at_limit, "worker") == at_limit
 
 
+def test_sends_no_icon_url_when_there_is_no_icon() -> None:
+    assert slack_icon_argument(None, "worker") is None
+
+
 def test_sends_no_icon_url_past_slacks_limit() -> None:
     # Slack refuses the post itself over this, so the message would be lost.
     over = "https://example.com/" + "a" * (SLACK_ICON_URL_MAX - 19)

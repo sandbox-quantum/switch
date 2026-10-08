@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
-from switch_core.agent_icon import generated_icon_url, initials_icon_url
+from switch_core.agent_icon import (
+    generated_icon_url,
+    initials_icon_url,
+    is_third_party_avatar,
+)
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.install import InboundWebhook, WebhookRequest
 from switch_core.bridges.collaboration.models import (
@@ -82,7 +86,7 @@ class AgentRendering:
 
     field_label: str
     body_label: str
-    icon_url: str
+    icon_url: str | None
 
 
 @dataclass(frozen=True)
@@ -573,9 +577,13 @@ class PlatformAdapter(ABC):
         self._max_attachment_bytes = 20 * 1024 * 1024
         # Set by `set_webhook_url` for an adapter that receives webhooks.
         self.webhook_url: str | None = None
+        self._third_party_avatars = True
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
+
+    def set_third_party_avatars(self, enabled: bool) -> None:
+        self._third_party_avatars = enabled
 
     @classmethod
     def describe(cls, key: str) -> MessagingPlatform:
@@ -1880,17 +1888,20 @@ class PlatformAdapter(ABC):
                 icon_url = initials_icon_url(agent_name)
             else:
                 icon_url = found.icon_url or generated_icon_url(agent_name)
+        withheld = not self._third_party_avatars and is_third_party_avatar(icon_url)
         return AgentRendering(
             field_label=label,
             body_label=self.escape_label_for_body(label),
-            icon_url=self.adapt_icon_url(icon_url),
+            icon_url=None if withheld else self.adapt_icon_url(icon_url),
         )
 
-    async def agent_icon_url(self, agent_name: str) -> str:
+    async def agent_icon_url(self, agent_name: str) -> str | None:
         """The icon URL to render for an agent on this platform.
 
         Adapters call this wherever they need a per-message avatar: the agent's
-        own icon when it has one, otherwise this platform's existing default."""
+        own icon when it has one, otherwise this platform's existing default.
+        None when third-party avatars are off and the agent has no icon of
+        its own, so the platform draws its own default."""
         return (await self.agent_rendering(agent_name)).icon_url
 
     async def agent_label_for_body(self, agent_name: str) -> str:
