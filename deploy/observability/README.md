@@ -46,8 +46,9 @@ done
 
 **Histogram panels need two things, not one.** Request latency, delivery lag,
 database query duration, pool hold and wait time (`switch.db.pool.hold.duration`,
-`switch.db.pool.wait.duration`), platform call duration and the agent buffer's
-scan length and duration are OTLP histograms, and the
+`switch.db.pool.wait.duration`), platform call duration, the agent buffer's
+scan length and duration, and garbage-collection pauses
+(`switch.runtime.gc_pause`) are OTLP histograms, and the
 `p95:`/`p99:` queries here assume the collector exports them to Datadog as
 *distributions*. Check the collector's
 histogram mode — in the older `histograms` mode they arrive as separate
@@ -58,8 +59,8 @@ side rather than the collector's: **percentile aggregations are off by default
 on a distribution metric and are billed separately.** Enable them per metric in
 Metrics Summary, and add the tag each panel groups by to that metric's
 configured tag set (`route` for requests, `operation` for database queries and
-the agent buffer, `caller` for pool hold time but not wait time, `bridge` and
-`platform` for bridge calls), or
+the agent buffer, `caller` for pool hold time but not wait time, `generation` for
+garbage-collection pauses, `bridge` and `platform` for bridge calls), or
 `p95: … by {…}` returns nothing on a fresh account. Empty is the honest outcome either way; a panel is never silently
 switched to a different statistic.
 

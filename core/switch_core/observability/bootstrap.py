@@ -56,6 +56,7 @@ from switch_core.observability.otlp import OtlpClient, OtlpResource
 from switch_core.observability.pool import PoolStats
 from switch_core.observability.runtime import (
     EventLoopLag,
+    GcPauses,
     RuntimeMetrics,
     log_unreadable_sources,
 )
@@ -107,12 +108,15 @@ class Observability:
     _tasks: list[asyncio.Task[None]]
     _http_client: httpx.AsyncClient | None
     _log_handler: OtlpLogHandler | None
+    _gc_pauses: GcPauses | None
 
     async def aclose(self) -> None:
         # Detached first, so shutdown logging is not queued for an exporter
         # about to stop draining it.
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
+        if self._gc_pauses is not None:
+            self._gc_pauses.uninstall()
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -202,6 +206,7 @@ def start_observability(
             _tasks=tasks,
             _http_client=None,
             _log_handler=None,
+            _gc_pauses=None,
         )
 
     registry = MetricsRegistry()
@@ -209,7 +214,9 @@ def start_observability(
     registry.increment(RUNTIME_STARTS, {})
 
     monitor.install(registry)
-    RuntimeMetrics(lag).install(registry)
+    gc_pauses = GcPauses()
+    gc_pauses.install()
+    RuntimeMetrics(lag, gc_pauses).install(registry)
     registry.register_observer(_state_readings(probes))
     log_unreadable_sources()
 
@@ -288,4 +295,5 @@ def start_observability(
         _tasks=tasks,
         _http_client=http_client,
         _log_handler=log_handler,
+        _gc_pauses=gc_pauses,
     )
