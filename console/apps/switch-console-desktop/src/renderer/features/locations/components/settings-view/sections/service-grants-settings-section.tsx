@@ -56,7 +56,6 @@ export function ServiceGrantsSettingsSection({
   return (
     <ServiceGrantsRow
       workspaceId={agent.workspaceId as string}
-      serverId={agent.serverId as string}
       agentId={agent.switchAgentId as string}
       agentName={agent.name}
       cloud={false}
@@ -70,13 +69,11 @@ export function ServiceGrantsSettingsSection({
  */
 export function ServiceGrantsRow({
   workspaceId,
-  serverId,
   agentId,
   agentName,
   cloud,
 }: {
   workspaceId: string;
-  serverId: string;
   /** The agent's id in Switch. */
   agentId: string;
   agentName: string;
@@ -91,9 +88,10 @@ export function ServiceGrantsRow({
     queryFn: () => rpc.workspaces.getServiceGrants({ workspaceId, agentId }),
     retry: false,
   });
+  // The agent's workspace, not whichever one is active on its server.
   const github = useQuery({
-    queryKey: ['cloud-agent-github', serverId],
-    queryFn: () => rpc.switchServers.getGitHubConnection(serverId),
+    queryKey: ['workspace-github', workspaceId],
+    queryFn: () => rpc.workspaces.getGitHubConnection(workspaceId),
     retry: false,
   });
 
@@ -116,8 +114,14 @@ export function ServiceGrantsRow({
         <Spinner /> Loading service access…
       </p>
     );
-  // Only the agent's owner sees its grants; anyone else is answered as if it had none.
-  if (grants.isError) return null;
+  if (grants.isError)
+    return (
+      <span className="text-xs text-destructive">
+        {failureText(grants.error, 'Could not load service access.')}
+      </span>
+    );
+  // Only the agent's owner sees its grants; anyone else is shown nothing.
+  if (grants.data === null) return null;
 
   const githubGrant = grants.data.grants.find((grant) => grant.service === 'github') ?? null;
   return (

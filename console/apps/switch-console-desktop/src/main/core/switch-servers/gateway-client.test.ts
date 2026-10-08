@@ -1206,6 +1206,33 @@ describe('GitHub connection transport', () => {
     fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
     await expect(servesServiceConnections(SERVER)).rejects.toThrow();
   });
+  it("reads someone else's agent's grants as none, and any other failure as one", async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Agent not found."}', { status: 404 }));
+    expect(await fetchServiceGrants(SERVER, 'theirs')).toBeNull();
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(fetchServiceGrants(SERVER, 'mine')).rejects.toMatchObject({ status: 500 });
+  });
+  it('keeps the reason code and whether a retry can help from a coded refusal', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'The connection is busy. Please retry.',
+          code: 'internal',
+          retryable: true,
+        }),
+        { status: 503 }
+      )
+    );
+    await expect(
+      setServiceGrant(SERVER, 'agent', 'github', { access: 'read', resources: {} })
+    ).rejects.toMatchObject({
+      status: 503,
+      detail: 'The connection is busy. Please retry.',
+      code: 'internal',
+      retryable: true,
+    });
+  });
   it("reads, sets and removes an agent's service grants", async () => {
     const listed = {
       grants: [
@@ -1224,7 +1251,7 @@ describe('GitHub connection transport', () => {
       addressing_open: true,
     };
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(listed)));
-    expect((await fetchServiceGrants(SERVER, 'agent 1')).grants[0]?.summary).toBe(
+    expect((await fetchServiceGrants(SERVER, 'agent 1'))?.grants[0]?.summary).toBe(
       listed.grants[0]!.summary
     );
     expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(

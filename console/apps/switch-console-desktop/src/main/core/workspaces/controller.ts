@@ -42,6 +42,7 @@ import {
   type TemplateVisibility,
   updateAddressingPolicy,
   fetchServiceGrants,
+  getGitHubConnection,
   setServiceGrant,
   removeServiceGrant,
   updateCanManageAgents,
@@ -637,11 +638,21 @@ export const workspacesController = createRPCController({
   ownsOwnerAddressedAgent: (workspaceId: string): Promise<boolean> =>
     withWorkspaceSession(workspaceId, ownsOwnerAddressedAgent),
 
-  /** The agent's service grants, any it works without, and whether anyone can address it. */
-  getServiceGrants: (params: { workspaceId: string; agentId: string }): Promise<ServiceGrants> =>
+  /**
+   * The agent's service grants, any it works without, and whether anyone can
+   * address it; null when it is not the signed-in person's agent.
+   */
+  getServiceGrants: (params: {
+    workspaceId: string;
+    agentId: string;
+  }): Promise<ServiceGrants | null> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchServiceGrants(server, params.agentId)
     ),
+
+  /** The signed-in person's GitHub link in this workspace and the repositories it reaches. */
+  getGitHubConnection: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, getGitHubConnection),
 
   /** Create or replace the agent's grant on a service; owner only. Resolves to a warning or null. */
   setServiceGrant: (params: {

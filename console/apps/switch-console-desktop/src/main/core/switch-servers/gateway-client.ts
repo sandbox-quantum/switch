@@ -166,7 +166,10 @@ export class GatewayError extends Error {
     readonly code?: string,
     /** The response body as it came, for a caller that reads an envelope other
      * than FastAPI's (agent management answers `{"error": {...}}`). */
-    readonly body?: string
+    readonly body?: string,
+    /** Whether the refusal says a retry can succeed, from a body such as
+     * `{"detail": …, "code": …, "retryable": true}`. Absent when it does not say. */
+    readonly retryable?: boolean
   ) {
     super(message);
     this.name = 'GatewayError';
@@ -329,6 +332,17 @@ export async function gatewayRequest(
   return response;
 }
 
+/** The `retryable` beside `detail` in a coded refusal, or undefined without one. */
+function parseErrorRetryable(body: string): boolean | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as { retryable?: unknown };
+    return typeof parsed.retryable === 'boolean' ? parsed.retryable : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function gatewayFetch(
   server: SwitchServer,
   path: string,
@@ -346,7 +360,8 @@ export async function gatewayFetch(
       response.status,
       parseErrorDetail(body),
       parseErrorCode(body),
-      body
+      body,
+      parseErrorRetryable(body)
     );
   }
   return response;
@@ -2474,15 +2489,24 @@ export async function servesServiceConnections(server: SwitchServer): Promise<bo
 }
 
 /** An agent's service grants, with any it works without; its owner's alone to read. */
+/**
+ * The agent's grants, or null when the gateway answers that it is not the
+ * signed-in person's agent (a 404): only its owner sees them. Any other
+ * failure is thrown, for the caller to show.
+ */
 export async function fetchServiceGrants(
   server: SwitchServer,
   agentId: string
-): Promise<ServiceGrants> {
-  const response = await gatewayFetch(
-    server,
-    `/agents/${encodeURIComponent(agentId)}/service-grants`,
-    { authenticated: true }
-  );
+): Promise<ServiceGrants | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/service-grants`, {
+      authenticated: true,
+    });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
   return serviceGrantsSchema.parse(await response.json());
 }
 
