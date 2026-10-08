@@ -77,7 +77,8 @@ version of their own to them without also giving them a release of their own.
   agent works in (as a grant), and live tokens. A connection that cannot be
   read is skipped and logged, and its owner connects GitHub again. So is a
   second person linked to the same GitHub account as someone else: they must
-  connect a different GitHub account. A workspace whose move fails is logged
+  connect a different GitHub account, or the first must disconnect theirs. A
+  workspace whose move fails is logged
   and tried again at the next start; the others still move. The old tables are
   left as they were, but nothing is written back to them: after rolling back
   to the previous release, people connect GitHub again (GitHub renews sign-ins
@@ -85,7 +86,8 @@ version of their own to them without also giving them a release of their own.
   disconnects and removed grants made on this release do not carry back.
   Rolling back means downgrading this release's migrations, which drops the
   service connection, grant and token record tables and everything made in
-  them on this release.
+  them on this release. Tokens already handed out then stay valid until they
+  expire, within the hour, as nothing is left to revoke them.
 - The machine agent list sends cloud workers an empty `skills` list: sessions
   now take skills from their agent's grants.
 
