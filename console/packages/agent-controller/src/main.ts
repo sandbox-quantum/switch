@@ -440,9 +440,7 @@ async function runCommand(args: string[]): Promise<number> {
         dataDir,
         // Each agent sees its own directory at the same path: an agent named
         // no directory works in a folder of its own there.
-        workspacesFor: separateUsers
-          ? () => unitAgentRoot(separateUsers)
-          : serverWorkspacesDir,
+        workspacesFor: separateUsers ? () => unitAgentRoot(separateUsers) : serverWorkspacesDir,
         version: VERSION,
         now: Date.now,
         random: Math.random,
