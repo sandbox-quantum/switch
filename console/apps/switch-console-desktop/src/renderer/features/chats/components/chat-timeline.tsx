@@ -5,12 +5,14 @@ import { Fragment, type ReactNode } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
+import { agentInitials } from '@shared/core/agents/agent-avatar';
 import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
 import { chatAgentLabel } from '@shared/core/chats/chats';
 import type { TurnActivity } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
+import { chatsStore } from '../stores/chats';
 import { ChatMarkdown } from '../ui/chat-markdown';
 import { ChatActivityBlock } from './chat-activity-block';
 import { ChatAttachments } from './chat-attachments';
@@ -35,9 +37,26 @@ function Separator({ children }: { children: ReactNode }) {
   );
 }
 
+function isBridged(message: ChatMessage): boolean {
+  return message.source !== 'console' && message.source !== 'switch';
+}
+
 function sourceLabel(message: ChatMessage): string {
-  if (message.source === 'console' || message.source === 'switch') return message.sender.name;
+  if (!isBridged(message)) return message.sender.name;
   return `${message.sender.name} · from ${bridgePlatformLabel(message.source)}`;
+}
+
+/** Another person's initials disc: people have no picture in Switch. */
+function PersonAvatar({ name }: { name: string }) {
+  return (
+    <span
+      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-[11px] font-medium text-foreground"
+      title={name}
+      aria-hidden
+    >
+      {agentInitials(name)}
+    </span>
+  );
 }
 
 function scrollToMessage(messageId: string): void {
@@ -102,6 +121,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     }
   const agentOf = (agentId: string | null) => agents.find((agent) => agent.id === agentId) ?? null;
   const find = (messageId: string) => timeline.byId(messageId);
+  const myUserId = chatsStore.userId;
   let previous: Date | null = null;
   return (
     <div className="flex flex-col gap-5">
@@ -127,10 +147,11 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const chip = threadChip(message, find);
         const turns = turnsByMessage.get(message.messageId) ?? [];
         const agent = agentOf(message.sender.agentId);
+        const mine = message.sender.userId !== null && message.sender.userId === myUserId;
         return (
           <Fragment key={message.messageId}>
             {separator}
-            {message.sender.kind === 'human' ? (
+            {message.sender.kind === 'human' && mine ? (
               <div
                 id={messageAnchorId(message.messageId)}
                 className="group/row flex flex-col items-end gap-1"
@@ -151,6 +172,33 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   {sourceLabel(message)}
                   {turns.some(({ turn }) => turn.status === 'queued') && ' · queued'}
                 </span>
+              </div>
+            ) : message.sender.kind === 'human' ? (
+              <div id={messageAnchorId(message.messageId)} className="group/row flex gap-3">
+                <PersonAvatar name={message.sender.name} />
+                <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
+                  {chip && <ThreadChipButton chip={chip} />}
+                  <span className="flex items-center gap-1.5 text-xs">
+                    <span className="font-medium text-foreground-muted">{message.sender.name}</span>
+                    {isBridged(message) && (
+                      <span className="rounded bg-background-1 px-1.5 py-px text-[10px] text-foreground-passive">
+                        {bridgePlatformLabel(message.source)}
+                      </span>
+                    )}
+                  </span>
+                  <div className="min-w-0 rounded-2xl bg-background-1 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
+                    {message.body}
+                  </div>
+                  <ChatAttachments
+                    serverId={serverId}
+                    roomId={timeline.roomId}
+                    attachments={message.attachments}
+                  />
+                  {turns.some(({ turn }) => turn.status === 'queued') && (
+                    <span className="text-xs text-foreground-passive">queued</span>
+                  )}
+                </div>
+                <ReplyButton onReply={() => onReply(message)} />
               </div>
             ) : message.sender.kind === 'agent' ? (
               <div id={messageAnchorId(message.messageId)} className="group/row flex gap-3">
