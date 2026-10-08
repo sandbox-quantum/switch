@@ -411,9 +411,8 @@ pnpm run lint
   rather than reading the log itself, and no log content may enter a telemetry payload.
 - **Telemetry consent is a gate, not a preference.** Anything that would send usage data
   must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
-  emission and send nothing when it returns false. Do not read `telemetry.enabled` from
-  settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
-  cache the answer across a send, since the user can revoke it at any time. Consent off
+  emission and send nothing when it returns false. Do not read the setting anywhere else,
+  and do not cache the answer across a send, since the user can revoke it at any time. Consent off
   means **no request is made at all**, not a request whose result is discarded.
 - **The answer reaches the managed server too, and never by omission.** "Share usage
   data" is one decision covering this app and a Switch server it runs, so `startStack`
@@ -426,10 +425,11 @@ pnpm run lint
   a restart offered, never applied by restarting the user's server for them. Whether it
   is out of step is read off the running container, not inferred from what we last wrote —
   and a host that cannot be read is reported as unknown, never as agreeing.
-- **The toggle defaults to off.** The payload carries a random per-install id, which makes
-  it pseudonymous personal data under GDPR/nFADP; an opt-out default does not cover that.
-  Flipping the default back to on is a product decision that requires the id to go first,
-  not a code change.
+- **The toggle defaults to on (opt-out).** A non-dismissible first-run notice says what is
+  shared and carries the off switch (`docs/TELEMETRY.md`, "Consent"). The payload still
+  carries a random per-install id, which makes it pseudonymous personal data under
+  GDPR/nFADP. Whether an opt-out default covers that is an open question for whoever owns
+  privacy; do not add anything identifying to the payload while it is open.
 - **What a telemetry payload may contain.** Add an event only by adding it to the closed
   catalogue in `src/main/core/telemetry/events.ts`: its property types are literal unions,
   numbers and booleans, and `TELEMETRY_EVENT_PROPERTIES` names the same fields as data, which
@@ -592,8 +592,8 @@ and durable command receipts across redeployment.
 - Access mounted locations through `asMounted(getLocationStore(id))`, not inline guards.
 - Session selectors live in `src/renderer/features/sessions/stores/session-selectors.ts`.
 - Location selectors live in `src/renderer/features/locations/stores/location-selectors.ts`.
-- For provider changes, update shared provider metadata, SDK host env passthrough if needed,
-  hook/plugin integrations, renderer assumptions, and tests for non-standard behavior.
+- For provider changes, update shared provider metadata, the provider's SDK adapter, SDK host
+  env passthrough if needed, renderer assumptions, and tests for non-standard behavior.
 - For MCP changes, keep canonical data in shared types and adapt provider formats at edges.
 - Run the local merge gate before merging:
 
@@ -613,8 +613,8 @@ pnpm run test
   mirror to match. `provider-argv-parity.test.ts` pins Codex's.
 - **The Switch skill every session receives** lives in
   `packages/plugins/src/switch-skill/SKILL.md`, the one copy Console pushes to
-  every host (system context for Claude Code, Cursor and Antigravity; a
-  `SKILL.md` for Codex and OpenCode). A change to how agents interact with Switch
+  every host (system context for Claude Code, Cursor and Antigravity; developer
+  instructions for Codex; a `SKILL.md` for OpenCode). A change to how agents interact with Switch
   — MCP tools, in-room commands, room workflow — updates it.
 - Provider detection lives in `src/main/core/dependencies/` (`dependency-managers.ts`,
   `registry.ts`), with remote detection in `remote-dependency-manager.ts`.
@@ -652,8 +652,8 @@ pnpm run test
   `~/.codex` — config, auth, sessions — alone. It is written without `$` or `%`
   because the install runner's shell may be either PowerShell or cmd.exe, and
   each would expand one of them before `powershell -c` ran.
-- An auto-approving Codex session launches with `-c approval_policy="never"` and
-  nothing else. The sandbox is deliberately **not** overridden: "Bypass
+- An auto-approving Codex session opens its app-server thread with
+  `approvalPolicy: 'never'` and nothing else. The sandbox is deliberately **not** overridden: "Bypass
   permissions" promises unattended approvals, not unattended filesystem and
   network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
   stands. See `packages/plugins/src/agents/impl/codex/index.ts`.

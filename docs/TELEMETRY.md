@@ -109,15 +109,15 @@ id, no IP field, no Switch identity.
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `success` / `failure` |
 | `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
-| `setting_changed` | `setting_key`, one of exactly 15: `theme`, `notifications`, `terminal`, `defaultAgent`, `sessions`, `location`, `localLocation`, `openIn`, `interface`, `browser`, `browserPreview`, `changesViewMode`, `remote`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
+| `setting_changed` | `setting_key`, one of exactly 12: `localLocation`, `sessions`, `defaultAgent`, `notifications`, `theme`, `openIn`, `interface`, `browserPreview`, `browser`, `changesViewMode`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
 | `search_performed` | `status`: `ok` / `recents` / `query-too-short` / `failed` · `result_count`: `0`, `3`, `17`. **The query is never sent.** |
 
 **Navigation and onboarding**
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | `view_id`, one of exactly 10: `home`, `location`, `session`, `room`, `settings`, `server`, `serverAgents`, `serverRooms`, `remoteHosts`, `remoteHost` |
-| `command_executed` | `command_id`, one of 28 known commands: `app.settings`, `app.newSession`, `app.addServer`, `app.toggleTheme`, `session.newTerminal`, `session.gitPush`, … · `invoked_by`: `palette` / `shortcut` |
+| `view_opened` | `view_id`, one of exactly 17: `home`, `location`, `session`, `cloudSession`, `managedAgent`, `room`, `settings`, `server`, `serverAgents`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture` |
+| `command_executed` | `command_id`, one of exactly 9: `app.settings`, `app.newLocation`, `app.addServer`, `app.toggleTheme`, `app.navigateBack`, `app.navigateForward`, `session.pin`, `session.nextSession`, `session.prevSession` · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |
 | `onboarding_checklist_dismissed` | *(no fields)* |

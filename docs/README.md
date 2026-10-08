@@ -5,7 +5,7 @@ Two sets of documents, with different owners and different audiences.
 ## `official/`
 
 The reader-facing Switch documentation, published at
-[docs.flintai.dev](https://docs.flintai.dev). It is written in
+[docs.switchagents.ai](https://docs.switchagents.ai). It is written in
 [`sandbox-quantum/docs`](https://github.com/sandbox-quantum/docs) as Mintlify MDX
 and converted to Markdown here so that agents working in this repository can read
 what users are told.

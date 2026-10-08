@@ -2,8 +2,8 @@ import skill from './SKILL.md';
 
 /**
  * The Switch room-workflow skill every session is given, as a skill file:
- * frontmatter and body. Codex and OpenCode load it from a skills directory
- * under the name `switch`, which must match the frontmatter's `name`.
+ * frontmatter and body. OpenCode loads it from a skills directory under the
+ * name `switch`, which must match the frontmatter's `name`.
  */
 export const SWITCH_SKILL_FILE: string = skill;
 

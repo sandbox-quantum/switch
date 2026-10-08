@@ -669,9 +669,9 @@ class TestAntigravityKnownAgent:
         text = AntigravityKnownAgent.start_session_instructions(
             options, agent, "hub", None
         )
-        assert "Antigravity CLI" in text
-        assert "`agy`" in text
-        assert "local session" in text
+        assert "`antigravity-acp --login`" in text
+        assert "advanced settings" not in text
+        assert "start a session" in text
         assert "antigravity.test" in text
 
 
@@ -696,6 +696,7 @@ class TestCursorKnownAgent:
         agent = _agent_named("cursor.test")
         assert CursorKnownAgent.connect_command(options, agent, "hub", None) is None
         text = CursorKnownAgent.start_session_instructions(options, agent, "hub", None)
-        assert "Cursor CLI ACP" in text
-        assert "local session" in text
+        assert "`agent login`" in text
+        assert "advanced settings" not in text
+        assert "start a session" in text
         assert "cursor.test" in text

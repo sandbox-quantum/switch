@@ -671,9 +671,10 @@ class AntigravityKnownAgent(KnownAgent):
     ) -> str | None:
         prefix = f"{owner_handle} — " if owner_handle else ""
         return (
-            f"{prefix}open **{agent.name}** in Switch Console, enable the Antigravity CLI "
-            f"runtime in its advanced settings, and start a local session in **{room_name}**. "
-            "Sign in with `agy` first if you have not already."
+            f"{prefix}open **{agent.name}** in Switch Console and start a session for it "
+            f"in **{room_name}**. Antigravity signs in separately from `agy`: run "
+            "`antigravity-acp --login` on the machine the agent runs on first if you "
+            "have not already."
         )
 
 
@@ -732,9 +733,9 @@ class CursorKnownAgent(KnownAgent):
     ) -> str | None:
         prefix = f"{owner_handle} — " if owner_handle else ""
         return (
-            f"{prefix}open **{agent.name}** in Switch Console, enable the Cursor CLI ACP "
-            f"runtime in its advanced settings, and start a local session in **{room_name}**. "
-            "Sign in with `agent` first if you have not already."
+            f"{prefix}open **{agent.name}** in Switch Console and start a session for it "
+            f"in **{room_name}**. Run `agent login` on the machine the agent runs on "
+            "first if you have not signed in to Cursor there."
         )
 
 
