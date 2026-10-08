@@ -45,8 +45,11 @@ class FakeSocket {
   }
 }
 
+const clock = { now: 0 };
+
 function setup() {
   FakeSocket.opened = [];
+  clock.now = 0;
   const emitted: UserChangesEvent[] = [];
   const timers: { fn: () => void; ms: number }[] = [];
   const deps: UserChangesDeps = {
@@ -63,6 +66,8 @@ function setup() {
       return timers.length as unknown as ReturnType<typeof setTimeout>;
     },
     clearTimer: () => {},
+    now: () => clock.now,
+    random: () => 0.999,
   };
   return { service: createUserChangesService(deps), emitted, timers };
 }
@@ -145,6 +150,29 @@ describe('user changes', () => {
     timers.at(-1)!.fn();
     await tick();
     expect(FakeSocket.opened).toHaveLength(3);
+  });
+
+  it('retries at least every 5 s for two minutes after a known server goes away', async () => {
+    const { service, timers } = setup();
+    service.watch('s1');
+    await tick();
+    FakeSocket.opened[0].fire('open');
+    FakeSocket.opened[0].frame('hello', { kinds: ['machine'], ping_interval_s: 25 });
+    FakeSocket.opened[0].fire('close', { code: 1012 });
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      clock.now += 5_000;
+      const retry = timers.at(-1)!;
+      expect(retry.ms).toBeLessThanOrEqual(5_000);
+      retry.fn();
+      await tick();
+      FakeSocket.opened.at(-1)!.fire('close', { code: 1006 });
+    }
+    // Past the window, the usual back-off grows again.
+    clock.now += 2 * 60_000;
+    timers.at(-1)!.fn();
+    await tick();
+    FakeSocket.opened.at(-1)!.fire('close', { code: 1006 });
+    expect(timers.at(-1)!.ms).toBeGreaterThan(5_000);
   });
 
   it('closes the socket when the last watcher goes', async () => {

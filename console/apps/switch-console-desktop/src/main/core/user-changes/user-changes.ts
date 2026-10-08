@@ -26,6 +26,13 @@ const MIN_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 60_000;
 /** Back-off after a handshake that never opened: likely a server without the socket. */
 const UNSUPPORTED_RETRY_MS = 5 * 60_000;
+/**
+ * A server that has said hello and goes away is most likely restarting, which
+ * takes about half a minute: for this long, retry at least every
+ * `RESTART_RETRY_MS`, so the socket is back within seconds of the server.
+ */
+const RESTART_WINDOW_MS = 2 * 60_000;
+const RESTART_RETRY_MS = 5_000;
 /** Pings missed before the socket is taken for dead and opened again. */
 const MISSED_PINGS = 3;
 
@@ -37,6 +44,9 @@ export type UserChangesDeps = {
   emit: typeof events.emit;
   setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
+  now: () => number;
+  /** In [0, 1), to spread the retries of many Consoles. */
+  random: () => number;
 };
 
 const defaultDeps: UserChangesDeps = {
@@ -48,6 +58,8 @@ const defaultDeps: UserChangesDeps = {
   emit: (...args) => events.emit(...args),
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: (timer) => clearTimeout(timer),
+  now: () => Date.now(),
+  random: () => Math.random(),
 };
 
 class ServerSocket {
@@ -55,6 +67,8 @@ class ServerSocket {
   live = false;
   /** This server has said hello at least once, so it has the socket. */
   private supported = false;
+  /** When the socket last went away, while it has not come back. */
+  private downSince: number | null = null;
   private socket: WebSocket | null = null;
   private retryMs = MIN_RETRY_MS;
   private retry: ReturnType<typeof setTimeout> | null = null;
@@ -105,6 +119,7 @@ class ServerSocket {
     socket.addEventListener('close', (event) => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.downSince ??= this.deps.now();
       if (this.watchdog) this.deps.clearTimer(this.watchdog);
       this.setDown();
       // A handshake that never opened, on a server that has never said hello,
@@ -129,6 +144,7 @@ class ServerSocket {
         const hello = frame.data as unknown as Hello;
         this.retryMs = MIN_RETRY_MS;
         this.supported = true;
+        this.downSince = null;
         this.live = true;
         this.arm(socket, hello.ping_interval_s);
         this.deps.emit(userChangesChannel, {
@@ -174,6 +190,11 @@ class ServerSocket {
 
   private schedule(ms: number, why: string): void {
     if (this.stopped) return;
+    const restarting =
+      this.supported &&
+      this.downSince !== null &&
+      this.deps.now() - this.downSince < RESTART_WINDOW_MS;
+    if (restarting) ms = Math.min(ms, RESTART_RETRY_MS) * (0.5 + this.deps.random() / 2);
     log.debug(`Change socket for server ${this.serverId} ${why}; retrying in ${ms} ms`);
     this.retry = this.deps.setTimer(() => {
       this.retry = null;
