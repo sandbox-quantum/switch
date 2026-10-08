@@ -19,12 +19,11 @@ from switch_core.gateway.known_agents import (
     provider_known_agent,
 )
 from switch_core.gateway.provider_connections import OtherProvider
+from switch_core.gateway.providers import router as providers_router
 from switch_core.management.advanced_config import (
-    advanced_config_schema,
     provider_fields,
     validate_advanced_config,
 )
-from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.schemas import DefinitionV1
 from switch_core.management.service import _known_agent_registration
 from switch_core.providers import registry
@@ -37,6 +36,7 @@ from switch_core.providers.registry import (
     agent_providers,
     provider_ids,
 )
+from switch_core.providers.schema import advanced_config_schema
 
 
 def test_ids_known_agent_types_and_connector_types_are_unique() -> None:
@@ -139,7 +139,7 @@ class TestANewProvider:
         self, new_provider: AgentProvider
     ) -> None:
         app = FastAPI()
-        app.include_router(gateway_router, prefix="/gateway/management")
+        app.include_router(providers_router, prefix="/gateway")
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="u")
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

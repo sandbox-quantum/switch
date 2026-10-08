@@ -7,12 +7,9 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from switch_core.management.advanced_config import (
-    advanced_config_schema,
-    providers_schema,
-    validate_advanced_config,
-)
+from switch_core.management.advanced_config import validate_advanced_config
 from switch_core.management.schemas import DefinitionV1
+from switch_core.providers.schema import advanced_config_schema, providers_schema
 
 
 def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:

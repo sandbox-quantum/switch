@@ -169,7 +169,10 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 - `POST   /gateway/management/operations` and `GET /gateway/management/operations?controller_id=`.
 - `GET    /gateway/management/advanced-config` returns each provider's advanced-configuration
   schema, `{"providers": {"claude": {"fields": [...]}, "codex": ..., "opencode": ...,
-  "cursor": {"fields": []}, "antigravity": {"fields": []}}}` (see Advanced configuration below).
+  "cursor": {"fields": []}, "antigravity": {"fields": []}}}` (see Advanced configuration below),
+  and `GET /gateway/management/providers` the providers in order, each with its label and the
+  same fields. These two are served whether or not agent management is on: Switch Console
+  builds the advanced-configuration form of the agents it runs itself from them too.
 
 **Placement checks** run on create, adopt and move, and on a change to `running`. Each failure returns `409` with a reason:
 - `controller_revoked`
@@ -203,8 +206,11 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
 Switch Console offers for its own agents. The server owns one fixed schema per provider
 (`management/advanced_config.py`), checks every create and update against it whatever
 machine runs the agent, and serves it at `GET /gateway/management/advanced-config` and
-through the `get_advanced_config(provider)` agent operation. Controllers report nothing
-about settings; they apply what they are given.
+through the `get_advanced_config(provider)` agent operation. Switch Console and the
+controller hold no copy of the fields; their provider plugins only apply values, by key.
+Controllers report nothing about settings; they apply what they are given, and report
+`definition_invalid` for a key their build does not apply or a value of a shape it cannot
+apply, rather than starting the agent without it.
 
 - Each served field is `{key, label, type, help, placeholder, options, catalogue}`. `type`
   is `text` or `textarea` (a string), `number` (finite), `boolean`, `list` (strings) or

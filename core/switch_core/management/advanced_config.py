@@ -1,11 +1,12 @@
-"""How a definition's "Advanced configuration" is checked and served.
+"""How a definition's "Advanced configuration" is checked.
 
 The fields each provider takes are declared with the provider, in
 `switch_core.providers.registry` (`switch_core.providers.advanced_fields` holds
 the field model): every definition is checked against them whatever machine
-runs the agent, and `GET /gateway/management/providers`,
-`GET /gateway/management/advanced-config` and the `get_advanced_config` agent
-operation serve them so a client can build its form from them.
+runs the agent. `switch_core.providers.schema` serves them, at
+`GET /gateway/management/providers` and `GET /gateway/management/advanced-config`,
+and the `get_advanced_config` agent operation, so a client can build its form
+from them.
 
 An advanced config is a JSON object keyed by field. A field that is not set is
 left out, never sent as null, "" or [].
@@ -17,7 +18,7 @@ import math
 from typing import Any
 
 from switch_core.providers.advanced_fields import AdvancedField
-from switch_core.providers.registry import agent_provider, agent_providers
+from switch_core.providers.registry import agent_provider
 
 MAX_KEYS = 32
 MAX_STRING_CHARS = 4096
@@ -29,34 +30,6 @@ def provider_fields(provider: str) -> list[dict[str, Any]]:
     """The provider's fields as served. Raises ValueError for a provider
     Switch does not run."""
     return [field.wire() for field in agent_provider(provider).advanced_fields]
-
-
-def advanced_config_schema() -> dict[str, Any]:
-    """Every provider's fields, as `GET /gateway/management/advanced-config`
-    serves them."""
-    return {
-        "providers": {
-            provider.id: {
-                "fields": [field.wire() for field in provider.advanced_fields]
-            }
-            for provider in agent_providers()
-        }
-    }
-
-
-def providers_schema() -> dict[str, Any]:
-    """Every provider a definition can name, in the order a client offers
-    them, as `GET /gateway/management/providers` serves them."""
-    return {
-        "providers": [
-            {
-                "id": provider.id,
-                "label": provider.label,
-                "advanced_fields": [field.wire() for field in provider.advanced_fields],
-            }
-            for provider in agent_providers()
-        ]
-    }
 
 
 def _value_problem(field: AdvancedField, value: Any) -> str | None:

@@ -61,6 +61,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
+from switch_core.gateway.providers import router as providers_router
 from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.errors import ManagementError
@@ -208,6 +209,7 @@ def build_harness(
 
     agent_app = FastAPI()
     gateway_app = FastAPI()
+    gateway_app.include_router(providers_router)
     management.install(
         agent_bridge_app=agent_app, gateway_app=gateway_app, protocol=protocol
     )

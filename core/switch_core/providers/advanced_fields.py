@@ -1,11 +1,11 @@
 """The settings a managed agent of each provider may carry, its "Advanced configuration".
 
-Each field is a key, a label and a type a client can build a form from. The
-fields, labels and help mirror the advanced forms Switch Console offers for its
-own agents (Claude Code's subagent fields, the Codex profile and OpenCode
-settings in `console/packages/plugins`). Each provider in
-`switch_core.providers.registry` names its fields; a provider with none has an
-empty tuple.
+Each field is a key, a label and a type a client can build a form from. These
+are the only definitions of them: Switch Console builds the advanced form of
+every agent, its own and managed ones, from what the server serves, and its
+provider plugins only apply the values, by key, when a session launches. Each
+provider in `switch_core.providers.registry` names its fields; a provider with
+none has an empty tuple.
 
 `model` and the instructions are not here: they are top-level definition fields.
 A `select` field's served options start with `{"value": "", "label": <unset
