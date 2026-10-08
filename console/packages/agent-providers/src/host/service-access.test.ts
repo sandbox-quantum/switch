@@ -14,7 +14,7 @@ describe("a token's expiry", () => {
     const fetchImpl = vi.fn(
       async () =>
         new Response(
-          JSON.stringify({ token: 'ghs_synthetic0123456789', expires_at: '2026-10-08T13:00:00Z' }),
+          JSON.stringify({ token: 'synthetic-service-token', expires_at: '2026-10-08T13:00:00Z' }),
           { status: 200, headers }
         )
     ) as unknown as typeof fetch;
