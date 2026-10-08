@@ -6,6 +6,8 @@ import { FOLLOW_BOTTOM_THRESHOLD_PX, isAtBottom } from './follow-bottom';
 
 type MessageScrollerContextValue = {
   viewportRef: React.RefObject<HTMLDivElement | null>;
+  viewport: HTMLDivElement | null;
+  setViewport: (viewport: HTMLDivElement | null) => void;
   followingRef: React.RefObject<boolean>;
   atBottom: boolean;
   setAtBottom: (atBottom: boolean) => void;
@@ -33,6 +35,10 @@ function useMessageScroller(): { isAtBottom: boolean; scrollToEnd: () => void } 
 
 function MessageScroller({ className, ...props }: React.ComponentProps<'div'>) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
+  // The viewport is also held as state because the content's layout effect
+  // runs before the enclosing viewport's ref is attached on mount: reading the
+  // ref there finds null, and nothing would ever stick to the bottom.
+  const [viewport, setViewport] = React.useState<HTMLDivElement | null>(null);
   const followingRef = React.useRef(true);
   const [atBottom, setAtBottom] = React.useState(true);
 
@@ -45,8 +51,16 @@ function MessageScroller({ className, ...props }: React.ComponentProps<'div'>) {
   }, []);
 
   const value = React.useMemo(
-    () => ({ viewportRef, followingRef, atBottom, setAtBottom, scrollToEnd }),
-    [atBottom, scrollToEnd]
+    () => ({
+      viewportRef,
+      viewport,
+      setViewport,
+      followingRef,
+      atBottom,
+      setAtBottom,
+      scrollToEnd,
+    }),
+    [viewport, atBottom, scrollToEnd]
   );
 
   return (
@@ -65,7 +79,14 @@ function MessageScroller({ className, ...props }: React.ComponentProps<'div'>) {
 }
 
 function MessageScrollerViewport({ className, onScroll, ...props }: React.ComponentProps<'div'>) {
-  const { viewportRef, followingRef, setAtBottom } = useMessageScrollerContext();
+  const { viewportRef, setViewport, followingRef, setAtBottom } = useMessageScrollerContext();
+  const attach = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      viewportRef.current = node;
+      setViewport(node);
+    },
+    [viewportRef, setViewport]
+  );
 
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const atEnd = isAtBottom(event.currentTarget, FOLLOW_BOTTOM_THRESHOLD_PX);
@@ -82,18 +103,17 @@ function MessageScrollerViewport({ className, onScroll, ...props }: React.Compon
         className
       )}
       {...props}
-      ref={viewportRef}
+      ref={attach}
       onScroll={handleScroll}
     />
   );
 }
 
 function MessageScrollerContent({ className, ...props }: React.ComponentProps<'div'>) {
-  const { viewportRef, followingRef } = useMessageScrollerContext();
+  const { viewport, followingRef } = useMessageScrollerContext();
   const contentRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useLayoutEffect(() => {
-    const viewport = viewportRef.current;
     const content = contentRef.current;
     if (!viewport || !content) return;
 
@@ -107,7 +127,7 @@ function MessageScrollerContent({ className, ...props }: React.ComponentProps<'d
     observer.observe(content);
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [viewportRef, followingRef]);
+  }, [viewport, followingRef]);
 
   return (
     <div
