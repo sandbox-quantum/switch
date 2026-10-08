@@ -57,6 +57,17 @@ import {
   secretStoreFor,
 } from './secrets';
 import {
+  assertControllerCanRunSeparateUsers,
+  DEFAULT_AGENT_USERS,
+  findSeparateUsersConfig,
+  installSeparateUsers,
+  loadSeparateUsersConfig,
+  MAX_AGENT_USERS,
+  type SeparateUsersConfig,
+  separateUserNames,
+  uninstallSeparateUsers,
+} from './separate-users';
+import {
   installService,
   LAUNCHD_FINAL_EXIT_CODES,
   restartService,
@@ -65,6 +76,7 @@ import {
 } from './service';
 import { contractPlatform, mapAgentProcess, PathProviderLocator } from './status';
 import { ControllerStore } from './store';
+import { SystemdRuntime, systemctl } from './systemd-runtime';
 import { installPrefix, isNewer, latestRelease, releasesRepository } from './update';
 
 export const VERSION: string = packageJson.version;
@@ -84,8 +96,10 @@ Commands:
       at most 500 characters, editable later in the gateway).
   run [--data-dir <dir>] [--shared-host-bundle <path>]
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
-      [--credential-stdin]
+      [--credential-stdin] [--agent-runtime default|separate-user]
       Run the agents assigned to this machine and report their status.
+      --agent-runtime separate-user runs every agent as a Linux user of its
+      own, as set up by install-service --separate-users.
       --controller-id and --server adopt an identity enrolled elsewhere when
       the data directory holds none, and move the same identity to a new
       server URL when it holds that one. --credential-stdin reads the
@@ -103,6 +117,17 @@ Commands:
       that may pass. It keeps the PATH of the shell that installed it.
   uninstall-service [--data-dir <dir>]
       Stop the service and remove it. The enrollment and data are kept.
+  install-service --separate-users [--user <name>] [--data-dir <dir>]
+      [--env-file <path>] [--agents-dir <dir>] [--agent-users <n>]
+      As root, once (Linux with systemd and polkit): run every agent as a
+      Linux user of its own, seeing only its own directory. Makes <n> agent
+      users (default 16), a unit template for them, a polkit rule that lets
+      the controller start only those units, and runs the controller as a
+      system service of --user (default: the user who ran sudo). Node and the
+      controller must be installed system-wide. Run it again to change it.
+  uninstall-service --separate-users [--user <name>]
+      As root: stop the controller and its agents, and remove what the setup
+      made. The agents' directories are kept.
   doctor [--data-dir <dir>] [--shared-host-bundle <path>]
       Check this machine can run agents: Node, enrollment, the credential, the
       server, the provider CLIs and their sign-in, the service, and updates.
@@ -308,10 +333,14 @@ async function runCommand(args: string[]): Promise<number> {
       'credential-stdin': { type: 'boolean' },
       'env-file': { type: 'string' },
       launchd: { type: 'boolean' },
+      'agent-runtime': { type: 'string' },
     },
     strict: true,
   });
   assertSupportedPlatform(process.platform);
+  const agentRuntime = values['agent-runtime'] ?? 'default';
+  if (agentRuntime !== 'default' && agentRuntime !== 'separate-user')
+    throw new UsageError('--agent-runtime must be default or separate-user.');
   // Before anything reads the environment: the agents inherit it.
   const fromFile = values['env-file'] ? await readEnvFile(resolve(values['env-file'])) : {};
   Object.assign(process.env, fromFile);
@@ -329,6 +358,16 @@ async function runCommand(args: string[]): Promise<number> {
     : null;
   const sharedHostBundle = bundlePath(values['shared-host-bundle']);
   const { dataDir, layout, store, secrets: fileSecrets } = await openState(values['data-dir']);
+  let separateUsers: SeparateUsersConfig | null = null;
+  if (agentRuntime === 'separate-user') {
+    try {
+      separateUsers = await loadSeparateUsersConfig(currentUid(), dataDir);
+      assertControllerCanRunSeparateUsers(separateUsers);
+    } catch (error) {
+      store.close();
+      throw error;
+    }
+  }
   const secrets =
     credential === null
       ? fileSecrets
@@ -373,17 +412,26 @@ async function runCommand(args: string[]): Promise<number> {
         store,
         secrets,
         runtime: (openStream, workspaces) =>
-          new AgentRuntimes(
-            new InProcessRuntime({
-              layout,
-              workspaces,
-              bundlePath: sharedHostBundle,
-              openStream,
-              log,
-              crashBackoffMs: 2_000,
-            }),
-            new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
-          ),
+          separateUsers
+            ? new SystemdRuntime({
+                config: separateUsers,
+                store,
+                systemctl,
+                env: process.env,
+                log,
+                now: Date.now,
+              })
+            : new AgentRuntimes(
+                new InProcessRuntime({
+                  layout,
+                  workspaces,
+                  bundlePath: sharedHostBundle,
+                  openStream,
+                  log,
+                  crashBackoffMs: 2_000,
+                }),
+                new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
+              ),
         locator: new PathProviderLocator(process.env.PATH),
         fetch,
         openWebSocket: nodeWebSocket,
@@ -412,7 +460,22 @@ async function statusCommand(args: string[]): Promise<number> {
   });
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
   try {
+    const separateUsers = await findSeparateUsersConfig(currentUid(), dataDir);
+    const separateRuntime = separateUsers
+      ? new SystemdRuntime({
+          config: separateUsers,
+          store,
+          systemctl,
+          env: process.env,
+          log: createLogger({ level: 'error', write: (line) => process.stderr.write(line) }),
+          now: Date.now,
+        })
+      : null;
     const out: string[] = [`Data directory: ${dataDir}`];
+    if (separateUsers)
+      out.push(
+        `Agents:         each as a user of its own, in ${separateUsers.agentsDir} (${separateUserNames(separateUsers.uid).controllerUnit})`
+      );
     const identity = store.identity();
     if (!identity) {
       out.push('Not enrolled.');
@@ -451,9 +514,16 @@ async function statusCommand(args: string[]): Promise<number> {
     );
     for (const entry of cached.assignment.agents) {
       const row = store.agent(entry.agent_id);
-      const observation = definitionProblem(entry)
-        ? emptyObservation()
-        : await observeOnDisk(layout, entry.agent_id);
+      let observation = emptyObservation();
+      let unreadable: string | null = null;
+      if (!definitionProblem(entry)) {
+        if (separateRuntime)
+          observation = await separateRuntime.observe(entry.agent_id).catch((error: unknown) => {
+            unreadable = errorMessage(error);
+            return emptyObservation();
+          });
+        else observation = await observeOnDisk(layout, entry.agent_id);
+      }
       // Whether events flow is the running controller's to know; this reads only disk.
       const mapped = mapAgentProcess({
         assignment: entry,
@@ -466,7 +536,9 @@ async function statusCommand(args: string[]): Promise<number> {
         '',
         `  ${entry.definition.name} (${entry.agent_id})`,
         `    provider ${entry.definition.provider}, desired ${entry.desired_state}, revision ${entry.revision}, applied ${row?.appliedRevision ?? 'never'}`,
-        `    ${mapped.process}${mapped.reason ? ` [${mapped.reason}]` : ''}${mapped.detail ? `: ${mapped.detail}` : ''}`
+        unreadable && separateUsers
+          ? `    ${await unitSummary(separateUsers, store.agentUser(entry.agent_id))}; the rest needs the agents' group (${unreadable})`
+          : `    ${mapped.process}${mapped.reason ? ` [${mapped.reason}]` : ''}${mapped.detail ? `: ${mapped.detail}` : ''}`
       );
     }
     process.stdout.write(`${out.join('\n')}\n`);
@@ -503,10 +575,18 @@ async function installServiceCommand(args: string[]): Promise<number> {
       'data-dir': { type: 'string' },
       'env-file': { type: 'string' },
       'shared-host-bundle': { type: 'string' },
+      'separate-users': { type: 'boolean' },
+      user: { type: 'string' },
+      'agents-dir': { type: 'string' },
+      'agent-users': { type: 'string' },
     },
     strict: true,
   });
   assertSupportedPlatform(process.platform);
+  if (values['separate-users']) return installSeparateUsersCommand(values);
+  for (const flag of ['user', 'agents-dir', 'agent-users'] as const)
+    if (values[flag] !== undefined)
+      throw new UsageError(`--${flag} is for install-service --separate-users.`);
   const envFile = values['env-file'] ? resolve(values['env-file']) : null;
   // Read now, so a broken file fails here rather than in the service.
   if (envFile) await readEnvFile(envFile);
@@ -537,12 +617,67 @@ async function installServiceCommand(args: string[]): Promise<number> {
   return EXIT_OK;
 }
 
+async function installSeparateUsersCommand(values: {
+  'data-dir'?: string;
+  'env-file'?: string;
+  'shared-host-bundle'?: string;
+  user?: string;
+  'agents-dir'?: string;
+  'agent-users'?: string;
+}): Promise<number> {
+  const user = values.user ?? process.env.SUDO_USER;
+  if (!user)
+    throw new UsageError(
+      'install-service --separate-users needs --user <name>, the user the controller runs as, when not run through sudo.'
+    );
+  const agentUsers =
+    values['agent-users'] === undefined ? DEFAULT_AGENT_USERS : Number(values['agent-users']);
+  if (!Number.isInteger(agentUsers) || agentUsers < 1 || agentUsers > MAX_AGENT_USERS)
+    throw new UsageError(`--agent-users must be a whole number from 1 to ${MAX_AGENT_USERS}.`);
+  const envFile = values['env-file'] ? resolve(values['env-file']) : null;
+  if (envFile) await readEnvFile(envFile);
+  const report = await installSeparateUsers(
+    {
+      user,
+      dataDir: values['data-dir'] ? resolve(values['data-dir']) : null,
+      agentsDir: values['agents-dir'] ? resolve(values['agents-dir']) : null,
+      agentUsers,
+      node: process.execPath,
+      cli: cliPath(),
+      bundle: bundlePath(values['shared-host-bundle']),
+      envFile,
+      path: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    },
+    runSecretCommand
+  );
+  process.stdout.write(['Agents now run as users of their own.', ...report.notes, ''].join('\n'));
+  return EXIT_OK;
+}
+
 async function uninstallServiceCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' } },
+    options: {
+      'data-dir': { type: 'string' },
+      'separate-users': { type: 'boolean' },
+      user: { type: 'string' },
+    },
     strict: true,
   });
+  if (values['separate-users']) {
+    const user = values.user ?? process.env.SUDO_USER;
+    if (!user)
+      throw new UsageError(
+        'uninstall-service --separate-users needs --user <name> when not run through sudo.'
+      );
+    const report = await uninstallSeparateUsers(user, runSecretCommand);
+    process.stdout.write(
+      ['Removed the setup for agents as users of their own.', ...report.notes, ''].join('\n')
+    );
+    return EXIT_OK;
+  }
+  if (values.user !== undefined)
+    throw new UsageError('--user is for uninstall-service --separate-users.');
   const removed = await uninstallService(resolveDataDir(values['data-dir']), runSecretCommand);
   process.stdout.write(
     removed ? 'Stopped and removed the service.\n' : 'No service was installed.\n'
@@ -559,6 +694,17 @@ async function doctorCommand(args: string[]): Promise<number> {
   const { dataDir, store, secrets } = await openState(values['data-dir']);
   const locator = new PathProviderLocator(process.env.PATH);
   try {
+    const separateUsers = await findSeparateUsersConfig(currentUid(), dataDir);
+    const separateRuntime = separateUsers
+      ? new SystemdRuntime({
+          config: separateUsers,
+          store,
+          systemctl,
+          env: process.env,
+          log: createLogger({ level: 'error', write: (line) => process.stderr.write(line) }),
+          now: Date.now,
+        })
+      : null;
     const checks = await runDoctor({
       version: VERSION,
       nodeVersion: process.version,
@@ -571,8 +717,19 @@ async function doctorCommand(args: string[]): Promise<number> {
       exchange: (server, controllerId, credential) =>
         exchangeToken(fetch, server, controllerId, credential),
       locate: (provider) => locator.locate(provider),
-      probe: (bundle, provider, binary) => probeProvider(bundle, provider, binary, dataDir),
-      service: () => serviceState(dataDir, runSecretCommand),
+      probe: (bundle, provider, binary) =>
+        separateRuntime
+          ? separateRuntime.probe(provider, binary, dataDir)
+          : probeProvider(bundle, provider, binary, dataDir, process.env),
+      service: () =>
+        separateUsers
+          ? systemServiceState(separateUserNames(separateUsers.uid).controllerUnit)
+          : serviceState(dataDir, runSecretCommand),
+      separateUsers: separateUsers && {
+        agentsDir: separateUsers.agentsDir,
+        agentUsers: separateUsers.agentUsers,
+        controllerUnit: separateUserNames(separateUsers.uid).controllerUnit,
+      },
       latest: () => latestRelease(fetch, releasesRepository(process.env)),
     });
     process.stdout.write(`${formatChecks(checks)}\n`);
@@ -675,6 +832,28 @@ export async function main(argv: string[]): Promise<number> {
     reportFailure(error);
     return exitCodeFor(error);
   }
+}
+
+/** What systemd says of an agent's unit, for a shell without the agents' group. */
+async function unitSummary(config: SeparateUsersConfig, slot: number | null): Promise<string> {
+  if (slot === null) return 'no agent user claimed';
+  const unit = separateUserNames(config.uid).agentUnit(slot);
+  const state = await systemctl(['is-active', unit]).catch(
+    (error: { stdout?: string }) => error.stdout ?? 'unknown'
+  );
+  return `${unit} is ${state.trim()}`;
+}
+
+function currentUid(): number {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new ConfigurationError('This platform has no user ids.');
+  return uid;
+}
+
+/** Whether a system service is running, as a user may ask. */
+async function systemServiceState(unit: string): Promise<'running' | 'stopped'> {
+  const state = await systemctl(['is-active', unit]).catch(() => 'inactive');
+  return state.trim() === 'active' ? 'running' : 'stopped';
 }
 
 /** The last line is the reason: a parent that supervises this process shows it. */

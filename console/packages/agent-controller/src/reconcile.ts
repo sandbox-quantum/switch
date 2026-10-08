@@ -232,7 +232,7 @@ export async function startAgent(
     if (!isProvider(provider))
       throw new ReasonedError('definition_invalid', `Unknown provider '${provider}'.`);
     await deps.ensureCredentials(agentId);
-    const cwd = await deps.runtime.workingDirectory(definition.name, definition.directory);
+    const cwd = await deps.runtime.workingDirectory(agentId, definition.name, definition.directory);
     const binaryPath = await deps.binaryPath(provider);
     if (!binaryPath)
       throw new ReasonedError(

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { fileMode } from './host-permissions';
 import { type WatcherControl, watcherHealthSchema } from './watcher-tools';
 
 /**
@@ -46,7 +47,7 @@ export function recordWatcherHealth(root: string, control: WatcherControl): () =
     writing = writing
       .then(async () => {
         const temporary = `${path}.${randomUUID()}`;
-        await writeFile(temporary, JSON.stringify(body), { mode: 0o600 });
+        await writeFile(temporary, JSON.stringify(body), { mode: fileMode(0o600) });
         await rename(temporary, path);
       })
       .catch((error: unknown) => {

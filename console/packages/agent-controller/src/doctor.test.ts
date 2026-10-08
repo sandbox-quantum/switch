@@ -24,6 +24,7 @@ function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
     probe: async () => ({ status: 'authenticated', message: 'Signed in.', models: [] }),
     service: async () => 'running',
     latest: async () => ({ version: '0.2.0', packageUrl: 'https://example.invalid/p.tgz' }),
+    separateUsers: null,
     ...overrides,
   };
 }

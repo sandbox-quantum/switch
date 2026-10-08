@@ -65,8 +65,8 @@ export class AgentRuntimes implements AgentRuntime {
     return this.shared.deleteCredentials(agentId);
   }
 
-  workingDirectory(name: string, directory: string | null): Promise<string> {
-    return this.shared.workingDirectory(name, directory);
+  workingDirectory(agentId: string, name: string, directory: string | null): Promise<string> {
+    return this.shared.workingDirectory(agentId, name, directory);
   }
 
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {

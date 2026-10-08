@@ -74,7 +74,11 @@ export class FakeRuntime implements AgentRuntime {
     this.credentials.delete(agentId);
   }
 
-  async workingDirectory(name: string, directory: string | null): Promise<string> {
+  async workingDirectory(
+    _agentId: string,
+    name: string,
+    directory: string | null
+  ): Promise<string> {
     if (directory === null) return `/data/workspaces/${name}`;
     if (!directory.startsWith('/'))
       throw new ReasonedError('definition_invalid', `'${directory}' is not absolute.`);

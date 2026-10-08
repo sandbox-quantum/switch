@@ -6,6 +6,7 @@ import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import { type ControlContext, ensureSessions, serveControl } from './control';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
+import { dirMode } from './host-permissions';
 import { hostedWorker } from './hosted-watcher';
 import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
@@ -245,7 +246,7 @@ try {
       mode !== '--supervise' &&
       mode !== '--watch-supervise'
     ) {
-      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: dirMode(0o700) });
       await replaceOwner(join(root, 'supervisor', 'failure.json'), {
         message: error instanceof Error ? error.message : String(error),
       });
