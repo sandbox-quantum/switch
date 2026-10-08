@@ -29,6 +29,15 @@ describe.skipIf(process.platform === 'win32')("the login shell's PATH", () => {
     );
   });
 
+  it("puts the shell's PATH first over launchd's bare default, so Homebrew's tools win", async () => {
+    const shell = await fakeShell(
+      `printf '\\n__SWITCH_LOGIN_PATH__/opt/homebrew/bin:/usr/bin:/bin\\n'`
+    );
+    expect(await loginShellPath(shell, '/usr/bin:/bin:/usr/sbin:/sbin')).toBe(
+      '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+    );
+  });
+
   it('is null when the shell fails or does not say', async () => {
     expect(await loginShellPath(await fakeShell('exit 1'), '/usr/bin')).toBeNull();
     expect(await loginShellPath(await fakeShell('echo nothing useful'), '/usr/bin')).toBeNull();

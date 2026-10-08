@@ -10,7 +10,8 @@ const MARKER = '__SWITCH_LOGIN_PATH__';
  * and nothing more, so the provider CLIs, git and gh it looks for, and those
  * its sessions inherit, would be the ones that PATH finds rather than the ones
  * the user's own shell does. What the controller was given comes first, so a
- * PATH set on purpose (a virtualenv, nvm, direnv) still wins. Null when the
+ * PATH set on purpose (a virtualenv, nvm, direnv) still wins, unless it is
+ * launchd's bare default, which the shell's goes ahead of. Null when the
  * shell cannot say within `timeoutMs`, for the caller to report.
  *
  * The shell is interactive, as Console's own lookup runs it, so its profile
@@ -64,10 +65,17 @@ export function loginShellPath(
   });
 }
 
+/** The PATH launchd gives a LaunchAgent, which nobody chose: the shell's goes first then. */
+const LAUNCHD_DEFAULT = '/usr/bin:/bin:/usr/sbin:/sbin';
+
 function merged(shellPath: string, current: string): string | null {
   if (!shellPath) return null;
+  const shellEntries = shellPath.split(delimiter).filter(Boolean);
   const currentEntries = current.split(delimiter).filter(Boolean);
-  const seen = new Set(currentEntries);
-  const extra = shellPath.split(delimiter).filter((entry) => entry && !seen.has(entry));
-  return [...currentEntries, ...extra].join(delimiter);
+  const [first, then] =
+    current === LAUNCHD_DEFAULT || current === ''
+      ? [shellEntries, currentEntries]
+      : [currentEntries, shellEntries];
+  const seen = new Set(first);
+  return [...first, ...then.filter((entry) => !seen.has(entry))].join(delimiter);
 }
