@@ -17,11 +17,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import uuid
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import markdown
 from sqlalchemy import delete, exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -62,6 +64,7 @@ from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
+from switch_core.transport.types import MessageFormat
 
 logger = logging.getLogger(__name__)
 
@@ -887,6 +890,20 @@ def _staged(upload_id: str, operation: ChatOperation) -> StagedUpload:
     )
 
 
+_PARAGRAPH_TAG = re.compile(r"</?p>")
+_HTML_TAG = re.compile(r"<[A-Za-z/!]")
+
+
+def _format_of(body: str) -> MessageFormat:
+    """Markdown only when rendering it adds more than paragraphs.
+
+    A plain sentence stays plain text, so receivers do not get an HTML body
+    that says nothing the text does not.
+    """
+    rendered = _PARAGRAPH_TAG.sub("", markdown.markdown(body))
+    return "markdown" if _HTML_TAG.search(rendered) else "text"
+
+
 def _parts(
     body: str,
     uploads: list[StagedUpload],
@@ -906,7 +923,7 @@ def _parts(
             message_content(
                 body,
                 sender_name=sender_name,
-                format="markdown",
+                format=_format_of(body),
                 thread_root_id=thread_root_id,
             )
         ]

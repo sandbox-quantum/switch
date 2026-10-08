@@ -527,6 +527,17 @@ async def test_a_sent_message_reads_back_as_the_console_member(chats: _Harness) 
     assert body["hasMore"] is False
 
 
+async def test_a_plain_sent_message_carries_no_html(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    sent = await chats.send(chats.alice, room_id, "s1", "just a plain line\nand a < b")
+    assert sent.status_code == 200, sent.text
+    [message] = sent.json()["messages"]
+    assert message["format"] is None
+    assert message["body"] == "just a plain line\nand a < b"
+
+
 async def test_paging_walks_back_by_seq(chats: _Harness) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await chats.new_chat(chats.alice, agent, "c1")
