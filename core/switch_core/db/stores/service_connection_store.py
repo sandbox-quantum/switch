@@ -16,6 +16,8 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
+    AgentController,
+    AgentDefinition,
     HostedLaunch,
     ServiceConnection,
     ServiceGrant,
@@ -366,7 +368,9 @@ class ServiceConnectionStore:
         )
 
     async def queue_orphaned(self, session: AsyncSession) -> None:
-        """Queue every live token whose grant, or owner's membership, is gone.
+        """Queue every live token whose grant, or owner's membership, is gone,
+        and every one issued to a controller that is revoked or no longer
+        hosts the agent.
 
         A missing connection needs no test of its own: deleting one deletes
         its grants. Deleting an agent does the same, so its tokens are queued
@@ -385,10 +389,27 @@ class ServiceConnectionStore:
                 TenantMember.user_id == ServiceTokenIssuance.owner_id,
             )
         )
+        controller_live = exists(
+            select(AgentController.id).where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == ServiceTokenIssuance.controller_id,
+                AgentController.revoked_at.is_(None),
+            )
+        )
+        bound = exists(
+            select(AgentDefinition.id).where(
+                AgentDefinition.tenant_id == tenant_id,
+                AgentDefinition.agent_id == ServiceTokenIssuance.agent_id,
+                AgentDefinition.controller_id == ServiceTokenIssuance.controller_id,
+            )
+        )
+        held = (ServiceTokenIssuance.principal != "controller") | (
+            controller_live & bound
+        )
         await self.queue_revocation(
             session,
             ServiceTokenIssuance.revoke_requested.is_(False),
-            ~(granted & member),
+            ~(granted & member & held),
         )
 
     async def clear_expired(self, session: AsyncSession, now: datetime) -> None:
