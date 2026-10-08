@@ -436,10 +436,31 @@ through `runAgentHost`.
   agent's HTTPS access to github.com.
 - **Agents without a GitHub grant:** nothing is installed, so the agent keeps
   the user's own Git and `gh` logins, as today.
+- **Grants that could not be read** as the session started: the helpers are
+  installed anyway and refuse every request with the reason, so git and `gh`
+  never fall through to the machine's own sign-in. That holds for an agent
+  with no GitHub grant too, for that session: it cannot be told apart.
+- **Git older than 2.31** ignores `GIT_CONFIG_COUNT`, so the helper is not
+  set. The host logs a warning and the session is told plain git uses the
+  machine's own sign-in while `gh` (through the wrapper) uses the grant.
 - **Windows:** the helpers do not run there. Nothing is installed, the session
   host logs a warning, and the agent uses the machine's own sign-in.
 - **Cloud:** keeps full isolation (every other credential helper cleared,
   prompts off).
+
+#### What a grant does not do on the owner's machine
+
+On a laptop or server, a GitHub grant adds access through Switch; it does
+not contain the agent. The session runs as the owner, so it still reaches
+whatever the owner's own setup reaches: SSH remotes and their keys, a
+`url.*.insteadOf` rewrite away from `https://github.com`, the real `gh` called
+by its path past the wrapper, and a `GITHUB_TOKEN` or `GH_TOKEN` in the
+environment it inherits. Agents on one machine are not isolated from each
+other either: the session's endpoint bearer is in the environment of
+everything the CLI starts, MCP servers included, and any process running as
+the same user can read it and ask for that agent's token; the wrapper hands
+`gh` (and its extensions, and what they start) the token itself as
+`GH_TOKEN`. Containing an agent is what the cloud deployment is for.
 - **Under Console:** the scripts set `ELECTRON_RUN_AS_NODE=1` themselves, since
   Console runs agent hosts on Electron's binary and strips `ELECTRON_*` from
   the session's environment; the wrapper keeps it from what `gh` starts.
