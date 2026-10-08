@@ -473,6 +473,44 @@ through `runAgentHost`.
 - **Cloud:** keeps full isolation (every other credential helper cleared,
   prompts off).
 
+- **Under Console:** the scripts set `ELECTRON_RUN_AS_NODE=1` themselves, since
+  Console runs agent hosts on Electron's binary and strips `ELECTRON_*` from
+  the session's environment; the wrapper keeps it from what `gh` starts.
+- **The cloud bootstrap** (`host/hosted-bootstrap.ts`) no longer renews a token
+  itself through `/hosted/github-credential`. For its own clone of a granted
+  repository, before any session runs, it asks
+  `POST /agents/{id}/service-tokens/github` with the agent's key (on `https`
+  only, once more if Core says to retry), and sessions set GitHub up from the
+  grant. A deployment's saved plan from the earlier build, which differs only
+  by the old GitHub launch variables, is upgraded in place once, with a
+  warning; any other difference is still refused. A deployment given a mounted
+  personal token is unchanged.
+
+### Fallback: what is available to the agent can be used by it
+
+One rule for every connector. Access through Switch is used first. When
+Switch cannot or will not give it (unreachable, the grants unreadable, the
+grant removed or narrowed, or the resource outside it), the agent uses
+whatever the machine it runs on already gives it, and that is never silent:
+the command's output, the session (`SERVICE_FALLBACK`, shown in Console and
+on the bridges) and the host log say so. Where the machine gives nothing, as
+in the cloud, the command fails with the reason. A connector answers only
+"a token, or none and why"; the fallback and the flag are the host's.
+
+**What removing a grant means.** On the owner's own machine, removing or
+narrowing a grant stops Switch giving that access; it does not take away
+access the machine already has. An agent whose GitHub grant is removed goes
+back to where an agent with no grant is: the owner's own sign-in, if there is
+one, with each use flagged. In the cloud there is no such sign-in, so removing
+the grant ends the agent's GitHub access.
+
+**Shared machines.** "The machine's own sign-in" is whatever the machine the
+agent runs on is signed in as, under the account the session runs as. On a
+laptop that is the owner's. On a shared server or SSH host it can be a service
+account's, or another person's: a fallback there acts as them, flagged the
+same way. Run agents on a shared host under an account whose own sign-ins are
+the ones they should fall back to, or under one with none.
+
 #### What a grant does not do on the owner's machine
 
 On a laptop or server, a GitHub grant adds access through Switch; it does
@@ -486,18 +524,11 @@ everything the CLI starts, MCP servers included, and any process running as
 the same user can read it and ask for that agent's token; the wrapper hands
 `gh` (and its extensions, and what they start) the token itself as
 `GH_TOKEN`. Containing an agent is what the cloud deployment is for.
-- **Under Console:** the scripts set `ELECTRON_RUN_AS_NODE=1` themselves, since
-  Console runs agent hosts on Electron's binary and strips `ELECTRON_*` from
-  the session's environment; the wrapper keeps it from what `gh` starts.
-- **The cloud bootstrap** (`host/hosted-bootstrap.ts`) no longer renews a token
-  itself through `/hosted/github-credential`. For its own clone of a granted
-  repository, before any session runs, it asks
-  `POST /agents/{id}/service-tokens/github` with the agent's key (on `https`
-  only, once more if Core says to retry), and sessions set GitHub up from the
-  grant. A deployment's saved plan from the earlier build, which differs only
-  by the old GitHub launch variables, is upgraded in place once, with a
-  warning; any other difference is still refused. A deployment given a mounted
-  personal token is unchanged.
+
+One thing a fallback does not do: run a `gh auth` command that shows or
+hands out the machine's token (`auth token`, `auth status --show-token`,
+`auth git-credential`). That keeps the token out of transcripts and the
+bridges; it does not contain the agent, which can still call the real `gh`.
 
 ## GitHub on the new model
 
