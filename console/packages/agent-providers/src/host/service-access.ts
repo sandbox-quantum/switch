@@ -150,5 +150,17 @@ export async function issueServiceToken(
   const expiresAt = issued.success ? Date.parse(issued.data.expires_at) : Number.NaN;
   if (!issued.success || !validServiceToken(issued.data.token) || !Number.isFinite(expiresAt))
     throw new Error(`Switch answered a ${service} token request with something that is not one.`);
-  return { token: issued.data.token, expiresAt };
+  return { token: issued.data.token, expiresAt: onLocalClock(expiresAt, response) };
+}
+
+/**
+ * `expiresAt`, by Switch's clock, on this machine's: how long the token has
+ * left by Switch's `Date` header, counted from now. A clock an hour fast would
+ * otherwise read every token as expired and fetch a new one for each command.
+ * The header has whole seconds, so a second is taken off to stay early.
+ */
+function onLocalClock(expiresAt: number, response: Response): number {
+  const serverNow = Date.parse(response.headers.get('date') ?? '');
+  if (!Number.isFinite(serverNow)) return expiresAt;
+  return Date.now() + (expiresAt - serverNow) - 1000;
 }

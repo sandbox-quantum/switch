@@ -1,10 +1,46 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   grantedSkills,
+  issueServiceToken,
   readServiceGrants,
   type ServiceGrant,
   skillContext,
 } from './service-access';
+
+describe("a token's expiry", () => {
+  const issue = (dateHeader: string | null) => {
+    const headers = new Headers({ 'content-type': 'application/json' });
+    if (dateHeader) headers.set('date', dateHeader);
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ token: 'ghs_synthetic0123456789', expires_at: '2026-10-08T13:00:00Z' }),
+          { status: 200, headers }
+        )
+    ) as unknown as typeof fetch;
+    return issueServiceToken(
+      { endpoint: 'https://switch.example.test/api', token: 'agent-key', agentId: 'agent' },
+      'github',
+      fetchImpl
+    );
+  };
+
+  it("is read on this machine's clock, however far it is from Switch's", async () => {
+    // This machine runs an hour fast: Switch says 12:00, it thinks 13:00.
+    vi.useFakeTimers({ now: Date.parse('2026-10-08T13:00:00Z'), toFake: ['Date'] });
+    try {
+      const issued = await issue('Thu, 08 Oct 2026 12:00:00 GMT');
+      expect(issued).toMatchObject({ expiresAt: Date.parse('2026-10-08T13:59:59Z') });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("is taken as given when Switch's answer carries no date", async () => {
+    const issued = await issue(null);
+    expect(issued).toMatchObject({ expiresAt: Date.parse('2026-10-08T13:00:00Z') });
+  });
+});
 
 const SWITCH = {
   endpoint: 'https://switch.example.test/api/',
