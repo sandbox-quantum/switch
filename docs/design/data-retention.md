@@ -202,9 +202,18 @@ sent deleted, nothing would show a placeholder anyway.
   channel's name is the platform's.
 
 **People from a disconnected chat app.** Disconnecting an app deletes its
-identity and client rows but keeps their messages in the detached rooms, so
-those people are not in the People list and cannot be erased this way. See
-"Not covered yet".
+identity and client rows but keeps their messages in the detached rooms. These
+former participants are found by their messages instead: every sender whose id
+has the shape a bridge gives a person (`@switch-{platform}-{bridge id}-…`) and
+for whom no client row is left. The People list shows them under "Disconnected
+app", named by the display names their messages carry, and an erasure request
+names them by that sender id (`former_sender_ids`). Erasing one deletes their
+messages, files, bridge post mappings and hosted copies, scrubs their approval
+answers, and replaces their names in the direct rooms among the rooms their
+messages were deleted from, since their memberships went with their client.
+There is no identity left to delete and no bridge to tell. Listing them scans
+the tenant's messages, which is fine for an owner-only page opened rarely; an
+index on the sender's shape would be the fix if it is not.
 
 ### Data export (not built)
 
@@ -249,6 +258,3 @@ personal-data processing.
 - Expired controller enrolment codes. Each is tied to an `api_keys` row that
   needs to go with it.
 - `tasks`, `hosted_operations` and agent-controller operation history.
-- Erasing someone seen only on a chat app that has since been disconnected.
-  Their messages carry their transport id and display name, but no identity
-  row is left to find them by.

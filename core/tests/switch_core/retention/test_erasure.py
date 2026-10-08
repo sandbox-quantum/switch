@@ -12,7 +12,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -191,7 +191,9 @@ async def _agent(session: AsyncSession) -> Agent:
 
 
 async def _queue(
-    session_factory: async_sessionmaker[AsyncSession], external_user_ids: list[str]
+    session_factory: async_sessionmaker[AsyncSession],
+    external_user_ids: list[str],
+    former_sender_ids: list[str] | None = None,
 ) -> str:
     async with session_factory() as session:
         owner = User(
@@ -202,10 +204,29 @@ async def _queue(
         session.add(owner)
         await session.flush()
         erasure = await ErasureStore().queue(
-            session, external_user_ids=external_user_ids, requested_by_user_id=owner.id
+            session,
+            external_user_ids=external_user_ids,
+            former_sender_ids=former_sender_ids or [],
+            requested_by_user_id=owner.id,
         )
         await session.commit()
         return erasure.id
+
+
+async def _disconnect(session: AsyncSession, person: ExternalUser) -> str:
+    """What removing their chat app does: identity and client go, messages stay."""
+    client = await _client_of(session, person)
+    await session.execute(
+        update(Message)
+        .where(Message.sender_client_id == client.id)
+        .values(sender_name=person.external_username)
+    )
+    sender_id = client.transport_user_id
+    await session.delete(person)
+    await session.flush()
+    await session.delete(client)
+    await session.flush()
+    return sender_id
 
 
 class TestErasing:
@@ -587,3 +608,112 @@ class TestQueue:
         with pytest.raises(ErasureAlreadyQueued):
             await _queue(session_factory, [bo_id, ana_id])
         await _queue(session_factory, [bo_id])
+
+
+class TestFormerParticipants:
+    async def test_people_of_a_disconnected_app_are_listed_and_no_one_else(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            bridge = await _bridge(session)
+            ana = await _person(session, bridge, "ana")
+            bo = await _person(session, bridge, "bo")
+            agent = await _agent(session)
+            agent_client = await session.get(Client, agent.client_id)
+            assert agent_client is not None
+            room = await _room(session, "r")
+            for index in range(2):
+                await _say(session, room, await _client_of(session, ana), f"$a{index}")
+            await _say(session, room, await _client_of(session, bo), "$b")
+            await _say(session, room, agent_client, "$agent")
+            ana_sender = await _disconnect(session, ana)
+            await session.commit()
+
+            former = await ErasureStore().list_former_participants(session)
+
+        assert [
+            (f.sender_id, f.names, f.platform, f.message_count) for f in former
+        ] == [(ana_sender, ["ana"], "slack", 2)]
+
+    async def test_a_former_participant_is_erased_and_the_rest_stays(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            bridge = await _bridge(session)
+            ana = await _person(session, bridge, "ana")
+            bo = await _person(session, bridge, "bo")
+            ana_client = await _client_of(session, ana)
+            bo_client = await _client_of(session, bo)
+            agent = await _agent(session)
+            room = await _room(session, "r", archived=True)
+            dm = Room(
+                transport_room_id=f"!dm-{uuid.uuid4().hex[:8]}:test",
+                name="Acme Slack: ana / helper",
+                description="Acme Slack DM — ana / helper",
+                channel_type="direct",
+            )
+            session.add(dm)
+            await session.flush()
+            await _blob(session, "mxc://test/ana-only")
+            await _blob(session, "mxc://test/shared")
+            await _say(session, room, ana_client, "$a1", "mxc://test/ana-only")
+            await _say(session, dm, ana_client, "$a2", "mxc://test/shared")
+            await _say(session, room, bo_client, "$b1", "mxc://test/shared")
+            session.add(
+                ApprovalRequest(
+                    agent_id=agent.id,
+                    session_id="s",
+                    request_id="q",
+                    turn_id="t",
+                    kind="questions",
+                    title="t",
+                    options=[],
+                    questions=[],
+                    state="answered",
+                    answered_by=ana_client.transport_user_id,
+                    answers=[{"question_id": "q1", "custom_text": "private"}],
+                )
+            )
+            ana_sender = await _disconnect(session, ana)
+            await session.commit()
+            dm_id = dm.id
+        erasure_id = await _queue(session_factory, [], [ana_sender])
+
+        finished = await ErasureService(
+            session_factory, _Clients(), _Bridges()
+        ).work_once(datetime.now(UTC))
+
+        assert finished is not None and finished.id == erasure_id
+        assert (finished.state, finished.error) == ("done", None)
+        assert (
+            finished.messages_deleted,
+            finished.files_deleted,
+            finished.identities_erased,
+        ) == (2, 1, 1)
+        async with session_factory() as session:
+            left = (await session.execute(select(Message.transport_event_id))).scalars()
+            blobs = (await session.execute(select(MediaBlob.uri))).scalars()
+            approval = (await session.execute(select(ApprovalRequest))).scalar_one()
+            dm_after = await session.get(Room, dm_id)
+            former = await ErasureStore().list_former_participants(session)
+        assert list(left) == ["$b1"]
+        assert list(blobs) == ["mxc://test/shared"]
+        assert approval.answered_by == ERASED_ANSWERER
+        assert approval.answers == [{"question_id": "q1"}]
+        assert dm_after is not None
+        assert dm_after.name == "Acme Slack: erased person / helper"
+        assert former == []
+
+    async def test_a_sender_that_is_not_a_former_participant_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            ana = await _person(session, await _bridge(session), "ana")
+            await _say(
+                session, await _room(session, "r"), await _client_of(session, ana), "$a"
+            )
+            await session.commit()
+            live_sender = (await _client_of(session, ana)).transport_user_id
+
+        with pytest.raises(UnknownIdentity):
+            await _queue(session_factory, [], [live_sender])

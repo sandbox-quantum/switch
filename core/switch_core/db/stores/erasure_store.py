@@ -9,6 +9,7 @@ is `MessageStore.delete_sent_by`, which keeps the room's numbering intact.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,7 @@ from sqlalchemy import (
     Text,
     delete,
     func,
+    or_,
     select,
     text,
     update,
@@ -58,6 +60,17 @@ ACTIVE_STATES = ("queued", "running")
 STALE_RUNNING = timedelta(minutes=10)
 
 
+#: The transport id a bridge gives the person behind a platform account
+#: (`CollaborationCore._create_human_actor`): `@switch-<platform>-<bridge id>-
+#: <username>:<server>`. Agents, bridges and system clients have other shapes,
+#: so this tells a person's messages apart once their identity rows are gone.
+HUMAN_SENDER_PATTERN = (
+    r"^@switch-([a-z]+)-"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+)
+_HUMAN_SENDER = re.compile(HUMAN_SENDER_PATTERN)
+
+
 class ErasureAlreadyQueued(Exception):
     """An identity named in a request already has an erasure queued or running."""
 
@@ -85,6 +98,21 @@ class Person:
     transport_user_id: str
     message_count: int
     claimed_by: list[Claimant]
+
+
+@dataclass(frozen=True)
+class FormerParticipant:
+    """Someone seen on a chat app that has since been disconnected.
+
+    Disconnecting an app deletes its identity and client rows but keeps the
+    messages, so all that is left of the person is the transport id and the
+    display names on what they sent.
+    """
+
+    sender_id: str
+    names: list[str]
+    platform: str
+    message_count: int
 
 
 def _rowcount(result: Result[Any]) -> int:
@@ -178,11 +206,66 @@ class ErasureStore:
             for row in rows
         ]
 
+    async def list_former_participants(
+        self, session: AsyncSession
+    ) -> list[FormerParticipant]:
+        """Everyone in the bound tenant whose messages remain but whose identity
+        went with a disconnected chat app."""
+        return await self._former(session, None)
+
+    async def former_with_ids(
+        self, session: AsyncSession, sender_ids: Collection[str]
+    ) -> list[FormerParticipant]:
+        """The named former participants that are in the bound tenant."""
+        return await self._former(session, list(sender_ids))
+
+    async def _former(
+        self, session: AsyncSession, sender_ids: list[str] | None
+    ) -> list[FormerParticipant]:
+        tenant_id = require_tenant_id()
+        has_client = (
+            select(Client.id)
+            .where(Client.transport_user_id == Message.sender_id)
+            .correlate(Message)
+            .exists()
+        )
+        query = (
+            select(
+                Message.sender_id,
+                func.count(),
+                func.array_agg(func.distinct(Message.sender_name)),
+            )
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.sender_id.regexp_match(HUMAN_SENDER_PATTERN),
+                ~has_client,
+            )
+            .group_by(Message.sender_id)
+            .order_by(Message.sender_id)
+        )
+        if sender_ids is not None:
+            query = query.where(Message.sender_id.in_(sender_ids))
+        rows = (await session.execute(query)).all()
+        former = []
+        for sender_id, count, names in rows:
+            match = _HUMAN_SENDER.match(sender_id)
+            assert match is not None
+            former.append(
+                FormerParticipant(
+                    sender_id=sender_id,
+                    names=sorted(n for n in names if n),
+                    platform=match.group(1),
+                    message_count=int(count),
+                )
+            )
+        return former
+
     async def queue(
         self,
         session: AsyncSession,
         *,
         external_user_ids: list[str],
+        former_sender_ids: list[str],
         requested_by_user_id: str,
     ) -> PersonErasure:
         """Queue the erasure of these identities, or raise.
@@ -205,24 +288,35 @@ class ErasureStore:
                 )
             ).scalars()
         )
-        unknown = set(external_user_ids) - known
+        if former_sender_ids:
+            known |= {
+                f.sender_id
+                for f in await self.former_with_ids(session, former_sender_ids)
+            }
+        unknown = (set(external_user_ids) | set(former_sender_ids)) - known
         if unknown:
             raise UnknownIdentity(", ".join(sorted(unknown)))
+        overlaps = []
+        for column, ids in (
+            (PersonErasure.external_user_ids, external_user_ids),
+            (PersonErasure.former_sender_ids, former_sender_ids),
+        ):
+            if ids:
+                overlaps.append(column.op("?|")(cast_(array(ids), ARRAY(Text))))
         overlapping = await session.scalar(
             select(func.count())
             .select_from(PersonErasure)
             .where(
                 PersonErasure.tenant_id == tenant_id,
                 PersonErasure.state.in_(ACTIVE_STATES),
-                PersonErasure.external_user_ids.op("?|")(
-                    cast_(array(external_user_ids), ARRAY(Text))
-                ),
+                or_(*overlaps),
             )
         )
         if overlapping:
             raise ErasureAlreadyQueued()
         erasure = PersonErasure(
             external_user_ids=list(external_user_ids),
+            former_sender_ids=list(former_sender_ids),
             state="queued",
             requested_by_user_id=requested_by_user_id,
         )
@@ -368,25 +462,47 @@ class ErasureStore:
         A direct room is named after the person and the agent when the bridge
         adopts it. Must run while their room memberships still stand.
         """
+        member_of = select(ClientRoom.room_id).where(
+            ClientRoom.tenant_id == require_tenant_id(),
+            ClientRoom.client_id == person.client_id,
+        )
+        return await self._scrub_direct_rooms(
+            session, Room.id.in_(member_of), [person.username]
+        )
+
+    async def scrub_former_direct_rooms(
+        self, session: AsyncSession, room_ids: Collection[str], names: Collection[str]
+    ) -> int:
+        """Take a former participant's names out of the direct rooms among
+        `room_ids`, the rooms their messages were deleted from. Their room
+        memberships went with their client, so these are what is left to say
+        which rooms were theirs."""
+        if not room_ids or not names:
+            return 0
+        return await self._scrub_direct_rooms(
+            session, Room.id.in_(list(room_ids)), list(names)
+        )
+
+    async def _scrub_direct_rooms(
+        self, session: AsyncSession, which: Any, names: list[str]
+    ) -> int:
         rooms = (
             await session.execute(
-                select(Room)
-                .join(
-                    ClientRoom,
-                    (ClientRoom.tenant_id == Room.tenant_id)
-                    & (ClientRoom.room_id == Room.id),
-                )
-                .where(
+                select(Room).where(
                     Room.tenant_id == require_tenant_id(),
                     Room.channel_type == "direct",
-                    ClientRoom.client_id == person.client_id,
+                    which,
                 )
             )
         ).scalars()
         scrubbed = 0
+        # Longest first, so a name that contains another is replaced whole.
+        ordered = sorted(names, key=len, reverse=True)
         for room in rooms:
-            name = room.name.replace(person.username, ERASED_NAME)
-            description = room.description.replace(person.username, ERASED_NAME)
+            name, description = room.name, room.description
+            for person_name in ordered:
+                name = name.replace(person_name, ERASED_NAME)
+                description = description.replace(person_name, ERASED_NAME)
             if (name, description) != (room.name, room.description):
                 room.name, room.description = name, description
                 scrubbed += 1

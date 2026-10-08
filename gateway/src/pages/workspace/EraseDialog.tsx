@@ -13,7 +13,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
-import { type Person, eraseIdentities } from "../../data/api";
+import { type Person, erasePeople } from "../../data/api";
 
 /** Identities that may be the same person as `person`: every one claimed by
  * a member who also claims `person`. Only a hint, offered unticked: claims are
@@ -24,7 +24,7 @@ export function relatedIdentities(person: Person, people: Person[]): Person[] {
   if (claimants.size === 0) return [];
   return people.filter(
     (other) =>
-      other.external_user_id !== person.external_user_id &&
+      other.id !== person.id &&
       other.claimed_by.some((c) => claimants.has(c.user_id)),
   );
 }
@@ -54,7 +54,7 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
   // Reset only when a different person is chosen. The list behind `people` is
   // refreshed while other erasures run, and resetting on every refresh would
   // undo what the owner ticked or typed just before they confirm.
-  const personId = person?.external_user_id;
+  const personId = person?.id;
   useEffect(() => {
     setIncluded(new Set());
     setTyped("");
@@ -63,7 +63,7 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
 
   if (!person) return null;
 
-  const chosen = [person, ...related.filter((p) => included.has(p.external_user_id))];
+  const chosen = [person, ...related.filter((p) => included.has(p.id))];
   const messages = chosen.reduce((sum, p) => sum + p.message_count, 0);
   const confirmed = typed === person.username;
 
@@ -79,10 +79,7 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
     setSubmitting(true);
     setError(null);
     try {
-      await eraseIdentities(
-        tenantId,
-        chosen.map((p) => p.external_user_id),
-      );
+      await erasePeople(tenantId, chosen);
       onQueued();
       onClose();
     } catch (err) {
@@ -104,8 +101,9 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
           </DialogContentText>
           <DialogContentText>
             What other people wrote, including replies that quote them, is kept. Copies in{" "}
-            {person.bridge_name} and other chat apps are not deleted; remove those in the app.
-            Their Switch account and membership, if any, are not affected.
+            {person.bridge_name ?? "the disconnected app"} and other chat apps are not
+            deleted; remove those in the app. Their Switch account and membership, if any, are
+            not affected.
           </DialogContentText>
           {related.length > 0 && (
             <Stack spacing={0.5}>
@@ -115,14 +113,14 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
               </Typography>
               {related.map((other) => (
                 <FormControlLabel
-                  key={other.external_user_id}
+                  key={other.id}
                   control={
                     <Checkbox
-                      checked={included.has(other.external_user_id)}
-                      onChange={() => toggle(other.external_user_id)}
+                      checked={included.has(other.id)}
+                      onChange={() => toggle(other.id)}
                     />
                   }
-                  label={`${other.username} on ${other.bridge_name} (${plural(other.message_count, "message")})`}
+                  label={`${other.username} on ${other.bridge_name ?? "a disconnected app"} (${plural(other.message_count, "message")})`}
                 />
               ))}
             </Stack>
