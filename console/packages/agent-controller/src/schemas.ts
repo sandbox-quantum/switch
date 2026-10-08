@@ -312,8 +312,6 @@ export const connectionStateSchema = z.object({
   connection_id: id,
   generation: z.number().int(),
   heartbeat_interval_s: z.number().positive(),
-  /** The workspace's flags. A server from before flags were sent omits it. */
-  feature_flags: z.record(z.string().min(1), z.boolean()).optional(),
 });
 export type ConnectionState = z.infer<typeof connectionStateSchema>;
 
@@ -393,9 +391,3 @@ export const operationPendingSchema = z.object({
 export type OperationPending = z.infer<typeof operationPendingSchema>;
 
 export const credentialRevokedSchema = z.object({});
-
-/** An admin changed one of the workspace's flags: every flag, as it now stands. */
-export const featureFlagsChangedSchema = z.object({
-  flags: z.record(z.string().min(1), z.boolean()),
-});
-export type FeatureFlagsChanged = z.infer<typeof featureFlagsChangedSchema>;

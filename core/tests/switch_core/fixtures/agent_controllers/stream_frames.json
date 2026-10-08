@@ -7,10 +7,7 @@
       "report_within_s": 60,
       "connection_id": "00000000-0000-4000-8000-0000000000e1",
       "generation": 3141592653,
-      "heartbeat_interval_s": 2.0,
-      "feature_flags": {
-        "ecosystem.show_owners": false
-      }
+      "heartbeat_interval_s": 2.0
     }
   },
   {
@@ -128,14 +125,6 @@
       "operation_id": "00000000-0000-4000-8000-0000000000d2",
       "kind": "provider.recheck",
       "agent_id": null
-    }
-  },
-  {
-    "event": "feature_flags.changed",
-    "data": {
-      "flags": {
-        "ecosystem.show_owners": true
-      }
     }
   },
   {

@@ -1,4 +1,4 @@
-"""FEATURE_FLAGS_DEFAULT_ON: which flags are on by default in every workspace."""
+"""FEATURE_FLAGS_ENABLED: which flags this deployment turns on."""
 
 from __future__ import annotations
 
@@ -23,23 +23,23 @@ _BASE_KWARGS = dict(
 )
 
 
-def test_unset_leaves_every_flag_at_its_registry_default(
+def test_unset_leaves_every_flag_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("FEATURE_FLAGS_DEFAULT_ON", raising=False)
-    assert SwitchConfig(**_BASE_KWARGS).feature_flag_defaults == {  # type: ignore[arg-type]
+    monkeypatch.delenv("FEATURE_FLAGS_ENABLED", raising=False)
+    assert SwitchConfig(**_BASE_KWARGS).feature_flags == {  # type: ignore[arg-type]
         ECOSYSTEM_SHOW_OWNERS: False
     }
 
 
-def test_listed_flags_are_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FEATURE_FLAGS_DEFAULT_ON", f" {ECOSYSTEM_SHOW_OWNERS} ,")
-    assert SwitchConfig(**_BASE_KWARGS).feature_flag_defaults == {  # type: ignore[arg-type]
+def test_listed_flags_are_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEATURE_FLAGS_ENABLED", f" {ECOSYSTEM_SHOW_OWNERS} ,")
+    assert SwitchConfig(**_BASE_KWARGS).feature_flags == {  # type: ignore[arg-type]
         ECOSYSTEM_SHOW_OWNERS: True
     }
 
 
 def test_an_unknown_flag_is_a_startup_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FEATURE_FLAGS_DEFAULT_ON", "ecosystem.show_ownres")
+    monkeypatch.setenv("FEATURE_FLAGS_ENABLED", "ecosystem.show_ownres")
     with pytest.raises(ValidationError, match="ecosystem.show_ownres"):
         SwitchConfig(**_BASE_KWARGS)  # type: ignore[arg-type]

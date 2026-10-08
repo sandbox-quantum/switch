@@ -8,6 +8,7 @@ import {
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
 import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -395,6 +396,16 @@ function mapUser(json: UserResponseJson): SwitchUser {
     role: json.role,
     server: mapServerDeclaration(json.server ?? null),
   };
+}
+
+const featureFlagsResponseSchema = z.object({
+  flags: z.array(z.object({ key: z.string(), enabled: z.boolean() })),
+});
+
+/** The server's feature flags, which its deployment sets and nothing can change. */
+export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFeatureFlag[]> {
+  const res = await gatewayFetch(server, '/feature-flags', { authenticated: true });
+  return featureFlagsResponseSchema.parse(await res.json()).flags;
 }
 
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {

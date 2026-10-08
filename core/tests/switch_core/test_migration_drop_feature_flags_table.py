@@ -1,10 +1,8 @@
-"""Scoping feature flags to workspaces keeps every deployment's current values.
+"""Dropping the feature_flags table names the flags that were on.
 
-Before `9c4e7a1f2b38` a flag row was server-global. The migration copies each
-row that was on into every tenant, so a flag that was on for the whole
-deployment is still on for each workspace in it, while one that was off leaves
-no row that would hide a later server default; and downgrading folds them back into one row that
-is on if any workspace had it on.
+Flags are set at deploy time after `9c4e7a1f2b38`, so a flag a deployment had
+switched on through the old table is off after upgrading unless the operator
+lists it in FEATURE_FLAGS_ENABLED. The migration says which ones those are.
 """
 
 from __future__ import annotations
@@ -12,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from alembic.config import Config
 from alembic.runtime.environment import EnvironmentContext
 from alembic.script import ScriptDirectory
@@ -19,11 +18,10 @@ from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 _CORE = Path(__file__).resolve().parents[2]
-_MIGRATION_DB = "migration_scope_feature_flags"
+_MIGRATION_DB = "migration_drop_feature_flags_table"
 
 _PRE_MIGRATION_REVISION = "eb24eafa59a0"
 _MIGRATION_UNDER_TEST = "9c4e7a1f2b38"
-_TENANT_ZERO_ID = "00000000-0000-0000-0000-000000000000"
 
 
 def _script_directory(config: Config) -> ScriptDirectory:
@@ -49,8 +47,8 @@ def _migrate(revision: str, *, down: bool) -> Any:
     return migrate
 
 
-async def test_global_flags_are_copied_into_every_workspace_and_back(
-    postgres_url: str,
+async def test_the_flags_that_were_on_are_logged_and_the_table_goes(
+    postgres_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     admin = create_async_engine(postgres_url, isolation_level="AUTOCOMMIT")
     async with admin.connect() as connection:
@@ -61,14 +59,7 @@ async def test_global_flags_are_copied_into_every_workspace_and_back(
     try:
         async with engine.begin() as connection:
             await connection.run_sync(_migrate(_PRE_MIGRATION_REVISION, down=False))
-
         async with engine.begin() as connection:
-            await connection.execute(
-                text(
-                    "INSERT INTO tenants (id, slug, name) "
-                    "VALUES ('second', 'second', 'Second')"
-                )
-            )
             await connection.execute(
                 text(
                     "INSERT INTO feature_flags (key, enabled) VALUES "
@@ -76,48 +67,24 @@ async def test_global_flags_are_copied_into_every_workspace_and_back(
                 )
             )
 
-        async with engine.begin() as connection:
-            await connection.run_sync(_migrate(_MIGRATION_UNDER_TEST, down=False))
+        with caplog.at_level("WARNING", logger="alembic.runtime.migration"):
+            async with engine.begin() as connection:
+                await connection.run_sync(_migrate(_MIGRATION_UNDER_TEST, down=False))
+        assert "FEATURE_FLAGS_ENABLED: ecosystem.show_owners" in caplog.text
+        assert "retired.flag" not in caplog.text
 
         async with engine.begin() as connection:
-            rows = (
-                await connection.execute(
-                    text(
-                        "SELECT tenant_id, key, enabled FROM feature_flags "
-                        "ORDER BY tenant_id, key"
-                    )
-                )
-            ).all()
-            assert [tuple(r) for r in rows] == [
-                (_TENANT_ZERO_ID, "ecosystem.show_owners", True),
-                ("second", "ecosystem.show_owners", True),
-            ]
-            await connection.execute(
-                text(
-                    "UPDATE feature_flags SET enabled = false "
-                    "WHERE tenant_id = 'second' AND key = 'ecosystem.show_owners'"
-                )
-            )
-            await connection.execute(
-                text(
-                    "INSERT INTO feature_flags (tenant_id, key, enabled) "
-                    "VALUES ('second', 'retired.flag', true)"
-                )
+            assert (
+                await connection.scalar(text("SELECT to_regclass('feature_flags')"))
+                is None
             )
 
         async with engine.begin() as connection:
             await connection.run_sync(_migrate(_PRE_MIGRATION_REVISION, down=True))
-
         async with engine.begin() as connection:
-            rows = (
-                await connection.execute(
-                    text("SELECT key, enabled FROM feature_flags ORDER BY key")
-                )
-            ).all()
-            assert [tuple(r) for r in rows] == [
-                ("ecosystem.show_owners", True),
-                ("retired.flag", True),
-            ]
+            assert (
+                await connection.scalar(text("SELECT count(*) FROM feature_flags")) == 0
+            )
     finally:
         await engine.dispose()
         async with admin.connect() as connection:

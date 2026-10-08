@@ -358,7 +358,7 @@ async def controller_events(
     change that commits while the stream is opening is still delivered.
     """
     presence = protocol.connections.controllers
-    nudges = management.notifier.subscribe(principal.controller_id, principal.tenant_id)
+    nudges = management.notifier.subscribe(principal.controller_id)
     try:
         conn = presence.require(principal.controller_id, connection_id, generation)
         async with tenant_session(session_factory, principal.tenant_id) as session:

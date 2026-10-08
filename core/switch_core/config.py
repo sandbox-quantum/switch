@@ -110,11 +110,11 @@ class SwitchConfig(BaseSettings):
     # See `outbound.py`.
     outbound_allowed_private_hosts: str = ""
 
-    # Feature flags that are on by default in every workspace: comma-separated
-    # keys from `feature_flags.KNOWN_FEATURE_FLAGS`. A workspace admin can still
-    # turn one off (or another on) for their workspace. An unknown key is a
-    # startup error rather than a silently ignored typo.
-    feature_flags_default_on: str = ""
+    # Feature flags that are on for this deployment: comma-separated keys from
+    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off. Fixed for
+    # the life of the process; an unknown key is a startup error rather than a
+    # silently ignored typo.
+    feature_flags_enabled: str = ""
 
     # Gateway admin seed
     gateway_admin_email: str
@@ -865,33 +865,25 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _validate_feature_flags_default_on(self) -> "SwitchConfig":
-        unknown = sorted(
-            key
-            for key in self._feature_flags_default_on_keys()
-            if key not in KNOWN_FEATURE_FLAGS
-        )
+    def _validate_feature_flags_enabled(self) -> "SwitchConfig":
+        unknown = sorted(self._enabled_feature_flags() - KNOWN_FEATURE_FLAGS)
         if unknown:
             raise ValueError(
-                f"FEATURE_FLAGS_DEFAULT_ON names unknown feature flag(s): {unknown}. "
+                f"FEATURE_FLAGS_ENABLED names unknown feature flag(s): {unknown}. "
                 f"Known flags: {sorted(KNOWN_FEATURE_FLAGS)}."
             )
         return self
 
-    def _feature_flags_default_on_keys(self) -> set[str]:
+    def _enabled_feature_flags(self) -> set[str]:
         return {
-            key.strip()
-            for key in self.feature_flags_default_on.split(",")
-            if key.strip()
+            key.strip() for key in self.feature_flags_enabled.split(",") if key.strip()
         }
 
     @property
-    def feature_flag_defaults(self) -> dict[str, bool]:
-        """Every known flag's server-wide default: the registry's, unless listed."""
-        on = self._feature_flags_default_on_keys()
-        return {
-            key: key in on or default for key, default in KNOWN_FEATURE_FLAGS.items()
-        }
+    def feature_flags(self) -> dict[str, bool]:
+        """Every known flag and whether this deployment turned it on."""
+        enabled = self._enabled_feature_flags()
+        return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

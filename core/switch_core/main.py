@@ -140,7 +140,6 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
-from switch_core.feature_flag_service import FeatureFlagService
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
@@ -719,7 +718,6 @@ async def run(config: SwitchConfig) -> None:
         )
 
     # ── Gateway app ───────────────────────────────────────────────────────────
-    feature_flag_service = FeatureFlagService(config.feature_flag_defaults)
     gateway_app = create_gateway_app(
         agent_store=agent_store,
         room_store=room_store,
@@ -748,7 +746,6 @@ async def run(config: SwitchConfig) -> None:
             if config.invite_email_enabled
             else None
         ),
-        feature_flag_service=feature_flag_service,
         config=config,
     )
 
@@ -801,7 +798,6 @@ async def run(config: SwitchConfig) -> None:
             agent_bridge_app=agent_bridge_app,
             gateway_app=gateway_app,
             protocol=protocol,
-            feature_flag_service=feature_flag_service,
         )
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.

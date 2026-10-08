@@ -4,7 +4,6 @@ import type {
   EmbeddedControllerOverview,
   MachineDetailsChange,
 } from '@shared/core/embedded-controller/embedded-controller';
-import type { ConsoleFeatureFlags } from '@shared/core/feature-flags';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { defaultWorkspacePath, serverWorkspacesDir } from './controller-files';
 import { embeddedControllerService } from './embedded-controllers';
@@ -30,10 +29,6 @@ export const embeddedControllerController = createRPCController({
     embeddedControllerService.updateDetails(params.serverId, params.changes),
 
   dismissRemoved: (serverId: string): Promise<void> => embeddedControllerService.dismiss(serverId),
-
-  /** The workspace feature flags this computer's controller for the server was last sent. */
-  getFeatureFlags: (serverId: string): Promise<ConsoleFeatureFlags> =>
-    embeddedControllerService.featureFlags(serverId),
 
   /**
    * Where this computer's controller puts a managed agent that names no

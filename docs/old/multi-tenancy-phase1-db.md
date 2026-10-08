@@ -136,9 +136,9 @@ Three entries are worth justifying:
 
 A user is a person, not a tenant member; the membership row is the per-tenant
 object. `oidc_identities` records how that person proves who they are, equally
-tenant-independent. `feature_flags` was a deployment switch in Phase 1; it has
-since become tenant-scoped (migration `9c4e7a1f2b38`), each workspace holding
-its own value.
+tenant-independent. `feature_flags` was a deployment switch in Phase 1; the
+table has since been dropped (migration `9c4e7a1f2b38`), and flags are now set
+at deploy time through `FEATURE_FLAGS_ENABLED`.
 
 **This is the list that is written down, and the scoped list is the one that
 is derived** — that way round, deliberately. The three in the model metadata

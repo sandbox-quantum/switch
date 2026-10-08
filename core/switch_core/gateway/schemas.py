@@ -1468,18 +1468,7 @@ class BudgetResponse(BaseModel):
 class FeatureFlagState(BaseModel):
     key: str
     enabled: bool
-    # The server-wide default, which the flag follows unless overridden.
-    default: bool
-    # Whether this workspace made its own choice for the flag.
-    overridden: bool
 
 
 class FeatureFlagsResponse(BaseModel):
     flags: list[FeatureFlagState]
-    # Whether the caller may change them: an admin of this workspace, or the
-    # deployment operator.
-    can_edit: bool
-
-
-class SetFeatureFlagRequest(BaseModel):
-    enabled: bool

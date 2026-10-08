@@ -312,11 +312,11 @@ switchCore:
   # Mattermost (mattermost.enabled) is added automatically.
   outbound:
     allowedPrivateHosts: []
-  # Feature flags on by default in every workspace (FEATURE_FLAGS_DEFAULT_ON),
-  # e.g. ["ecosystem.show_owners"]. Workspace admins can still turn a flag on
-  # or off for their own workspace. An unknown flag stops switch-core at startup.
+  # Feature flags turned on for this deployment (FEATURE_FLAGS_ENABLED), e.g.
+  # ["ecosystem.show_owners"]. Every other flag is off, and no one can change
+  # them while the server runs. An unknown flag stops switch-core at startup.
   featureFlags:
-    defaultOn: []
+    enabled: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
   # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
   # anything that speaks SMTP). Off, the invitation is still created and the

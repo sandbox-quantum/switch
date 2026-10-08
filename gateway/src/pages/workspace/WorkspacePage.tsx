@@ -1,7 +1,6 @@
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useAuth } from "../../data/AuthContext";
 import { ownsTenant } from "../../data/sessionState";
-import FeatureFlagsSection from "./FeatureFlagsSection";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
 
@@ -37,7 +36,6 @@ export default function WorkspacePage() {
             Ask a workspace owner or admin to invite someone.
           </Alert>
         )}
-        <FeatureFlagsSection />
       </Stack>
     </Box>
   );

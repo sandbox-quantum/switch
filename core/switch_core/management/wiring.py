@@ -34,8 +34,6 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.db.stores.feature_flag_store import FeatureFlagStore
-from switch_core.feature_flag_service import FeatureFlagService
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
@@ -65,7 +63,6 @@ class Management:
         agent_bridge_app: FastAPI,
         gateway_app: FastAPI,
         protocol: AgentCore,
-        feature_flag_service: FeatureFlagService,
     ) -> None:
         init_management_dependencies(
             service=self.service,
@@ -75,7 +72,6 @@ class Management:
         agent_bridge_app.include_router(controller_router)
         gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
         protocol.set_agent_removal_listener(self.agent_removed)
-        feature_flag_service.add_listener(self.service.notifier.feature_flags_changed)
         enable_agent_management(self.agent_operations)
 
     async def agent_removed(self, tenant_id: str, agent_id: str) -> None:
@@ -99,7 +95,6 @@ def build_management(
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
-    feature_flag_defaults: dict[str, bool],
     clock: Callable[[], datetime],
 ) -> Management:
     controllers = AgentControllerStore()
@@ -117,7 +112,6 @@ def build_management(
         api_keys=ApiKeyStore(),
         agents=AgentStore(),
         presence=presence,
-        feature_flags=FeatureFlagStore(feature_flag_defaults),
         clock=clock,
     )
     authenticator = ManagementAuthenticator(
@@ -162,6 +156,5 @@ def create_management(
             ttl_seconds=config.agent_auth_cache_ttl_seconds,
             max_entries=config.agent_auth_cache_max_entries,
         ),
-        feature_flag_defaults=config.feature_flag_defaults,
         clock=utc_now,
     )

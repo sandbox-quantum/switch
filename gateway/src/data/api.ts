@@ -1034,44 +1034,6 @@ export interface Member {
   created_at: string;
 }
 
-// ── Feature flags (per workspace) ───────────────────────────────────────
-
-export interface FeatureFlagState {
-  key: string;
-  enabled: boolean;
-  /** The server-wide default, which the flag follows unless overridden. */
-  default: boolean;
-  /** Whether this workspace made its own choice for the flag. */
-  overridden: boolean;
-}
-
-export interface FeatureFlagsResponse {
-  flags: FeatureFlagState[];
-  /** Whether the caller may change them: a workspace owner or admin. */
-  can_edit: boolean;
-}
-
-/** The signed-in workspace's flags. */
-export async function fetchFeatureFlags(): Promise<FeatureFlagsResponse> {
-  return jsonRequest<FeatureFlagsResponse>("/feature-flags", "GET");
-}
-
-export async function setFeatureFlag(
-  key: string,
-  enabled: boolean,
-): Promise<FeatureFlagsResponse> {
-  return jsonRequest<FeatureFlagsResponse>(
-    `/feature-flags/${encodeURIComponent(key)}`,
-    "PUT",
-    { enabled },
-  );
-}
-
-/** Drop the workspace's choice for a flag, so it follows the server default. */
-export async function resetFeatureFlag(key: string): Promise<FeatureFlagsResponse> {
-  return jsonRequest<FeatureFlagsResponse>(`/feature-flags/${encodeURIComponent(key)}`, "DELETE");
-}
-
 export async function fetchMembers(tenantId: string): Promise<Member[]> {
   return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
 }
@@ -1505,7 +1467,7 @@ export interface EcosystemNode {
   kind: EcosystemNodeKind;
   label: string;
   sublabel: string;
-  // Present on agent nodes only when the `ecosystem.show_owners` workspace flag
+  // Present on agent nodes only when the `ecosystem.show_owners` server flag
   // is ON; otherwise omitted so the "Show owners" toggle has nothing to show.
   owner_name?: string | null;
 }

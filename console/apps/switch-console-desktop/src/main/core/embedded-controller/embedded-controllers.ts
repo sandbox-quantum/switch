@@ -2,7 +2,6 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { hostname, release } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { readFeatureFlagsFile } from '@switch-console/agent-providers';
 import { app } from 'electron';
 import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import {
@@ -92,7 +91,6 @@ export const embeddedControllerService = new EmbeddedControllerService({
   management: gatewayManagementPort,
   files: {
     dataDir: (serverId) => controllerDataDir(base(), serverId),
-    readFeatureFlags: readFeatureFlagsFile,
     turnOffWatchers,
     wipeIdentity: wipeControllerIdentity,
   },

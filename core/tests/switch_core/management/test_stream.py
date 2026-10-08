@@ -75,7 +75,7 @@ def _message(room_id: str, body: str, *, addressed: bool) -> AgentEvent:
 class TestTheNotifier:
     def test_signals_coalesce_and_revocation_comes_last(self) -> None:
         notifier = ControllerNotifier()
-        subscription = notifier.subscribe("c1", "t1")
+        subscription = notifier.subscribe("c1")
         notifier.credential_revoked("c1")
         notifier.assignment_changed("c1", 3)
         notifier.assignment_changed("c1", 5)
@@ -99,8 +99,8 @@ class TestTheNotifier:
 
     def test_every_open_stream_hears_and_a_closed_one_is_forgotten(self) -> None:
         notifier = ControllerNotifier()
-        first = notifier.subscribe("c1", "t1")
-        second = notifier.subscribe("c1", "t1")
+        first = notifier.subscribe("c1")
+        second = notifier.subscribe("c1")
         notifier.assignment_changed("c1", 1)
         assert (
             first.drain() == second.drain() == [(ASSIGNMENT_CHANGED, {"revision": 1})]
@@ -136,7 +136,6 @@ class TestOpening:
                 "connection_id": opened["connection_id"],
                 "generation": opened["generation"],
                 "heartbeat_interval_s": 2.0,
-                "feature_flags": {"ecosystem.show_owners": False},
             },
         )
         assert attached == (

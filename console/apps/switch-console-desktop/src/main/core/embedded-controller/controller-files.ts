@@ -1,11 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import {
-  FEATURE_FLAGS_FILE,
-  WATCH_FLAGS_FILE,
-  watchFlagsSchema,
-} from '@switch-console/agent-providers';
+import { WATCH_FLAGS_FILE, watchFlagsSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
 
 /**
@@ -180,12 +176,7 @@ export async function turnOffWatchers(dataDir: string): Promise<number> {
  * still be winding down in its root, and a workspace holds the agent's work.
  */
 export async function wipeControllerIdentity(dataDir: string): Promise<void> {
-  for (const name of [
-    'controller.db',
-    'controller.db-wal',
-    'controller.db-shm',
-    FEATURE_FLAGS_FILE,
-  ])
+  for (const name of ['controller.db', 'controller.db-wal', 'controller.db-shm'])
     await rm(join(dataDir, name), { force: true });
   await rm(join(dataDir, 'agents'), { recursive: true, force: true });
   await rm(join(dataDir, 'secrets'), { recursive: true, force: true });

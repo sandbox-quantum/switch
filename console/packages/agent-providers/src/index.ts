@@ -78,12 +78,6 @@ export {
   type WatchFlags,
   watchFlagsSchema,
 } from './host/watch-flags';
-export {
-  FEATURE_FLAGS_FILE,
-  type FeatureFlagsFile,
-  featureFlagsFileSchema,
-  readFeatureFlagsFile,
-} from './host/feature-flags-file';
 export { superviseSharedHost } from './host/supervisor';
 export { controllerConnectionId } from './host/connection-id';
 export { EXECUTION_INHERIT_ENV } from './host/agent-env';

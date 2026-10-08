@@ -35,7 +35,6 @@ from switch_core.management.schemas import (
 )
 from tests.switch_core.management.harness import (
     FIXTURES,
-    TENANT_ZERO_ID,
     Harness,
     add_member,
     add_room,
@@ -414,11 +413,6 @@ class TestStreamFrames:
                 operation_id="op",
                 kind="provider.recheck",
                 agent_id=None,
-            )
-            provoked += await take(stream, 1)
-
-            harness.management.service.notifier.feature_flags_changed(
-                TENANT_ZERO_ID, {"ecosystem.show_owners": True}
             )
             provoked += await take(stream, 1)
 

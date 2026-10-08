@@ -33,7 +33,6 @@ from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flag_service import FeatureFlagService
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
@@ -67,7 +66,6 @@ def init_dependencies(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
-    feature_flag_service: FeatureFlagService,
     config: SwitchConfig,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -93,7 +91,6 @@ def init_dependencies(
     _state["protocol"] = protocol
     _state["install_service"] = install_service
     _state["invite_mailer"] = invite_mailer
-    _state["feature_flag_service"] = feature_flag_service
     _state["config"] = config
 
 
@@ -239,10 +236,6 @@ def get_config() -> SwitchConfig:
 
 def get_protocol() -> AgentCore:
     return _state["protocol"]  # type: ignore[no-any-return]
-
-
-def get_feature_flag_service() -> FeatureFlagService:
-    return _state["feature_flag_service"]  # type: ignore[no-any-return]
 
 
 def current_telemetry() -> TelemetryService | None:

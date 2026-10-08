@@ -2392,31 +2392,6 @@ class TelemetrySnapshotWatermark(Base):
     )
 
 
-# ── Feature flags ────────────────────────────────────────────────────────────
-
-
-class FeatureFlag(TenantScoped, Base):
-    """A workspace's on/off switch, keyed by a well-known flag name.
-
-    A row exists only once a flag has been written for the workspace; an
-    absent row means the flag is OFF (its default). Which keys are writable is
-    enforced in the application layer (see ``switch_core.feature_flags``), not
-    by the table.
-    """
-
-    __tablename__ = "feature_flags"
-    __table_args__ = (PrimaryKeyConstraint("tenant_id", "key"),)
-
-    key: Mapped[str] = mapped_column(Text, nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    updated_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
 # ── Messages ─────────────────────────────────────────────────────────────────
 
 

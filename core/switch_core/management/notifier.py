@@ -5,8 +5,7 @@ process holds. Each open stream subscribes; a change commits and then calls
 one of the `ControllerNotifier` methods, which records the latest signal on
 every subscription for that controller and wakes it.
 
-A nudge carries no state the controller depends on (feature flags excepted,
-see `feature_flags_changed`). It says "pull again",
+A nudge carries no state the controller depends on. It says "pull again",
 and every reconnect resyncs in full, so a nudge lost to a restart or to a
 stream that was between connections costs a delay, never correctness. That
 is also why signals coalesce: two assignment changes before the stream wakes
@@ -21,23 +20,18 @@ from typing import Any
 ASSIGNMENT_CHANGED = "assignment.changed"
 OPERATION_PENDING = "operation.pending"
 CREDENTIAL_REVOKED = "credential.revoked"
-FEATURE_FLAGS_CHANGED = "feature_flags.changed"
 CONNECTION_STATE = "connection_state"
 
 
 class ControllerSubscription:
     """One open stream's pending signals, and the event that wakes it."""
 
-    def __init__(
-        self, notifier: ControllerNotifier, controller_id: str, tenant_id: str
-    ) -> None:
+    def __init__(self, notifier: ControllerNotifier, controller_id: str) -> None:
         self._notifier = notifier
         self.controller_id = controller_id
-        self.tenant_id = tenant_id
         self.wake = asyncio.Event()
         self._assignment_revision: int | None = None
         self._operations: dict[str, dict[str, Any]] = {}
-        self._feature_flags: dict[str, bool] | None = None
         self._revoked = False
 
     def _assignment_changed(self, revision: int) -> None:
@@ -47,10 +41,6 @@ class ControllerSubscription:
 
     def _operation_pending(self, data: dict[str, Any]) -> None:
         self._operations[data["operation_id"]] = data
-        self.wake.set()
-
-    def _feature_flags_changed(self, flags: dict[str, bool]) -> None:
-        self._feature_flags = flags
         self.wake.set()
 
     def _credential_revoked(self) -> None:
@@ -71,9 +61,6 @@ class ControllerSubscription:
         for data in self._operations.values():
             frames.append((OPERATION_PENDING, data))
         self._operations.clear()
-        if self._feature_flags is not None:
-            frames.append((FEATURE_FLAGS_CHANGED, {"flags": self._feature_flags}))
-            self._feature_flags = None
         if self._revoked:
             frames.append((CREDENTIAL_REVOKED, {}))
             self._revoked = False
@@ -87,8 +74,8 @@ class ControllerNotifier:
     def __init__(self) -> None:
         self._subscriptions: dict[str, set[ControllerSubscription]] = {}
 
-    def subscribe(self, controller_id: str, tenant_id: str) -> ControllerSubscription:
-        subscription = ControllerSubscription(self, controller_id, tenant_id)
+    def subscribe(self, controller_id: str) -> ControllerSubscription:
+        subscription = ControllerSubscription(self, controller_id)
         self._subscriptions.setdefault(controller_id, set()).add(subscription)
         return subscription
 
@@ -113,17 +100,6 @@ class ControllerNotifier:
         data = {"operation_id": operation_id, "kind": kind, "agent_id": agent_id}
         for subscription in self._subscriptions.get(controller_id, ()):
             subscription._operation_pending(data)
-
-    def feature_flags_changed(self, tenant_id: str, flags: dict[str, bool]) -> None:
-        """Every controller of `tenant_id` gets the workspace's full flag set.
-
-        Unlike the other nudges this one carries the state: it is small, and a
-        controller has nowhere else to pull it from between connects.
-        """
-        for held in self._subscriptions.values():
-            for subscription in held:
-                if subscription.tenant_id == tenant_id:
-                    subscription._feature_flags_changed(flags)
 
     def credential_revoked(self, controller_id: str) -> None:
         for subscription in self._subscriptions.get(controller_id, ()):

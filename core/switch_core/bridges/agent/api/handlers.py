@@ -129,7 +129,6 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, HostedLaunch, Task, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.gateway.known_agents import KNOWN_AGENTS
 from switch_core.version import switch_core_version
 
@@ -2120,15 +2119,15 @@ async def list_bridges(
 @router.get("/feature-flags")
 async def list_feature_flags(
     _agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    session: Annotated[AsyncSession, Depends(get_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> FeatureFlagListResponse:
-    """List every feature flag of the agent's workspace and its current state.
+    """List every feature flag and whether this deployment turned it on.
 
-    Any authenticated agent may read its own workspace's flags. Only workspace
-    admins may change them, through the gateway.
+    Any authenticated agent may read them. Flags are set at deploy time
+    (`FEATURE_FLAGS_ENABLED`); nothing can change them through the API.
     """
-    flags = await FeatureFlagStore(config.feature_flag_defaults).get_all(session)
     return FeatureFlagListResponse(
-        flags=[FeatureFlagInfo(key=k, enabled=v) for k, v in sorted(flags.items())]
+        flags=[
+            FeatureFlagInfo(key=k, enabled=v) for k, v in config.feature_flags.items()
+        ]
     )

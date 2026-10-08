@@ -18,7 +18,6 @@ from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ASSIGNMENT_CHANGED, CREDENTIAL_REVOKED
 from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.management.harness import (
-    TENANT_ZERO_ID,
     WORKSPACES_DIR,
     EnrolledController,
     Harness,
@@ -736,7 +735,7 @@ class TestRevocation:
                 client, owner, name="reviewer", controller_id=controller.controller_id
             )
             subscription = harness.management.service.notifier.subscribe(
-                controller.controller_id, TENANT_ZERO_ID
+                controller.controller_id
             )
             revoked = await client.delete(
                 f"/gateway/management/controllers/{controller.controller_id}",
@@ -773,7 +772,7 @@ class TestRevocation:
             controller = await enroll_console(harness, client, owner)
             await report_status(client, controller, 1, providers=[provider("claude")])
             subscription = harness.management.service.notifier.subscribe(
-                controller.controller_id, TENANT_ZERO_ID
+                controller.controller_id
             )
             await create_managed_agent(
                 client, owner, name="reviewer", controller_id=controller.controller_id
@@ -792,7 +791,7 @@ class TestDeletingAManagedAgentThroughCore:
             )
             agent_id = created.json()["agent_id"]
             subscription = harness.management.service.notifier.subscribe(
-                controller.controller_id, TENANT_ZERO_ID
+                controller.controller_id
             )
             await harness.protocol.delete_agent(agent_id=agent_id)
             assignment = await client.get(

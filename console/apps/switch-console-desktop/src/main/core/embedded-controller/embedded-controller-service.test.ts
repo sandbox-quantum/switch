@@ -9,7 +9,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readFeatureFlagsFile } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type {
@@ -67,7 +66,6 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
     management,
     files: {
       dataDir: (serverId) => controllerDataDir(base, serverId),
-      readFeatureFlags: readFeatureFlagsFile,
       turnOffWatchers,
       wipeIdentity: wipeControllerIdentity,
     },
@@ -167,27 +165,6 @@ afterEach(async () => {
 });
 
 describe('EmbeddedControllerService', () => {
-  it('reads the flags the controller was last sent, only while it runs', async () => {
-    const recordFlags = () => {
-      const dir = controllerDataDir(base, SERVER);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(
-        join(dir, 'feature-flags.json'),
-        JSON.stringify({
-          flags: { 'ecosystem.show_owners': true, 'not.for.console': true },
-          receivedAt: '2026-01-01T00:00:00Z',
-        })
-      );
-    };
-    const stopped = service();
-    recordFlags();
-    expect(await stopped.featureFlags(SERVER)).toEqual({ 'ecosystem.show_owners': false });
-
-    const running = await enabled();
-    recordFlags();
-    expect(await running.featureFlags(SERVER)).toEqual({ 'ecosystem.show_owners': true });
-  });
-
   it('enrolls, keeps the credential in the secrets store only, and hands it to the child on stdin', async () => {
     await enabled();
     expect(management.enroll).toHaveBeenCalledWith(WORKSPACE, {

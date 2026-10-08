@@ -1,9 +1,4 @@
-import { join } from 'node:path';
-import {
-  FEATURE_FLAGS_FILE,
-  type FeatureFlagsFile,
-  type OpenAgentStream,
-} from '@switch-console/agent-providers';
+import type { OpenAgentStream } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
 import { AccessTokens, ControllerClient, type Fetch, isRevoked } from './api';
 import { ConfigurationError } from './errors';
@@ -13,7 +8,7 @@ import { isSafeSegment } from './paths';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
 import { DEFAULT_RELAY_TIMING, LocalRelay, RELAY_TOKEN_PREFIX, type RelayTiming } from './relay';
 import { UpstreamForwarder } from './relay-forward';
-import { type AgentRuntime, writeAtomic } from './runtime';
+import type { AgentRuntime } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
@@ -450,29 +445,10 @@ export async function runController(
     });
   };
 
-  let flagsWriting: Promise<void> = Promise.resolve();
-  const recordFeatureFlags = (flags: Record<string, boolean>) => {
-    const body: FeatureFlagsFile = { flags, receivedAt: new Date(deps.now()).toISOString() };
-    const path = join(deps.dataDir, FEATURE_FLAGS_FILE);
-    flagsWriting = flagsWriting
-      .then(() => writeAtomic(path, JSON.stringify(body)))
-      .catch((error: unknown) => {
-        log.warn(
-          'Could not record the workspace feature flags; they are written again on the next change or reconnect.',
-          {
-            path,
-            error: errorMessage(error),
-          }
-        );
-      });
-  };
-
   const onFrame = async (frame: ControllerFrame): Promise<void> => {
     switch (frame.type) {
       case 'connection_state':
         reportWithinS = frame.data.report_within_s;
-        // A server that sends none has no flags: every one is off.
-        recordFeatureFlags(frame.data.feature_flags ?? {});
         if (assignment === null || frame.data.assignment_revision > assignment.revision)
           void sync('the stream says the assignment moved on');
         return;
@@ -515,9 +491,6 @@ export async function runController(
         return;
       case 'credential.revoked':
         await revoke();
-        return;
-      case 'feature_flags.changed':
-        recordFeatureFlags(frame.data.flags);
         return;
     }
   };

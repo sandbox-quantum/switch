@@ -39,8 +39,6 @@ export class FakeCore {
   tokenLifetimeMs = 60 * 60 * 1000;
   reportWithinS = 60;
   heartbeatIntervalS = 0.05;
-  /** Sent on `connection_state` when set, as a server that knows feature flags does. */
-  featureFlags: Record<string, boolean> | null = null;
   revoked = false;
   assignment: Assignment = { revision: 0, agents: [] };
   /** Each agent's rooms, as `agent.attached` carries them. */
@@ -288,7 +286,6 @@ export class FakeCore {
         connection_id: connection.id,
         generation: connection.generation,
         heartbeat_interval_s: this.heartbeatIntervalS,
-        ...(this.featureFlags ? { feature_flags: this.featureFlags } : {}),
       });
       // Every bound agent is attached afresh on each stream, from where the
       // connection was opened.

@@ -380,8 +380,6 @@ stream. The flag and everything else above stay as they are.
     (membership changed).
   - Plus the management nudges: `assignment.changed`, `operation.pending`,
     `credential.revoked`.
-  - `feature_flags.changed {flags}`: every flag of the controller's workspace
-    after an admin changed one. Unlike the nudges it carries the state.
 - **Reading:** a read-side merge over the existing per-agent `EventBuffer`, from each agent's cursor,
   `filter=all` (the controller filters locally). There is no buffer per controller. Bindings
   changing mid-stream attach or detach agents live.
@@ -468,10 +466,7 @@ stream. The flag and everything else above stay as they are.
   from the room), `agent.approval_outcome {agent_id, outcome}`, and the stream
   ends with `evicted {code, reason}` (`taken_over`, `heartbeat_lapsed`,
   `closed`) or after `credential.revoked`. `connection_state` adds
-  `connection_id`, `generation`, `heartbeat_interval_s` and `feature_flags`
-  (the workspace's flags; absent from an older server). The controller writes
-  the flags it is sent to `feature-flags.json` in its data directory, which is
-  where Console reads them.
+  `connection_id`, `generation` and `heartbeat_interval_s`.
 - **Revocation** leaves the agents bound to the revoked controller (still
   controller-backed, not live) until they are moved or removed.
 - **Controller-token cache.** The controller row a controller token re-reads

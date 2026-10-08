@@ -58,7 +58,7 @@ export default function EcosystemGraphPage() {
 
   // "Show owners" inserts an owner node between each agent-type and its agents
   // (type -> owner -> agent). Owner names come from the ecosystem payload,
-  // which only carries them when the workspace `ecosystem.show_owners` flag is ON —
+  // which only carries them when the server `ecosystem.show_owners` flag is ON —
   // so with the flag off this toggle reveals nothing.
   const [showOwners, setShowOwners] = useState(false);
 
