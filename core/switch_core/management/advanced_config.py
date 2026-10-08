@@ -3,8 +3,9 @@
 The fields each provider takes are declared with the provider, in
 `switch_core.providers.registry` (`switch_core.providers.advanced_fields` holds
 the field model): every definition is checked against them whatever machine
-runs the agent, and `GET /gateway/management/advanced-config` and the
-`get_advanced_config` agent operation serve them so a client can build its form from them.
+runs the agent, and `GET /gateway/management/providers`,
+`GET /gateway/management/advanced-config` and the `get_advanced_config` agent
+operation serve them so a client can build its form from them.
 
 An advanced config is a JSON object keyed by field. A field that is not set is
 left out, never sent as null, "" or [].
@@ -40,6 +41,21 @@ def advanced_config_schema() -> dict[str, Any]:
             }
             for provider in agent_providers()
         }
+    }
+
+
+def providers_schema() -> dict[str, Any]:
+    """Every provider a definition can name, in the order a client offers
+    them, as `GET /gateway/management/providers` serves them."""
+    return {
+        "providers": [
+            {
+                "id": provider.id,
+                "label": provider.label,
+                "advanced_fields": [field.wire() for field in provider.advanced_fields],
+            }
+            for provider in agent_providers()
+        ]
     }
 
 

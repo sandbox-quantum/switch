@@ -5,9 +5,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from pydantic import TypeAdapter, ValidationError
 
+from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.known_agents import (
     ClaudeCodeKnownAgent,
     GenericKnownAgent,
@@ -21,6 +24,7 @@ from switch_core.management.advanced_config import (
     provider_fields,
     validate_advanced_config,
 )
+from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.schemas import DefinitionV1
 from switch_core.management.service import _known_agent_registration
 from switch_core.providers import registry
@@ -130,6 +134,25 @@ class TestANewProvider:
             runtime=None, sign_in_command=None
         )
         assert provider_ids()[-1] == "newcli"
+
+    async def test_it_is_served_in_the_provider_list(
+        self, new_provider: AgentProvider
+    ) -> None:
+        app = FastAPI()
+        app.include_router(gateway_router, prefix="/gateway/management")
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="u")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            providers = await client.get("/gateway/management/providers")
+            advanced = await client.get("/gateway/management/advanced-config")
+        assert providers.status_code == 200, providers.text
+        assert providers.json()["providers"][-1] == {
+            "id": "newcli",
+            "label": "New CLI",
+            "advanced_fields": [],
+        }
+        assert advanced.json()["providers"]["newcli"] == {"fields": []}
 
     def test_it_has_an_empty_advanced_configuration(
         self, new_provider: AgentProvider

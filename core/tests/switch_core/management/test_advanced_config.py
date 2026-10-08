@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from switch_core.management.advanced_config import (
     advanced_config_schema,
+    providers_schema,
     validate_advanced_config,
 )
 from switch_core.management.schemas import DefinitionV1
@@ -21,6 +22,23 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
         "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
         in str(raised.value)
     )
+
+
+def test_the_served_provider_list() -> None:
+    providers = providers_schema()["providers"]
+
+    assert [(provider["id"], provider["label"]) for provider in providers] == [
+        ("claude", "Claude Code"),
+        ("codex", "Codex"),
+        ("opencode", "OpenCode"),
+        ("antigravity", "Antigravity"),
+        ("cursor", "Cursor CLI"),
+    ]
+    by_id = {provider["id"]: provider for provider in providers}
+    served = advanced_config_schema()["providers"]
+    for provider_id, provider in by_id.items():
+        assert provider["advanced_fields"] == served[provider_id]["fields"]
+    assert by_id["cursor"]["advanced_fields"] == []
 
 
 def test_the_served_schema() -> None:

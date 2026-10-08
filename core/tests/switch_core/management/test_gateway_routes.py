@@ -133,7 +133,7 @@ class TestOwnerIsolation:
             return found
 
         routes = [r for r in gateway_router.routes if hasattr(r, "dependant")]
-        assert len(routes) == 14
+        assert len(routes) == 15
         for route in routes:
             assert get_current_user in calls(route.dependant), route.path  # type: ignore[attr-defined]
 
@@ -448,6 +448,34 @@ class TestManagedAgents:
             field for field in providers["claude"]["fields"] if field["key"] == "effort"
         )
         assert effort["options"][0] == {"value": "", "label": "Inherit"}
+        assert anonymous.status_code == 401
+
+    async def test_the_provider_list_is_served(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            served = await client.get(
+                "/gateway/management/providers", cookies=cookies_for(owner)
+            )
+            advanced = await client.get(
+                "/gateway/management/advanced-config", cookies=cookies_for(owner)
+            )
+            anonymous = await client.get("/gateway/management/providers")
+        assert served.status_code == 200, served.text
+        providers = served.json()["providers"]
+        assert [provider["id"] for provider in providers] == [
+            "claude",
+            "codex",
+            "opencode",
+            "antigravity",
+            "cursor",
+        ]
+        assert providers[0]["label"] == "Claude Code"
+        for entry in providers:
+            assert set(entry) == {"id", "label", "advanced_fields"}
+            assert (
+                entry["advanced_fields"]
+                == advanced.json()["providers"][entry["id"]]["fields"]
+            )
         assert anonymous.status_code == 401
 
     async def test_adopting_an_existing_agent(self, harness: Harness) -> None:
