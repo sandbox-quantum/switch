@@ -2,6 +2,7 @@ import type { Result } from '@switch-console/shared';
 import { z } from 'zod';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { appService } from '@main/core/app/service';
+import { resetChatStream } from '@main/core/chats/chat-streams';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
@@ -538,6 +539,7 @@ export const switchServersController = createRPCController({
     const server = await getServer(serverId).catch(() => null);
     await deleteManagedClaudeCredential(serverId);
     await deleteSessionCookie(serverId);
+    resetChatStream(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
   },
 

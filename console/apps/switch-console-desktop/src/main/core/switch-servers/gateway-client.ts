@@ -197,6 +197,8 @@ type FetchOptions = {
   authenticated: boolean;
   method?: string;
   body?: unknown;
+  /** A multipart body, sent as is; `fetch` sets its boundary. Excludes `body`. */
+  formData?: FormData;
 };
 
 /**
@@ -286,7 +288,9 @@ export async function gatewayRequest(
       return await fetch(gatewayUrl(server, path), {
         method: options.method ?? 'GET',
         headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        body:
+          options.formData ??
+          (options.body !== undefined ? JSON.stringify(options.body) : undefined),
         // We attach the cookie explicitly; don't let the runtime manage a jar.
         redirect: 'manual',
         signal: options.signal,
