@@ -56,6 +56,8 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    receivesWebhooks: false,
+    webhookUrl: null,
     ...patch,
   };
 }
@@ -175,6 +177,32 @@ describe('the app name and its badges', () => {
 });
 
 describe('the row menu', () => {
+  it('offers the webhook address of a connection that receives events on one', async () => {
+    const el = await render(
+      row({
+        bridge: bridge({
+          receivesWebhooks: true,
+          webhookUrl: 'https://switch.example/messaging/bridges/b-1/events',
+        }),
+      })
+    );
+
+    expect(await openMenu(el)).toContain('Copy webhook address');
+  });
+
+  it('says what is missing when the server has no public address to give', async () => {
+    const el = await render(row({ bridge: bridge({ receivesWebhooks: true, webhookUrl: null }) }));
+
+    await openMenu(el);
+    expect(document.body.textContent).toContain('MESSAGING_PUBLIC_URL');
+  });
+
+  it('offers no webhook address for a connection that dials out', async () => {
+    const el = await render(row());
+
+    expect(await openMenu(el)).not.toContain('Copy webhook address');
+  });
+
   it('is where unlinking lives, and only when there is a link to undo', async () => {
     const el = await render(row({ identities: [IDENTITY] }));
 

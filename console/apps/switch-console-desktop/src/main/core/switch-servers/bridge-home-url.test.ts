@@ -20,6 +20,8 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    receivesWebhooks: false,
+    webhookUrl: null,
     ...overrides,
   };
 }

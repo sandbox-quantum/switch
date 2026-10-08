@@ -97,6 +97,8 @@ describe('createBridgeOnServer', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        receivesWebhooks: false,
+        webhookUrl: null,
       },
     });
   });

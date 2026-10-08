@@ -1,6 +1,7 @@
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   CircleAlert,
+  Copy,
   ExternalLink,
   Info,
   KeyRound,
@@ -18,7 +19,7 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { useToast } from '@renderer/lib/hooks/use-toast';
+import { toast as showToast, useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -527,6 +528,26 @@ export function MessagingAppRow({
             <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
           )}
 
+          {bridge.receivesWebhooks && (
+            <>
+              <DropdownMenuSeparator />
+              {/* The address the platform delivers this connection's events
+                  to. Nothing arrives until someone pastes it into the
+                  platform's settings, so it is offered right here. */}
+              {bridge.webhookUrl ? (
+                <DropdownMenuItem onClick={() => void copyWebhookAddress(bridge.webhookUrl!)}>
+                  <Copy className="size-4" />
+                  Copy webhook address
+                </DropdownMenuItem>
+              ) : (
+                <p className="max-w-xs px-2 py-1 text-xs text-destructive">
+                  {platform} delivers events to a public address, and this server has none
+                  configured. Set MESSAGING_PUBLIC_URL on the server.
+                </p>
+              )}
+            </>
+          )}
+
           {(showBundledSignIn || bridge.homeUrl) && <DropdownMenuSeparator />}
           {showBundledSignIn && (
             <DropdownMenuItem
@@ -564,6 +585,19 @@ export function MessagingAppRow({
       </DropdownMenu>
     </div>
   );
+}
+
+async function copyWebhookAddress(url: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast({ title: 'Webhook address copied', description: url });
+  } catch {
+    showToast({
+      title: 'Copy failed',
+      description: 'The webhook address could not be copied to the clipboard.',
+      variant: 'destructive',
+    });
+  }
 }
 
 /** The claimed account as a handle. Platforms differ on whether the username

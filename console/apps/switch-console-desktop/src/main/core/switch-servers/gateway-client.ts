@@ -1154,6 +1154,9 @@ type BridgeJson = {
   channel_creation_enabled?: boolean;
   // Absent on a server predating Telegram, where every bridge had a directory.
   directory_search_supported?: boolean;
+  // Absent on a server predating per-connection webhooks, where none had one.
+  receives_webhooks?: boolean;
+  webhook_url?: string | null;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1169,6 +1172,8 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
     directorySearchSupported: b.directory_search_supported ?? true,
+    receivesWebhooks: b.receives_webhooks ?? false,
+    webhookUrl: b.webhook_url ?? null,
   };
 }
 

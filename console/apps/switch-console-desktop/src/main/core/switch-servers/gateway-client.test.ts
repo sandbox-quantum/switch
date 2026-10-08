@@ -462,6 +462,8 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        receivesWebhooks: false,
+        webhookUrl: null,
       },
       {
         id: 'b2',
@@ -476,6 +478,8 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        receivesWebhooks: false,
+        webhookUrl: null,
       },
     ]);
   });

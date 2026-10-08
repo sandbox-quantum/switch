@@ -89,6 +89,8 @@ describe('updateBridgeOnServer', () => {
         channelCreationSupported: true,
         canCreateChannels: false,
         directorySearchSupported: true,
+        receivesWebhooks: false,
+        webhookUrl: null,
       },
     });
   });

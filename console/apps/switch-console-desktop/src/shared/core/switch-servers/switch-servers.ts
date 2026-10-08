@@ -360,6 +360,12 @@ export type RemoteBridge = {
    * before Telegram had one.
    */
   directorySearchSupported: boolean;
+  /** Whether this connection receives its platform's events on an address of
+   * its own, which the operator has to give the platform. */
+  receivesWebhooks: boolean;
+  /** That address, or null where the connection takes none or the server has
+   * no public origin configured (`MESSAGING_PUBLIC_URL`) to build it from. */
+  webhookUrl: string | null;
 };
 
 /**

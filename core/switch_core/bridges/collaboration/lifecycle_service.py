@@ -118,7 +118,17 @@ def _failure_reason(
         return "auth_failed"
 
     if adapter_cls is not None:
-        claimed = adapter_cls.classify_failure(exc)
+        # Guarded because this runs while a bridge failure is being reported:
+        # a classifier that raised would replace the bridge's own exception
+        # with its own and take the failure event with it.
+        try:
+            claimed = adapter_cls.classify_failure(exc)
+        except Exception:
+            logger.exception(
+                "%s.classify_failure raised; classifying with the shared rules",
+                adapter_cls.__name__,
+            )
+            claimed = None
         if claimed is not None:
             return claimed
 

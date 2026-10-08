@@ -371,3 +371,13 @@ class TestTheAdapterOwnsItsPlatformsExceptions:
         assert _failure_reason(httpx.ConnectError("no route"), None) == "network"
         assert _failure_reason(BridgeOperationError("no"), None) == "platform_error"
         assert _failure_reason(ValueError("bad"), None) == "config_invalid"
+
+    def test_an_adapter_classifier_that_raises_does_not_replace_the_failure(
+        self,
+    ) -> None:
+        class _Broken(TeamsAdapter):
+            @classmethod
+            def classify_failure(cls, exc: BaseException) -> None:
+                raise RuntimeError("the classifier itself is broken")
+
+        assert _failure_reason(BridgeOperationError("no"), _Broken) == "platform_error"
