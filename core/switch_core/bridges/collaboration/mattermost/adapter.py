@@ -2381,8 +2381,11 @@ class MattermostAdapter(PlatformAdapter):
         try:
             url = await self.agent_icon_url(agent_name)
             if url is None:
+                # Nothing is uploaded, so the bot keeps the image it has: the
+                # default for a new bot, or whatever an earlier start set.
                 logger.debug(
-                    "[BOT-ICON] no icon for %s; keeping the default", agent_name
+                    "[BOT-ICON] no icon to send for %s; leaving the bot's current image",
+                    agent_name,
                 )
                 return
             logger.debug("[BOT-ICON] fetching avatar for %s", agent_name)

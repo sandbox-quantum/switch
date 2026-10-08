@@ -21,6 +21,8 @@ not fit is not sent, and Slack shows the app's own icon for that post.
 import logging
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
+from switch_core.agent_icon import GENERATED_ICON_HOST
+
 logger = logging.getLogger(__name__)
 
 # Slack's resting dark surface, sampled from a real client. A hovered row
@@ -33,7 +35,6 @@ SLACK_SURFACE = "1a1d21"
 #: against the live API, as Slack does not document it.
 SLACK_ICON_URL_MAX = 255
 
-_DICEBEAR_HOST = "api.dicebear.com"
 _BACKGROUND_PARAM = "backgroundColor"
 
 
@@ -49,7 +50,7 @@ def on_slack_background(icon_url: str) -> str:
     `%2C`, which DiceBear refuses.
     """
     parts = urlsplit(icon_url)
-    if (parts.hostname or "").lower() != _DICEBEAR_HOST:
+    if parts.hostname != GENERATED_ICON_HOST:
         return icon_url
 
     query = parse_qsl(parts.query, keep_blank_values=True)

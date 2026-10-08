@@ -114,6 +114,8 @@ class ManagementSettings:
     # against (`GATEWAY_PUBLIC_URL`). None when the deployment has not said,
     # and then nothing can tell an owner what `--server` to enroll with.
     server_url: str | None
+    # `THIRD_PARTY_AVATARS_ENABLED`. Off, a new agent with no chosen icon
+    # stores none rather than the generated one, which carries its name.
     third_party_avatars: bool
 
 

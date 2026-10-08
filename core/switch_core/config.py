@@ -402,6 +402,15 @@ class SwitchConfig(BaseSettings):
     # separately by email domain whether or not this is set.
     telemetry_internal: bool = False
 
+    # Whether agents and people may be drawn by outside avatar services. An
+    # agent with no icon of its own wears a face from api.dicebear.com seeded
+    # with its name, and a person relayed from another platform a lettered
+    # badge from ui-avatars.com with their name in the URL. Slack, Discord and
+    # Teams clients load those URLs, so the services see the name and each
+    # reader's address; the Mattermost adapter loads them from this server.
+    # False sends no such URL anywhere, stored ones included: each platform
+    # shows its own default icon, new agents get no generated icon, and Switch
+    # Console stops drawing them for this server's agents.
     third_party_avatars_enabled: bool = True
 
     server_host: str = "0.0.0.0"

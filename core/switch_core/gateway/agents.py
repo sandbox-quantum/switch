@@ -44,7 +44,9 @@ from switch_core.gateway.known_agents import KNOWN_AGENTS
 from switch_core.gateway.schemas import (
     AgentDetail,
     AgentSummary,
+    AvatarSettingsResponse,
     BulkRegisterResult,
+    IconChoicesResponse,
     KnownAgentType,
     RegisterAgentResponse,
     RegisterKnownAgentRequest,
@@ -154,19 +156,34 @@ async def list_known_agent_types() -> list[KnownAgentType]:
     ]
 
 
+@router.get("/avatar-settings")
+async def get_avatar_settings(
+    _user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AvatarSettingsResponse:
+    """Whether a client may draw agents with icons from outside avatar
+    services. Switch Console builds the same generated icons the bridges do,
+    so it asks here rather than sending names the operator has kept in."""
+    return AvatarSettingsResponse(
+        third_party_avatars_enabled=config.third_party_avatars_enabled
+    )
+
+
 @router.get("/icon-choices")
 async def list_icon_choices(
     _user: Annotated[User, Depends(get_current_user)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     name: Annotated[str, Query(min_length=1, max_length=128)],
     page: Annotated[int, Query(ge=0, le=1000)] = 0,
-) -> dict[str, list[str]]:
+) -> IconChoicesResponse:
     """One page of generated icons for an agent called `name`: page 0 leads
-    with the one an agent of that name gets when nobody picks an icon. None
-    when third-party avatars are off."""
+    with the one an agent of that name gets when nobody picks an icon. An
+    empty page, flagged as such, when third-party avatars are off."""
     if not config.third_party_avatars_enabled:
-        return {"choices": []}
-    return {"choices": generated_icon_choices(name, page)}
+        return IconChoicesResponse(choices=[], third_party_avatars_enabled=False)
+    return IconChoicesResponse(
+        choices=generated_icon_choices(name, page), third_party_avatars_enabled=True
+    )
 
 
 @router.post("/register")

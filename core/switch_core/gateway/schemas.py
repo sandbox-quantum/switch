@@ -358,6 +358,23 @@ class UpdateAgentIconRequest(BaseModel):
     icon_url: str | None
 
 
+class AvatarSettingsResponse(BaseModel):
+    """Whether this server lets icons drawn by outside avatar services through
+    (`THIRD_PARTY_AVATARS_ENABLED`). A client that draws agents itself follows
+    it, so turning it off covers the client as well as the bridges."""
+
+    third_party_avatars_enabled: bool
+
+
+class IconChoicesResponse(BaseModel):
+    """One page of generated icons to choose from. `choices` is empty when
+    `third_party_avatars_enabled` is false: the server generates none, rather
+    than having none to offer."""
+
+    choices: list[str]
+    third_party_avatars_enabled: bool
+
+
 class UpdateAgentDescriptionRequest(BaseModel):
     """Change what an agent is for. A description is required, so a blank one
     is refused rather than stored."""

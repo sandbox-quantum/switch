@@ -230,7 +230,9 @@ def build_harness(
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        keyring=TEST_KEYRING, gateway_tenant_choice_enabled=False
+        keyring=TEST_KEYRING,
+        gateway_tenant_choice_enabled=False,
+        third_party_avatars_enabled=third_party_avatars,
     )
     agent_app.mount("/gateway", gateway_app)
     agent_app.add_middleware(

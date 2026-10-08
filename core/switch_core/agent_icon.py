@@ -9,6 +9,10 @@ generates, so it looks the same as one that was given it. A sender that is not
 an agent at all keeps a lettered badge (`initials_icon_url`), so a person never
 wears an agent's face.
 
+Both are drawn by outside services that see the name in the URL. An operator
+who sets `THIRD_PARTY_AVATARS_ENABLED=false` gets neither: the bridges send no
+icon where one would be (`is_third_party_avatar`), and nothing new is generated.
+
 That makes the URL attacker-controlled input with two distinct consumers, and
 the rules below exist for the second one:
 
@@ -116,7 +120,9 @@ def validate_icon_url(url: str) -> str:
 # Generated icons. The URL is all Switch stores; the picture is DiceBear's
 # "gaze", raster because Slack, Discord and Mattermost render no SVG, and pinned
 # to a major version because the drawing changes between majors.
-_GENERATED_ICON_BASE = "https://api.dicebear.com/10.x/gaze/png"
+_GENERATED_ICON_SERVICE = "dicebear.com"
+GENERATED_ICON_HOST = f"api.{_GENERATED_ICON_SERVICE}"
+_GENERATED_ICON_BASE = f"https://{GENERATED_ICON_HOST}/10.x/gaze/png"
 _GENERATED_ICON_PIXELS = 256
 # A tenth larger than DiceBear draws it, which leaves the body small in its
 # frame at chat-avatar size. At that scale a round crop (Discord, Mattermost,
@@ -173,6 +179,9 @@ def prepare_icon_url(url: str) -> str:
     return validate_icon_url(upgrade_legacy_icon_url(url.strip()))
 
 
+_INITIALS_ICON_SERVICE = "ui-avatars.com"
+
+
 def initials_icon_url(name: str) -> str:
     """The lettered badge for a sender that is not an agent.
 
@@ -185,16 +194,34 @@ def initials_icon_url(name: str) -> str:
     # the fact turns it back into a literal plus and the name renders with one
     # initial instead.
     escaped = quote(name).replace("_", "+")
-    return f"https://ui-avatars.com/api/?name={escaped}&background=random&size=128"
+    return f"https://{_INITIALS_ICON_SERVICE}/api/?name={escaped}&background=random&size=128"
 
 
-_THIRD_PARTY_AVATAR_HOSTS = frozenset({"api.dicebear.com", "ui-avatars.com"})
+# Every service the two builders above send a name to. Any host under them
+# counts, not just the one a builder uses, because a stored icon can name any.
+_THIRD_PARTY_AVATAR_SERVICES = (_GENERATED_ICON_SERVICE, _INITIALS_ICON_SERVICE)
 
 
 def is_third_party_avatar(url: str) -> bool:
-    """Whether `url` is drawn by one of the avatar services above, which
-    receive the seed or name in it."""
-    return (urlsplit(url).hostname or "").lower() in _THIRD_PARTY_AVATAR_HOSTS
+    """Whether `url` is drawn by one of the avatar services above.
+
+    Those services receive whatever is in the URL, which for the icons Switch
+    builds is an agent's or a person's name, along with the address of every
+    client that loads it. `THIRD_PARTY_AVATARS_ENABLED=false` keeps every such
+    URL from leaving the server, whoever chose it.
+    """
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    # A trailing dot names the same host, and `hostname` is already lowercase.
+    host = host.rstrip(".")
+    return any(
+        host == service or host.endswith(f".{service}")
+        for service in _THIRD_PARTY_AVATAR_SERVICES
+    )
 
 
 def generated_icon_choices(agent_name: str, page: int) -> list[str]:

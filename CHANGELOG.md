@@ -45,6 +45,19 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Operators can keep names away from outside avatar services.** An agent with
+  no icon of its own is drawn by api.dicebear.com with its name as the seed, and
+  a person relayed from another platform by ui-avatars.com with their name in the
+  URL. Chat clients load those images, so the services see the name and each
+  reader's address. With `THIRD_PARTY_AVATARS_ENABLED=false` (Helm:
+  `switchCore.thirdPartyAvatars.enabled`), no bridge sends such a URL, icons
+  already stored on those services included, and each platform shows its own
+  default: Slack the app's icon, Discord its default avatar, Teams no image,
+  while a Mattermost bot keeps the image it already has. People and agents
+  without an icon of their own then share that default. New managed agents get
+  no generated icon, `GET /agents/icon-choices` offers none and says why, and
+  `GET /agents/avatar-settings` tells Switch Console the setting. The default is
+  unchanged. A server Switch Console runs for you always uses the default.
 - **Switch cloud machines that run the agents controller sleep when idle,
   and wake on a message.** Such a machine is stopped once its status reports
   say no session has run for `HOSTED_IDLE_STOP_MINUTES` (released, as before,

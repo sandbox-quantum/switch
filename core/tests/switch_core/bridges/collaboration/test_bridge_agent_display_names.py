@@ -111,7 +111,12 @@ def _bridge(*agents: SimpleNamespace) -> CollaborationCore:
 
 class _BareAdapter(PlatformAdapter):
     """Concrete only so it can be instantiated: the label plumbing under test
-    lives on the base class and no platform method is called."""
+    lives on the base class and no platform method is called. Third-party
+    avatars are on, as the lifecycle sets them under the default config."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.set_third_party_avatars(True)
 
     async def start(self, *a: Any, **k: Any) -> Any: ...
     async def stop(self, *a: Any, **k: Any) -> Any: ...
@@ -322,6 +327,7 @@ def _slack_adapter(
             bot_token="xoxb-test", app_token="xapp-test", workspace_id="T123"
         )
     )
+    adapter.set_third_party_avatars(True)
     client = _FakeSlackClient()
     adapter._web_client = client  # type: ignore[assignment]
     adapter._bot_user_id = "U1"
@@ -1070,6 +1076,7 @@ def _teams_adapter(
             client_state="s3cr3t",
         )
     )
+    adapter.set_third_party_avatars(True)
     connector = _FakeTeamsConnector()
     adapter._connector = connector  # type: ignore[assignment]
     adapter._default_service_url = "https://smba.example/amer/"
