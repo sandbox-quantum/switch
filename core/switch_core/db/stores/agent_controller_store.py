@@ -377,9 +377,13 @@ class AgentControllerStore:
         owner_id: str,
         api_key_id: str,
         expires_at: datetime,
+        hosted_machine_id: str | None,
     ) -> AgentControllerEnrollmentCode:
         code = AgentControllerEnrollmentCode(
-            owner_id=owner_id, api_key_id=api_key_id, expires_at=expires_at
+            owner_id=owner_id,
+            api_key_id=api_key_id,
+            expires_at=expires_at,
+            hosted_machine_id=hosted_machine_id,
         )
         session.add(code)
         await session.flush()

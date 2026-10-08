@@ -1,0 +1,20 @@
+[Unit]
+Description=Mount this Switch cloud machine's data volume and start its agents controller
+Wants=network-online.target
+After=network-online.target cloud-config.service
+ConditionPathExists=/etc/switch-hosted/assignment.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/switch-machine-boot
+TimeoutStartSec=20min
+Restart=on-failure
+RestartSec=30s
+# A worker's bundle: this image cannot run it, and starting again changes nothing.
+RestartPreventExitStatus=75
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

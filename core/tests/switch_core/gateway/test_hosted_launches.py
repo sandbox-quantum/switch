@@ -102,6 +102,7 @@ async def launch_app(session_factory, monkeypatch):
     )
     config = SimpleNamespace(
         hosted_launch_capacity=1,
+        hosted_machine_runtime="worker",
         hosted_agents_per_owner=3,
         hosted_sessions_per_agent=2,
         hosted_disk_retention_days=7,

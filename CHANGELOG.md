@@ -45,6 +45,17 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Switch cloud machines can run the agents controller.** With
+  `HOSTED_MACHINE_RUNTIME=controller` (Helm `switchCore.hostedMachineRuntime`)
+  and agent management on, a cloud machine claimed from then on enrolls the
+  standard `switch-agent-controller` with a one-time code Core hands the hosted
+  controller at prepare (the same code on every retry of a revision, valid 30
+  minutes), instead of running the hosted worker. The controller it enrolls as
+  becomes the machine's (`hosted_machines.controller_id`, kind `ec2`, "Switch
+  cloud"); its status reports make the machine ready; the managed agents placed
+  on it are the machine's agents, and keep it from being retained. Launches are
+  refused in that mode, and such machines are not stopped when idle yet.
+  Machines claimed before keep the worker runtime. Migration `e7a2c4b9d013`.
 - **Provider logins sealed to a machine.** A controller registers an X25519
   public key (at enrollment, or once afterwards); its owner gives the machine a
   provider login sealed to that key, which Switch stores and relays as

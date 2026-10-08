@@ -49,6 +49,7 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerOperation,
     ApiKey,
+    HostedMachine,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -58,7 +59,9 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.hosted_machine_store import HostedMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.gateway.cloud_controllers import record_controller_status
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
@@ -95,6 +98,9 @@ OPERATION_TTL = timedelta(hours=1)
 OPERATION_LIST_LIMIT = 200
 
 V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
+
+# What a Switch cloud machine's controller is called, whatever enrolled it.
+CLOUD_MACHINE_NAME = "Switch cloud"
 
 
 @dataclass(frozen=True)
@@ -218,10 +224,35 @@ class ManagementService:
         )
         expires_at = self.now() + tokens.ENROLLMENT_CODE_LIFETIME
         await self.controllers.create_enrollment_code(
-            session, owner_id=owner_id, api_key_id=key.id, expires_at=expires_at
+            session,
+            owner_id=owner_id,
+            api_key_id=key.id,
+            expires_at=expires_at,
+            hosted_machine_id=None,
         )
         await session.commit()
         return code, expires_at
+
+    async def machine_enrollment_code(
+        self, session: AsyncSession, machine: HostedMachine, now: datetime
+    ) -> str:
+        """A code for a Switch cloud machine's controller to enroll with: the
+        owner's, valid long enough for the machine to boot, and binding what
+        enrolls with it to the machine. The caller commits."""
+        key, code = await self._new_hash_only_key(
+            session,
+            owner_id=machine.owner_id,
+            key_type=CONTROLLER_ENROLLMENT_KEY_TYPE,
+            label="cloud machine enrollment code",
+        )
+        await self.controllers.create_enrollment_code(
+            session,
+            owner_id=machine.owner_id,
+            api_key_id=key.id,
+            expires_at=now + tokens.MACHINE_ENROLLMENT_CODE_LIFETIME,
+            hosted_machine_id=machine.id,
+        )
+        return code
 
     async def enroll(
         self,
@@ -247,6 +278,15 @@ class ManagementService:
         )
         if consumed is None:
             raise invalid
+        machine = (
+            None
+            if consumed.hosted_machine_id is None
+            else await HostedMachineStore().locked(session, consumed.hosted_machine_id)
+        )
+        if consumed.hosted_machine_id is not None and (
+            machine is None or machine.state == "deleted"
+        ):
+            raise invalid
         controller_key, credential = await self._new_hash_only_key(
             session,
             owner_id=consumed.owner_id,
@@ -256,9 +296,11 @@ class ManagementService:
         controller = await self.controllers.create(
             session,
             owner_id=consumed.owner_id,
-            name=description.name,
+            name=CLOUD_MACHINE_NAME if machine is not None else description.name,
             description=description.description,
-            kind=description.kind,
+            # A Switch cloud machine's controller is the cloud's, whatever the
+            # program that enrolled says it is.
+            kind="ec2" if machine is not None else description.kind,
             platform=description.platform.model_dump(),
             version=description.version,
             public_key=public_key.model_dump() if public_key is not None else None,
@@ -268,7 +310,20 @@ class ManagementService:
             session, tenant_id, consumed.id, controller.id
         )
         await self.api_keys.delete(session, key.id)
+        replaced: str | None = None
+        if machine is not None:
+            replaced = machine.controller_id
+            machine.controller_id = controller.id
+            if replaced is not None and replaced != controller.id:
+                await self._revoke(session, tenant_id, replaced)
         await session.commit()
+        if replaced is not None and replaced != controller.id:
+            self._announce_revoked(replaced)
+            logger.info(
+                "Cloud machine %s enrolled again; revoked its previous controller %s",
+                consumed.hosted_machine_id,
+                replaced,
+            )
         logger.info(
             "Enrolled agent controller %s (%s) by code for user %s",
             controller.id,
@@ -382,6 +437,10 @@ class ManagementService:
             )
         controller = await self._principal_controller(session, principal)
         revision = controller.assignment_revision
+        if stored and controller.kind == "ec2":
+            await record_controller_status(
+                session, controller.id, report.machine.model_dump(mode="json")
+            )
         await session.commit()
         return {
             "assignment_revision": revision,
@@ -642,6 +701,19 @@ class ManagementService:
         )
         if controller.revoked_at is not None:
             return
+        await self._revoke(session, tenant_id, controller_id)
+        await session.commit()
+        logger.info("Revoked agent controller %s", controller_id)
+        self._announce_revoked(controller_id)
+
+    async def _revoke(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> None:
+        """Mark revoked, delete the credential, cancel open operations and
+        drop sealed logins. The caller commits, then announces it."""
+        controller = await self.controllers.get(session, tenant_id, controller_id)
+        if controller is None or controller.revoked_at is not None:
+            return
         key_id = controller.api_key_id
         await self.controllers.mark_revoked(
             session, tenant_id, controller_id, self.now()
@@ -654,8 +726,8 @@ class ManagementService:
         await self.controllers.delete_sealed_logins(
             session, tenant_id, controller_id, None
         )
-        await session.commit()
-        logger.info("Revoked agent controller %s", controller_id)
+
+    def _announce_revoked(self, controller_id: str) -> None:
         self.notifier.credential_revoked(controller_id)
         self.presence.revoke_controller(controller_id)
 

@@ -49,6 +49,7 @@ async def claim(factory, owner_id, slots=SLOTS, capacity=2):
             owner_id=owner_id,
             slots=slots,
             capacity=capacity,
+            runtime="worker",
             now=datetime.now(UTC),
         )
         await session.commit()

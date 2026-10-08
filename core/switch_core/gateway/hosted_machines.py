@@ -46,7 +46,16 @@ def _usage(heartbeat: dict | None, key: str) -> dict | None:
 
 
 async def machine_summary(session: AsyncSession, machine: HostedMachine) -> dict:
-    launches = await HostedMachineStore().launches(session, machine.id)
+    """The machine as its owner sees it. `agents` are its launches on a
+    worker machine, and the managed agents placed on its controller on a
+    controller machine, whose `controller_id` is the controller it enrolled as
+    (null until it has)."""
+    store = HostedMachineStore()
+    agents = (
+        await store.managed_agent_ids(session, machine)
+        if machine.runtime == "controller"
+        else [launch.id for launch in await store.launches(session, machine.id)]
+    )
     return {
         "machine_id": machine.id,
         "state": machine.state,
@@ -65,7 +74,9 @@ async def machine_summary(session: AsyncSession, machine: HostedMachine) -> dict
         else machine.heartbeat_at.isoformat(),
         "disk": _usage(machine.heartbeat, "disk"),
         "memory": _usage(machine.heartbeat, "memory"),
-        "agents": [launch.id for launch in launches],
+        "agents": agents,
+        "runtime": machine.runtime,
+        "controller_id": machine.controller_id,
     }
 
 
@@ -104,6 +115,7 @@ async def ensure_machine(
         owner_id=owner_id,
         slots=list(settings.machine_slots),
         capacity=config.hosted_launch_capacity,
+        runtime=config.hosted_machine_runtime,
         now=datetime.now(UTC),
     )
 

@@ -776,6 +776,11 @@ async def create(
 ) -> dict:
     if not launch_enabled(config, settings):
         raise HTTPException(503, LAUNCH_DISABLED)
+    if config.hosted_machine_runtime == "controller":
+        raise HTTPException(
+            409,
+            "Cloud machines on this server run the agents controller: create the agent as a managed agent on your cloud machine.",
+        )
     try:
         body.icon_url = normalise_icon_url(body.icon_url)
         body.display_name = normalise_display_name(body.display_name)
