@@ -108,6 +108,10 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             "deployment_identity",
             "telemetry_milestones",
             "telemetry_snapshot_watermark",
+            # The OAuth client Core registered for itself at a vendor: the
+            # vendor sees one Switch, so one client per deployment and
+            # service, holding no person's account.
+            "service_oauth_clients",
         }
 
     async def test_scoped_is_everything_else(self) -> None:

@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapter
 from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
@@ -27,6 +29,12 @@ from switch_core.connections.adapters.oauth_mcp import (
     StaticClient,
 )
 from switch_core.connections.loader import Connection
+from switch_core.connections.oauth_clients import (
+    RegisteredClient,
+    client_name,
+    redirect_uris,
+)
+from switch_core.keys import Keyring
 
 
 class ServiceSetupError(RuntimeError):
@@ -69,12 +77,24 @@ def load_client_settings(
         ) from None
 
 
+@dataclass(frozen=True)
+class ClientRegistration:
+    """What a client Core registers for itself needs: where it is kept, and
+    the host the vendor's consent screen names and calls back."""
+
+    session_factory: async_sessionmaker[AsyncSession]
+    keyring: Keyring
+    public_url: str | None
+    server_name: str
+
+
 def build_adapters(
     catalog: dict[str, Connection],
     *,
     github_app: GitHubApp | None,
     environ: Mapping[str, str],
     http: httpx.AsyncClient,
+    registration: ClientRegistration,
 ) -> dict[str, ServiceAdapter]:
     """An adapter for each enabled entry this server is set up for.
 
@@ -95,11 +115,29 @@ def build_adapters(
         elif definition.adapter == "oauth-mcp":
             oauth = definition.auth.oauth
             assert oauth is not None
-            if oauth.registration != "static":
-                raise ServiceSetupError(
-                    f"Connection {slug} registers its OAuth client dynamically, "
-                    "which this server cannot do."
+            if oauth.registration == "dynamic":
+                uris = redirect_uris(slug, oauth.redirect, registration.public_url)
+                if not uris:
+                    raise ServiceSetupError(
+                        f"Connection {slug} signs in only through Core's callback, "
+                        "which needs GATEWAY_PUBLIC_URL."
+                    )
+                adapters[slug] = OAuthMcpAdapter(
+                    definition,
+                    RegisteredClient(
+                        service=slug,
+                        name=definition.name,
+                        session_factory=registration.session_factory,
+                        keyring=registration.keyring,
+                        http=http,
+                        client_name=client_name(
+                            registration.public_url, registration.server_name
+                        ),
+                        redirect_uris=uris,
+                    ),
+                    http,
                 )
+                continue
             assert oauth.client_settings is not None
             settings = load_client_settings(oauth.client_settings, environ)
             if settings is not None:

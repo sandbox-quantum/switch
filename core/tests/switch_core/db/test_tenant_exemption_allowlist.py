@@ -180,6 +180,14 @@ _RAW_SESSION_FACTORY_MODULES = {
     # Its own reads are the per-tenant fan-out above; this is the one global
     # read beside them, the deployment's user count.
     "switch_core.telemetry.snapshot",
+    #
+    # ── The OAuth client Core registers for itself at a vendor that offers
+    # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The
+    # vendor sees one Switch, so the client is the deployment's, not a
+    # tenant's: read and written in a session bound to none, and re-encrypted
+    # once at boot beside the per-tenant pass.
+    "switch_core.connections.oauth_clients",
+    "switch_core.db.key_rotation",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

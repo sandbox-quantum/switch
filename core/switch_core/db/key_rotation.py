@@ -30,6 +30,7 @@ from switch_core.db.models import (
     ProviderVerification,
     ServerConnector,
     ServiceConnection,
+    ServiceOAuthClient,
     ServiceTokenIssuance,
 )
 from switch_core.db.session_scope import tenant_session
@@ -52,6 +53,11 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (HostedLaunch, "worker_capability_encrypted"),
     (ServiceConnection, "encrypted_secret"),
     (ServiceTokenIssuance, "encrypted_token"),
+)
+# In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES): rewritten once,
+# in a session bound to no tenant, which reads them as they carry no policy.
+_GLOBAL_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
+    (ServiceOAuthClient, "encrypted_secret"),
 )
 
 
@@ -99,8 +105,13 @@ async def reencrypt_stored_secrets(
     keyring: Keyring,
     tenant_ids: list[str],
 ) -> None:
-    """Bring every tenant's encrypted values onto the current key."""
+    """Bring every tenant's encrypted values, and the deployment's own, onto
+    the current key."""
     total = 0
+    async with session_factory() as session:
+        for model, column in _GLOBAL_ENCRYPTED_TEXT_COLUMNS:
+            total += await reencrypt_stale_text(session, keyring, model, column)
+        await session.commit()
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             for model, column in _ENCRYPTED_JSON_COLUMNS:

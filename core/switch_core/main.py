@@ -97,7 +97,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
-from switch_core.connections.registry import build_adapters
+from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
@@ -851,6 +851,12 @@ async def run(config: SwitchConfig) -> None:
             github_app=github_app,
             environ=os.environ,
             http=guarded_async_client(config.outbound_policy, timeout=20),
+            registration=ClientRegistration(
+                session_factory=session_factory,
+                keyring=config.keyring,
+                public_url=config.gateway_public_url,
+                server_name=config.id_server_name,
+            ),
         ),
         disabled=config.disabled_services,
         store=ServiceConnectionStore(),

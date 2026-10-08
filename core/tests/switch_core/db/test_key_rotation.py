@@ -231,6 +231,34 @@ async def test_every_tenants_secrets_end_up_under_the_current_key(
         without_old.decrypt(key)
 
 
+async def test_the_deployments_registered_clients_end_up_under_the_current_key(
+    rls_harness: RLSHarness,
+) -> None:
+    """A client Core registered at a vendor belongs to no tenant, and is
+    rewritten once whatever the tenants, by the runtime role."""
+    async with rls_harness.owner() as session:
+        await session.execute(
+            text(
+                "INSERT INTO service_oauth_clients "
+                "(service, registration_endpoint, client_id, encrypted_secret) "
+                "VALUES ('example', 'https://auth.example.test/register', "
+                "'registered-1', :secret)"
+            ),
+            {"secret": _legacy_encrypt('{"client_id": "registered-1"}')},
+        )
+        await session.commit()
+
+    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [])
+
+    secret = await _raw_where(
+        rls_harness.owner,
+        "SELECT encrypted_secret FROM service_oauth_clients WHERE service = :service",
+        {"service": "example"},
+    )
+    assert isinstance(secret, str) and secret.startswith(_NEW.current_prefix())
+    assert _NEW.decrypt(secret) == '{"client_id": "registered-1"}'
+
+
 async def test_a_value_no_key_opens_stops_the_boot(
     rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
