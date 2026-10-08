@@ -1,6 +1,7 @@
 import type { Item } from '@switch-console/shared/session-v1';
 import { SquareTerminal } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { useState } from 'react';
 import { SessionV1Request } from '@renderer/features/sessions/components/transcript/session-v1-request';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
@@ -27,6 +28,24 @@ function ToolCard({ item, turn }: { item: Item; turn: TurnActivity }) {
   );
 }
 
+/** Switch's own tools for the turn, folded into a count until asked for. */
+function SwitchActions({ items, turn }: { items: Item[]; turn: TurnActivity }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="self-start text-xs text-foreground-passive hover:text-foreground-muted"
+      >
+        {`${open ? 'Hide ' : '+'}${items.length} Switch ${items.length === 1 ? 'action' : 'actions'}`}
+      </button>
+      {open && items.map((item) => <ToolCard key={item.itemId} item={item} turn={turn} />)}
+    </>
+  );
+}
+
 /**
  * What the agent did for one room message, from its session: its reasoning
  * (local and SSH hosts only), each tool it ran, and the approvals it asks
@@ -48,11 +67,12 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const label = reasoningLabel(reasoning, running && reasoning !== null);
   const client = activity.client;
   const connected = activity.view?.connected ?? false;
-  const work = turnTools(turn);
+  const { work, switchActions } = turnTools(turn);
   const thinking = isThinking(turn) && !label;
   const ended = turn.status === 'interrupted' || turn.status === 'error';
   const requests = client ? turn.requests : [];
-  if (!label && !work.length && !thinking && !ended && !requests.length) return null;
+  if (!label && !work.length && !switchActions.length && !thinking && !ended && !requests.length)
+    return null;
   return (
     <div className="flex gap-3" data-turn-id={turn.turnId}>
       <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={28} className="mt-0.5" />
@@ -67,6 +87,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
         {work.map((item) => (
           <ToolCard key={item.itemId} item={item} turn={turn} />
         ))}
+        {switchActions.length > 0 && <SwitchActions items={switchActions} turn={turn} />}
         {thinking && (
           <Shimmer className="text-sm">
             {turn.status === 'queued' ? 'Queued…' : 'Thinking…'}

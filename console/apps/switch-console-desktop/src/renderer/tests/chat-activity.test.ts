@@ -10,6 +10,7 @@ import {
   bindTurns,
   isThinking,
   toolState,
+  turnTools,
 } from '@renderer/features/chats/activity-join';
 import {
   type ActivityApi,
@@ -115,6 +116,26 @@ describe('bindTurns', () => {
     };
     expect(isThinking(turn)).toBe(true);
     expect(isThinking({ ...turn, items: [item('t1', 'tool-activity')] })).toBe(false);
+  });
+
+  it("shows tools only, with Switch's own tools set apart", () => {
+    const turn = {
+      turnId: 't1',
+      status: 'completed' as const,
+      items: [
+        item('t1', 'tool-activity', { title: 'mcp__switch__read_context' }),
+        item('t1', 'tool-activity', { title: 'ls -la' }),
+        item('t1', 'assistant-message', { text: 'the answer' }),
+        item('t1', 'tool-activity', { title: 'mcp__switch__post_message' }),
+      ],
+      requests: [],
+    };
+    const { work, switchActions } = turnTools(turn);
+    expect(work.map((each) => each.title)).toEqual(['ls -la']);
+    expect(switchActions.map((each) => each.title)).toEqual([
+      'mcp__switch__read_context',
+      'mcp__switch__post_message',
+    ]);
   });
 
   it('shows an unfinished tool of an interrupted turn as failed', () => {

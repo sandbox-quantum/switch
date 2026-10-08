@@ -71,13 +71,23 @@ export function toolState(item: Item, turn: TurnStatus): ToolState {
   return turn === 'interrupted' || turn === 'error' ? 'failed' : 'running';
 }
 
+/** Tool names the Switch MCP server's tools carry, as Claude Code reports them. */
+const SWITCH_TOOL_PREFIX = 'mcp__switch__';
+
 /**
  * The tool cards a turn shows. Assistant text is left out: what the agent
  * means the room to read it posts there, and the room message is the copy
- * shown.
+ * shown. Switch's own tools (connecting, reading context, posting) are split
+ * off — they are how the agent talks to the room, not work done for it.
  */
-export function turnTools(turn: TurnActivity): Item[] {
-  return turn.items.filter((item) => item.kind === 'tool-activity');
+export function turnTools(turn: TurnActivity): { work: Item[]; switchActions: Item[] } {
+  const work: Item[] = [];
+  const switchActions: Item[] = [];
+  for (const item of turn.items) {
+    if (item.kind !== 'tool-activity') continue;
+    (item.title.startsWith(SWITCH_TOOL_PREFIX) ? switchActions : work).push(item);
+  }
+  return { work, switchActions };
 }
 
 /** Whether the turn is under way with no tool run yet. */
