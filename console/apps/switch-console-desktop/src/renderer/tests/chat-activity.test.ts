@@ -332,4 +332,43 @@ describe('AgentActivities', () => {
     expect(activity.turns().get('m1')?.items[0].title).toBe('test-tool');
     activities.release(activity);
   });
+
+  it('keeps the tool details a local host sends with its reasoning, for this epoch only', async () => {
+    const tool = {
+      itemId: '["turn-1","t1"]',
+      type: 'tool_call',
+      toolName: 'Read',
+      input: { file_path: '/a.ts' },
+      output: 'x',
+      truncated: false,
+      exitCode: null,
+    };
+    const api: ActivityApi = {
+      resolve: async () => ({
+        kind: 'session',
+        target: 'local',
+        hostAgentKey: 'console-a',
+        sessionId: 's1',
+        controllerId: null,
+        generation: null,
+        cloud: false,
+      }),
+      transport: () => fakeTransport(snapshot('s1', 'e1')).transport,
+      reasoning: async (_key, _session, turnIds) => ({
+        epoch: turnIds?.includes('stale') ? 'old' : 'e1',
+        turns: [],
+        tools: [{ turnId: 'turn-1', tools: [tool] }],
+      }),
+      watchPlacements: () => () => {},
+    };
+    const activities = new AgentActivities(api);
+    const activity = activities.acquire('server', null, 'room-1', 'a');
+    await vi.waitFor(() => expect(activity.key?.epoch).toBe('e1'));
+    await activity.readReasoning(['turn-1']);
+    expect(activity.toolDetails.get(tool.itemId)).toEqual(tool);
+    activity.toolDetails.clear();
+    await activity.readReasoning(['stale']);
+    expect(activity.toolDetails.size).toBe(0);
+    activities.release(activity);
+  });
 });

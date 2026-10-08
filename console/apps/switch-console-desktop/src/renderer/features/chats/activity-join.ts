@@ -1,5 +1,5 @@
 import type { HostBody, Item, Snapshot } from '@switch-console/shared/session-v1';
-import type { ToolState } from './ui/tool';
+import { SWITCH_TOOL_PREFIX } from './tool-presentation';
 
 /**
  * Joining an agent's session activity to the room messages that started it.
@@ -63,7 +63,9 @@ export function bindTurns(
   return bound;
 }
 
-/** The card state of a tool item, given its turn's status. */
+export type ToolState = 'running' | 'done' | 'failed' | 'declined';
+
+/** How a tool item stands, given its turn's status: one left open by a turn that ended failed. */
 export function toolState(item: Item, turn: TurnStatus): ToolState {
   if (item.status === 'completed') return 'done';
   if (item.status === 'failed') return 'failed';
@@ -71,11 +73,8 @@ export function toolState(item: Item, turn: TurnStatus): ToolState {
   return turn === 'interrupted' || turn === 'error' ? 'failed' : 'running';
 }
 
-/** Tool names the Switch MCP server's tools carry, as Claude Code reports them. */
-const SWITCH_TOOL_PREFIX = 'mcp__switch__';
-
 /**
- * The tool cards a turn shows. Assistant text is left out: what the agent
+ * The tool calls a turn shows. Assistant text is left out: what the agent
  * means the room to read it posts there, and the room message is the copy
  * shown. Switch's own tools (connecting, reading context, posting) are split
  * off — they are how the agent talks to the room, not work done for it.
