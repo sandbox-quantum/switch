@@ -331,6 +331,8 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
     response = await confirm(client, second)
     assert response.status_code == 409
     assert "already linked" in response.json()["detail"]
+    assert response.json()["code"] == "account_linked_elsewhere"
+    assert response.json()["retryable"] is False
     async with factory() as session:
         rows = (await session.scalars(select(ServiceConnection))).all()
         assert len(rows) == 1

@@ -297,9 +297,13 @@ async def confirm(
         )
     )
     if taken is not None:
-        raise HTTPException(
-            409,
-            "This GitHub account is already linked to another Switch user in this workspace. Remove that link first.",
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "This GitHub account is already linked to another Switch user in this workspace. Remove that link first.",
+                "code": "account_linked_elsewhere",
+                "retryable": False,
+            },
         )
     try:
         warning = await broker.connect(

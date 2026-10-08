@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -116,6 +117,7 @@ from switch_core.gateway.schemas import (
     TenantMembershipResponse,
     UsageTotalResponse,
 )
+from switch_core.gateway.service_connections import service_refusal
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
@@ -1372,7 +1374,7 @@ async def update_member_role(
     return _member_detail(user, membership)
 
 
-@router.delete("/tenants/{tenant_id}/members/{user_id}")
+@router.delete("/tenants/{tenant_id}/members/{user_id}", response_model=None)
 async def remove_member(
     request: Request,
     tenant_id: str,
@@ -1386,7 +1388,7 @@ async def remove_member(
     is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-) -> dict:
+) -> dict | JSONResponse:
     """Remove a member from the bound tenant. `owner`/`admin` only.
 
     Removing an *owner* is owner-only, the same as demoting one and for the
@@ -1439,9 +1441,7 @@ async def remove_member(
     try:
         removed_services = await broker.remove_connections(session, user_id)
     except ServiceError as error:
-        raise HTTPException(
-            status_code=error.status_code, detail=error.message
-        ) from None
+        return service_refusal(error)
 
     keys = await api_key_store.get_by_user(session, user_id)
     revoked_key_hashes = [key.key_hash for key in keys]
