@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, delete, select
@@ -45,6 +46,17 @@ class ExternalUserStore:
     ) -> list[ExternalUser]:
         result = await session.execute(
             select(ExternalUser).where(ExternalUser.bridge_id == bridge_id)
+        )
+        return list(result.scalars().all())
+
+    async def get_by_bridges(
+        self, session: AsyncSession, bridge_ids: Collection[str]
+    ) -> list[ExternalUser]:
+        """`get_by_bridge` for several bridges in one query."""
+        if not bridge_ids:
+            return []
+        result = await session.execute(
+            select(ExternalUser).where(ExternalUser.bridge_id.in_(bridge_ids))
         )
         return list(result.scalars().all())
 

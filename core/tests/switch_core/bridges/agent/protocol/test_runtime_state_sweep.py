@@ -57,6 +57,11 @@ class _SessionStore:
     ) -> set[str]:
         return set()
 
+    async def live_agent_ids_by_room(
+        self, _session: Any, _agent_ids: list[str], _room_ids: list[str]
+    ) -> dict[str, set[str]]:
+        return {}
+
 
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
