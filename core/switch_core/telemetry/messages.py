@@ -9,7 +9,9 @@ thing being reported on. Three rules keep it off that path:
   room's platform, type and membership, who the sender is — and emits.
 - **Lookups are cached.** A busy room says a lot and changes membership
   rarely, so a room is read at most once per `_CACHE_TTL_SECONDS` rather than
-  once per message. The member counts can therefore be that far behind.
+  once per message. The member counts can therefore be that far behind. A
+  lookup that finds nothing is cached too, as `unknown`: a room deleted while
+  its last messages were queued must not cost a query per message.
 - **A failing database is left alone.** After a lookup fails, lookups stop for
   `_LOOKUP_BACKOFF_SECONDS` and events report what they could not look up as
   `unknown`, and the failure is logged at most once a minute — rather than
@@ -399,6 +401,7 @@ class MessageTelemetry:
             return _UNKNOWN_ROOM
         if facts is None:
             self._lookup_missed(f"room {room_id}")
+            self._rooms.put(key, _UNKNOWN_ROOM)
             return _UNKNOWN_ROOM
         self._rooms.put(key, facts)
         return facts
@@ -463,6 +466,7 @@ class MessageTelemetry:
             return "unknown"
         if client_type is None:
             self._lookup_missed("client for a message sender")
+            self._sender_kinds.put(key, "unknown")
             return "unknown"
         kind = _CLIENT_TYPE_KIND.get(client_type, "unknown")
         self._sender_kinds.put(key, kind)
@@ -488,6 +492,7 @@ class MessageTelemetry:
             return _UNKNOWN_RUNTIME
         if row is None:
             self._lookup_missed(f"agent for client {client_id}")
+            self._agent_runtimes.put(key, _UNKNOWN_RUNTIME)
             return _UNKNOWN_RUNTIME
         runtime = normalise_known_agent_type(row[0])
         self._agent_runtimes.put(key, runtime)

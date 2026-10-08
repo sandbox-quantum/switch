@@ -848,9 +848,9 @@ once per event into a log nobody is reading.
 
 Product events are batched: they arrive at the sink up to five seconds after
 they happen, several to a request. Whatever is buffered at shutdown is posted
-on the way out, inside a one-second budget shared with the message worker's
-drain; what cannot be posted in that time is lost, with a warning in the
-server log.
+on the way out, in the 0.6 seconds a one-second shutdown budget leaves after
+the message worker's drain; what cannot be posted in that time is lost, with a
+warning in the server log.
 
 The same sink serves the operational export, so one process shows both streams. Every event is printed as it arrives, decoded, with all of its
 properties. Create a room, register an

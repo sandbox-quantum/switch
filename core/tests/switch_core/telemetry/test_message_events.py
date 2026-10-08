@@ -494,6 +494,80 @@ class TestCaching:
             if name == "switch_core.agent_message_sent"
         ] == ["codex", "codex"]
 
+    async def test_a_room_that_cannot_be_found_is_looked_up_once(self) -> None:
+        """A room deleted while its last messages were queued must not cost a
+        query per message."""
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        loads = 0
+
+        async def _gone(tenant_id: str, room_id: str) -> None:
+            nonlocal loads
+            loads += 1
+            return None
+
+        messages._load_room_facts = _gone  # type: ignore[method-assign]
+
+        for _ in range(3):
+            messages.observe(_said_in("deleted-room"))
+        reported = await _reported(messages, service, sink)
+
+        assert loads == 1
+        assert [p["bridge_platform"] for _, p in reported] == ["unknown"] * 3
+
+    async def test_a_sender_or_agent_that_cannot_be_found_is_looked_up_once(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The miss is cached like a hit: a row that appears afterwards is not
+        seen until the entry expires."""
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+        late_sender = f"@late-{uuid.uuid4().hex[:8]}:test"
+        async with session_factory() as session:
+            unregistered = await _client(session, "agent")
+            await session.commit()
+
+        def _activity() -> None:
+            messages.agent_addressed(
+                tenant_id=TENANT_ZERO,
+                room_id=world.room.id,
+                sender_transport_user_id=late_sender,
+                from_platform=False,
+                agent_metadata=None,
+                agent_live=True,
+                has_attachment=False,
+            )
+            messages.observe(_said(world, unregistered.id, "agent"))
+
+        _activity()
+        await messages._queue.join()
+        async with session_factory() as session:
+            session.add(
+                Client(transport_user_id=late_sender, display_name="late", type="user")
+            )
+            owner = await _agent(session, "codex")
+            owner.client_id = unregistered.id
+            await session.commit()
+        _activity()
+
+        reported = await _reported(messages, service, sink)
+        assert [
+            p["sender_kind"]
+            for name, p in reported
+            if name == "switch_core.agent_message_received"
+        ] == ["unknown", "unknown"]
+        assert [
+            p["known_agent_type"]
+            for name, p in reported
+            if name == "switch_core.agent_message_sent"
+        ] == ["unknown", "unknown"]
+
 
 class TestTtlCache:
     def test_an_entry_expires_after_its_age(
