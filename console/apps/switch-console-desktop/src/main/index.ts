@@ -1,4 +1,6 @@
 import './app/configure-app-identity';
+// Installs the agent provider catalogue before any module that reads it loads.
+import './core/providers/plugin-registry';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';

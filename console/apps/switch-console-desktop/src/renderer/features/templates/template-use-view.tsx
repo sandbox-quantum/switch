@@ -45,8 +45,8 @@ import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import {
-  AGENT_PROVIDER_IDS,
   type AgentProviderId,
+  isValidProviderId,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
 import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
@@ -482,8 +482,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         : providerParam
           ? String(values[providerParam.name] ?? '')
           : (pickedProvider ?? '');
-      const provider = (AGENT_PROVIDER_IDS as readonly string[]).includes(providerText)
-        ? (providerText as AgentProviderId)
+      const provider: AgentProviderId | null = isValidProviderId(providerText)
+        ? providerText
         : null;
       const locationText = entry.location
         ? interpolate(entry.location, values)
@@ -580,9 +580,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         const list =
           at && at.location !== LOCAL_RUN_LOCATION ? availability.data : localAvailability.data;
         candidates = list
-          ?.filter(
-            (a) => a.available && (AGENT_PROVIDER_IDS as readonly string[]).includes(a.agentId)
-          )
+          ?.filter((a) => a.available && isValidProviderId(a.agentId))
           .map((a) => a.agentId);
       }
       if (candidates === undefined) continue; // the list is still loading

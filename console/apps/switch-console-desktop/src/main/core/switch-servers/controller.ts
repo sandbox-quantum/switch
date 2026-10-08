@@ -14,6 +14,7 @@ import {
 } from '@main/core/workspaces/workspace-session';
 import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
+import type { CloudAgentProvider } from '@shared/core/cloud-agents/cloud-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import {
   validateClaudeCredential,
@@ -232,14 +233,14 @@ export const switchServersController = createRPCController({
     ),
   connectCloudProvider: (
     serverId: string,
-    provider: Exclude<AgentProviderId, 'claude'>,
+    provider: Exclude<CloudAgentProvider, 'claude'>,
     kind: 'api-key' | 'auth-json',
     credential: string
   ) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
       connectCloudProvider(server, provider, kind, credential)
     ),
-  disconnectCloudProvider: (serverId: string, provider: Exclude<AgentProviderId, 'claude'>) =>
+  disconnectCloudProvider: (serverId: string, provider: Exclude<CloudAgentProvider, 'claude'>) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
       disconnectCloudProvider(server, provider)
     ),

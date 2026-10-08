@@ -7,7 +7,11 @@ import {
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
-import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import {
+  type CloudAgentProvider,
+  cloudLaunchSchema,
+  cloudMachineSchema,
+} from '@shared/core/cloud-agents/cloud-agents';
 import type {
   AdvancedConfigField,
   ManagedMachine,
@@ -2517,7 +2521,7 @@ export async function getCloudProviderConnection(server: SwitchServer, provider:
 }
 export async function connectCloudProvider(
   server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>,
+  provider: Exclude<CloudAgentProvider, 'claude'>,
   kind: 'api-key' | 'auth-json',
   credential: string
 ) {
@@ -2535,7 +2539,7 @@ export async function connectCloudProvider(
 }
 export async function disconnectCloudProvider(
   server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>
+  provider: Exclude<CloudAgentProvider, 'claude'>
 ) {
   await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
     authenticated: true,

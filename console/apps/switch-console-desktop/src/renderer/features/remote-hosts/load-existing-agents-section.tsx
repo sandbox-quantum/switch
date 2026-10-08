@@ -41,7 +41,7 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { AGENT_PROVIDERS, getProvider } from '@shared/core/providers/agent-provider-registry';
+import { agentProviders, getProvider } from '@shared/core/providers/agent-provider-registry';
 
 type LoadableAgentRow = {
   name: string;
@@ -318,7 +318,7 @@ export function LoadExistingAgentsSection({
     return () => clearInterval(id);
   }, [deepScan.isPending]);
 
-  const providerOptions = AGENT_PROVIDERS.filter((p) => p.detectable !== false);
+  const providerOptions = agentProviders();
 
   return (
     <section className="pt-2">

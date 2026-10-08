@@ -31,8 +31,8 @@ import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import {
-  AGENT_PROVIDER_IDS,
   asAgentProviderId,
+  isValidProviderId,
 } from '@shared/core/providers/agent-provider-registry';
 import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import { isHostBlocked } from '@shared/core/remote-hosts/reachability';
@@ -300,8 +300,7 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
                           signIn={
                             // Installed is not usable: a session also needs
                             // the CLI signed in on this host.
-                            !blocked &&
-                            (AGENT_PROVIDER_IDS as readonly string[]).includes(row.agentId) ? (
+                            !blocked && isValidProviderId(row.agentId) ? (
                               <ProviderConnectionStatus
                                 providerId={asAgentProviderId(row.agentId)}
                                 sshHost={sshHost}

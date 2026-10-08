@@ -5,7 +5,7 @@ import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { cn } from '@renderer/utils/utils';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
-  AGENT_PROVIDERS,
+  agentProviders,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
 import { autoSelectedAgentType } from './agent-type-auto-selection';
@@ -14,7 +14,7 @@ import { autoSelectedAgentType } from './agent-type-auto-selection';
 export function machineProviderOptions(
   machine: OwnedMachine
 ): { id: AgentProviderId; name: string; ready: boolean; problem: string | null }[] {
-  return AGENT_PROVIDERS.map((provider) => {
+  return agentProviders().map((provider) => {
     const reported = machine.providers.find((entry) => entry.provider === provider.id);
     return {
       id: provider.id,

@@ -1,39 +1,23 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { log } from '@main/lib/logger';
+import { describe, expect, it } from 'vitest';
+import '@main/core/providers/plugin-registry';
 import { knownAgentTypeForProvider } from './known-agent-type';
 
-vi.mock('@main/lib/logger', () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
 describe('knownAgentTypeForProvider', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('maps codex to its own gateway known-agent type', () => {
-    expect(knownAgentTypeForProvider('codex')).toBe('codex');
-    expect(log.warn).not.toHaveBeenCalled();
-  });
-
   it('maps claude to claude-code', () => {
     expect(knownAgentTypeForProvider('claude')).toBe('claude-code');
-    expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it('maps opencode to its own gateway known-agent type', () => {
-    // Without this it fell through to the fallback and registered as
-    // claude-code, so an operator onboarding it by hand was told to run
-    // `claude` in an OpenCode agent's directory.
-    expect(knownAgentTypeForProvider('opencode')).toBe('opencode');
-    expect(log.warn).not.toHaveBeenCalled();
+  it.each(['codex', 'opencode', 'antigravity', 'cursor'])(
+    'registers %s under its own gateway known-agent type',
+    (providerId) => {
+      // Without this OpenCode fell through to a fallback and registered as
+      // claude-code, so an operator onboarding it by hand was told to run
+      // `claude` in an OpenCode agent's directory.
+      expect(knownAgentTypeForProvider(providerId)).toBe(providerId);
+    }
+  );
+
+  it('refuses a provider this build does not have', () => {
+    expect(() => knownAgentTypeForProvider('nope')).toThrow("unknown agent provider 'nope'");
   });
-});
-
-it('registers Antigravity under its own gateway type', () => {
-  expect(knownAgentTypeForProvider('antigravity')).toBe('antigravity');
-});
-
-it('maps Cursor to its own backend profile', () => {
-  expect(knownAgentTypeForProvider('cursor')).toBe('cursor');
 });

@@ -47,6 +47,7 @@ import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notific
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import { workspaceServer } from '@main/core/workspaces/workspace-session';
 import { log } from '@main/lib/logger';
+import { providerNamesSentence } from '@shared/core/providers/agent-provider-registry';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import type { Session } from '@shared/core/sessions/sessions';
 import { JournalUnavailableError } from './host-journal';
@@ -403,7 +404,7 @@ export async function buildSharedHostConfig(
   const launch = await agentLaunchConfig(session.agentId);
   if (!providerAdapterRegistry.supports(session.providerId))
     throw new Error(
-      'SDK sessions support Claude Code, Codex, OpenCode, Antigravity and Cursor. Choose one of these providers.'
+      `SDK sessions support ${providerNamesSentence()}. Choose one of these providers.`
     );
   if (transport.kind !== 'ssh' && process.platform === 'win32')
     throw new Error(

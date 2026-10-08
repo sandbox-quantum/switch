@@ -7,8 +7,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import { isCloudAgentProvider } from '@shared/core/cloud-agents/cloud-agents';
 import {
-  AGENT_PROVIDERS,
+  agentProviders,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
 
@@ -33,33 +34,35 @@ export function ManagedProvidersStep({
           Choose the providers you want to use with Switch. You’ll add credentials next.
         </p>
         <div role="group" aria-label="Agent providers" className="space-y-2">
-          {AGENT_PROVIDERS.map((provider) => {
-            const available = true;
-            return (
-              <label
-                key={provider.id}
-                className={`flex items-center gap-3 rounded-lg border border-border p-3 ${available ? 'cursor-pointer hover:bg-background-tertiary-2' : 'cursor-not-allowed opacity-60'}`}
-              >
-                <Checkbox
-                  checked={selected.includes(provider.id)}
-                  disabled={!available}
-                  onCheckedChange={(checked) => {
-                    if (!available) return;
-                    onSelectionChange(
-                      checked
-                        ? [...selected, provider.id]
-                        : selected.filter((id) => id !== provider.id)
-                    );
-                  }}
-                />
-                <AgentIcon id={provider.id} size={24} />
-                <span className="flex-1 text-sm font-medium">{provider.name}</span>
-                <span className="text-xs text-foreground-muted">
-                  {available ? 'Available' : 'Coming soon'}
-                </span>
-              </label>
-            );
-          })}
+          {agentProviders()
+            .filter((provider) => isCloudAgentProvider(provider.id))
+            .map((provider) => {
+              const available = true;
+              return (
+                <label
+                  key={provider.id}
+                  className={`flex items-center gap-3 rounded-lg border border-border p-3 ${available ? 'cursor-pointer hover:bg-background-tertiary-2' : 'cursor-not-allowed opacity-60'}`}
+                >
+                  <Checkbox
+                    checked={selected.includes(provider.id)}
+                    disabled={!available}
+                    onCheckedChange={(checked) => {
+                      if (!available) return;
+                      onSelectionChange(
+                        checked
+                          ? [...selected, provider.id]
+                          : selected.filter((id) => id !== provider.id)
+                      );
+                    }}
+                  />
+                  <AgentIcon id={provider.id} size={24} />
+                  <span className="flex-1 text-sm font-medium">{provider.name}</span>
+                  <span className="text-xs text-foreground-muted">
+                    {available ? 'Available' : 'Coming soon'}
+                  </span>
+                </label>
+              );
+            })}
         </div>
         <p className="text-xs text-foreground-muted">
           Each connection is checked before it is marked verified. Selecting a provider does not

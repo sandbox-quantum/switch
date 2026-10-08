@@ -1,20 +1,10 @@
-import type { CLIAgentPluginProvider } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import { getRemoteDependencyManager } from '@main/core/dependencies/remote-dependency-manager';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { listPlugins } from '@main/core/providers/plugin-registry';
 import type { AgentTypeAvailability } from '@shared/core/agent-types/agent-type-availability';
-
-/** What to tell someone to install, where the product name alone would be ambiguous. */
-const CLI_LABELS: Record<string, string> = {
-  cursor: 'Cursor CLI',
-  antigravity: 'Antigravity ACP',
-};
-
-function cliLabel(plugin: CLIAgentPluginProvider): string {
-  return CLI_LABELS[plugin.metadata.id] ?? plugin.metadata.name;
-}
+import { requireProvider } from '@shared/core/providers/agent-provider-registry';
 
 function available(agentId: string): AgentTypeAvailability {
   return { agentId, available: true, blockedReason: null, blockedKind: null };
@@ -55,7 +45,7 @@ export async function listLocalAgentTypeAvailability(): Promise<AgentTypeAvailab
         : {
             agentId,
             available: false,
-            blockedReason: `Install ${cliLabel(plugin)} on this computer.`,
+            blockedReason: `Install ${requireProvider(agentId).cliLabel} on this computer.`,
             blockedKind: 'not-installed',
           }
     );
@@ -88,7 +78,7 @@ export async function listRemoteAgentTypeAvailability(
           ? {
               agentId,
               available: false,
-              blockedReason: `Install ${cliLabel(plugin)} on ${sshHost}.`,
+              blockedReason: `Install ${requireProvider(agentId).cliLabel} on ${sshHost}.`,
               blockedKind: 'not-installed',
             }
           : {

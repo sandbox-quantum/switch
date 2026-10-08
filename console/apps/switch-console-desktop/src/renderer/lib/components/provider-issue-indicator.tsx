@@ -1,7 +1,7 @@
 import { CircleAlert } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { loginCommands, providerProblem, useProviderReadiness } from './provider-connection-status';
+import { providerProblem, useProviderReadiness } from './provider-connection-status';
 
 /**
  * A warning beside an agent whose provider cannot run on the agent's machine:
@@ -23,13 +23,14 @@ export function ProviderIssueIndicator({
   const { data } = useProviderReadiness(providerId, sshHost, '', hostReachable);
   const problem = providerProblem(data);
   if (!problem) return null;
-  const name = getProvider(providerId)?.name ?? providerId;
+  const provider = getProvider(providerId);
+  const name = provider?.name ?? providerId;
   const where = sshHost ? `on ${sshHost}` : 'on this computer';
   const fix =
     data?.installed === false
       ? `Install the ${name} CLI ${where}.`
-      : data?.status === 'unauthenticated'
-        ? `Run \`${loginCommands[providerId]}\` ${where}.`
+      : data?.status === 'unauthenticated' && provider
+        ? `Run \`${provider.loginCommand}\` ${where}.`
         : data?.message;
   return (
     <Tooltip>

@@ -13,8 +13,9 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { isCloudAgentProvider } from '@shared/core/cloud-agents/cloud-agents';
 import {
-  AGENT_PROVIDERS,
+  agentProviders,
   providerDisplayName,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
@@ -85,11 +86,13 @@ export function CloudAgentRepository({
               <SelectValue>{providerDisplayName(providerId)}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {AGENT_PROVIDERS.map((provider) => (
-                <SelectItem key={provider.id} value={provider.id}>
-                  {provider.name}
-                </SelectItem>
-              ))}
+              {agentProviders()
+                .filter((provider) => isCloudAgentProvider(provider.id))
+                .map((provider) => (
+                  <SelectItem key={provider.id} value={provider.id}>
+                    {provider.name}
+                  </SelectItem>
+                ))}
             </SelectContent>
           </Select>
           <span className="ml-auto text-xs text-foreground-muted">

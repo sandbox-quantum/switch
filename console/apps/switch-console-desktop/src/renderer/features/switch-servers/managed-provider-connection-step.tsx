@@ -15,6 +15,10 @@ import { Input } from '@renderer/lib/ui/input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import {
+  type CloudAgentProvider,
+  isCloudAgentProvider,
+} from '@shared/core/cloud-agents/cloud-agents';
+import {
   providerDisplayName,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
@@ -88,6 +92,8 @@ export function ManagedProviderConnectionStep({
   onDone: () => void;
   continueLabel: string;
 }) {
+  if (!isCloudAgentProvider(provider))
+    throw new Error(`A Switch server cannot host ${providerDisplayName(provider)} agents.`);
   if (provider === 'claude')
     return (
       <ManagedClaudeConnectionStep
@@ -117,7 +123,7 @@ function OtherProviderConnectionStep({
   continueLabel,
 }: {
   serverId: string;
-  provider: Exclude<AgentProviderId, 'claude'>;
+  provider: Exclude<CloudAgentProvider, 'claude'>;
   onBack: () => void;
   onDone: () => void;
   continueLabel: string;

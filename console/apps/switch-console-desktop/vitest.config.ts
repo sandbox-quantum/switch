@@ -16,6 +16,13 @@ const alias = {
 // isolated copy installed under tooling/node-deps/ (compiled for system Node).
 // The root node_modules/better-sqlite3 stays Electron-compiled at all times,
 // so no rebuild dance is needed when switching between app dev and DB tests.
+// Every project that runs app code gets the real agent provider catalogue,
+// built in Node by the global setup and installed before each test file.
+const agentProviderCatalogue = {
+  globalSetup: ['./tooling/agent-provider-catalogue/global-setup.ts'],
+  setupFiles: ['./tooling/agent-provider-catalogue/install.ts'],
+};
+
 const toolingAlias = {
   ...alias,
   'better-sqlite3': resolve(__dirname, 'tooling/node-deps/node_modules/better-sqlite3'),
@@ -33,6 +40,7 @@ export default defineConfig({
         test: {
           name: 'node',
           environment: 'node',
+          ...agentProviderCatalogue,
           include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
           exclude: [
             '**/_*/**',
@@ -52,6 +60,7 @@ export default defineConfig({
         test: {
           name: 'main-db',
           environment: 'node',
+          ...agentProviderCatalogue,
           include: [
             'src/main/core/**/*.db.test.ts',
             'src/main/db/legacy-port/**/*.test.ts',
@@ -114,7 +123,11 @@ export default defineConfig({
           // Supplies the preload bridge before a test module is evaluated, so
           // renderer imports can be static. See the file's docblock for why a
           // dynamic import of app code breaks React here.
-          setupFiles: ['./src/renderer/tests/browser/setup-electron-bridge.ts'],
+          globalSetup: agentProviderCatalogue.globalSetup,
+          setupFiles: [
+            './src/renderer/tests/browser/setup-electron-bridge.ts',
+            ...agentProviderCatalogue.setupFiles,
+          ],
         },
       },
     ],

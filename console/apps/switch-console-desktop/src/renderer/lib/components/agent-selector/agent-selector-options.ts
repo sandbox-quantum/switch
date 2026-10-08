@@ -1,5 +1,5 @@
 import {
-  AGENT_PROVIDERS,
+  agentProviderIds,
   getProvider,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
@@ -24,11 +24,9 @@ export function buildAgentGroups(
   installingAgents: ReadonlySet<AgentProviderId> = new Set(),
   getName?: (id: AgentProviderId) => string
 ): AgentGroup[] {
-  const allAgentIds = AGENT_PROVIDERS.map((p) => p.id);
+  const allAgentIds = agentProviderIds();
   const installedSet = new Set(
-    [...installedAgents, ...assumedInstalledAgents].filter((id) =>
-      allAgentIds.includes(id as AgentProviderId)
-    )
+    [...installedAgents, ...assumedInstalledAgents].filter((id) => allAgentIds.includes(id))
   );
 
   const resolveName = getName ?? ((id: AgentProviderId) => getProvider(id)?.name ?? id);

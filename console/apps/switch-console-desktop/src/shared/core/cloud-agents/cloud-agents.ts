@@ -22,10 +22,28 @@ export function parseCloudAgentKey(key: string): { serverId: string; requestId: 
   return serverId && requestId ? { serverId, requestId } : null;
 }
 
+/**
+ * The providers a Switch server can host. A closed set because the server
+ * decides it, not this build's plugins: a provider Console can run locally is
+ * not one the server can host until the server says so.
+ */
+export const cloudAgentProviderSchema = z.enum([
+  'claude',
+  'codex',
+  'opencode',
+  'cursor',
+  'antigravity',
+]);
+export type CloudAgentProvider = z.infer<typeof cloudAgentProviderSchema>;
+
+export function isCloudAgentProvider(id: string): id is CloudAgentProvider {
+  return cloudAgentProviderSchema.safeParse(id).success;
+}
+
 export const cloudLaunchSchema = z.object({
   request_id: z.string().uuid(),
   name: z.string(),
-  provider: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity']),
+  provider: cloudAgentProviderSchema,
   state: z.string(),
   desired_state: z.enum(['running', 'stopped', 'restart', 'deleted']),
   revision: z.number().int().positive(),

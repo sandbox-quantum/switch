@@ -1,17 +1,22 @@
+import { PROVIDER_RUNTIMES } from '@switch-console/agent-providers';
 import type {
   CLIAgentPluginMetadata,
   CLIAgentPluginProvider,
 } from '@switch-console/core/agents/plugins';
 import { pluginRegistry } from '@switch-console/plugins/agents';
-import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
+import {
+  type AgentProviderDefinition,
+  setAgentProviderCatalogue,
+} from '@shared/core/providers/agent-provider-registry';
+import { buildAgentProviderCatalogue } from './agent-provider-catalogue';
 
-// Assert plugin ids match the canonical AGENT_PROVIDER_IDS list at startup.
-const pluginIds = new Set(pluginRegistry.ids());
-for (const id of AGENT_PROVIDER_IDS) {
-  if (!pluginIds.has(id)) {
-    throw new Error(`Plugin registry parity violation: missing plugin for provider '${id}'`);
-  }
-}
+/**
+ * Built when this module loads, which `src/main/index.ts` makes the first thing
+ * the main process does, so shared code can read the catalogue from then on.
+ */
+export const AGENT_PROVIDER_CATALOGUE: readonly AgentProviderDefinition[] =
+  buildAgentProviderCatalogue(pluginRegistry.getAll(), PROVIDER_RUNTIMES);
+setAgentProviderCatalogue(AGENT_PROVIDER_CATALOGUE);
 
 export function getPlugin(id: string): CLIAgentPluginProvider {
   const plugin = pluginRegistry.get(id);

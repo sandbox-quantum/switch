@@ -19,13 +19,9 @@ import type {
   AgentPayload,
   InstallOption,
 } from '@shared/core/providers/agent-payload';
-import {
-  AGENT_PROVIDERS,
-  type AgentProviderId,
-} from '@shared/core/providers/agent-provider-registry';
 import { getDependencyDescriptor } from '../dependencies/registry';
 import { providerOverrideSettings } from '../settings/provider-settings-service';
-import { getPlugin } from './plugin-registry';
+import { getPlugin, listPlugins } from './plugin-registry';
 
 /**
  * Optional callback injected by the controller so the builder can enrich the
@@ -58,7 +54,7 @@ function buildMetadata(provider: CLIAgentPluginProvider): AgentMetadata {
 }
 
 async function buildOne(
-  id: AgentProviderId,
+  id: string,
   platform: Platform,
   dependencyManager?: HostDependencyManager,
   enrichHostDep?: EnrichHostDep
@@ -108,7 +104,7 @@ export async function buildAgentPayload(
   dependencyManager?: HostDependencyManager,
   enrichHostDep?: EnrichHostDep
 ): Promise<AgentPayload | null> {
-  return buildOne(id as AgentProviderId, platform, dependencyManager, enrichHostDep);
+  return buildOne(id, platform, dependencyManager, enrichHostDep);
 }
 
 export async function buildAgentPayloads(
@@ -117,7 +113,9 @@ export async function buildAgentPayloads(
   enrichHostDep?: EnrichHostDep
 ): Promise<AgentPayload[]> {
   const results = await Promise.all(
-    AGENT_PROVIDERS.map((p) => buildOne(p.id, platform, dependencyManager, enrichHostDep))
+    listPlugins().map((plugin) =>
+      buildOne(plugin.metadata.id, platform, dependencyManager, enrichHostDep)
+    )
   );
   return results.filter((r): r is AgentPayload => r !== null);
 }

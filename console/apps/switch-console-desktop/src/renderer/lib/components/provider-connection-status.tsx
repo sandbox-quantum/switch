@@ -4,14 +4,6 @@ import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
-const loginCommands: Record<AgentProviderId, string> = {
-  claude: 'claude auth login',
-  codex: 'codex login',
-  cursor: 'agent login',
-  antigravity: 'antigravity-acp --login',
-  opencode: 'opencode auth login',
-};
-
 /**
  * Whether a provider's CLI is installed and signed in on a machine. One check
  * per provider, machine and directory, shared by every component that asks:
@@ -48,8 +40,6 @@ export function providerProblem(
   return null;
 }
 
-export { loginCommands };
-
 export function ProviderConnectionStatus({
   providerId,
   sshHost,
@@ -61,9 +51,10 @@ export function ProviderConnectionStatus({
   dir: string;
   compact?: boolean;
 }) {
+  const provider = getProvider(providerId);
   const query = useProviderReadiness(providerId, sshHost, dir, true);
   const copy = useMutation({
-    mutationFn: () => navigator.clipboard.writeText(loginCommands[providerId]),
+    mutationFn: (command: string) => navigator.clipboard.writeText(command),
   });
   const data = query.data;
   const checking = query.isFetching;
@@ -98,7 +89,7 @@ export function ProviderConnectionStatus({
       <div className="flex items-center gap-2">
         <Icon className={`size-4 shrink-0 ${tone} ${checking ? 'animate-spin' : ''}`} />
         <span className="font-medium">
-          {getProvider(providerId)?.name} · {headline}
+          {provider?.name ?? providerId} · {headline}
         </span>
         <Button
           className="ml-auto shrink-0"
@@ -125,17 +116,17 @@ export function ProviderConnectionStatus({
               : data?.message}
         </p>
       )}
-      {!checking && data?.installed && !ready && (
+      {!checking && data?.installed && !ready && provider && (
         <div className="mt-2 space-y-1">
           <p>Run in a terminal {sshHost ? `on ${sshHost}` : 'on this computer'}, then Recheck:</p>
           <div className="flex items-center gap-2 rounded bg-background px-2 py-1">
             <code className="min-w-0 flex-1 text-xs break-all select-all">
-              {loginCommands[providerId]}
+              {provider.loginCommand}
             </code>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => copy.mutate()}
+              onClick={() => copy.mutate(provider.loginCommand)}
               aria-label="Copy sign-in command"
             >
               {copy.isSuccess ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
