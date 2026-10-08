@@ -361,6 +361,15 @@ class HostedMachine(TenantScoped, Base):
             name="ck_hosted_machine_stop_reason",
         ),
         CheckConstraint("generation >= 1", name="ck_hosted_machine_generation"),
+        CheckConstraint(
+            "runtime IN ('worker', 'controller')", name="ck_hosted_machine_runtime"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_hosted_machines_controller",
+            ondelete="SET NULL (controller_id)",
+        ),
         Index(
             "uq_hosted_machine_owner",
             "tenant_id",
@@ -401,6 +410,15 @@ class HostedMachine(TenantScoped, Base):
     machine_capability_hash: Mapped[str | None] = mapped_column(Text)
     machine_capability_encrypted: Mapped[str | None] = mapped_column(Text)
     machine_capability_revision: Mapped[int | None] = mapped_column(Integer)
+    # `worker` runs launches through the hosted worker; `controller` runs the
+    # agents controller, enrolled with a one-time code minted for the machine,
+    # which then runs the owner's managed agents placed on `controller_id`.
+    runtime: Mapped[str] = mapped_column(Text, nullable=False, server_default="worker")
+    controller_id: Mapped[str | None] = mapped_column(Text)
+    # The code a `controller` machine enrolls with, kept for the revision it
+    # was issued at, so every retry of that revision hands over the same one.
+    enrollment_code_encrypted: Mapped[str | None] = mapped_column(Text)
+    enrollment_code_revision: Mapped[int | None] = mapped_column(Integer)
     agents_version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="1"
     )
@@ -3211,6 +3229,11 @@ class AgentControllerEnrollmentCode(TenantScoped, Base):
             ["agent_controllers.tenant_id", "agent_controllers.id"],
             name="fk_agent_controller_enrollment_codes_controller",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "hosted_machine_id"],
+            ["hosted_machines.tenant_id", "hosted_machines.id"],
+            name="fk_agent_controller_enrollment_codes_hosted_machine",
+        ),
         Index("ix_agent_controller_enrollment_codes_tenant_id", "tenant_id"),
     )
 
@@ -3224,6 +3247,9 @@ class AgentControllerEnrollmentCode(TenantScoped, Base):
         DateTime(timezone=True), nullable=True
     )
     controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set for a code minted for a Switch cloud machine: what enrolls with it
+    # is that machine's controller.
+    hosted_machine_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

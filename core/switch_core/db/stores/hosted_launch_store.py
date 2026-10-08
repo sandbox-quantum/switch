@@ -114,8 +114,17 @@ class HostedLaunchStore:
             )
         machines = HostedMachineStore()
         machine = await machines.claim(
-            session, owner_id=owner_id, slots=slots, capacity=capacity, now=now
+            session,
+            owner_id=owner_id,
+            slots=slots,
+            capacity=capacity,
+            runtime="worker",
+            now=now,
         )
+        if machine.runtime != "worker":
+            raise HostedLaunchConflict(
+                "Your cloud machine runs the agents controller: create the agent as a managed agent on it."
+            )
         launch = HostedLaunch(
             id=request_id,
             owner_id=owner_id,

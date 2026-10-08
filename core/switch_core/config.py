@@ -173,6 +173,11 @@ class SwitchConfig(BaseSettings):
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
+    # What a cloud machine claimed from now on runs: the hosted worker, which
+    # runs launches, or the agents controller, which enrolls with a one-time
+    # code and runs the owner's managed agents (needs AGENT_MANAGEMENT_ENABLED).
+    # A machine keeps the runtime it was claimed with.
+    hosted_machine_runtime: Literal["worker", "controller"] = "worker"
     hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
     hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)

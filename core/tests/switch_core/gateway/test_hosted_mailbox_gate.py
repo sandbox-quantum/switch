@@ -25,6 +25,7 @@ def reclaim(monkeypatch) -> AsyncMock:
 def _unconfigured(config) -> None:
     config.hosted_controller_config_path = None
     config.hosted_launch_capacity = 0
+    config.hosted_machine_runtime = "worker"
 
 
 def _bare_service(session_factory):
@@ -65,6 +66,7 @@ async def test_configured_server_runs_the_pass(
     service = _bare_service(session_factory)
     service.config.hosted_controller_config_path = controller
     service.config.hosted_launch_capacity = capacity
+    service.config.hosted_machine_runtime = "worker"
 
     await mailbox_upkeep(service, datetime.now(UTC))
 

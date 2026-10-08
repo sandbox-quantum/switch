@@ -132,6 +132,7 @@ async def wire(session_factory, monkeypatch, tmp_path):
     service.connections = AgentConnectionRegistry()
     service.event_buffer = EventBuffer(sequence_base=1 << 32)
     service.config.hosted_launch_capacity = 4
+    service.config.hosted_machine_runtime = "worker"
     service.config.hosted_agents_per_owner = 3
     service.config.hosted_sessions_per_agent = 8
     service.config.hosted_disk_retention_days = 7

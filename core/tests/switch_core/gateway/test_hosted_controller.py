@@ -97,6 +97,7 @@ MACHINE_ITEM_KEYS = {
     "data_volume_id",
     "retain_until",
     "bundle_revision",
+    "runtime",
 }
 
 
@@ -446,6 +447,7 @@ async def test_machines_lists_every_live_machine_with_the_contract_keys(
         "data_volume_id": None,
         "retain_until": None,
         "bundle_revision": None,
+        "runtime": "worker",
     }
 
 
@@ -1345,6 +1347,7 @@ async def _claim(factory, owner_id: str) -> HostedMachine:
             owner_id=owner_id,
             slots=["slot-a", "slot-b"],
             capacity=2,
+            runtime="worker",
             now=datetime.now(UTC),
         )
         await session.commit()

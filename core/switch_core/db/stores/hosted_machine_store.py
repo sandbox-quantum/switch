@@ -9,7 +9,12 @@ from uuid import uuid4
 from sqlalchemy import exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import HostedLaunch, HostedMachine, require_tenant_id
+from switch_core.db.models import (
+    AgentDefinition,
+    HostedLaunch,
+    HostedMachine,
+    require_tenant_id,
+)
 from switch_core.keys import Keyring
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
@@ -176,9 +181,11 @@ class HostedMachineStore:
         owner_id: str,
         slots: list[str],
         capacity: int,
+        runtime: Literal["worker", "controller"],
         now: datetime,
     ) -> HostedMachine:
-        """The owner's machine, reused or newly placed on a free slot.
+        """The owner's machine, reused or newly placed on a free slot; a new
+        one runs `runtime`, a reused one keeps the runtime it was claimed with.
 
         The caller holds `lock_launches`, so no other claim in the tenant can
         take the same slot or count towards capacity meanwhile.
@@ -230,6 +237,7 @@ class HostedMachineStore:
             generation=(generation or 0) + 1,
             state="queued",
             desired_state="running",
+            runtime=runtime,
             active_at=now,
             created_at=now,
             updated_at=now,
@@ -288,21 +296,14 @@ class HostedMachineStore:
         retention_days: int,
         now: datetime,
     ) -> bool:
-        """Retain the machine's disk once no agent is left on it.
+        """Retain the machine's disk once no agent is left on it: no launch
+        on a worker machine, no managed agent placed on a controller machine's
+        controller.
 
         Returns whether it did. The caller holds the machine lock and commits.
         """
         await session.flush()
-        if await session.scalar(
-            select(
-                exists().where(
-                    HostedLaunch.tenant_id == require_tenant_id(),
-                    HostedLaunch.machine_id == machine.id,
-                    HostedLaunch.state != "deleted",
-                    HostedLaunch.desired_state != "deleted",
-                )
-            )
-        ):
+        if await self.has_agents(session, machine):
             return False
         machine.desired_state = "retained"
         machine.stop_reason = None
@@ -327,12 +328,60 @@ class HostedMachineStore:
             session, machine, retention_days=retention_days, now=now
         ):
             return False
-        if not await self.ever_hosted(session, machine.id):
+        if not await self.ever_hosted(session, machine):
             machine.retain_until = now
         return True
 
-    async def ever_hosted(self, session: AsyncSession, machine_id: str) -> bool:
-        """Whether any launch row ever referenced the machine, deleted or not."""
+    async def has_agents(self, session: AsyncSession, machine: HostedMachine) -> bool:
+        """Whether an agent is still meant to run on the machine."""
+        if machine.runtime == "controller":
+            return machine.controller_id is not None and bool(
+                await session.scalar(
+                    select(
+                        exists().where(
+                            AgentDefinition.tenant_id == require_tenant_id(),
+                            AgentDefinition.controller_id == machine.controller_id,
+                        )
+                    )
+                )
+            )
+        return bool(
+            await session.scalar(
+                select(
+                    exists().where(
+                        HostedLaunch.tenant_id == require_tenant_id(),
+                        HostedLaunch.machine_id == machine.id,
+                        HostedLaunch.state != "deleted",
+                        HostedLaunch.desired_state != "deleted",
+                    )
+                )
+            )
+        )
+
+    async def managed_agent_ids(
+        self, session: AsyncSession, machine: HostedMachine
+    ) -> list[str]:
+        """The managed agents placed on a controller machine's controller."""
+        if machine.controller_id is None:
+            return []
+        return list(
+            await session.scalars(
+                select(AgentDefinition.agent_id)
+                .where(
+                    AgentDefinition.tenant_id == require_tenant_id(),
+                    AgentDefinition.controller_id == machine.controller_id,
+                )
+                .order_by(AgentDefinition.agent_id)
+            )
+        )
+
+    async def ever_hosted(self, session: AsyncSession, machine: HostedMachine) -> bool:
+        """Whether the machine ever had an agent whose disk is worth keeping:
+        a launch row ever referenced a worker machine, deleted or not; a
+        controller machine's controller ever enrolled."""
+        if machine.runtime == "controller":
+            return machine.controller_id is not None
+        machine_id = machine.id
         return bool(
             await session.scalar(
                 select(

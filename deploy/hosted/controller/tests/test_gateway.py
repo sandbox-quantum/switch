@@ -661,3 +661,69 @@ def test_invalid_core_machine_does_not_block_the_others(tmp_path):
     gateway.sync_machines(gateway.machines())
     assert store.get(MACHINE_ID).desired_state is DesiredState.STOPPED
     store.close()
+
+
+def test_a_controller_machine_gets_a_bundle_with_its_enrollment_code(tmp_path):
+    [listed] = core_fixture("machines_response.json")["machines"]
+    prepared = core_fixture("prepare_controller_response.json")
+    cfg = fixture_config(tmp_path, "c7i.2xlarge")
+    store = open_store(cfg)
+    secrets = Mock()
+    secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
+    gateway = make_gateway(cfg, store, secrets, instance_type="c7i.2xlarge")
+    gateway.request = routed([listed], prepared)
+    gateway.sync_machines(gateway.machines())
+    bundle = json.loads(gateway.secrets.put_secret_value.call_args.kwargs["SecretString"])
+    assert bundle == {
+        "version": 3,
+        "machineId": prepared["machine_id"],
+        "assignment": {
+            "installationId": "inst-test",
+            "slotId": prepared["slot_id"],
+            "generation": prepared["generation"],
+            "dataVolumeId": listed["data_volume_id"],
+        },
+        "apiEndpoint": prepared["api_endpoint"],
+        "controller": {"id": None, "enrollmentCode": prepared["controller"]["enrollment_code"]},
+    }
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "controller",
+    [
+        None,
+        {"id": None, "enrollment_code": None},
+        {"id": None, "enrollment_code": "swcc_not-a-code-at-all-0000"},
+        {"id": "not-a-uuid", "enrollment_code": None},
+        {"id": MACHINE_ID, "enrollment_code": "swce_SyntheticEnrollmentCode0000"},
+    ],
+)
+def test_a_controller_bundle_refuses_what_is_not_one(tmp_path, controller):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    prepared = {
+        **prepared_machine(),
+        "runtime": "controller",
+        "controller": controller,
+    }
+    del prepared["machine_capability"]
+    with pytest.raises((ConfigError, ValueError)):
+        make_gateway(cfg, store).bundle(prepared, machine)
+    store.close()
+
+
+def test_an_enrolled_controller_machine_gets_its_controller_and_no_code(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
+    prepared = {
+        **prepared_machine(),
+        "runtime": "controller",
+        "controller": {"id": MACHINE_ID, "enrollment_code": None},
+    }
+    bundle = make_gateway(cfg, store).bundle(prepared, machine)
+    assert bundle["controller"] == {"id": MACHINE_ID, "enrollmentCode": None}
+    assert "machineCapability" not in bundle
+    store.close()

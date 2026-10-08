@@ -27,6 +27,11 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_launch,
     retention_expired,
 )
+from switch_core.gateway.cloud_controllers import (
+    CloudEnrollmentUnavailable,
+    enrollment_code,
+    live_controller,
+)
 from switch_core.gateway.dependencies import (
     get_config,
     get_protocol,
@@ -78,8 +83,17 @@ def machine_item(machine: HostedMachine) -> dict:
         "retain_until": machine.retain_until.isoformat()
         if machine.retain_until
         else None,
-        "bundle_revision": machine.machine_capability_revision,
+        "bundle_revision": machine.machine_capability_revision
+        if machine.runtime == "worker"
+        else machine.enrollment_code_revision,
+        "runtime": machine.runtime,
     }
+
+
+def _idle_stops(machine: HostedMachine, idle_minutes: int) -> bool:
+    """Whether an idle machine is put to sleep. Only a worker machine is: a
+    controller machine's agents could not wake it again on a message yet."""
+    return idle_minutes > 0 and machine.runtime == "worker"
 
 
 def _connect_timed_out(machine: HostedMachine, now: datetime) -> bool:
@@ -132,7 +146,7 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
         or _errored_unclaimed(machine, now, idle_minutes)
         or idle_sleeping(machine)
         or (
-            idle_minutes > 0
+            _idle_stops(machine, idle_minutes)
             and machine.state == "ready"
             and machine.desired_state == "running"
         )
@@ -240,7 +254,7 @@ async def _sweep(
         machine.desired_state = "deleted"
         bump_revision(machine, now)
     elif _errored_unclaimed(machine, now, idle_minutes) and not await store.ever_hosted(
-        session, machine.id
+        session, machine
     ):
         await store.release_if_empty(
             session, machine, retention_days=retention_days, now=now
@@ -250,7 +264,7 @@ async def _sweep(
             session, machine, retention_days=retention_days, now=now
         )
     elif (
-        idle_minutes > 0
+        _idle_stops(machine, idle_minutes)
         and machine.state == "ready"
         and machine.desired_state == "running"
         and await _should_sleep(
@@ -394,6 +408,10 @@ async def prepare(
         raise HTTPException(
             409, "The cloud machine's owner is no longer a workspace member."
         )
+    if machine.runtime == "controller":
+        result = await _prepare_controller(session, machine, settings, config, now)
+        await session.commit()
+        return result
     capability = HostedMachineStore().issue_capability(machine, config.keyring)
     if machine.state == "queued":
         machine.state = "provisioning"
@@ -409,6 +427,44 @@ async def prepare(
     }
     await session.commit()
     return result
+
+
+async def _prepare_controller(
+    session: AsyncSession,
+    machine: HostedMachine,
+    settings: HostedControllerSettings,
+    config: SwitchConfig,
+    now: datetime,
+) -> dict:
+    """What a controller machine boots from at its current revision: the
+    controller it enrolled as, or, until it has one that is not revoked, a
+    one-time code to enroll with. Never a long-lived credential: the machine
+    keeps the one it enrolls with on its own disk."""
+    controller = await live_controller(session, machine)
+    try:
+        code = (
+            None
+            if controller is not None
+            else await enrollment_code(session, machine, config.keyring, now)
+        )
+    except CloudEnrollmentUnavailable as error:
+        raise HTTPException(409, str(error)) from None
+    if machine.state == "queued":
+        machine.state = "provisioning"
+        machine.updated_at = now
+    return {
+        "machine_id": machine.id,
+        "slot_id": machine.slot_id,
+        "generation": machine.generation,
+        "revision": machine.revision,
+        "bundle_revision": machine.revision,
+        "runtime": "controller",
+        "api_endpoint": settings.agent_api_endpoint,
+        "controller": {
+            "id": controller.id if controller is not None else None,
+            "enrollment_code": code,
+        },
+    }
 
 
 class Observation(BaseModel):

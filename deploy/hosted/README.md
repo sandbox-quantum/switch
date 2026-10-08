@@ -14,6 +14,15 @@ room on that VM.
 Creating an agent does not create a room. The controller runs on existing EKS;
 workers never join that cluster.
 
+## Machines that run the agents controller
+
+With `HOSTED_MACHINE_RUNTIME=controller` (and agent management on), a machine
+claimed from then on runs `switch-agent-controller` instead of the hosted
+worker. It enrolls with a one-time code Core hands over at prepare, and runs
+its owner's managed agents, each as a Linux user of its own. Its image and
+boot are in [`machine/`](machine/README.md). Machines claimed before keep the
+worker runtime described below.
+
 ## Components
 
 - `controller/`: Python CLI/service using boto3, SQLite durable desired/observed

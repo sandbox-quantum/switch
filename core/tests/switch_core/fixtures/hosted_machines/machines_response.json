@@ -9,7 +9,8 @@
       "revision": 1,
       "data_volume_id": "vol-0123456789abcdef0",
       "retain_until": null,
-      "bundle_revision": 1
+      "bundle_revision": 1,
+      "runtime": "worker"
     }
   ]
 }

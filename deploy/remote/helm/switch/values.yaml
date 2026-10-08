@@ -158,6 +158,9 @@ switchCore:
   githubConnectionsSecret: ""
   hostedControllerSecret: ""
   hostedLaunchCapacity: 0
+  # worker: cloud machines run the hosted worker. controller: they run the
+  # agents controller and the owner's managed agents (needs agentManagement).
+  hostedMachineRuntime: worker
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
   hostedProviderVerificationEnabled: false

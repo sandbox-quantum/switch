@@ -7,6 +7,7 @@ import pytest
 from switch_core.bridges.agent.operations.agent_management import (
     disable_agent_management,
 )
+from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 
 
 @pytest.fixture(autouse=True)
@@ -15,3 +16,4 @@ def _agent_management_operations_off_afterwards() -> Iterator[None]:
     does in production; take them away again so no other test sees them."""
     yield
     disable_agent_management()
+    set_cloud_enrollment(None)
