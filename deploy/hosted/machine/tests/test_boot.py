@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -241,6 +242,7 @@ def test_a_new_code_sets_a_revoked_enrollment_aside(monkeypatch, tmp_path):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path)
     (tmp_path / ".switch-controller").mkdir()
     (tmp_path / ".switch-controller" / "controller.db").write_text("old")
+    (tmp_path / ".switch-controller-code").write_text(hashlib.sha256(b"swce_old").hexdigest())
     commands = FakeCommands({" status ": [(0, "Controller: old")]})
     boot.start_controller(
         commands, CONFIG, ASSIGNMENT, boot.parse_bundle(bundle(), ASSIGNMENT), now=lambda: 7
@@ -248,6 +250,27 @@ def test_a_new_code_sets_a_revoked_enrollment_aside(monkeypatch, tmp_path):
     assert (tmp_path / ".switch-controller.replaced-7" / "controller.db").read_text() == "old"
     assert not (tmp_path / ".switch-controller" / "controller.db").exists()
     assert len(commands.ran("enroll")) == 1
+    assert (tmp_path / ".switch-controller-code").read_text() != hashlib.sha256(
+        b"swce_old"
+    ).hexdigest()
+
+
+def test_an_enrollment_made_with_this_code_is_kept_when_the_boot_runs_again(monkeypatch, tmp_path):
+    monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path)
+    first = FakeCommands({" status ": [(1, "Not enrolled.")]})
+    boot.start_controller(first, CONFIG, ASSIGNMENT, boot.parse_bundle(bundle(), ASSIGNMENT))
+    assert len(first.ran("enroll")) == 1
+    # It failed after enrolling: systemd starts the boot again, and Switch,
+    # which has not linked the controller yet, still hands over the code.
+    (tmp_path / ".switch-controller" / "controller.db").write_text("enrolled")
+    again = FakeCommands({" status ": [(0, "Controller: new")]})
+    boot.start_controller(
+        again, CONFIG, ASSIGNMENT, boot.parse_bundle(bundle(), ASSIGNMENT), now=lambda: 7
+    )
+    assert again.ran("enroll") == []
+    assert not (tmp_path / ".switch-controller.replaced-7").exists()
+    assert (tmp_path / ".switch-controller" / "controller.db").read_text() == "enrolled"
+    assert len(again.ran("install-service")) == 1
 
 
 def test_no_enrollment_and_no_code_says_what_to_do(monkeypatch, tmp_path):

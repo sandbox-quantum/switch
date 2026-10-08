@@ -371,7 +371,8 @@ export async function installSeparateUsers(
   input: SetupInput,
   run: CommandRunner
 ): Promise<SetupReport> {
-  await assertSetupHost(input.path);
+  await assertSetupHost();
+  run = onSystemPath(run);
   const account = parsePasswd((await run('getent', ['passwd', input.user], null)).stdout);
   if (account.uid === 0)
     throw new ConfigurationError('The controller must run as a user other than root.');
@@ -426,9 +427,9 @@ export async function installSeparateUsers(
   await chmod(config.agentsDir, 0o700);
 
   const tools = {
-    sh: await which('sh', input.path),
-    find: await which('find', input.path),
-    chown: await which('chown', input.path),
+    sh: await which('sh', SYSTEM_PATH),
+    find: await which('find', SYSTEM_PATH),
+    chown: await which('chown', SYSTEM_PATH),
     path: agentPath(input.path, homes),
   };
   await mkdir(SEPARATE_USERS_CONFIG_DIR, { recursive: true, mode: 0o755 });
@@ -467,6 +468,7 @@ export async function uninstallSeparateUsers(
   run: CommandRunner
 ): Promise<SetupReport> {
   assertRoot();
+  run = onSystemPath(run);
   const account = parsePasswd((await run('getent', ['passwd', user], null)).stdout);
   const names = separateUserNames(account.uid);
   let agentsDir: string | null = null;
@@ -511,7 +513,7 @@ function assertRoot(): void {
     );
 }
 
-async function assertSetupHost(path: string): Promise<void> {
+async function assertSetupHost(): Promise<void> {
   if (process.platform !== 'linux')
     throw new ConfigurationError(
       'Agents run as users of their own only on Linux with systemd. On this machine, run the controller as a service of your user: switch-agent-controller install-service'
@@ -531,7 +533,8 @@ async function assertSetupHost(path: string): Promise<void> {
       `${POLKIT_RULES_DIR} does not exist: install polkit (polkitd), which lets the controller start its agents without root, and run the setup again.`
     );
   }
-  for (const command of ['useradd', 'groupadd', 'getent', 'id']) await which(command, path);
+  for (const command of ['useradd', 'groupadd', 'getent', 'id', 'systemctl'])
+    await which(command, SYSTEM_PATH);
 }
 
 async function assertEnrolled(dataDir: string, account: PasswdEntry): Promise<void> {
@@ -615,6 +618,18 @@ async function ensureAgentUser(user: string, group: string, run: CommandRunner):
   );
 }
 
+/**
+ * Where the setup finds the system's own commands (`useradd`, `systemctl`,
+ * `find`…), whatever PATH it runs with: the PATH it is given is the one the
+ * controller and its agents run with, which has no business holding `sbin`.
+ */
+const SYSTEM_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
+/** `run`, with each command found on `SYSTEM_PATH` and run by its absolute path. */
+function onSystemPath(run: CommandRunner): CommandRunner {
+  return async (file, args, input) => run(await which(file, SYSTEM_PATH), args, input);
+}
+
 async function which(command: string, path: string): Promise<string> {
   for (const directory of path.split(delimiter)) {
     if (!isAbsolute(directory)) continue;
@@ -626,5 +641,7 @@ async function which(command: string, path: string): Promise<string> {
       // not in this directory
     }
   }
-  throw new ConfigurationError(`${command} is not on the PATH, and the agents' unit needs it.`);
+  throw new ConfigurationError(
+    `${command} is not installed in ${path.split(delimiter).join(', ')}, and the setup needs it.`
+  );
 }
