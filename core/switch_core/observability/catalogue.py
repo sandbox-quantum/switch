@@ -508,6 +508,19 @@ RUNTIME_GC_COLLECTIONS = _spec(
     "Garbage collections, by generation.",
     "generation",
 )
+# Measured from inside the collector, so unlike the event-loop lag above it
+# catches every pause, not only one that happens to overlap the sweep timer's
+# wake. A full collection walks every tracked object with the interpreter lock
+# held: on a large heap that freezes the event loop as surely as blocking code.
+RUNTIME_GC_PAUSE = _spec(
+    "switch.runtime.gc_pause",
+    "histogram",
+    "ms",
+    "How long each garbage collection stopped the process, by generation. "
+    "Generation 2 is the full collection, the one that grows with the heap.",
+    "generation",
+    bounds=(0.1, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0),
+)
 
 # ── Health ───────────────────────────────────────────────────────────────────
 # One series per dependency, so a dashboard shows which one broke.
@@ -564,6 +577,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         RUNTIME_EVENT_LOOP_LAG,
         RUNTIME_STARTS,
         RUNTIME_GC_COLLECTIONS,
+        RUNTIME_GC_PAUSE,
         HEALTH_CHECK,
     )
 }
