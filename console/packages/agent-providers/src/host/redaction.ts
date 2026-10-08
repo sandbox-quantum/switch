@@ -72,10 +72,12 @@ export function tokenForms(token: string): string[] {
  * GitHub's token shapes, matched whether or not this process issued the token:
  * one a sibling session fetched, or fetched before this session resumed or its
  * host restarted, or cut short in a title, all of which an exact value misses.
- * Four characters after the prefix tell a cut token from prose.
+ * Four characters after the prefix tell a cut token from prose. No word
+ * boundary before it: escaped or encoded text glues a token to what precedes
+ * it (`\nghs_…` in JSON, `%3Aghs_…` in a URL).
  */
 const TOKEN_SHAPES = [
-  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{4,}/g,
+  /(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{4,}/g,
   // `x-access-token:<token>` in base64, as Git sends it and a Git trace shows it.
   /eC1hY2Nlc3MtdG9rZW46[A-Za-z0-9+/]*={0,2}/g,
 ];
@@ -210,7 +212,7 @@ export class ShapeLineRedactor {
   push(chunk: Buffer): Buffer {
     const combined = Buffer.concat([this.pending, chunk]);
     const end = combined.lastIndexOf(0x0a) + 1;
-    const cut = end > 0 ? end : combined.length > SHAPE_LINE_LIMIT ? combined.length : 0;
+    const cut = end > 0 ? end : combined.length > SHAPE_LINE_LIMIT ? longLineCut(combined) : 0;
     this.pending = Buffer.from(combined.subarray(cut));
     return redactShapeBytes(combined.subarray(0, cut));
   }
@@ -220,6 +222,23 @@ export class ShapeLineRedactor {
     this.pending = Buffer.alloc(0);
     return output;
   }
+}
+
+/** Longer than any token's form a shape matches, base64 of a fine-grained one included. */
+const SHAPE_TAIL = 256;
+
+/**
+ * Where to cut a line written before its end: short of its last
+ * `SHAPE_TAIL` bytes, and short of any token-shaped text reaching into them,
+ * which may go on in the next chunk and is held back whole.
+ */
+function longLineCut(line: Buffer): number {
+  const text = line.toString('latin1');
+  let cut = text.length - SHAPE_TAIL;
+  for (const shape of TOKEN_SHAPES)
+    for (const match of text.matchAll(shape))
+      if (match.index + match[0].length > cut) cut = Math.min(cut, match.index);
+  return Math.max(cut, 0);
 }
 
 function redactShapeBytes(input: Buffer): Buffer {

@@ -147,6 +147,15 @@ describe('token shapes in logs', () => {
     );
   });
 
+  it('never cuts a long line through a token that runs on into the next chunk', () => {
+    const shapes = new ShapeLineRedactor();
+    // The line passes the limit inside the token, which ends in the next chunk.
+    const before = Buffer.from(`${'a'.repeat(64 * 1024 - 10)} ${token.slice(0, 20)}`);
+    const after = Buffer.from(`${token.slice(20)} done\n`);
+    const output = Buffer.concat([shapes.push(before), shapes.push(after), shapes.finish()]);
+    expect(output.toString()).toBe(`${'a'.repeat(64 * 1024 - 10)} [REDACTED] done\n`);
+  });
+
   it('writes an unended line once it is long, still redacted', () => {
     const shapes = new ShapeLineRedactor();
     const long = Buffer.from(`${'é'.repeat(40_000)} ${token} `);
@@ -173,6 +182,14 @@ describe('tokens no exact value catches', () => {
       header: 'Basic [REDACTED]',
       n: 1,
     });
+  });
+
+  it('redacts a GitHub token glued to what precedes it, as escaped or encoded text has it', () => {
+    const redactions = new Redactions();
+    expect(redactions.text(`{"out":"done\\n${installation}"}`)).toBe('{"out":"done\\n[REDACTED]"}');
+    expect(redactions.text(`url=https%3A%2F%2Fx-access-token%3A${installation}%40github.com`)).toBe(
+      'url=https%3A%2F%2Fx-access-token%3A[REDACTED]%40github.com'
+    );
   });
 
   it('redacts what is left of a GitHub token cut short', () => {
