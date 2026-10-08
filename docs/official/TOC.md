@@ -63,7 +63,6 @@ rather than to a path in this repository, which they cannot open.
 ## Under the hood
 
 - [internals/index](internals/index.md) — <https://docs.flintai.dev/flintai/switch/internals>
-- [internals/matrix-substrate](internals/matrix-substrate.md) — <https://docs.flintai.dev/flintai/switch/internals/matrix-substrate>
 - [internals/collaboration-bridge](internals/collaboration-bridge.md) — <https://docs.flintai.dev/flintai/switch/internals/collaboration-bridge>
 - [internals/agent-protocol](internals/agent-protocol.md) — <https://docs.flintai.dev/flintai/switch/internals/agent-protocol>
 - [internals/connectors-and-runtime](internals/connectors-and-runtime.md) — <https://docs.flintai.dev/flintai/switch/internals/connectors-and-runtime>

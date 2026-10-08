@@ -14,6 +14,14 @@ This page covers what you need to choose, what the deployment exposes, and how t
 
 If a server is already running and somebody can give you its Gateway URL and API URL, you don't need to deploy anything. Go to [Add a server](../getting-started/add-a-server.md) and choose **Connect to an existing server**.
 
+## Before you begin
+
+- **Somewhere to run it.** A Linux machine you administer, or a namespace in a cluster you can deploy to. Whoever provisions infrastructure in your organization is the person to ask, and that ask usually has the longest lead time on this page.
+- **Whoever fronts your internal services.** A fresh deployment is reachable only from the machine it's running on, and your colleagues reach it through whatever your organization uses to terminate TLS and sign people in. That's rarely the same person who deploys the server.
+- **An administrator of your messaging app**, if you're bridging the server to one your team already uses. [Connect messaging apps](messaging-apps/index.md) says what each app needs from theirs. You don't need one to start with: both deployments below can bring up a Mattermost of their own.
+
+One decision can't be undone once the server has started — the name it gives every account and room it creates. Read [Decide the server's name before the first start](#decide-the-servers-name-before-the-first-start) before you deploy, rather than when you reach it.
+
 ## Choose where it runs
 
 Each Switch release publishes both of the following, stamped with the same version, so a single version number pins the whole stack.
@@ -43,7 +51,7 @@ The Compose file **requires** you to set a version and has no fallback. That's d
 
 ## What the Compose deployment gives you
 
-The core of the stack — the Switch server itself, its database, and the `tuwunel` message server that carries room traffic — starts by default. The rest is opt-in through Compose profiles:
+The core of the stack — the Switch server itself and its database — starts by default. The database carries room traffic as well as everything else the deployment stores. The rest is opt-in through Compose profiles:
 
 - **`collab`** adds a Mattermost instance and seeds it, so the deployment comes with a messaging app rather than needing one connected first.
 - **`gateway`** adds the Gateway, the administrative surface for the server.
@@ -60,9 +68,9 @@ Set `AGENT_REGISTRATION_TOKEN` before the first start. It becomes the server's s
 
 ### Decide the server's name before the first start
 
-The Compose file names the message server `localhost`, in two places — `TUWUNEL_SERVER_NAME` and `MATRIX_SERVER_NAME` — and both have to carry the same value.
+The Compose file sets the server's name to `localhost`, in `MATRIX_SERVER_NAME`. The server has no default for it and won't start without one.
 
-That name doesn't have to resolve anywhere, because the deployment doesn't federate with any other. But it becomes part of every user and room identifier the server creates, so it's visible to everyone using the deployment, and changing it after the server has run orphans everything created up to that point. Pick a name you can live with, or keep the default deliberately.
+Nothing is ever contacted at that name — it's a naming scheme rather than an address, so it doesn't have to resolve anywhere. But it becomes the second half of every user and room identifier the server creates, so it's visible to everyone using the deployment, and changing it after the server has run orphans everything created up to that point. Pick a name you can live with, or keep the default deliberately.
 
 ## What the Helm chart gives you
 
@@ -91,13 +99,25 @@ In Switch Console, add a server and choose **Connect to an existing server**. En
 
 They install Switch Console, choose the same option, and enter the same addresses. Each person also needs an account on the deployment and on the messaging app it's bridged to.
 
-## Back up the signing key
+## What to back up
 
 **Warning**
 
-**The signing key is the one thing you cannot recover.** It's the cryptographic identity of your deployment: lose it and every account on the server is orphaned, and the server can never be restored as itself. On a Compose deployment it lives in the `tuwuneldata` volume. Back that up before anyone relies on the deployment.
+**The database is the backup.** Rooms, messages, the files people share, and every account live in PostgreSQL. Take a database backup before anyone relies on the deployment — without one there is nothing to restore.
 
-The Helm chart ships no backup jobs, deliberately — a backup written to storage in the same cluster shares the failure it's meant to protect against, and your cluster already has better primitives. The chart's own `BACKUP.md` says what to back up and how, including the database and the Mattermost files.
+The Helm chart ships no backup jobs, deliberately — a backup written to storage in the same cluster shares the failure it's meant to protect against, and your cluster already has better primitives. The chart's own `BACKUP.md` says what to take and how.
+
+Two more things live in the environment rather than on disk, so a backup of neither the database nor a volume captures them.
+
+**`JWT_SECRET_KEY` is the one to guard.** It signs session tokens, and it encrypts the API keys the server stores — each agent's, and the Gateway's. Bring the deployment back on a different value and nothing looks broken: those API keys go on working, because checking one doesn't involve the secret. What you lose is the ability to read any of them back, so anyone who didn't keep their own copy needs a new key issued.
+
+`AGENT_REGISTRATION_TOKEN` is the key your colleagues' agents register against. Keep both wherever your organization keeps secrets.
+
+### One volume matters only if you upgraded
+
+A deployment that has been running since before Switch kept shared files in the database still holds the files shared up to that point in a single volume — `tuwuneldata` on Compose, a retained claim on Kubernetes. Those files stayed where they were rather than moving, so that volume is their only copy. Back it up alongside the database, or decide deliberately to let them go. On Kubernetes, `retainedTuwunelDataSize` has to match the size the volume was created at, because Kubernetes rejects a smaller claim rather than resizing.
+
+**Standing up a new deployment, none of that applies to you.** Nothing writes to that volume, so it stays empty — and you can set `retainTuwunelData` to `false` rather than claim storage you'll never fill.
 
 ## Next steps
 
