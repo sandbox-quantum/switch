@@ -21,6 +21,7 @@ from sqlalchemy import delete, event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
+    ConnectionSecret,
     ReauthorizationRequiredError,
     ServiceAdapterError,
 )
@@ -69,6 +70,7 @@ def broker(
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters={"github": vendor},
+        disabled={},
         store=STORE,
         token_retention=timedelta(days=30),
     )
@@ -438,6 +440,7 @@ class TestChecks:
             keyring=TEST_KEYRING,
             catalog=CATALOG,
             adapters={},
+            disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
         )
@@ -868,6 +871,7 @@ class TestConnectOnly:
             keyring=TEST_KEYRING,
             catalog=CATALOG,
             adapters={"github": vendor},
+            disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
         )
@@ -926,3 +930,88 @@ class TestLaunchChangesInFlight:
         )
         assert vendor.revoked == [vendor.issued[0][1]]
         assert await _issuances(session_factory) == []
+
+
+def _switched_off(
+    session_factory: async_sessionmaker[AsyncSession],
+    vendor: FakeVendor,
+    disabled: dict[str, str],
+) -> ServiceBroker:
+    return ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=CATALOG,
+        adapters={"github": vendor},
+        disabled=disabled,
+        store=STORE,
+        token_retention=timedelta(days=30),
+    )
+
+
+class TestSwitchedOff:
+    async def test_a_switched_off_service_says_why_and_is_neither_connected_nor_granted(
+        self, session_factory, vendor
+    ) -> None:
+        reason = "Coming to this server soon."
+        broker = _switched_off(session_factory, vendor, {"github": reason})
+        world = await _world(session_factory)
+
+        assert broker.availability("github") == reason
+        assert broker.connectable("github") is False
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (refused.status_code, refused.code, refused.retryable) == (
+            403,
+            "forbidden",
+            False,
+        )
+        assert refused.message == reason
+        assert vendor.issued == [] and vendor.refreshes == 0
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            with pytest.raises(ServiceError) as caught:
+                await broker.set_grant(
+                    session,
+                    agent=agent,
+                    actor_id=world.owner.id,
+                    service="github",
+                    access="read",
+                    tool_mode=None,
+                    tools=None,
+                    resources=RESOURCES,
+                )
+            assert (caught.value.status_code, caught.value.message) == (422, reason)
+            with pytest.raises(ServiceError) as caught:
+                await broker.connect(
+                    session,
+                    user_id=world.owner.id,
+                    service="github",
+                    consent="write",
+                    granted_scopes=[],
+                    account_id="1001",
+                    external_identity="ada-gh",
+                    secret=ConnectionSecret(_secret(expires_in=3600)),
+                )
+            assert (caught.value.status_code, caught.value.message) == (403, reason)
+
+    async def test_disconnecting_a_switched_off_service_still_works(
+        self, session_factory, vendor
+    ) -> None:
+        broker = _switched_off(session_factory, vendor, {"github": ""})
+        world = await _world(session_factory)
+        async with session_factory() as session:
+            await broker.disconnect(session, world.owner.id, "github")
+        assert await _connection(session_factory, world.owner.id) is None
+        assert len(vendor.connections_revoked) == 1
+
+    async def test_an_empty_reason_reads_switched_off(
+        self, session_factory, vendor
+    ) -> None:
+        broker = _switched_off(session_factory, vendor, {"github": ""})
+        assert broker.availability("github") == "Switched off on this server."
+
+    async def test_a_service_outside_the_catalog_stops_the_server(
+        self, session_factory, vendor
+    ) -> None:
+        with pytest.raises(ValueError, match="not in the catalog: \\['nowhere'\\]"):
+            _switched_off(session_factory, vendor, {"nowhere": ""})

@@ -64,7 +64,8 @@ class OAuthClient(BaseModel):
     Console's listener on 127.0.0.1), in the order offered. Without
     `authorization_url` and `token_url`, both are discovered from the MCP
     server's metadata. `revocation_url` is where a disconnect revokes the
-    sign-in, where the vendor has one.
+    sign-in, where the vendor has one. `setup_note` tells people what a server
+    without the client's settings lacks.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -74,6 +75,9 @@ class OAuthClient(BaseModel):
     authorization_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    setup_note: str | None = Field(
+        default=None, min_length=1, max_length=200, pattern=r"^[^\n]+$"
+    )
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":

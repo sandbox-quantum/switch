@@ -21,6 +21,8 @@ _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 # worth catching at startup rather than at the first `GRANT`. The 63-character
 # cap matches Postgres's own `NAMEDATALEN` limit.
 _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+# A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
+_SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
 class SwitchConfig(BaseSettings):
@@ -189,6 +191,12 @@ class SwitchConfig(BaseSettings):
     # unless the deprecated hosted settings above still name an App.
     github_app_config_path: str | None = None
     github_app_private_key_path: str | None = None
+    # Catalog services switched off on this server, each with the reason
+    # people are shown, as JSON: {"<slug>": "<reason>"}. An empty reason shows
+    # "Switched off on this server." A switched-off service is listed with its
+    # reason, and cannot be connected, granted or issued; disconnecting still
+    # works. Unknown slugs stop the server.
+    disabled_services: dict[str, str] = Field(default_factory=dict)
     hosted_provider_verification_enabled: bool = False
     hosted_claude_verifier_path: str | None = None
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
@@ -919,6 +927,20 @@ class SwitchConfig(BaseSettings):
             and not Path(self.github_app_private_key_path).is_absolute()
         ):
             raise ValueError("GITHUB_APP_PRIVATE_KEY_PATH must be an absolute path.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_disabled_services(self) -> "SwitchConfig":
+        for slug, reason in self.disabled_services.items():
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"DISABLED_SERVICES names an invalid service: {slug!r}"
+                )
+            if len(reason) > 300 or "\n" in reason:
+                raise ValueError(
+                    f"DISABLED_SERVICES' reason for {slug} must be one line of at "
+                    "most 300 characters."
+                )
         return self
 
     @model_validator(mode="after")

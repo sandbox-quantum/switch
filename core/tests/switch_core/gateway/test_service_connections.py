@@ -499,6 +499,7 @@ class TestMemberRemoval:
             keyring=TEST_KEYRING,
             catalog=CATALOG,
             adapters={"github": vendor},
+            disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
         )

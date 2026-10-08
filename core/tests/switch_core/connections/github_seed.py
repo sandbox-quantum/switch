@@ -82,6 +82,7 @@ def github_broker(
         keyring=keyring,
         catalog=CATALOG,
         adapters={"github": vendor},
+        disabled={},
         store=STORE,
         token_retention=timedelta(days=30),
     )

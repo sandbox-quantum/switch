@@ -108,6 +108,7 @@ REVOCATION_BUDGET_SECONDS = 10.0
 REVOCATION_CLAIM = timedelta(seconds=90)
 VENDOR_CALL_SECONDS = 8
 ACCESS_WARNING = "Some access already given out may remain for up to 1 hour."
+SWITCHED_OFF = "Switched off on this server."
 
 
 class ServiceError(Exception):
@@ -231,16 +232,26 @@ class ServiceBroker:
         keyring: Keyring,
         catalog: dict[str, Connection],
         adapters: dict[str, ServiceAdapter],
+        disabled: dict[str, str],
         store: ServiceConnectionStore,
         token_retention: timedelta,
     ) -> None:
         unknown = sorted(set(adapters) - set(catalog))
         if unknown:
             raise ValueError(f"Adapters for services not in the catalog: {unknown}")
+        unknown = sorted(set(disabled) - set(catalog))
+        if unknown:
+            raise ValueError(
+                f"DISABLED_SERVICES names services not in the catalog: {unknown}"
+            )
         self._session_factory = session_factory
         self._keyring = keyring
         self._catalog = catalog
         self._adapters = adapters
+        # Switched off here, by service, with the reason people are shown.
+        self._disabled = {
+            service: reason or SWITCHED_OFF for service, reason in disabled.items()
+        }
         self._store = store
         self._token_retention = token_retention
         # The access token being fetched for each connection, by (tenant,
@@ -254,6 +265,11 @@ class ServiceBroker:
                 404, NOT_FOUND, f"No service named {service!r}.", retryable=False
             )
         return entry
+
+    def _require_switched_on(self, service: str) -> None:
+        reason = self._disabled.get(service)
+        if reason is not None:
+            raise ServiceError(403, FORBIDDEN, reason, retryable=False)
 
     def _adapter(self, service: str) -> ServiceAdapter:
         """The adapter that issues for `service`, or the refusal saying why not."""
@@ -304,6 +320,7 @@ class ServiceBroker:
         to_record: bool,
     ) -> GrantDecision:
         entry = self._entry(service)
+        self._require_switched_on(service)
         name = entry.definition.name
         tenant_id = require_tenant_id()
         agent = await session.scalar(
@@ -839,10 +856,14 @@ class ServiceBroker:
         return grants
 
     def connectable(self, service: str) -> bool:
-        """Whether a person can connect `service` here: it has an adapter."""
+        """Whether a person can connect `service` here: it has an adapter and
+        is not switched off."""
         entry = self._catalog.get(service)
         return (
-            entry is not None and entry.definition.enabled and service in self._adapters
+            entry is not None
+            and entry.definition.enabled
+            and service in self._adapters
+            and service not in self._disabled
         )
 
     def availability(self, service: str) -> str | None:
@@ -850,8 +871,14 @@ class ServiceBroker:
         entry = self._catalog.get(service)
         if entry is None or not entry.definition.enabled:
             return "Not available yet."
+        reason = self._disabled.get(service)
+        if reason is not None:
+            return reason
         adapter = self._adapters.get(service)
         if adapter is None:
+            oauth = entry.definition.auth.oauth
+            if oauth is not None and oauth.setup_note is not None:
+                return f"Not set up on this server. {oauth.setup_note}"
             return f"{entry.definition.name} is not set up on this server."
         if not adapter.can_issue:
             return (
@@ -1047,6 +1074,7 @@ class ServiceBroker:
         Commits `session`; returns a warning naming what could not be revoked.
         """
         name = self._entry(service).definition.name
+        self._require_switched_on(service)
         try:
             await self._store.lock_connection(session, user_id, service)
         except ServiceConnectionBusy as error:
