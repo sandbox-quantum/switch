@@ -53,6 +53,8 @@ const defaultDeps: UserChangesDeps = {
 class ServerSocket {
   watchers = 0;
   live = false;
+  /** This server has said hello at least once, so it has the socket. */
+  private supported = false;
   private socket: WebSocket | null = null;
   private retryMs = MIN_RETRY_MS;
   private retry: ReturnType<typeof setTimeout> | null = null;
@@ -105,8 +107,13 @@ class ServerSocket {
       this.socket = null;
       if (this.watchdog) this.deps.clearTimer(this.watchdog);
       this.setDown();
-      // A handshake that never opened is most likely a server without the socket.
-      this.schedule(opened ? this.retryMs : UNSUPPORTED_RETRY_MS, `closed (${event.code})`);
+      // A handshake that never opened, on a server that has never said hello,
+      // is most likely a server without the socket. One that has said hello
+      // is restarting or unreachable for now: keep trying at the usual pace.
+      this.schedule(
+        opened || this.supported ? this.retryMs : UNSUPPORTED_RETRY_MS,
+        `closed (${event.code})`
+      );
     });
   }
 
@@ -121,6 +128,7 @@ class ServerSocket {
       case 'hello': {
         const hello = frame.data as unknown as Hello;
         this.retryMs = MIN_RETRY_MS;
+        this.supported = true;
         this.live = true;
         this.arm(socket, hello.ping_interval_s);
         this.deps.emit(userChangesChannel, {

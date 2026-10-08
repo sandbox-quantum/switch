@@ -129,6 +129,24 @@ describe('user changes', () => {
     expect(timers.at(-1)!.ms).toBe(5 * 60_000);
   });
 
+  it('keeps retrying at the usual pace when a server that said hello is restarting', async () => {
+    const { service, timers } = setup();
+    service.watch('s1');
+    await tick();
+    const first = FakeSocket.opened[0];
+    first.fire('open');
+    first.frame('hello', { kinds: ['machine'], ping_interval_s: 25 });
+    first.fire('close', { code: 1012 });
+    timers.at(-1)!.fn();
+    await tick();
+    // The server is still down: the handshake fails without opening (a 502).
+    FakeSocket.opened[1].fire('close', { code: 1006 });
+    expect(timers.at(-1)!.ms).toBeLessThan(60_000);
+    timers.at(-1)!.fn();
+    await tick();
+    expect(FakeSocket.opened).toHaveLength(3);
+  });
+
   it('closes the socket when the last watcher goes', async () => {
     const { service } = setup();
     service.watch('s1');
