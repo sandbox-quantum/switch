@@ -22,6 +22,8 @@ import {
  * Core with the completion secret only this Console holds. Neither the
  * listener nor the browser ever sees a token: Core exchanges the code.
  */
+/** Some vendors issue codes as signed tokens: Atlassian's run past 2,000 characters. */
+const MAX_CODE_LENGTH = 8192;
 const active = new Map<string, { secret: string; close: () => void }>();
 const key = (server: SwitchServer, service: string, id: string) =>
   JSON.stringify([server.id, service, id]);
@@ -57,7 +59,7 @@ export async function startServiceBrowserFlow(
       url.pathname !== SERVICE_CALLBACK_PATH ||
       url.searchParams.get('state') !== state ||
       !code ||
-      code.length > 2048
+      code.length > MAX_CODE_LENGTH
     ) {
       response.writeHead(400);
       response.end(

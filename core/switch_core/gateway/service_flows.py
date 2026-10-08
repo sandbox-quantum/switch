@@ -31,6 +31,7 @@ from switch_core.connections.broker import (
 )
 from switch_core.connections.flows import (
     INTERRUPTED,
+    MAX_CODE_LENGTH,
     FlowError,
     ServiceFlow,
     ServiceFlows,
@@ -104,7 +105,7 @@ class FlowSecret(BaseModel):
 
 
 class CompleteFlow(FlowSecret):
-    code: str = Field(min_length=1, max_length=2048)
+    code: str = Field(min_length=1, max_length=MAX_CODE_LENGTH)
 
 
 @router.post("", response_model=None)
@@ -226,7 +227,7 @@ async def relay(
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
-        if len(body) > 4096:
+        if len(body) > 2 * MAX_CODE_LENGTH:
             return _page("Connections", "Invalid sign-in response.", 400)
     value = parse_qs(body.decode("utf-8", errors="replace"))
     state = value.get("state", [""])[0]

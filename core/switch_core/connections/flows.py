@@ -46,7 +46,9 @@ from switch_core.connections.oauth_clients import core_callback, loopback_redire
 
 FLOW_SECONDS = 600
 MAX_FLOWS = 256
-MAX_CODE_LENGTH = 2048
+# Some vendors issue codes as signed tokens: Atlassian's run past 2,000
+# characters.
+MAX_CODE_LENGTH = 8192
 INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 

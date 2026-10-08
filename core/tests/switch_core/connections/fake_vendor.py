@@ -169,6 +169,8 @@ class FakeOAuthServer:
         self.lifetime = lifetime
         self.resource_metadata_path = "/.well-known/oauth-protected-resource/v1/mcp"
         self.advertise = True
+        # Some vendors issue long codes: Atlassian's run past 2,000 characters.
+        self.code_length = 22
         # Clients by id, with their secret (None: a public client).
         self.clients: dict[str, str | None] = {STATIC_CLIENT_ID: STATIC_CLIENT_SECRET}
         # A registered client's redirects; the static client's are not checked.
@@ -212,7 +214,7 @@ class FakeOAuthServer:
         registered = self.registered_redirects.get(query["client_id"])
         if registered is not None and query["redirect_uri"] not in registered:
             raise UnregisteredRedirect(query["redirect_uri"])
-        code = secrets.token_urlsafe(16)
+        code = secrets.token_urlsafe(self.code_length)[: self.code_length]
         self.codes[code] = _Code(
             client_id=query["client_id"],
             redirect_uri=query["redirect_uri"],

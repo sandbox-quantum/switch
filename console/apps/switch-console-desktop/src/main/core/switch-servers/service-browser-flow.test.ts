@@ -98,6 +98,21 @@ it('takes back only this Console’s state, and hands the code to Core with its 
   );
 });
 
+it('takes back a code as long as a vendor issues, and nothing absurdly long', async () => {
+  // Atlassian's codes are signed tokens: 2,177 characters in a live sign-in.
+  const { id, input, url } = await start();
+  expect((await fetch(url + `?state=${id}&code=${'x'.repeat(9000)}`)).status).toBe(400);
+  const long = 'x'.repeat(2177);
+  expect((await fetch(url + `?state=${id}&code=${long}`)).status).toBe(200);
+  expect(completeServiceConnection).toHaveBeenCalledExactlyOnceWith(
+    server,
+    'example',
+    id,
+    long,
+    input.completion_secret
+  );
+});
+
 it('keys each flow by its service', async () => {
   const { id } = await start('example');
   await expect(confirmServiceBrowserFlow(server, 'other', id)).rejects.toThrow(

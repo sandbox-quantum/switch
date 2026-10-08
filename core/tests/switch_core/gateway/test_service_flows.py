@@ -368,6 +368,56 @@ class TestLoopback:
         assert connection is not None and connection.consent == "read"
 
 
+class TestLongCodes:
+    """Atlassian's codes run past 2,000 characters (2,177 in a live sign-in)."""
+
+    async def test_a_long_code_comes_back_to_console(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        world.vendor.code_length = 2177
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            assert len(code) == 2177
+            assert (await console.complete(code)).status_code == 204
+            assert (await console.confirm()).status_code == 200
+
+    async def test_a_long_code_is_relayed_through_core(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        world.vendor.code_length = 2177
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            cookie = {
+                f"switch_service_{console.state}": left.cookies[
+                    f"switch_service_{console.state}"
+                ]
+            }
+            back = urlsplit(world.vendor.authorize(left.headers["location"]))
+            code = parse_qs(back.query)["code"][0]
+            assert (
+                await client.get(f"{back.path}?{back.query}", cookies=cookie)
+            ).status_code == 200
+            relayed = await client.post(
+                f"{FLOWS}/callback",
+                data={"state": console.state, "code": code},
+                cookies=cookie,
+            )
+            assert relayed.status_code == 303
+            assert (await console.complete(code)).status_code == 204
+
+
 class TestLoopbackPorts:
     async def test_signs_in_on_any_registered_port(
         self, session_factory, tmp_path
