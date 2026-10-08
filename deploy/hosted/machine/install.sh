@@ -67,7 +67,7 @@ agents_group="switch-agents-$controller_uid"
 if ! getent passwd "$controller_user" >/dev/null; then
   groupadd --system --gid "$controller_uid" "$controller_user"
   useradd --system --uid "$controller_uid" --gid "$controller_uid" \
-    --home-dir /var/lib/switch-controller --create-home --shell /usr/sbin/nologin \
+    --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin \
     --comment "Switch agents controller" "$controller_user"
 fi
 [ "$(id -u "$controller_user")" -eq "$controller_uid" ] || {
