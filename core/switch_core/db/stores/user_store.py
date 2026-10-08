@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from datetime import timedelta
 
 from sqlalchemy import case, func, select
@@ -117,6 +118,23 @@ class UserStore:
 
     async def get(self, session: AsyncSession, user_id: str) -> User | None:
         return await session.get(User, user_id)
+
+    async def names_by_id(
+        self, session: AsyncSession, user_ids: Collection[str]
+    ) -> dict[str, str]:
+        """Each existing user's name, keyed by id, in one query.
+
+        For the lists that show an owner beside every row: one read for all
+        the owners rather than one per owner. `users` carries no tenant, so
+        what scopes this is the ids, which the caller took from rows its own
+        tenant can see.
+        """
+        if not user_ids:
+            return {}
+        result = await session.execute(
+            select(User.id, User.name).where(User.id.in_(user_ids))
+        )
+        return {user_id: name for user_id, name in result.all()}
 
     async def exists(self, session: AsyncSession, user_id: str) -> bool:
         """Whether this id names a real account, without loading the row.

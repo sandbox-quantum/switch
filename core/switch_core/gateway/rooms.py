@@ -290,23 +290,11 @@ async def list_rooms(
     group_names = {g.id: g.name for g in await room_group_store.get_all(session)}
 
     bridge_ids = {r.bridge_id for r in rooms if r.bridge_id}
-    bridge_names: dict[str, str] = {}
-    bridge_types: dict[str, str] = {}
-    ext_client_to_name: dict[str, str] = {}
-    for bid in bridge_ids:
-        bridge = await bridge_store.get(session, bid)
-        if bridge:
-            bridge_names[bid] = bridge.display_name
-            bridge_types[bid] = bridge.type
-        ext_users = await external_user_store.get_by_bridge(session, bid)
-        for eu in ext_users:
-            ext_client_to_name[eu.client_id] = eu.external_username
-
-    owner_names: dict[str, str] = {}
-    for oid in {r.owner_id for r in rooms if r.owner_id}:
-        owner = await user_store.get(session, oid)
-        if owner:
-            owner_names[oid] = owner.name
+    bridges = {b.id: b for b in await bridge_store.get_many(session, bridge_ids)}
+    ext_client_to_name = {
+        eu.client_id: eu.external_username
+        for eu in await external_user_store.get_by_bridges(session, bridge_ids)
+    }
 
     if search:
         term = search.lower()
@@ -314,16 +302,24 @@ async def list_rooms(
             r for r in rooms if term in r.name.lower() or term in r.description.lower()
         ]
 
+    owner_names = await user_store.names_by_id(
+        session, {r.owner_id for r in rooms if r.owner_id}
+    )
+    room_ids = [room.id for room in rooms]
+    agent_ids_by_room = await room_store.agent_ids_by_room(session, room_ids)
+    client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
+    # Not held across the deeplinks, which can ask the platform on a cache miss.
+    await session.commit()
+
     summaries = []
     for room in rooms:
-        agent_ids = await room_store.get_agent_ids(session, room.id)
-        client_ids = await room_store.get_client_ids(session, room.id)
         connected_names = sorted(
-            ext_client_to_name[cid] for cid in client_ids if cid in ext_client_to_name
+            ext_client_to_name[cid]
+            for cid in client_ids_by_room.get(room.id, [])
+            if cid in ext_client_to_name
         )
-        bridge_display_name = (
-            bridge_names.get(room.bridge_id) if room.bridge_id else None
-        )
+        bridge = bridges.get(room.bridge_id) if room.bridge_id else None
+        bridge_display_name = bridge.display_name if bridge else None
         name = room.name
         if bridge_display_name and name.startswith(f"{bridge_display_name}: "):
             name = name[len(bridge_display_name) + 2 :]
@@ -334,14 +330,12 @@ async def list_rooms(
                 description=room.description,
                 channel_type=room.channel_type,
                 admin_mode=room.admin_mode,
-                agent_count=len(agent_ids),
+                agent_count=len(agent_ids_by_room.get(room.id, [])),
                 connected_user_count=len(connected_names),
                 connected_user_names=connected_names,
                 bridge_id=room.bridge_id,
                 bridge_display_name=bridge_display_name,
-                bridge_type=(
-                    bridge_types.get(room.bridge_id) if room.bridge_id else None
-                ),
+                bridge_type=bridge.type if bridge else None,
                 external_channel_url=await _external_channel_url(room),
                 group_id=room.group_id,
                 group_name=group_names.get(room.group_id) if room.group_id else None,
