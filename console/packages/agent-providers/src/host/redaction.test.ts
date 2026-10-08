@@ -1,7 +1,14 @@
 import type { FileHandle } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { LogRedactor, pipeRedactedLogs, Redactions, redactText, tokenForms } from './redaction';
+import {
+  LogRedactor,
+  pipeRedactedLogs,
+  Redactions,
+  redactText,
+  ShapeLineRedactor,
+  tokenForms,
+} from './redaction';
 
 function redactChunks(chunks: Buffer[], values: string[]): Buffer {
   const redactor = new LogRedactor(() => values);
@@ -123,6 +130,32 @@ it('says how much of a text could still turn into a value', () => {
   expect(redactions.unfinished('nothing here.')).toBe(0);
   // Every token's base64 form starts with that of `x-access-token:`.
   expect(redactions.unfinished('nothing here')).toBe(1);
+});
+
+describe('token shapes in logs', () => {
+  const token = `ghs_${'A1b2C3d4E5'.repeat(3)}xyz789`;
+
+  it('redacts a GitHub token split over chunks, line by line', () => {
+    const shapes = new ShapeLineRedactor();
+    const line = Buffer.from(`push to https://x-access-token:${token}@github.com — ✓\nnext`);
+    const chunks = [line.subarray(0, 40), line.subarray(40, 41), line.subarray(41)];
+
+    const output = Buffer.concat([...chunks.map((chunk) => shapes.push(chunk)), shapes.finish()]);
+
+    expect(output.toString()).toBe(
+      'push to https://x-access-token:[REDACTED]@github.com — ✓\nnext'
+    );
+  });
+
+  it('writes an unended line once it is long, still redacted', () => {
+    const shapes = new ShapeLineRedactor();
+    const long = Buffer.from(`${'é'.repeat(40_000)} ${token} `);
+    const written = shapes.push(long);
+    expect(written.length).toBeGreaterThan(0);
+    expect(Buffer.concat([written, shapes.finish()]).toString()).toBe(
+      `${'é'.repeat(40_000)} [REDACTED] `
+    );
+  });
 });
 
 describe('tokens no exact value catches', () => {

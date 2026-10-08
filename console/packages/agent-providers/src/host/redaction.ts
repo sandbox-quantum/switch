@@ -194,17 +194,50 @@ export class LogRedactor {
   }
 }
 
+/** How much of a line without its end is held for shape redaction before it is written anyway. */
+const SHAPE_LINE_LIMIT = 64 * 1024;
+
+/**
+ * Streaming redaction of GitHub's token shapes, a line at a time: a token
+ * issued before this host started, which no exact value names, split over
+ * chunks is still whole within its line. Bytes are read as latin1, one
+ * character each, so a line held past `SHAPE_LINE_LIMIT` is never cut inside
+ * a UTF-8 character's bytes when it is put back.
+ */
+export class ShapeLineRedactor {
+  private pending = Buffer.alloc(0);
+
+  push(chunk: Buffer): Buffer {
+    const combined = Buffer.concat([this.pending, chunk]);
+    const end = combined.lastIndexOf(0x0a) + 1;
+    const cut = end > 0 ? end : combined.length > SHAPE_LINE_LIMIT ? combined.length : 0;
+    this.pending = Buffer.from(combined.subarray(cut));
+    return redactShapeBytes(combined.subarray(0, cut));
+  }
+
+  finish(): Buffer {
+    const output = redactShapeBytes(this.pending);
+    this.pending = Buffer.alloc(0);
+    return output;
+  }
+}
+
+function redactShapeBytes(input: Buffer): Buffer {
+  return input.length ? Buffer.from(redactShapes(input.toString('latin1')), 'latin1') : input;
+}
+
 async function consume(
   stream: Readable,
   file: FileHandle,
   secrets: () => readonly string[]
 ): Promise<void> {
   const redactor = new LogRedactor(secrets);
+  const shapes = new ShapeLineRedactor();
   for await (const chunk of stream) {
-    const output = redactor.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const output = shapes.push(redactor.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     if (output.length) await file.write(output);
   }
-  const output = redactor.finish();
+  const output = Buffer.concat([shapes.push(redactor.finish()), shapes.finish()]);
   if (output.length) await file.write(output);
 }
 
