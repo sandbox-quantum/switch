@@ -15,7 +15,8 @@ import {
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
-import { cloudControl, isCloudAgent, runCloudSessionOperation } from './cloud-control';
+import { isCloudAgent, runCloudSessionOperation } from './cloud-control';
+import { isControllerAgent, isRelayedAgent, relayControl } from './controller-control';
 import { localSessionLinks } from './local-host';
 import { withSidecar } from './sidecar-control';
 
@@ -51,7 +52,7 @@ export async function askHost(
   sessionId: string,
   request: SessionRequest
 ): Promise<unknown> {
-  if (isCloudAgent(agentId)) return (await cloudControl(agentId)).request(sessionId, request);
+  if (isRelayedAgent(agentId)) return (await relayControl(agentId)).request(sessionId, request);
   if (await isLocal(agentId)) {
     const root = sharedSessionRoot(sessionId);
     // Waits for a host that is starting, not for one nothing is running.
@@ -86,6 +87,8 @@ export async function submitSessionCommand(
     // user asking for it, and whatever stopped it may have been fixed.
     if (!(error instanceof SessionUnavailableError || error instanceof SessionHostFailedError))
       throw error;
+    // A controller runs its own sessions: Console never starts one there.
+    if (isControllerAgent(agentId)) throw error;
   }
   const notRestarted = 'The session is not running and could not be started again: ';
   try {

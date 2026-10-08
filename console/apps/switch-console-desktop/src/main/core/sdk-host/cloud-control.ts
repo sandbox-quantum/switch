@@ -87,6 +87,33 @@ function machinePath(machineId: string, rest = ''): string {
   return `/hosted-machines/${encodeURIComponent(machineId)}${rest}`;
 }
 
+/**
+ * A relay client for a managed agent's sessions, through its server's
+ * gateway with the server's workspace selected per request. Shared by cloud
+ * agents and agents on any other controller; the caller checks the server.
+ */
+export function relayClientFor(target: CloudAgentTarget): CloudRelayClient {
+  return new CloudRelayClient(
+    (path, init) =>
+      withServerWorkspaceSession(target.serverId, (server) =>
+        gatewayRequest(server, path, {
+          authenticated: true,
+          method: init.method,
+          body: init.body,
+          signal: init.signal,
+        })
+      ),
+    cloudRelayBasePath(target),
+    { retryMs: 20_000, timeoutMs: RELAY_TIMEOUT_MS }
+  );
+}
+
+/** Raise when the server is no longer registered. */
+export async function requireRegisteredServer(serverId: string): Promise<void> {
+  if (!(await getServer(serverId)))
+    throw new Error('The Switch server for this agent was removed.');
+}
+
 const clients = new Map<string, CloudRelayClient>();
 
 /**
@@ -105,19 +132,7 @@ export async function cloudControl(agentId: string): Promise<CloudRelayClient> {
   const target = targetOf(agentId);
   const { serverId } = target;
   await requireCloudServer(serverId);
-  const client = new CloudRelayClient(
-    (path, init) =>
-      withServerWorkspaceSession(serverId, (server) =>
-        gatewayRequest(server, path, {
-          authenticated: true,
-          method: init.method,
-          body: init.body,
-          signal: init.signal,
-        })
-      ),
-    cloudRelayBasePath(target),
-    { retryMs: 20_000, timeoutMs: RELAY_TIMEOUT_MS }
-  );
+  const client = relayClientFor(target);
   client.onClose(() => {
     if (clients.get(agentId) === client) clients.delete(agentId);
   });
