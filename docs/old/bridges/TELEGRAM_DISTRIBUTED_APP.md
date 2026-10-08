@@ -62,7 +62,8 @@ not use. Setting them is the whole of turning the app on: there is no separate
 switch.
 
 With the Helm chart, set `switchCore.telegramApp.enabled` and
-`switchCore.telegramApp.messagingPublicUrl`, and supply the two secrets as
+`switchCore.messagingPublicUrl` (the origin every distributed messaging app
+shares), and supply the two secrets as
 `secrets.telegramAppBotToken` and `secrets.telegramAppWebhookSecret`. The
 standalone compose file forwards both variables from `.env`.
 

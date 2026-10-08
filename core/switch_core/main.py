@@ -1620,8 +1620,10 @@ async def _shutdown(
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
     teams_app: TeamsSharedApp | None,
-    telegram_app: TelegramAppClient | None,
-    telegram_app_task: asyncio.Task[None] | None,
+    # Defaulted so a caller with no Telegram app, as the shutdown-order tests
+    # are, need not name it; `run` always passes both.
+    telegram_app: TelegramAppClient | None = None,
+    telegram_app_task: asyncio.Task[None] | None = None,
 ) -> None:
     logger.info("Shutting down...")
     # Before uvicorn closes the sockets, so the controllers' are recorded as

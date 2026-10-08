@@ -98,7 +98,7 @@ export default function InstalledAppsSection({
   );
 
   const claimable = useMemo(() => offered?.claimable ?? [], [offered]);
-  const installable = useMemo(() => offered?.platforms ?? [], [offered]);
+  const installable = useMemo(() => (offered ? [...offered] : []), [offered]);
   const rows = useMemo(() => installs ?? [], [installs]);
 
   // Every platform this organisation can add to, or has anything recorded

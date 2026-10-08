@@ -205,34 +205,48 @@ class TestTheSharedBot:
 class TestAuthenticity:
     async def test_the_right_secret_is_accepted(self) -> None:
         installer = await _installer()
-        installer.verify_webhook(headers={SECRET_TOKEN_HEADER: _SECRET}, body=b"{}")
+        await installer.verify_webhook(
+            endpoint="events",
+            query={},
+            headers={SECRET_TOKEN_HEADER: _SECRET},
+            body=b"{}",
+        )
 
     async def test_the_header_name_is_case_insensitive(self) -> None:
         """Starlette hands the route lower-cased header names."""
         installer = await _installer()
-        installer.verify_webhook(
-            headers={SECRET_TOKEN_HEADER.lower(): _SECRET}, body=b"{}"
+        await installer.verify_webhook(
+            endpoint="events",
+            query={},
+            headers={SECRET_TOKEN_HEADER.lower(): _SECRET},
+            body=b"{}",
         )
 
     async def test_a_wrong_secret_is_refused(self) -> None:
         installer = await _installer()
         with pytest.raises(WebhookAuthenticityError):
-            installer.verify_webhook(
-                headers={SECRET_TOKEN_HEADER: "not-it"}, body=b"{}"
+            await installer.verify_webhook(
+                endpoint="events",
+                query={},
+                headers={SECRET_TOKEN_HEADER: "not-it"},
+                body=b"{}",
             )
 
     async def test_a_missing_secret_is_refused(self) -> None:
         installer = await _installer()
         with pytest.raises(WebhookAuthenticityError):
-            installer.verify_webhook(headers={}, body=b"{}")
+            await installer.verify_webhook(
+                endpoint="events", query={}, headers={}, body=b"{}"
+            )
 
 
 class TestParsing:
     async def test_the_update_id_is_what_retries_are_caught_by(self) -> None:
         installer = await _installer()
-        event = installer.parse_webhook(
+        [event] = installer.parse_webhook(
             endpoint="events",
             headers={},
+            query={},
             body=json.dumps(_group_message("hello")).encode(),
         )
         assert event.external_event_id == "7"
@@ -242,18 +256,22 @@ class TestParsing:
     async def test_an_update_without_an_id_is_refused(self) -> None:
         installer = await _installer()
         with pytest.raises(WebhookPayloadError):
-            installer.parse_webhook(endpoint="events", headers={}, body=b"{}")
+            installer.parse_webhook(endpoint="events", headers={}, query={}, body=b"{}")
 
     async def test_a_body_that_is_not_json_is_refused(self) -> None:
         installer = await _installer()
         with pytest.raises(WebhookPayloadError):
-            installer.parse_webhook(endpoint="events", headers={}, body=b"<html>")
+            installer.parse_webhook(
+                endpoint="events", headers={}, query={}, body=b"<html>"
+            )
 
     async def test_only_the_events_endpoint_is_telegrams(self) -> None:
         installer = await _installer()
         body = json.dumps(_group_message("hello")).encode()
         with pytest.raises(WebhookPayloadError):
-            installer.parse_webhook(endpoint="interactive", headers={}, body=body)
+            installer.parse_webhook(
+                endpoint="interactive", headers={}, query={}, body=body
+            )
 
 
 class TestWhichChat:

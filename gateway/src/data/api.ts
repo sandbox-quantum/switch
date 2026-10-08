@@ -1017,8 +1017,9 @@ export interface InstalledApp {
   platform: string;
   external_workspace_id: string;
   // What a person calls it — a chat's room, or the workspace an OAuth install
-  // came from — while it still has one. Null once it has ended.
-  name: string | null;
+  // came from — while it still has one. Null once it has ended, and absent
+  // from a server that predates it.
+  name?: string | null;
   // "active", "disconnected" (ended here) or "revoked" (ended at the
   // platform). The last two are kept apart because an operator whose
   // connection stopped working needs to know which of the two it was.
@@ -1041,14 +1042,21 @@ export interface ClaimablePlatform {
   can_add_chat: boolean;
 }
 
-export interface InstallablePlatforms {
-  // OAuth platforms, offered to a tenant admin only.
-  platforms: string[];
-  claimable: ClaimablePlatform[];
-}
+// The OAuth platforms, offered to a tenant admin only, as the list they have
+// always been read as — with the claim-based platforms carried alongside, from
+// the same response, rather than fetched a second time.
+export type InstallablePlatforms = string[] & {
+  claimable?: ClaimablePlatform[];
+};
 
 export async function fetchInstallablePlatforms(): Promise<InstallablePlatforms | null> {
-  return fetchJson<InstallablePlatforms>("/messaging-apps");
+  const res = await fetchJson<{
+    platforms: string[];
+    claimable?: ClaimablePlatform[];
+  }>("/messaging-apps");
+  return res === null
+    ? null
+    : Object.assign([...res.platforms], { claimable: res.claimable ?? [] });
 }
 
 export async function fetchInstalledApps(): Promise<InstalledApp[] | null> {

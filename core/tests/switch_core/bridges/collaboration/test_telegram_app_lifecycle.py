@@ -221,6 +221,7 @@ def _claim(claimant: str) -> InstallClaim:
             workspace_name="Telegram",
             bot_token=None,
             scopes="",
+            platform_data={},
         ),
         claimant=claimant,
     )
@@ -522,6 +523,7 @@ class TestRefusedClaims:
                 workspace_name="Telegram",
                 bot_token=None,
                 scopes="",
+                platform_data={},
             ),
             claimant="42",
         )
@@ -543,6 +545,7 @@ def _proposal_claim() -> InstallClaim:
             workspace_name="Telegram",
             bot_token=None,
             scopes="",
+            platform_data={},
         ),
         claimant="42",
     )

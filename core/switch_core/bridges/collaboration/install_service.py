@@ -282,8 +282,11 @@ class MessagingInstallService:
         receipts: MessagingEventReceiptStore,
         installers: MessagingInstallerRegistry,
         lifecycle: CollaborationBridgeLifecycleService,
-        users: UserStore,
-        rooms: RoomDetacher,
+        # Defaulted because only a claim-based platform asks either: who may
+        # turn it on, and which room a chat that leaves takes with it. A
+        # deployment, or a test, with none of those platforms passes neither.
+        users: UserStore = UserStore(),
+        rooms: RoomDetacher | None = None,
         public_origin: str,
         keyring: Keyring,
     ) -> None:
@@ -978,6 +981,12 @@ class MessagingInstallService:
         deletes it: a chat ending detaches only its own room, whoever ended it.
         """
         if self._installers.get(platform).installs_by_claim:
+            if self._rooms is None:
+                raise RuntimeError(
+                    f"{platform} is installed by claim, so ending one of its "
+                    "installs detaches a room, and this install service was "
+                    "built with nothing to detach it with"
+                )
             await self._rooms.unlink_bridge_channel(bridge_id, workspace_id)
             return
         await self._lifecycle.remove(bridge_id)

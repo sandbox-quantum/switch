@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from collections.abc import Mapping
 from typing import Any, ClassVar
@@ -93,6 +94,7 @@ class _ClaimInstaller(MessagingAppInstaller):
     """
 
     platform: ClassVar[str] = _PLATFORM
+    webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]] = frozenset({"events"})
     state_format = "compact"
     installs_by_claim = True
     expects_unowned_events = True
@@ -159,19 +161,34 @@ class _ClaimInstaller(MessagingAppInstaller):
     async def revoke(self, *, bot_token: str) -> None:
         raise AssertionError("a claim-based install holds no token to revoke")
 
-    def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
+    async def verify_webhook(
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> None:
         return None
 
     def parse_webhook(
-        self, *, endpoint: WebhookEndpoint, headers: Mapping[str, str], body: bytes
-    ) -> InboundWebhook:
-        return InboundWebhook(
-            envelope_type=endpoint,
-            payload=json.loads(body),
-            handshake=None,
-            external_event_id=None,
-            delivery_attempt=0,
-        )
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> list[InboundWebhook]:
+        return [
+            InboundWebhook(
+                envelope_type=endpoint,
+                payload=json.loads(body),
+                handshake=None,
+                external_event_id=None,
+                delivery_attempt=0,
+                answers_inline=False,
+            )
+        ]
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
         return str(payload["chat"])
@@ -214,6 +231,7 @@ def _grant(chat_id: str) -> InstallGrant:
         workspace_name="Telegram",
         bot_token=None,
         scopes="",
+        platform_data={},
     )
 
 
@@ -438,6 +456,7 @@ class TestNames:
                 external_workspace_id="T-gone",
                 encrypted_bot_token=None,
                 scopes="",
+                platform_data={},
                 user_id=fixture.admin_a,
             )
             await session.commit()
@@ -1440,7 +1459,8 @@ class TestABridgeStillStarting:
         self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Only the answer that made the bridge waits. Every other event is
-        routed exactly as before, which is what keeps Slack's untouched."""
+        refused at once for the platform to retry, as on every platform, and
+        never handed to an adapter still starting."""
         fixture = await _fixture(rls_harness)
         owned = await _claim(
             fixture,
@@ -1451,11 +1471,13 @@ class TestABridgeStillStarting:
         )
         fixture.lifecycle.is_connected = lambda bridge_id: False  # type: ignore[method-assign]
 
-        assert await self._post(fixture, {"chat": "-1001"}) == 200
+        started = time.monotonic()
+        assert await self._post(fixture, {"chat": "-1001"}) == 503
+        assert time.monotonic() - started < install_service_module._BRIDGE_START_WAIT
 
         adapter = fixture.lifecycle.adapters[owned.bridge_id]  # type: ignore[index]
         assert isinstance(adapter, _AttachableAdapter)
-        assert len(adapter.dispatched) == 1
+        assert adapter.dispatched == []
 
     async def test_a_retried_answer_waits_too(
         self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
