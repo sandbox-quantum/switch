@@ -119,13 +119,15 @@ Commands:
   uninstall-service [--data-dir <dir>]
       Stop the service and remove it. The enrollment and data are kept.
   install-service --separate-users [--user <name>] [--data-dir <dir>]
-      [--env-file <path>] [--agents-dir <dir>] [--agent-users <n>]
+      [--env-file <path>] [--agents-dir <dir>] [--agent-users <n>] [--no-block]
       As root, once (Linux with systemd and polkit): run every agent as a
       Linux user of its own, seeing only its own directory. Makes <n> agent
       users (default 16), a unit template for them, a polkit rule that lets
       the controller start only those units, and runs the controller as a
       system service of --user (default: the user who ran sudo). Node and the
       controller must be installed system-wide. Run it again to change it.
+      --no-block queues the controller's start rather than waiting for it,
+      for a service the controller's unit is ordered after.
   uninstall-service --separate-users [--user <name>]
       As root: stop the controller and its agents, and remove what the setup
       made. The agents' directories are kept.
@@ -582,12 +584,13 @@ async function installServiceCommand(args: string[]): Promise<number> {
       user: { type: 'string' },
       'agents-dir': { type: 'string' },
       'agent-users': { type: 'string' },
+      'no-block': { type: 'boolean' },
     },
     strict: true,
   });
   assertSupportedPlatform(process.platform);
   if (values['separate-users']) return installSeparateUsersCommand(values);
-  for (const flag of ['user', 'agents-dir', 'agent-users'] as const)
+  for (const flag of ['user', 'agents-dir', 'agent-users', 'no-block'] as const)
     if (values[flag] !== undefined)
       throw new UsageError(`--${flag} is for install-service --separate-users.`);
   const envFile = values['env-file'] ? resolve(values['env-file']) : null;
@@ -627,6 +630,7 @@ async function installSeparateUsersCommand(values: {
   user?: string;
   'agents-dir'?: string;
   'agent-users'?: string;
+  'no-block'?: boolean;
 }): Promise<number> {
   const user = values.user ?? process.env.SUDO_USER;
   if (!user)
@@ -650,6 +654,7 @@ async function installSeparateUsersCommand(values: {
       bundle: bundlePath(values['shared-host-bundle']),
       envFile,
       path: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      noBlock: values['no-block'] === true,
     },
     runSecretCommand
   );
