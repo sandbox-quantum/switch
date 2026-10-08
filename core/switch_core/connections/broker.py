@@ -95,6 +95,11 @@ TOKEN_LIFETIME = timedelta(hours=1)
 TOKEN_LEEWAY = timedelta(seconds=60)
 REFRESH_BEFORE = timedelta(minutes=5)
 REVOCATION_BATCH = 8
+# How long one revocation call keeps taking batches before it leaves the rest
+# to the next: a bulk change (a stop, a disconnect, a member removed) queues
+# more than one batch, and a token left for the five-minute tick may outlive
+# its own hour before it is reached.
+REVOCATION_BUDGET_SECONDS = 20.0
 REVOCATION_CLAIM = timedelta(seconds=90)
 VENDOR_CALL_SECONDS = 8
 ACCESS_WARNING = "Some access already given out may remain for up to 1 hour."
@@ -1240,11 +1245,18 @@ class ServiceBroker:
         """
         if session.in_transaction():
             raise RuntimeError("Commit the access change before revoking its tokens.")
+        deadline = time.monotonic() + REVOCATION_BUDGET_SECONDS
         try:
             async with tenant_session(
                 self._session_factory, require_tenant_id()
             ) as own:
-                return await self._revoke_pending(own, conditions)
+                # Batch after batch, until none remain, a batch revokes nothing
+                # (what is left keeps failing: the tick tries again), or the
+                # time is up. A failed token sorts last, by its attempts.
+                while True:
+                    revoked, pending = await self._revoke_pending(own, conditions)
+                    if not pending or not revoked or time.monotonic() >= deadline:
+                        return pending
         except Exception as error:
             logger.error(
                 "Service token revocation is pending after a failed pass: "
@@ -1255,11 +1267,12 @@ class ServiceBroker:
 
     async def _revoke_pending(
         self, session: AsyncSession, conditions: tuple[Any, ...]
-    ) -> bool:
+    ) -> tuple[int, bool]:
+        """One batch: how many it revoked, and whether any remain."""
         # Most workspaces hold no token at any moment: one read, and done.
         if not await self._store.holds_tokens(session):
             await session.commit()
-            return False
+            return 0, False
         tenant_id = require_tenant_id()
         now = datetime.now(UTC)
         await session.execute(text("SET LOCAL lock_timeout = '2s'"))
@@ -1312,7 +1325,7 @@ class ServiceBroker:
         )
         pending = await self._store.revocation_pending(session, conditions)
         await session.commit()
-        return pending
+        return len(revoked), pending
 
     async def prune(self, session: AsyncSession) -> int:
         """Delete the bound tenant's issuance records past retention; commits."""

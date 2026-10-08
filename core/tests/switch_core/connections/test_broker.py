@@ -580,6 +580,22 @@ class TestCloudLaunch:
 
 
 class TestRevocation:
+    async def test_one_call_revokes_more_than_one_batch(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        tokens = [
+            (await _issue(broker, session_factory, world.agent.id)).token
+            for _ in range(20)
+        ]
+        async with session_factory() as session:
+            grant = await STORE.get_grant(session, world.agent.id, "github")
+            assert grant is not None
+            warning = await broker.revoke_grant(session, grant, world.owner.id)
+
+        assert warning is None
+        assert sorted(vendor.revoked) == sorted(tokens)
+
     async def test_removing_a_grant_revokes_its_tokens_at_once(
         self, broker, session_factory, vendor
     ) -> None:
