@@ -495,7 +495,7 @@ class TeamsAppInstaller(MessagingAppInstaller):
         items = payload.get("value")
         if not isinstance(items, list):
             raise WebhookPayloadError("a Graph notification collection had no value")
-        vouched = self._vouched.pop(_digest(payload), frozenset())
+        vouched = self._vouched.get(_digest(payload), frozenset())
         events: list[InboundWebhook] = []
         for item in items:
             if not isinstance(item, dict):
@@ -518,9 +518,13 @@ class TeamsAppInstaller(MessagingAppInstaller):
 
         Keyed by the body, so the parse of these bytes reads what the check of
         the same bytes found, and bounded, so a parse that never comes leaves
-        nothing behind for long.
+        nothing behind for long. Read rather than removed: Graph resends a
+        batch it thinks was not answered, and a copy checked while the first
+        is still being parsed must find the same answer — the same bytes carry
+        the same tokens, so they vouch for the same organisations.
         """
         self._vouched[digest] = vouched
+        self._vouched.move_to_end(digest)
         while len(self._vouched) > _VOUCHED_KEPT:
             self._vouched.popitem(last=False)
 

@@ -1472,6 +1472,9 @@ class _SubscribingGraph:
         self.deleted: list[str] = []
         self.create_started = asyncio.Event()
         self.let_create_finish: asyncio.Event | None = None
+        # The teams Switch is in, and a failure for asking about any of them.
+        self.installed_in: set[str] = {"team-1"}
+        self.check_failure: Exception | None = None
 
     async def list_subscriptions(self) -> list[dict[str, Any]]:
         if self.list_failures:
@@ -1501,7 +1504,19 @@ class _SubscribingGraph:
     async def find_app_installations(
         self, *, team_id: str, external_id: str
     ) -> list[AppInstallation]:
-        return []
+        if self.check_failure is not None:
+            raise self.check_failure
+        if team_id not in self.installed_in:
+            return []
+        return [
+            AppInstallation(installation_id=f"INST-{team_id}", catalog_app_id="cat-1")
+        ]
+
+    async def install_app(self, *, team_id: str, catalog_app_id: str) -> None:
+        self.installed_in.add(team_id)
+
+    async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
+        self.installed_in.discard(team_id)
 
     async def list_teams(self) -> list[dict[str, Any]]:
         return []
@@ -1589,6 +1604,151 @@ async def test_a_subscription_being_made_as_withdrawal_starts_is_deleted() -> No
 
     assert graph.created == ["NEW-1"]
     assert graph.deleted == ["NEW-1"]
+
+
+async def test_a_notification_before_the_subscriptions_could_be_read_reads_them() -> (
+    None
+):
+    """Graph has been answered by the time a notification reaches the bridge,
+    so refusing one whose subscription is unknown only because the listing
+    failed at start would lose it."""
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(
+        list_failures=1,
+        held=[
+            {
+                "id": "LIVE",
+                "resource": f"teams/team-1/channels/{CHANNEL}/messages",
+                "notificationUrl": adapter._me.notification_url,
+            }
+        ],
+    )
+    renewed: list[str] = []
+
+    async def renew_subscription(*, subscription_id: str, **_: Any) -> None:
+        renewed.append(subscription_id)
+
+    graph.renew_subscription = renew_subscription  # type: ignore[attr-defined]
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+    assert adapter._adopted is False
+
+    await adapter.receive_notification(
+        {
+            "lifecycleEvent": "reauthorizationRequired",
+            "subscriptionId": "LIVE",
+            "clientState": adapter._me.client_state,
+        }
+    )
+
+    assert renewed == ["LIVE"]
+    assert adapter._subscriptions == {CHANNEL: "LIVE"}
+
+
+# ── Capture only where Switch is ─────────────────────────────────────────────
+
+
+async def test_a_channel_in_a_team_switch_is_not_in_is_not_captured() -> None:
+    """Graph delivers a team's messages whether or not the app is in it."""
+    adapter = _shared_adapter(team_id="team-2")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+
+    assert graph.created == []
+    assert CHANNEL not in adapter._capture_wanted
+    assert CHANNEL in adapter._capture_parked
+
+
+async def test_removing_switch_from_a_team_still_holds_after_a_restart() -> None:
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    before = _shared_adapter(team_id="team-1")
+    before._graph = graph  # type: ignore[assignment]
+    await before._adopt_existing_subscriptions()
+    await before._ensure_channel_subscription(CHANNEL)
+    assert graph.created == ["NEW-1"]
+
+    await before.remove_from_team("team-1")
+    assert graph.deleted == ["NEW-1"]
+
+    after = _shared_adapter(team_id="team-1")
+    after._graph = graph  # type: ignore[assignment]
+    await after._adopt_existing_subscriptions()
+    await after.ensure_channel_subscriptions([(CHANNEL, "channel_public")])
+
+    assert graph.created == ["NEW-1"]
+    assert after._subscriptions == {}
+
+
+async def test_a_subscription_left_in_a_team_switch_is_out_of_is_deleted() -> None:
+    """One whose deletion failed when Switch left is adopted at the next start;
+    it must not be renewed for ever."""
+    adapter = _shared_adapter(team_id="team-2")
+    graph = _SubscribingGraph(
+        list_failures=0,
+        held=[
+            {
+                "id": "LEFT",
+                "resource": f"teams/team-2/channels/{CHANNEL}/messages",
+                "notificationUrl": adapter._me.notification_url,
+            }
+        ],
+    )
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter._adopt_existing_subscriptions()
+    await adapter.ensure_channel_subscriptions([(CHANNEL, "channel_public")])
+
+    assert graph.deleted == ["LEFT"]
+    assert adapter._subscriptions == {}
+
+
+async def test_adding_switch_to_the_team_captures_its_waiting_channels() -> None:
+    adapter = _shared_adapter(team_id="team-2")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+    assert graph.created == []
+
+    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+
+    assert graph.created == ["NEW-1"]
+    assert CHANNEL not in adapter._capture_parked
+
+
+async def test_teams_saying_switch_was_added_captures_its_waiting_channels() -> None:
+    adapter = _shared_adapter(team_id="team-2")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+    graph.installed_in.add("team-2")
+
+    await adapter._dispatch_installation_update(
+        {"action": "add", "channelData": {"team": {"aadGroupId": "team-2"}}}
+    )
+
+    assert graph.created == ["NEW-1"]
+
+
+async def test_a_team_that_cannot_be_checked_is_left_to_the_repair_loop() -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    graph.check_failure = GraphError("busy", status=503)
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+
+    await adapter._ensure_channel_subscription(CHANNEL)
+    assert graph.created == []
+    assert CHANNEL in adapter._capture_wanted
+    assert "could not check" in adapter._capture_failures[CHANNEL]
+
+    graph.check_failure = None
+    await adapter._ensure_channel_subscription(CHANNEL)
+    assert graph.created == ["NEW-1"]
 
 
 # ── The default team ─────────────────────────────────────────────────────────

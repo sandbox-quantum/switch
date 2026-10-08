@@ -608,6 +608,30 @@ async def test_one_organisations_missing_token_does_not_cost_another_its_message
     assert [e.payload["tenantId"] for e in events] == [ORG]
 
 
+async def test_a_resent_batch_checked_while_the_first_is_parsed_is_kept() -> None:
+    """Graph resends a batch it thinks went unanswered; both copies are the
+    same bytes, carrying the same tokens."""
+    installer = _installer(_Microsoft())
+    installer._app.notification_authenticator = _Authenticator(  # type: ignore[assignment]
+        vouched=frozenset({ORG})
+    )
+    body = _notifications(_DATA, tokens=["t"])
+
+    for _ in range(2):
+        await installer.verify_webhook(
+            endpoint="notifications", headers={}, query={}, body=body
+        )
+    first = installer.parse_webhook(
+        endpoint="notifications", headers={}, query={}, body=body
+    )
+    second = installer.parse_webhook(
+        endpoint="notifications", headers={}, query={}, body=body
+    )
+
+    assert [e.payload["tenantId"] for e in first] == [ORG]
+    assert [e.payload["tenantId"] for e in second] == [ORG]
+
+
 async def test_a_forged_token_refuses_the_whole_batch() -> None:
     installer = _installer(_Microsoft())
     installer._app.notification_authenticator = _Authenticator(refuse=True)  # type: ignore[assignment]

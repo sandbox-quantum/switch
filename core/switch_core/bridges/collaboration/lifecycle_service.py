@@ -929,8 +929,11 @@ class CollaborationBridgeLifecycleService:
             await self.start(bridge.id)
         except Exception:
             # Stored and not startable is a half state: a row that fails every
-            # boot, and for an install a second bridge on the next attempt. The
-            # registration either produces a bridge that starts, or nothing.
+            # boot, and for an install a second bridge on the next attempt. So
+            # a bridge whose start is refused outright is not kept. Once its
+            # adapter is connecting, in the background, a failure is the
+            # bridge's own — logged and reported like any other start's — and
+            # credentials were already checked before anything was stored.
             logger.exception(
                 "Collaboration bridge %s (%s) could not start; removing it",
                 bridge.id,

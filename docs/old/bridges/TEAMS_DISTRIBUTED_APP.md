@@ -154,7 +154,9 @@ startup. Setting `TEAMS_APP_CLIENT_ID` is what enables the button.
    The workspace's admins add Switch to the teams they want and choose the
    default team new channels go in; choosing one turns channel creation on.
    Only a team Switch is in can be the default, and taking Switch out of the
-   default team turns channel creation off until another is chosen.
+   default team turns channel creation off until another is chosen. Switch
+   captures messages only in teams it is in: taking it out of a team stops
+   capture there, restarts included, until it is added back.
 6. Channels Switch is in become rooms, as with the bring-your-own app.
 
 One Microsoft organisation belongs to one Switch workspace. A second workspace

@@ -985,6 +985,11 @@ class TeamsAdapter(PlatformAdapter):
         # channel id -> last failure, so the repair loop can retry quietly and
         # still speak up when the reason changes.
         self._capture_failures: dict[str, str] = {}
+        # On the distributed app, whether Switch is in each team (team id ->
+        # answer), and the channels not captured because it is not: Graph
+        # delivers a team's messages whether or not the app is in it.
+        self._team_has_switch: dict[str, bool] = {}
+        self._capture_parked: set[str] = set()
         # channel id -> AAD team id, learned from inbound activities so a
         # channel-message subscription can be created for it. Seeded from the
         # persisted config, so a channel outside the configured team keeps its
@@ -1130,7 +1135,6 @@ class TeamsAdapter(PlatformAdapter):
                 app_id=self._config.app_id,
                 keys=SigningKeys(metadata_url=BOTFRAMEWORK_OPENID, http=self._http),
             )
-            await self._open_listener()
         self._connector = BotConnectorClient(
             tokens=self._tokens,
             http=self._http,
@@ -1138,6 +1142,10 @@ class TeamsAdapter(PlatformAdapter):
             on_bot_disabled=self._note_bot_disabled,
         )
         self._graph = GraphClient(tokens=self._tokens, http=self._http)
+        if self._shared_app is None:
+            # Only once there is something to answer with: an activity taken
+            # before then is acknowledged and lost, and Teams does not resend.
+            await self._open_listener()
         await self._check_approval()
         await self._adopt_existing_subscriptions()
         self._renewal_task = asyncio.create_task(self._renewal_loop())
@@ -3090,32 +3098,98 @@ class TeamsAdapter(PlatformAdapter):
     async def _dispatch_installation_update(self, activity: dict[str, Any]) -> None:
         """The app was added to or removed from a team.
 
-        Only removal needs anything here: added, the bot's own join arrives as
-        a `conversationUpdate` and is handled there. Removed, Graph keeps
-        delivering that team's channels to a bot that can no longer answer in
-        them, so their subscriptions are deleted and their capture is no longer
-        wanted. An upgrade arrives as `remove-upgrade` followed by
-        `add-upgrade` and is not a removal.
+        Removed, Graph keeps delivering that team's channels to a bot that can
+        no longer answer in them, so their subscriptions are deleted and their
+        capture waits for Switch to be added back. Added, the channels that
+        were waiting are captured again; the bot's own join arrives as a
+        `conversationUpdate` and is handled there. An upgrade arrives as
+        `remove-upgrade` followed by `add-upgrade` and is neither.
         """
-        if activity.get("action") != "remove":
+        action = activity.get("action")
+        if action not in ("add", "remove"):
             return
         team = (activity.get("channelData") or {}).get("team") or {}
         team_id = str(team.get("aadGroupId") or "")
         if not team_id:
             logger.warning(
-                "The Teams app was removed from a team that the activity does "
-                "not name; nothing to stop capturing"
+                "The Teams app was %s a team that the activity does not name",
+                "added to" if action == "add" else "removed from",
             )
             return
-        channels = [c for c, t in self._team_of_channel.items() if t == team_id]
+        if action == "add":
+            await self._switch_joined_team(team_id)
+            return
         logger.info(
-            "The Teams app was removed from team %s; stopping capture in its %d "
+            "The Teams app was removed from team %s; stopping capture in its "
             "known channels",
             team_id,
-            len(channels),
         )
-        for channel_id in channels:
+        await self._switch_left_team(team_id)
+
+    async def _switch_in_team(self, team_id: str) -> bool | None:
+        """On the distributed app, whether Switch is in a team; None if unknown.
+
+        Asked before capturing any of the team's channels, because Graph
+        delivers them whether or not the app is in the team: a room in a team
+        Switch was taken out of would otherwise go on receiving everything
+        said there, across restarts, to a bot that cannot answer. Remembered
+        per team, and changed by Switch joining or leaving it.
+        """
+        known = self._team_has_switch.get(team_id)
+        if known is not None:
+            return known
+        assert self._graph is not None
+        try:
+            installations = await self._graph.find_app_installations(
+                team_id=team_id, external_id=self._me.app_id
+            )
+        except Exception as error:
+            logger.warning(
+                "Could not check whether Switch is in Teams team %s: %s",
+                team_id,
+                error,
+            )
+            return None
+        known = bool(installations)
+        self._team_has_switch[team_id] = known
+        return known
+
+    def _capture_team(self, channel_id: str) -> str | None:
+        """The team a channel's messages are captured through."""
+        return self._team_of_channel.get(channel_id) or self._config.team_id
+
+    async def _park_capture(self, channel_id: str, team_id: str) -> None:
+        """Stop capturing a channel whose team Switch is not in, until it is."""
+        await self._stop_capture(channel_id)
+        if channel_id not in self._capture_parked:
+            self._capture_parked.add(channel_id)
+            logger.info(
+                "Not capturing Teams channel %s: Switch is not in its team %s",
+                channel_id,
+                team_id,
+            )
+
+    async def _switch_joined_team(self, team_id: str) -> None:
+        """Switch is in a team now: capture the channels waiting on that."""
+        self._team_has_switch[team_id] = True
+        waiting = [c for c in self._capture_parked if self._capture_team(c) == team_id]
+        for channel_id in waiting:
+            self._capture_parked.discard(channel_id)
+            await self._ensure_channel_subscription(channel_id)
+
+    async def _switch_left_team(self, team_id: str) -> None:
+        """Switch is out of a team: stop capturing it, ready to resume on return."""
+        self._team_has_switch[team_id] = False
+        known = (
+            self._capture_wanted | set(self._subscriptions) | set(self._team_of_channel)
+        )
+        for channel_id in [c for c in known if self._capture_team(c) == team_id]:
+            captured = (
+                channel_id in self._capture_wanted or channel_id in self._subscriptions
+            )
             await self._stop_capture(channel_id)
+            if captured:
+                self._capture_parked.add(channel_id)
 
     async def _stop_capture(self, channel_id: str) -> None:
         self._capture_wanted.discard(channel_id)
@@ -3215,6 +3289,7 @@ class TeamsAdapter(PlatformAdapter):
         await self._require_shared().install_app(
             team_id=team_id, catalog_app_id=catalog_app_id
         )
+        await self._switch_joined_team(team_id)
 
     async def remove_from_team(self, team_id: str) -> None:
         graph = self._require_shared()
@@ -3224,8 +3299,7 @@ class TeamsAdapter(PlatformAdapter):
             await graph.uninstall_app(
                 team_id=team_id, installation_id=installation.installation_id
             )
-        for channel_id in [c for c, t in self._team_of_channel.items() if t == team_id]:
-            await self._stop_capture(channel_id)
+        await self._switch_left_team(team_id)
 
     async def check_config_edit(self, connection_config: Mapping[str, object]) -> None:
         """On the distributed app, a default team must be one Switch is in.
@@ -3665,6 +3739,9 @@ class TeamsAdapter(PlatformAdapter):
                 # The bot was added to a channel/team → start capturing all of
                 # its messages via a Graph subscription (channels only; chats are
                 # captured through the Bot Framework path).
+                team_id = self._team_of_channel.get(channel_id)
+                if self._me.shared and team_id:
+                    await self._switch_joined_team(team_id)
                 if channel_type in ("channel_public", "channel_private"):
                     await self._ensure_channel_subscription(channel_id)
                 if self._on_app_joined is not None:
@@ -3890,11 +3967,22 @@ class TeamsAdapter(PlatformAdapter):
         adopted at start, and later lost, is still one the repair loop owes.
         """
         self._capture_wanted.add(channel_id)
-        if channel_id in self._subscriptions or self._graph is None:
-            return
-        if self._withdrawing:
+        if self._graph is None or self._withdrawing:
             return
         identity = self._me
+        team_id = self._capture_team(channel_id)
+        if identity.shared and team_id:
+            in_team = await self._switch_in_team(team_id)
+            if in_team is False:
+                await self._park_capture(channel_id, team_id)
+                return
+            if in_team is None and channel_id not in self._subscriptions:
+                self._note_capture_failure(
+                    channel_id, f"could not check that Switch is in team {team_id}"
+                )
+                return
+        if channel_id in self._subscriptions:
+            return
         keyring = identity.keyring
         if keyring is None:
             self._note_capture_failure(
@@ -3902,7 +3990,6 @@ class TeamsAdapter(PlatformAdapter):
                 "encryption certificate not configured on the Teams bridge",
             )
             return
-        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
         if not team_id:
             self._note_capture_failure(channel_id, "team id unknown")
             return
@@ -4053,14 +4140,17 @@ class TeamsAdapter(PlatformAdapter):
         if not identity.accepts_client_state(item.get("clientState")):
             logger.warning("Rejected Graph notification: clientState mismatch")
             return
-        if identity.shared and not self._owns_subscription(
-            str(item.get("subscriptionId", ""))
-        ):
+        subscription_id = str(item.get("subscriptionId", ""))
+        if identity.shared and not await self._knows_subscription(subscription_id):
             logger.warning(
                 "Rejected a Graph notification for subscription %s, which the "
-                "bridge for organisation %s did not make",
-                item.get("subscriptionId"),
+                "bridge for organisation %s did not make%s",
+                subscription_id,
                 identity.org_tenant_id,
+                ""
+                if self._adopted
+                else " — as far as it can tell: the subscriptions Graph holds "
+                "could not be read",
             )
             return
 
@@ -4083,6 +4173,20 @@ class TeamsAdapter(PlatformAdapter):
 
     def _owns_subscription(self, subscription_id: str) -> bool:
         return bool(subscription_id) and subscription_id in self._subscriptions.values()
+
+    async def _knows_subscription(self, subscription_id: str) -> bool:
+        """Whether a notification's subscription is one this bridge made.
+
+        Until the subscriptions Graph holds have been read once, every one of
+        them is unknown — and the notifications they deliver have already been
+        answered, so they would be lost until the repair loop next reads them.
+        An unknown one is a reason to read them now.
+        """
+        if not self._owns_subscription(subscription_id) and not self._adopted:
+            async with self._sub_lock:
+                if not self._adopted:
+                    await self._adopt_existing_subscriptions()
+        return self._owns_subscription(subscription_id)
 
     async def _handle_lifecycle_event(self, item: dict[str, Any]) -> None:
         event = item.get("lifecycleEvent")

@@ -934,7 +934,9 @@ def test_a_bring_your_own_bridge_starts_its_own_listener_and_client(
 ) -> None:
     """The bring-your-own path of `start`, unchanged by the distributed app:
     its own HTTP client and credential, its own listener, and on `stop` both
-    are closed, since nothing else shares them."""
+    are closed, since nothing else shares them. The listener opens last: an
+    activity it took before the clients existed would be acknowledged and
+    lost."""
     real_client = httpx.AsyncClient
     made: list[httpx.AsyncClient] = []
 
@@ -956,11 +958,23 @@ def test_a_bring_your_own_bridge_starts_its_own_listener_and_client(
         )
     )
 
+    open_listener = adapter._open_listener
+    ready_when_listening: list[bool] = []
+
+    async def open_listener_once_ready() -> None:
+        ready_when_listening.append(
+            adapter._connector is not None and adapter._graph is not None
+        )
+        await open_listener()
+
+    adapter._open_listener = open_listener_once_ready  # type: ignore[method-assign]
+
     async def scenario() -> None:
         async def _noop(*args: Any) -> None:
             return None
 
         await adapter.start(_noop, _noop, _noop, _noop, _noop)
+        assert ready_when_listening == [True]
         assert adapter._runner is not None
         assert adapter._owns_http is True
         assert adapter._authenticator is not None
