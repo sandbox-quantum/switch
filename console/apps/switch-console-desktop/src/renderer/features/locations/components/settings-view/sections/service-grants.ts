@@ -34,7 +34,7 @@ export const CLOUD_GITHUB_GRANT_NOTES = [APP_NOTE] as const;
 /** What a GitHub grant changes on the machine the agent runs on, and what it does not. */
 export const GITHUB_GRANT_NOTES = [
   APP_NOTE,
-  'Replaces your GitHub login for this agent over HTTPS. SSH still uses your keys.',
+  "Used first for this agent over HTTPS. If Switch can't provide it, your own GitHub login is used and the session says so. SSH still uses your keys.",
   "On your computer, the agent can still use anything you're signed in to.",
   'Not available on Windows yet.',
 ] as const;

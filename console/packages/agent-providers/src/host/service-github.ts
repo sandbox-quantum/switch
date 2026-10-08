@@ -151,17 +151,37 @@ export async function runGitCredentialHelper(
   const fields = parseCredentialRequest(input);
   if (!fields || !forGitHub(fields)) return;
   if (operation === 'get') {
-    const token = await githubToken(io.env);
+    let token: string | undefined;
+    try {
+      token = await githubToken(io.env);
+    } catch (error) {
+      // Answering nothing lets Git ask the machine's own helpers, which a
+      // session keeps after this one; the session itself is told too.
+      process.stderr.write(`switch: ${errorText(error)} ${FALLING_BACK}\n`);
+      return;
+    }
     if (token && validServiceToken(token)) io.stdout.write(githubCredentialAnswer(token));
     return;
   }
   const rejected = fields.get('password')?.[0];
   if (operation === 'erase' && rejected && io.env.SWITCH_SERVICE_ENDPOINT)
-    await sessionServiceToken('github', rejected, io.env);
+    try {
+      await sessionServiceToken('github', rejected, io.env);
+    } catch (error) {
+      process.stderr.write(`switch: ${errorText(error)}\n`);
+    }
 }
 
 /** What `gh` prints when GitHub refuses its token. */
 const GH_UNAUTHORIZED = /HTTP 401|Bad credentials/;
+
+/** What the helper adds when it answers nothing, and Git moves on to the machine's own helpers. */
+const FALLING_BACK = "Git uses this machine's own GitHub sign-in instead, if it has one.";
+const FALLING_BACK_GH = "gh uses this machine's own GitHub sign-in instead, if it has one.";
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * Find the real `gh` on PATH, passing over `own`, the wrapper's directory.
@@ -200,19 +220,18 @@ export async function runGitHubCli(
   let token: string | undefined;
   try {
     token = await githubToken(env);
+    if (!token) throw new Error('This session has no GitHub token.');
   } catch (error) {
-    process.stderr.write(`switch: ${error instanceof Error ? error.message : String(error)}\n`);
-    return 1;
-  }
-  if (!token) {
-    process.stderr.write('switch: this session has no GitHub token.\n');
-    return 1;
+    // `gh` then signs in as the machine's own login, if it has one; the
+    // session itself is told too.
+    process.stderr.write(`switch: ${errorText(error)} ${FALLING_BACK_GH}\n`);
+    token = undefined;
   }
   // The wrapper ran as Node by saying so; what `gh` starts should not.
   const { ELECTRON_RUN_AS_NODE: _asNode, ...ghEnv } = env;
   const child = spawn(gh, args, {
     stdio: ['inherit', 'inherit', 'pipe'],
-    env: { ...ghEnv, GH_TOKEN: token },
+    env: token ? { ...ghEnv, GH_TOKEN: token } : ghEnv,
   });
   let tail = '';
   child.stderr!.on('data', (chunk: Buffer) => {
@@ -223,7 +242,7 @@ export async function runGitHubCli(
     child.once('error', () => reject(new Error('GitHub CLI could not start.')));
     child.once('close', (exit) => resolve(exit ?? 1));
   });
-  if (code !== 0 && GH_UNAUTHORIZED.test(tail) && env.SWITCH_SERVICE_ENDPOINT) {
+  if (code !== 0 && token && GH_UNAUTHORIZED.test(tail) && env.SWITCH_SERVICE_ENDPOINT) {
     try {
       await sessionServiceToken('github', token, env);
       process.stderr.write(
@@ -270,10 +289,60 @@ export async function writeGitHubWrapper(input: {
 }
 
 /**
+ * The credential helpers Git would ask for `https://github.com` in `cwd`, in
+ * the order the machine's config gives them: `credential.helper` and each
+ * `credential.<url>.helper` whose URL is github.com over https, an empty value
+ * clearing those met before it, as Git reads them. Empty without git or any.
+ */
+export async function machineGitHubHelpers(
+  env: Readonly<Record<string, string>>,
+  cwd: string
+): Promise<string[]> {
+  const output = await new Promise<string>((resolve) => {
+    const child = spawn('git', ['config', '--null', '--get-regexp', '^credential\\..*helper$'], {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let text = '';
+    child.stdout.on('data', (chunk: Buffer) => (text += chunk.toString()));
+    child.once('error', () => resolve(''));
+    child.once('close', () => resolve(text));
+  });
+  const helpers: string[] = [];
+  for (const entry of output.split('\0')) {
+    const newline = entry.indexOf('\n');
+    if (newline < 0 || !helperForGitHub(entry.slice(0, newline))) continue;
+    const value = entry.slice(newline + 1);
+    if (value === '') helpers.length = 0;
+    else helpers.push(value);
+  }
+  return helpers;
+}
+
+function helperForGitHub(key: string): boolean {
+  if (key.toLowerCase() === 'credential.helper') return true;
+  const url = key.slice('credential.'.length, -'.helper'.length);
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === 'https:' && parsed.hostname === 'github.com' && parsed.pathname === '/'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * What a session's environment gains for GitHub: the credential helper for
  * `https://github.com`, the wrapper's directory first on PATH, and, in the
  * cloud (`isolate`), every other credential helper and prompt turned off.
  * Entries go after any `GIT_CONFIG_*` the environment already has.
+ *
+ * Elsewhere `machineHelpers`, the helpers the machine already had for
+ * github.com, come back after Switch's: Git asks Switch's first, and when it
+ * answers nothing (Switch could not, or would not, give a token) the
+ * machine's own sign-in is used, as for an agent with no grant.
  */
 export function githubSessionEnvironment(input: {
   env: Readonly<Record<string, string>>;
@@ -281,6 +350,7 @@ export function githubSessionEnvironment(input: {
   entrypoint: string;
   wrapperDirectory: string;
   isolate: boolean;
+  machineHelpers: readonly string[];
 }): Record<string, string> {
   const helper = `!${bundleCommand(input.execPath, input.entrypoint)} --git-credential`;
   const entries: [string, string][] = input.isolate
@@ -290,9 +360,14 @@ export function githubSessionEnvironment(input: {
         ['core.askPass', ''],
       ]
     : [
-        // Empty first: it clears the helpers met so far for github.com only.
+        // Empty first: it clears the helpers met so far for github.com, which
+        // then follow Switch's.
         ['credential.https://github.com.helper', ''],
         ['credential.https://github.com.helper', helper],
+        ...input.machineHelpers.map((own): [string, string] => [
+          'credential.https://github.com.helper',
+          own,
+        ]),
       ];
   const start = Number.parseInt(input.env.GIT_CONFIG_COUNT ?? '0', 10);
   const first = Number.isInteger(start) && start > 0 ? start : 0;

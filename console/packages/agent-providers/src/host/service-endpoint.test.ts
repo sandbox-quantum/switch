@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Redactions } from './redaction';
 import type { ServiceTokenAnswer } from './service-access';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
+import { ServiceNotices } from './service-notices';
 import type { HostAsk } from './session-channel';
 
 const servers: ServiceEndpointServer[] = [];
@@ -16,10 +17,16 @@ async function endpoint(
 ) {
   const asked: HostAsk[] = [];
   const redactions = new Redactions();
+  const notices = new ServiceNotices();
+  const shown: string[] = [];
+  notices.attach(async (message) => {
+    shown.push(message);
+  });
   const server = await startServiceEndpoint({
     services,
     unavailable,
     redactions,
+    notices,
     ask: async (ask) => {
       asked.push(ask);
       const next = answers.shift();
@@ -34,7 +41,7 @@ async function endpoint(
       headers: { Authorization: `Bearer ${token}` },
       body: typeof body === 'string' ? body : JSON.stringify(body),
     });
-  return { server, asked, redactions, post };
+  return { server, asked, redactions, post, shown };
 }
 
 const HOUR_LATER = new Date(Date.now() + 3_600_000).toISOString();
@@ -70,14 +77,23 @@ describe('the session service endpoint', () => {
     expect(e.asked).toEqual([]);
   });
 
-  it('refuses every request, asking nothing, when the grants could not be read', async () => {
+  it('answers no token, asking nothing, when the grants could not be read, and says so once', async () => {
     const e = await endpoint([], [], 'Switch refused (HTTP 503)');
     const response = await e.post('github', { rejected: null });
     expect(response.status).toBe(403);
     expect(((await response.json()) as { error: string }).error).toContain(
       'Switch refused (HTTP 503)'
     );
+    await e.post('github', { rejected: null });
     expect(e.asked).toEqual([]);
+    expect(e.shown).toHaveLength(1);
+    expect(e.shown[0]).toContain("git and gh use this machine's own GitHub sign-in instead");
+  });
+
+  it('says nothing when it hands out a token', async () => {
+    const e = await endpoint([{ kind: 'token', token: 'synthetic-one', expiresAt: HOUR_LATER }]);
+    expect((await e.post('github', { rejected: null })).status).toBe(200);
+    expect(e.shown).toEqual([]);
   });
 
   it("stops serving a service for the session on Switch's final refusal", async () => {
@@ -123,6 +139,7 @@ describe('the session service endpoint', () => {
       const server = await startServiceEndpoint({
         services: ['github'],
         unavailable: null,
+        notices: new ServiceNotices(),
         redactions: new Redactions(),
         ask: () => new Promise(() => {}),
       });

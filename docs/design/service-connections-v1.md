@@ -430,21 +430,33 @@ through `runAgentHost`.
 - **Laptops and servers, agents with a GitHub grant:** the helper is set, for
   the session only, through `GIT_CONFIG_*` entries in its environment, for
   `https://github.com` alone: an empty helper entry first clears the helpers
-  met so far for that URL, then Switch's. The user's other credential helpers
-  and Git config are untouched, and SSH remotes still use the user's keys. The
-  grant screen says a GitHub grant replaces the user's own login for that
-  agent's HTTPS access to github.com.
+  met so far for that URL, then Switch's, then the machine's own helpers for
+  that URL again, in their order (`machineGitHubHelpers`). The user's other
+  credential helpers and Git config are untouched, and SSH remotes still use
+  the user's keys.
+- **Fail open, said:** when Switch gives no token, for any reason (Switch
+  unreachable, the grant removed or narrowed, GitHub disconnected or
+  re-linked), the helper answers nothing and Git asks the machine's own
+  helpers next; the `gh` wrapper runs the real `gh` without a token, so it
+  uses its own login. Never silently: the helper or wrapper says so on
+  stderr, the session host logs it, and the session shows a
+  `SERVICE_FALLBACK` warning (once per reason) in Console's transcript and
+  the activity on the bridges. The GitHub skill tells the agent to tell the
+  user that such a command acted as the owner, outside the grant. The cloud
+  has no machine sign-in to fall back to, so there it fails with the reason.
 - **Agents without a GitHub grant:** nothing is installed, so the agent keeps
   the user's own Git and `gh` logins, as today.
 - **Grants that could not be read** as the session started: the helpers are
-  installed anyway and refuse every request with the reason, so git and `gh`
-  never fall through to the machine's own sign-in. That holds for an agent
-  with no GitHub grant too, for that session: it cannot be told apart.
+  installed anyway and give no token, so git and `gh` fall back as above,
+  with the fallback said. That holds for an agent with no GitHub grant too,
+  for that session: it cannot be told apart.
 - **Git older than 2.31** ignores `GIT_CONFIG_COUNT`, so the helper is not
-  set. The host logs a warning and the session is told plain git uses the
-  machine's own sign-in while `gh` (through the wrapper) uses the grant.
-- **Windows:** the helpers do not run there. Nothing is installed, the session
-  host logs a warning, and the agent uses the machine's own sign-in.
+  set. The session shows a `SERVICE_FALLBACK` warning and is told plain git
+  uses the machine's own sign-in while `gh` (through the wrapper) uses the
+  grant.
+- **Windows:** the helpers do not run there. Nothing is installed, the
+  session shows a `SERVICE_FALLBACK` warning, and the agent uses the
+  machine's own sign-in.
 - **Cloud:** keeps full isolation (every other credential helper cleared,
   prompts off).
 

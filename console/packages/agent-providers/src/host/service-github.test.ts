@@ -7,10 +7,12 @@ import { Redactions } from './redaction';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
 import {
   githubSessionEnvironment,
+  machineGitHubHelpers,
   parseCredentialRequest,
   sessionServiceToken,
   writeGitHubWrapper,
 } from './service-github';
+import { ServiceNotices } from './service-notices';
 import type { HostAsk } from './session-channel';
 
 const roots: string[] = [];
@@ -41,6 +43,7 @@ describe('Git credential requests', () => {
       entrypoint: '/opt/switch/shared-host.mjs',
       wrapperDirectory: '/state/bin',
       isolate: false,
+      machineHelpers: [],
     });
     expect(env).toEqual({
       GIT_CONFIG_COUNT: '3',
@@ -69,17 +72,30 @@ describe('Git credential requests', () => {
 });
 
 describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', () => {
-  async function session(isolate: boolean) {
+  async function session(isolate: boolean, refuse = false) {
     const root = await mkdtemp(join(tmpdir(), "service github's "));
     roots.push(root);
     const asks: HostAsk[] = [];
     const tokens = ['synthetic-first', 'synthetic-second'];
+    const notices = new ServiceNotices();
+    const shown: string[] = [];
+    notices.attach(async (message) => {
+      shown.push(message);
+    });
     const endpoint = await startServiceEndpoint({
       services: ['github'],
       unavailable: null,
       redactions: new Redactions(),
+      notices,
       ask: async (ask) => {
         asks.push(ask);
+        if (refuse)
+          return {
+            kind: 'refused',
+            code: 'grant_missing',
+            message: 'Agent builder has no GitHub grant.',
+            final: true,
+          };
         return {
           kind: 'token',
           token: tokens[Math.min(asks.length - 1, tokens.length - 1)]!,
@@ -113,15 +129,16 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
       execPath: process.execPath,
       entrypoint,
     });
+    const machine = { HOME: root, GIT_CONFIG_NOSYSTEM: '1' };
     const env: NodeJS.ProcessEnv = {
-      HOME: root,
-      GIT_CONFIG_NOSYSTEM: '1',
+      ...machine,
       ...githubSessionEnvironment({
         env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
         execPath: process.execPath,
         entrypoint,
         wrapperDirectory,
         isolate,
+        machineHelpers: isolate ? [] : await machineGitHubHelpers(machine, root),
       }),
       SWITCH_SERVICE_ENDPOINT: endpoint.url,
       SWITCH_SERVICE_BEARER: endpoint.token,
@@ -133,7 +150,7 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
         );
         child.stdin!.end(input);
       });
-    return { root, env, asks, git, wrapperDirectory };
+    return { root, env, asks, git, wrapperDirectory, shown };
   }
 
   it("answers Git for github.com with the agent's token, leaving other hosts to the user", async () => {
@@ -162,6 +179,51 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
     await expect(readFile(join(s.root, '.git-credentials'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
+  });
+
+  it("reads the machine's helpers for github.com as Git would", async () => {
+    const home = await mkdtemp(join(tmpdir(), 'machine-helpers-'));
+    roots.push(home);
+    // What `gh auth setup-git` writes, after a keychain helper for every host.
+    await writeFile(
+      join(home, '.gitconfig'),
+      [
+        '[credential]',
+        '\thelper = osxkeychain',
+        '[credential "https://github.com"]',
+        '\thelper =',
+        '\thelper = !gh auth git-credential',
+        '[credential "https://gist.github.com"]',
+        '\thelper = !gh auth git-credential --gist',
+        '',
+      ].join('\n')
+    );
+    expect(await machineGitHubHelpers({ HOME: home, GIT_CONFIG_NOSYSTEM: '1' }, home)).toEqual([
+      '!gh auth git-credential',
+    ]);
+  });
+
+  it("falls back to the machine's own sign-in when Switch gives no token, and says so", async () => {
+    const s = await session(false, true);
+    const github = await s.git('fill', 'protocol=https\nhost=github.com\n\n');
+    expect(github.code, github.stderr).toBe(0);
+    expect(github.stdout).toContain('username=user\npassword=user-password');
+    expect(github.stderr).toContain(
+      "Agent builder has no GitHub grant. Git uses this machine's own GitHub sign-in instead"
+    );
+    expect(s.shown).toEqual([
+      "GitHub through Switch is unavailable in this session (Agent builder has no GitHub grant), so git and gh use this machine's own GitHub sign-in instead, if it has one.",
+    ]);
+  });
+
+  it("falls back with gh too: the real gh runs with the machine's own login", async () => {
+    const s = await session(false, true);
+    const directory = await fakeGitHubCli(s.root, 'echo "token=${GH_TOKEN:-own-login}"');
+    const ran = await runWrapper(s, directory, ['pr', 'list']);
+    expect(ran.code, ran.stderr).toBe(0);
+    expect(ran.stdout.trim()).toBe('token=own-login');
+    expect(ran.stderr).toContain("gh uses this machine's own GitHub sign-in instead");
+    expect(s.shown).toHaveLength(1);
   });
 
   it('keeps every other credential helper out in the cloud', async () => {

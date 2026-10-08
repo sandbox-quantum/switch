@@ -344,7 +344,10 @@ export function GitHubNotes() {
   return (
     <Box component="ul" sx={{ m: 0, pl: 2.5, color: "text.secondary", typography: "body2" }}>
       <li>Pushes, pull requests and comments show as the Switch GitHub App, not you.</li>
-      <li>Replaces your GitHub login for this agent over HTTPS. SSH still uses your keys.</li>
+      <li>
+        Used first for this agent over HTTPS. If Switch can&apos;t provide it, your own GitHub login
+        is used and the session says so. SSH still uses your keys.
+      </li>
       <li>On your computer, the agent can still use anything you&apos;re signed in to.</li>
       <li>Not available on Windows yet.</li>
     </Box>

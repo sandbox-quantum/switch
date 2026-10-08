@@ -3,6 +3,7 @@ import http from 'node:http';
 import { z } from 'zod';
 import type { Redactions } from './redaction';
 import { serviceTokenAnswerSchema } from './service-access';
+import { serviceFallbackNotice, type ServiceNotices } from './service-notices';
 import type { HostAsk } from './session-channel';
 
 /** How long a helper waits for its token: Switch may be refreshing the owner's sign-in. */
@@ -23,14 +24,18 @@ export type ServiceEndpointServer = { url: string; token: string; close: () => P
  * told Switch's reason, then and every time after.
  *
  * With `unavailable`, why the grants could not be read as the session
- * started, every request is refused with that reason: the helpers stay in
- * place, so nothing falls through to this machine's own sign-in instead.
+ * started, every request is refused with that reason.
+ *
+ * A refusal is not the end of it: the helper then answers nothing and Git (or
+ * `gh`) uses the machine's own sign-in, if it has one. Every refusal is
+ * raised in `notices`, so that is said in the session rather than silent.
  */
 export async function startServiceEndpoint(input: {
   services: string[];
   unavailable: string | null;
   ask: (ask: HostAsk) => Promise<unknown>;
   redactions: Redactions;
+  notices: ServiceNotices;
 }): Promise<ServiceEndpointServer> {
   const secret = randomBytes(32).toString('hex');
   const expected = Buffer.from(`Bearer ${secret}`);
@@ -134,10 +139,19 @@ export async function startServiceEndpoint(input: {
         reply(400, { error: 'invalid request' });
         return;
       }
-      token(match[1]!, parsed.data.rejected).then(
-        ({ status, body }) => reply(status, body),
-        (error: unknown) =>
-          reply(500, { error: error instanceof Error ? error.message : String(error) })
+      const service = match[1]!;
+      token(service, parsed.data.rejected).then(
+        ({ status, body }) => {
+          // The helper falls back to the machine's own sign-in; say so.
+          if (status !== 200)
+            input.notices.raise(serviceFallbackNotice(service, String(body.error)));
+          reply(status, body);
+        },
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          input.notices.raise(serviceFallbackNotice(service, message));
+          reply(500, { error: message });
+        }
       );
     });
   });

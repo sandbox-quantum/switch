@@ -396,6 +396,11 @@ describe('the skills of the agent’s service grants', () => {
 
   it('set up GitHub for a session with a service endpoint and a GitHub grant', async () => {
     const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    // The machine's own helper, which follows Switch's for when it gives no token.
+    await writeFile(join(root, '.gitconfig'), '[credential]\n\thelper = machine-own\n');
+    vi.stubEnv('HOME', root);
+    vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+    vi.stubEnv('GIT_CONFIG_GLOBAL', join(root, '.gitconfig'));
     try {
       const prepared = await prepareSharedConfig(
         root,
@@ -411,14 +416,17 @@ describe('the skills of the agent’s service grants', () => {
       const env = prepared.input.env;
       expect(env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
       expect(env.SWITCH_SERVICE_BEARER).toBe('per-session-bearer');
-      expect(env.GIT_CONFIG_COUNT).toBe('2');
+      expect(env.GIT_CONFIG_COUNT).toBe('3');
       expect(env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
       expect(env.GIT_CONFIG_VALUE_1).toContain("'/opt/switch/shared-host.mjs' --git-credential");
+      expect(env.GIT_CONFIG_KEY_2).toBe('credential.https://github.com.helper');
+      expect(env.GIT_CONFIG_VALUE_2).toBe('machine-own');
       expect(env.PATH?.split(':')[0]).toBe(join(root, 'bin'));
       expect(await readFile(join(root, 'bin', 'gh'), 'utf8')).toContain('--github-cli');
       // The helpers ask for GitHub's token; none is in the session's environment.
       expect(env.GH_TOKEN).toBeUndefined();
     } finally {
+      vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });
     }
   });
