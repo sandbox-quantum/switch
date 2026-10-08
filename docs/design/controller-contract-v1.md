@@ -205,13 +205,18 @@ GET /agents/{agent_id}/service-grants                auth: controller token acti
   → 200 { grants: ServiceGrant[] }
 
 POST /agents/{agent_id}/service-tokens/{service}     auth: as above. No body
-  → 200 { token: string, expires_at: Time, resources: ServiceResources }   // ≤ 1h, Cache-Control: no-store. Every issuance is recorded
-  → 403 grant_missing | not_assigned | forbidden
+  → 200 { token: string, expires_at: Time, expires_in: number, use_until: Time, resources: ServiceResources }
+                                                     // Cache-Control: no-store. Every issuance is recorded
+  → 403 grant_missing | not_assigned | forbidden     // forbidden also: the service is switched off on this server
   → 404 connector_not_connected | not_found          // not_found: no such service
   → 409 connector_revoked | grant_account_changed | managed_by_controller
-  → 500 internal                                     // the vendor's token outlived an hour; not retryable
+  → 500 internal                                     // the vendor's token outlived its catalog lifetime; not retryable
   → 503 internal                                     // the vendor or the connection is unavailable
 ```
+
+- **`expires_in`** is the token's remaining life in seconds, as Core counts it. Time the token from when the answer arrived, not by comparing `expires_at` with your own clock.
+- **`use_until`** is when to ask again: `expires_at`, or an hour after the issue if that is sooner. A token may outlive it (a service whose tokens live longer than an hour), but it is not used past it, so Core's checks run at least hourly. Both fields are additive; a holder that predates them keeps using `expires_at`.
+- **Minted and pass-through tokens.** GitHub's token is minted for the one request and lives at most an hour. A pass-through service hands out its owner's own access token, shared by every agent they grant; it cannot be revoked per agent, and Core renews it while at least 15 minutes remain.
 
 ```ts
 type ServiceGrant = {

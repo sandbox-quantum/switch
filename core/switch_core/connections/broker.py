@@ -7,8 +7,9 @@ its own and none assumes where tokens go next:
 
 - **Connection credential** (`_access_token`): a usable vendor access token
   for a connection. Decrypt, refresh under the connection's lock when the
-  cached token expires within five minutes, store the new pair, commit. One
-  owner's agents share one token and one refresh.
+  cached token expires within five minutes (fifteen for a pass-through
+  service, whose agents are handed that token itself), store the new pair,
+  commit. One owner's agents share one token and one refresh.
 - **Grant decision** (`decide`): the ordered checks every issuance runs,
   returning what the grant allows or raising a coded `ServiceError`.
 - **Delivery** (`issue`): the only code, with the adapter's `issue` and
@@ -38,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
 from switch_core.connections.adapters import (
+    AccessToken,
     ConnectionSecret,
     IssuedToken,
     IssueRequest,
@@ -46,7 +48,7 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.loader import AccessLevel, Connection
+from switch_core.connections.loader import AccessLevel, Connection, TokenPolicy
 from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -94,9 +96,15 @@ REASON_CODES = frozenset(
     }
 )
 
-TOKEN_LIFETIME = timedelta(hours=1)
 TOKEN_LEEWAY = timedelta(seconds=60)
+# When a connection's cached access token is renewed. A pass-through token is
+# handed out as it is, and the agent host asks again once five minutes or less
+# remain, so it is renewed earlier: ten minutes of margin over the host's own.
 REFRESH_BEFORE = timedelta(minutes=5)
+PASS_THROUGH_REFRESH_BEFORE = timedelta(minutes=15)
+# However long the vendor's token lives, the agent host asks again within an
+# hour, so every check runs at least hourly (`use_until`).
+USE_WITHIN = timedelta(hours=1)
 REVOCATION_BATCH = 8
 # How long one revocation call keeps taking batches before it leaves the rest
 # to the next: a bulk change (a stop, a disconnect, a member removed) queues
@@ -171,7 +179,22 @@ class GrantDecision:
 class ServiceToken:
     token: str = field(repr=False)
     expires_at: datetime
+    # When the holder must ask again: `expires_at`, or an hour after the
+    # issue if that is sooner.
+    use_until: datetime
     resources: dict[str, Any]
+
+
+def _expiry(secret: ConnectionSecret) -> datetime:
+    return datetime.fromtimestamp(secret.expires_at, UTC)
+
+
+def _lifetime_words(seconds: int) -> str:
+    if seconds == 3600:
+        return "an hour"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600} hours"
+    return f"{seconds // 60} minutes"
 
 
 def effective_tools(
@@ -256,7 +279,7 @@ class ServiceBroker:
         self._token_retention = token_retention
         # The access token being fetched for each connection, by (tenant,
         # owner, service), for callers that ask while it is.
-        self._fetching: dict[tuple[str, str, str], asyncio.Task[str]] = {}
+        self._fetching: dict[tuple[str, str, str], asyncio.Task[AccessToken]] = {}
 
     def _entry(self, service: str) -> Connection:
         entry = self._catalog.get(service)
@@ -477,7 +500,7 @@ class ServiceBroker:
         principal: Principal,
         service: str,
     ) -> ServiceToken:
-        """Issue the agent a token for `service`, valid for at most an hour.
+        """Issue the agent a token for `service`, to use for at most an hour.
 
         Ends `session`'s transaction before calling the vendor, and commits the
         issuance record in it.
@@ -509,7 +532,7 @@ class ServiceBroker:
         decision = await self.decide(session, agent_id, principal, service)
         adapter = self._adapter(service)
         await session.commit()
-        access_token = await self._access_token(decision.owner_id, service, adapter)
+        access = await self._access_token(decision.owner_id, service, adapter)
         request = IssueRequest(
             service=service,
             access=decision.access,
@@ -517,7 +540,7 @@ class ServiceBroker:
             resources=decision.resources,
         )
         try:
-            issued = await adapter.issue(access_token, request)
+            issued = await adapter.issue(access, request)
         except ReauthorizationRequiredError as error:
             raise await self._needs_reauthorization(
                 decision.owner_id, service, error
@@ -526,25 +549,54 @@ class ServiceBroker:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except ServiceAdapterError as error:
             raise ServiceError(403, FORBIDDEN, str(error), retryable=False) from None
+        definition = self._entry(service).definition
+        policy = self._token_policy(service)
+        if policy.kind == "pass_through" and issued.revocable:
+            # The owner's own token: revoking it would end their connection,
+            # so it is never kept to revoke, nor taken back here.
+            raise ServiceError(
+                500,
+                INTERNAL,
+                f"{definition.name} handed out the owner's token as revocable, "
+                "so it was not handed out.",
+                retryable=False,
+            )
         try:
             now = datetime.now(UTC)
             if not (
                 now + TOKEN_LEEWAY
                 < issued.expires_at
-                <= now + TOKEN_LIFETIME + TOKEN_LEEWAY
+                <= now + timedelta(seconds=policy.max_lifetime) + TOKEN_LEEWAY
             ):
                 raise ServiceError(
                     500,
                     INTERNAL,
-                    f"{self._entry(service).definition.name} issued a token that "
-                    "does not expire within an hour, so it was not handed out.",
+                    f"{definition.name} issued a token that does not expire within "
+                    f"{_lifetime_words(policy.max_lifetime)}, so it was not "
+                    "handed out.",
                     retryable=False,
                 )
             await self._record(session, decision, principal, issued)
         except BaseException as error:
             await self._discard(adapter, decision, principal, issued, session, error)
             raise
-        return ServiceToken(issued.token, issued.expires_at, issued.resources)
+        return ServiceToken(
+            issued.token,
+            issued.expires_at,
+            min(issued.expires_at, now + USE_WITHIN),
+            issued.resources,
+        )
+
+    def _token_policy(self, service: str) -> TokenPolicy:
+        policy = self._entry(service).definition.token
+        if policy is None:
+            raise ServiceError(
+                500,
+                INTERNAL,
+                f"The catalog does not say what a {service} token is.",
+                retryable=False,
+            )
+        return policy
 
     async def _record(
         self,
@@ -689,8 +741,8 @@ class ServiceBroker:
 
     async def _access_token(
         self, owner_id: str, service: str, adapter: ServiceAdapter
-    ) -> str:
-        """A usable access token for the owner's connection.
+    ) -> AccessToken:
+        """A usable access token for the owner's connection, and its expiry.
 
         In a transaction of its own, which outlives the caller being
         cancelled: a rotating refresh spends the old refresh token, so the new
@@ -710,7 +762,9 @@ class ServiceBroker:
             fetching.add_done_callback(lambda done: self._fetched(key, done))
         return await asyncio.shield(fetching)
 
-    def _fetched(self, key: tuple[str, str, str], done: asyncio.Task[str]) -> None:
+    def _fetched(
+        self, key: tuple[str, str, str], done: asyncio.Task[AccessToken]
+    ) -> None:
         if self._fetching.get(key) is done:
             del self._fetching[key]
         # Its callers see a failure; one none of them stayed to see is logged.
@@ -722,9 +776,15 @@ class ServiceBroker:
 
     async def _fresh_access_token(
         self, tenant_id: str, owner_id: str, service: str, adapter: ServiceAdapter
-    ) -> str:
-        name = self._entry(service).definition.name
-        refresh = self._entry(service).definition.auth.refresh
+    ) -> AccessToken:
+        definition = self._entry(service).definition
+        name = definition.name
+        refresh = definition.auth.refresh
+        before = (
+            PASS_THROUGH_REFRESH_BEFORE
+            if definition.token is not None and definition.token.kind == "pass_through"
+            else REFRESH_BEFORE
+        )
         async with tenant_session(self._session_factory, tenant_id) as session:
             try:
                 await self._store.lock_connection(session, owner_id, service)
@@ -748,7 +808,7 @@ class ServiceBroker:
                 )
             secret = self._secret(connection)
             token = secret.access_token
-            fresh = secret.expires_at > time.time() + REFRESH_BEFORE.total_seconds()
+            fresh = secret.expires_at > time.time() + before.total_seconds()
             if refresh == "none" or (token is not None and fresh):
                 if token is None:
                     raise ServiceError(
@@ -758,7 +818,7 @@ class ServiceBroker:
                         retryable=False,
                     )
                 await session.commit()
-                return token
+                return AccessToken(token, _expiry(secret))
             try:
                 renewed = await adapter.refresh(secret)
             except ReauthorizationRequiredError as error:
@@ -787,7 +847,7 @@ class ServiceBroker:
                 encrypted_secret=self._keyring.encrypt(json.dumps(renewed.values)),
             )
             await session.commit()
-            return token
+            return AccessToken(token, _expiry(renewed))
 
     def _revoked(self, service: str, error: Exception) -> ServiceError:
         name = self._entry(service).definition.name
@@ -978,12 +1038,12 @@ class ServiceBroker:
         reach = level.model_dump(exclude_none=True)
         await session.commit()
 
-        access_token = await self._access_token(actor_id, service, adapter)
+        owner_token = await self._access_token(actor_id, service, adapter)
         request = IssueRequest(
             service=service, access=level_name, reach=reach, resources=resources
         )
         try:
-            checked = await adapter.check_grant(access_token, request)
+            checked = await adapter.check_grant(owner_token.token, request)
         except ReauthorizationRequiredError as error:
             raise await self._needs_reauthorization(actor_id, service, error) from None
         except ServiceUnavailableError as error:
@@ -1143,7 +1203,9 @@ class ServiceBroker:
         if await self._store.get_connection(session, user_id, service) is None:
             return None
         await session.commit()
-        return await self._access_token(user_id, service, self._refresher(service))
+        return (
+            await self._access_token(user_id, service, self._refresher(service))
+        ).token
 
     async def queue_agent_revocation(
         self, session: AsyncSession, agent_id: str, service: str

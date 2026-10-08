@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from switch_core.connections.adapters import (
+    AccessToken,
     ConnectionSecret,
     IssuedToken,
     IssueRequest,
@@ -30,7 +31,11 @@ class FakeVendor:
         self.refresh_error: Exception | None = None
         self.issue_error: Exception | None = None
         self.lifetime = timedelta(hours=1)
+        self.refreshed_lifetime = timedelta(hours=8)
         self.revocable = True
+        # Hands out the owner's own access token, as a pass-through vendor's
+        # adapter does, rather than minting one.
+        self.pass_through = False
         self.during_issue: Callable[[], Awaitable[None]] | None = None
         self.issued: list[tuple[str, str]] = []
         self.revoked: list[str] = []
@@ -48,18 +53,26 @@ class FakeVendor:
             {
                 **secret.values,
                 "access_token": f"gho_access_{self.refreshes}",
-                "expires_at": time.time() + 8 * 3600,
+                "expires_at": time.time() + self.refreshed_lifetime.total_seconds(),
                 "refresh_token": f"ghr_refresh_{self.refreshes}",
             }
         )
 
-    async def issue(self, access_token: str, request: IssueRequest) -> IssuedToken:
+    async def issue(self, access: AccessToken, request: IssueRequest) -> IssuedToken:
         if self.during_issue is not None:
             await self.during_issue()
         if self.issue_error is not None:
             raise self.issue_error
+        if self.pass_through:
+            self.issued.append((access.token, access.token))
+            return IssuedToken(
+                token=access.token,
+                expires_at=access.expires_at,
+                resources={},
+                revocable=self.revocable,
+            )
         token = f"ghs_{uuid.uuid4().hex}"
-        self.issued.append((access_token, token))
+        self.issued.append((access.token, token))
         return IssuedToken(
             token=token,
             expires_at=datetime.now(UTC) + self.lifetime,
