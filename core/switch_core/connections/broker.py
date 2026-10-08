@@ -195,6 +195,16 @@ def _narrows(
     return False
 
 
+def _require_owners_controller(principal: Principal, owner_id: str | None) -> None:
+    if principal.kind == "controller" and principal.controller_owner_id != owner_id:
+        raise ServiceError(
+            403,
+            FORBIDDEN,
+            "This controller belongs to someone other than the agent's owner.",
+            retryable=False,
+        )
+
+
 def get_service_broker(request: Request) -> ServiceBroker:
     """The broker `main` installs on the agent bridge and the gateway."""
     broker = getattr(request.app.state, "service_broker", None)
@@ -348,13 +358,7 @@ class ServiceBroker:
                 f"This agent's {name} grant was made by someone other than its owner.",
                 retryable=False,
             )
-        if principal.kind == "controller" and principal.controller_owner_id != owner_id:
-            raise ServiceError(
-                403,
-                FORBIDDEN,
-                "This controller belongs to someone other than the agent's owner.",
-                retryable=False,
-            )
+        _require_owners_controller(principal, owner_id)
 
         connection = await self._store.get_connection(session, owner_id, service)
         if connection is None:
@@ -752,11 +756,16 @@ class ServiceBroker:
     # ── Access changes ───────────────────────────────────────────────────────
 
     async def grants_for(
-        self, session: AsyncSession, agent_id: str
+        self, session: AsyncSession, agent: Agent, principal: Principal
     ) -> list[dict[str, Any]]:
-        """The agent's grants as its host reads them when a session starts."""
+        """The agent's grants as its host reads them when a session starts.
+
+        A controller reads them only for its owner's agents, the same rule
+        issuing holds it to.
+        """
+        _require_owners_controller(principal, agent.owner_id)
         grants = []
-        for grant in await self._store.list_grants(session, agent_id):
+        for grant in await self._store.list_grants(session, agent.id):
             entry = self._catalog.get(grant.service)
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             grants.append(
@@ -1225,25 +1234,23 @@ class ServiceBroker:
 
         Run after an access change has committed, so a failure here leaves the
         change in place and the tokens queued: it is logged, and the periodic
-        tick tries again.
+        tick tries again. The pass runs in a session of its own: a failure
+        rolls that back, never `session`, whose rows the caller may still be
+        reading for its response.
         """
         if session.in_transaction():
             raise RuntimeError("Commit the access change before revoking its tokens.")
         try:
-            return await self._revoke_pending(session, conditions)
+            async with tenant_session(
+                self._session_factory, require_tenant_id()
+            ) as own:
+                return await self._revoke_pending(own, conditions)
         except Exception as error:
             logger.error(
                 "Service token revocation is pending after a failed pass: "
                 "error_type=%s",
                 type(error).__name__,
             )
-            try:
-                await session.rollback()
-            except Exception as rollback_error:
-                logger.error(
-                    "Service token revocation rollback failed: error_type=%s",
-                    type(rollback_error).__name__,
-                )
             return True
 
     async def _revoke_pending(
@@ -1251,8 +1258,6 @@ class ServiceBroker:
     ) -> bool:
         # Most workspaces hold no token at any moment: one read, and done.
         if not await self._store.holds_tokens(session):
-            # A commit, not a rollback: a rollback would expire every row the
-            # caller still holds in this session.
             await session.commit()
             return False
         tenant_id = require_tenant_id()

@@ -207,6 +207,12 @@ class TestRefusals:
             403,
             "forbidden",
         )
+        async with harness.client() as client:
+            listed = await client.get(
+                f"/agents/{agent_id}/service-grants", headers=theirs.headers
+            )
+        assert code(listed) == (403, "forbidden")
+        assert "SKILL" not in listed.text and "repository_ids" not in listed.text
 
     async def test_a_controller_not_bound_to_the_agent(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")

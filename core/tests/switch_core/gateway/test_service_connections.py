@@ -25,6 +25,7 @@ from switch_core.db.models import (
     ServiceGrant,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.service_harness import (
@@ -360,6 +361,31 @@ class TestGrants:
         )
         assert response.status_code == 200, response.text
         assert vendor.revoked == [issued]
+
+    async def test_a_narrowing_whose_revocation_fails_is_saved_and_says_so(
+        self, harness: Harness, vendor: FakeVendor, monkeypatch
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, key = await agent_with_key(harness.session_factory, owner, "builder")
+        await connect(harness.session_factory, owner.id)
+        await _put(
+            harness, owner, agent_id, {"access": "write", "resources": RESOURCES}
+        )
+        await _token_for(harness, agent_id, key)
+
+        async def lock_timeout(*args, **kwargs):
+            raise RuntimeError("Synthetic lock timeout")
+
+        monkeypatch.setattr(ServiceConnectionStore, "claim_revocations", lock_timeout)
+        narrower = {"installation_id": 7, "repository_ids": [70]}
+        response = await _put(
+            harness, owner, agent_id, {"access": "write", "resources": narrower}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["grant"]["resources"] == narrower
+        assert response.json()["warning"] is not None
+        assert vendor.revoked == []
 
     async def test_narrowing_a_grant_that_gave_nothing_out(
         self, harness: Harness, vendor: FakeVendor
