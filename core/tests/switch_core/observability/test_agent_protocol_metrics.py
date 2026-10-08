@@ -133,3 +133,98 @@ def test_a_quiet_sweep_counts_nothing(registry):
 
     assert connections.sweep() == []
     assert _counts(registry, "switch.agent.connections_expired") == {}
+
+
+def _open(connections: AgentConnectionRegistry, connection_id: str = "c1") -> None:
+    connections.open(
+        agent_id="agent-1",
+        connection_id=connection_id,
+        scope="single",  # type: ignore[arg-type]
+        delivery_filter="all",  # type: ignore[arg-type]
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
+    )
+
+
+def test_a_first_open_is_fresh(registry):
+    _open(AgentConnectionRegistry())
+
+    assert _counts(registry, "switch.agent.connections_opened") == {
+        (("kind", "fresh"),): 1.0
+    }
+
+
+def test_a_socket_coming_back_to_a_live_connection_is_a_reattach(registry):
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    _open(connections)
+
+    assert _counts(registry, "switch.agent.connections_opened") == {
+        (("kind", "fresh"),): 1.0,
+        (("kind", "reattach"),): 1.0,
+    }
+
+
+def test_a_return_after_a_lapse_is_told_apart(registry, monkeypatch):
+    """The reconnect storm: agents lapse, then come straight back."""
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    later = time_module.monotonic() + conn_module.HEARTBEAT_TTL_SECONDS + 1
+    monkeypatch.setattr(conn_module.time, "monotonic", lambda: later)
+    assert connections.sweep()
+
+    _open(connections)
+
+    assert _counts(registry, "switch.agent.connections_opened") == {
+        (("kind", "fresh"),): 1.0,
+        (("kind", "after_lapse"),): 1.0,
+    }
+
+
+def test_a_return_after_any_other_close_is_after_close(registry):
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    connections.close("c1", conn_module.TAKEN_OVER)
+    _open(connections)
+
+    assert (
+        _counts(registry, "switch.agent.connections_opened")[(("kind", "after_close"),)]
+        == 1.0
+    )
+
+
+def test_the_memory_of_closed_connections_is_bounded(monkeypatch):
+    monkeypatch.setattr(conn_module, "_RECENTLY_CLOSED_LIMIT", 2)
+    connections = AgentConnectionRegistry()
+    for index in range(4):
+        _open(connections, f"c{index}")
+        connections.close(f"c{index}", conn_module.HEARTBEAT_LAPSED)
+
+    assert list(connections._recently_closed) == ["c2", "c3"]
+
+
+def test_a_lapse_noticed_on_next_use_is_counted_too(registry, monkeypatch):
+    """The sweep is one of three ways a lapse is noticed. Counting only it
+    under-reported lapses against the reconnects that follow them."""
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    later = time_module.monotonic() + conn_module.HEARTBEAT_TTL_SECONDS + 1
+    monkeypatch.setattr(conn_module.time, "monotonic", lambda: later)
+
+    with pytest.raises(conn_module.UnknownConnectionError):
+        connections.require("agent-1", "c1")
+    _open(connections)
+
+    # One collection: reading the registry resets it.
+    payloads = {p.name: p for p in registry.collect()}
+    expired = sum(
+        point.value for point in payloads["switch.agent.connections_expired"].numbers
+    )
+    opened = {
+        point.attributes["kind"]: point.value
+        for point in payloads["switch.agent.connections_opened"].numbers
+    }
+    assert expired == 1.0
+    assert opened == {"fresh": 1.0, "after_lapse": 1.0}

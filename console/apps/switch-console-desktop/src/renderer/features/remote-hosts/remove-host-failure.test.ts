@@ -13,7 +13,7 @@ function rpcError(code: string, message: string): RpcError {
 describe('a host removal that did not happen', () => {
   it('says why it was refused, with the way out, when agents moved there still run on it', () => {
     const message =
-      'build-box runs builder for this Console, so it cannot be removed yet. Bring the agents back first: Bring all back on the host’s page, or Stop managing on each agent.';
+      'build-box runs builder as managed agents for this Console, so it cannot be removed yet. Delete those agents first.';
     expect(removeHostFailureToast('Build Box', rpcError('MovedAgentsHereError', message))).toEqual({
       title: 'Build Box was not removed',
       description: message,

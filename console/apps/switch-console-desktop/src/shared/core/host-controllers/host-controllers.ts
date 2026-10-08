@@ -34,7 +34,10 @@ export type HostControllerProcess =
 export type HostControllerRemote =
   | {
       kind: 'ok';
-      controller: { state: 'online' | 'unknown' | 'revoked'; lastSeenAt: string | null } | null;
+      controller: {
+        state: 'online' | 'offline' | 'unknown' | 'revoked';
+        lastSeenAt: string | null;
+      } | null;
       agents: PlacedManagedAgent[];
     }
   | { kind: 'unavailable' }

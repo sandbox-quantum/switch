@@ -1,0 +1,67 @@
+{
+  "id": "3f0f8a1e-5b7c-4c1e-9a52-2d6f1c9e0b11",
+  "name": "build-box",
+  "description": "The build box in the office",
+  "kind": "console",
+  "platform": {
+    "os": "linux",
+    "arch": "x64",
+    "os_version": "6.1.0"
+  },
+  "version": "0.1.0",
+  "state": "online",
+  "last_seen_at": "2026-10-07T09:00:05Z",
+  "connection": {
+    "connected_at": "2026-10-07T09:00:00Z",
+    "disconnected_at": null,
+    "disconnect_reason": null
+  },
+  "status": {
+    "seq": 42,
+    "observed_at": "2026-01-01T00:00:00Z",
+    "controller": {
+      "version": "0.1.0",
+      "protocol": 1,
+      "assignment_revision": 3
+    },
+    "machine": {
+      "platform": {
+        "os": "linux",
+        "arch": "x64",
+        "os_version": "6.1.0"
+      },
+      "disk_free_bytes": 53687091200,
+      "disk_total_bytes": 107374182400,
+      "mem_free_bytes": 8589934592,
+      "mem_total_bytes": 17179869184,
+      "sessions_running": 1,
+      "sessions_max": 4,
+      "workspaces_dir": "/home/user/.local/state/switch/agent-controller/workspaces"
+    },
+    "providers": [
+      {
+        "provider": "claude",
+        "installed": true,
+        "version": "1.0.0",
+        "auth": "ok",
+        "auth_source": "local",
+        "checked_at": "2026-01-01T00:00:00Z"
+      }
+    ],
+    "tools": [
+      {
+        "tool": "git",
+        "state": "ok"
+      },
+      {
+        "tool": "gh",
+        "state": "missing"
+      }
+    ],
+    "agents": []
+  },
+  "assignment_revision": 0,
+  "workspaces_dir": "/home/user/.local/state/switch/agent-controller/workspaces",
+  "created_at": "2026-10-01T12:00:00Z",
+  "revoked_at": null
+}

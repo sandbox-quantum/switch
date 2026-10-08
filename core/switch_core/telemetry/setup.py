@@ -134,6 +134,8 @@ def _service(
         service_name=config.service_name,
         version=version,
         environment=config.environment,
+        telemetry_environment=config.telemetry_environment,
+        telemetry_internal=config.telemetry_internal,
         session_factory=session_factory,
         installed_at=installed_at,
     )

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass
 from typing import Protocol
 
 import jwt
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from jwt import PyJWKClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -29,6 +31,8 @@ from switch_core.db.tenant_lookup import (
     tenant_of_api_key,
 )
 from switch_core.logging_context import log_context
+from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
+from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -76,12 +80,17 @@ _NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
 # Registration: a controller registers nothing, so its token is refused here.
 _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # The connection surface a controller serves its agents itself, from its own
-# stream (`GET /v1/controllers/{id}/events`). A controller-backed agent has no
+# connection (`/v1/controllers/{id}/connection/ws`). A controller-backed agent has no
 # connection of its own, and the legacy heartbeats would make it look live from
 # a second source.
 _SERVED_ON_THE_CONTROLLER_STREAM = re.compile(
     r"/(events|notifications|rooms/[^/]+/events|connection/.*|watch/heartbeat)"
 )
+
+
+# The agent connection's socket, whose refusals are counted as connections
+# refused. Any other path's 401 is an ordinary failed request.
+_AGENT_CONNECTION_PATH = re.compile(r"^/agents/[^/]+/connection/ws$")
 
 
 class OIDCTokenValidator:
@@ -248,10 +257,9 @@ class BearerAuthMiddleware:
             return
 
         if not auth_header.startswith("Bearer "):
-            response = Response(
-                "Missing or invalid Authorization header", status_code=401
+            await _unauthorized(
+                scope, receive, send, "Missing or invalid Authorization header"
             )
-            await response(scope, receive, send)
             return
 
         token = auth_header[7:]
@@ -325,8 +333,7 @@ class BearerAuthMiddleware:
                 await self.app(scope, receive, send)
             return
 
-        response = Response("Invalid credentials", status_code=401)
-        await response(scope, receive, send)
+        await _unauthorized(scope, receive, send, "Invalid credentials")
 
     async def _serve_controller(
         self,
@@ -425,7 +432,7 @@ class BearerAuthMiddleware:
             await _controller_refusal(
                 MANAGED_BY_CONTROLLER,
                 "A controller receives its agents' events on its own stream, "
-                "GET /v1/controllers/{id}/events; this agent route is not "
+                "/v1/controllers/{id}/connection/ws; this agent route is not "
                 "served to it.",
                 409,
             )(scope, receive, send)
@@ -531,11 +538,35 @@ class BearerAuthMiddleware:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 
-def _controller_refusal(code: str, message: str, status_code: int) -> Response:
-    return JSONResponse(
+def _controller_refusal(code: str, message: str, status_code: int) -> ASGIApp:
+    """A controller refusal, in the contract's error envelope.
+
+    On a WebSocket, which cannot read a refused handshake (see
+    `_unauthorized`), the same refusal the agent connection sends: a `refused`
+    frame carrying the code, then a close with 4000 plus the status.
+    """
+    response = JSONResponse(
         {"error": {"code": code, "message": message, "retryable": False}},
         status_code=status_code,
     )
+
+    async def refuse(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "websocket":
+            await response(scope, receive, send)
+            return
+        await receive()  # the client's websocket.connect
+        await send({"type": "websocket.accept"})
+        frame = {
+            "event": "refused",
+            "data": {
+                "status": status_code,
+                "detail": {"code": code, "message": message},
+            },
+        }
+        await send({"type": "websocket.send", "text": json.dumps(frame)})
+        await send({"type": "websocket.close", "code": 4000 + status_code})
+
+    return refuse
 
 
 def _is_agent_route(path: str) -> bool:
@@ -553,13 +584,37 @@ def _path_agent(path: str) -> tuple[str | None, str]:
     return match["segment"], match["rest"] or ""
 
 
+async def _unauthorized(
+    scope: Scope, receive: Receive, send: Send, reason: str
+) -> None:
+    """Refuse an unauthenticated request in a form its client can read.
+
+    An HTTP 401. A WebSocket client cannot read the status of a handshake that
+    was refused (the browser-style API hides it), so it would see only a
+    failed connection and retry for ever. A WebSocket is accepted and closed at
+    once with 4401 instead: 4000 plus the status, the same mapping the agent
+    connection uses for every refusal.
+    """
+    if scope["type"] == "websocket":
+        if _AGENT_CONNECTION_PATH.match(scope.get("path", "")):
+            metrics().increment(AGENT_CONNECTIONS_REFUSED, {"reason": "unauthorized"})
+        await receive()  # the client's websocket.connect
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.close", "code": 4401, "reason": reason})
+        return
+    await Response(reason, status_code=401)(scope, receive, send)
+
+
 def _is_public_path(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in PUBLIC_PATH_PREFIXES)
 
 
-def get_agent_from_scope(request: Request) -> Agent:
-    """Get authenticated agent from request scope (set by middleware)."""
-    agent: object = request.scope.get("agent")
+def get_agent_from_scope(connection: HTTPConnection) -> Agent:
+    """Get authenticated agent from the connection's scope (set by middleware).
+
+    Any HTTP connection, so a WebSocket route can use it too.
+    """
+    agent: object = connection.scope.get("agent")
     if not isinstance(agent, Agent):
         raise HTTPException(status_code=401, detail="Not authenticated")
     return agent

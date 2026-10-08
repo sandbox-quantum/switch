@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
 import type { TelemetryEventMap } from '@main/core/telemetry/events';
+import { forgetSessionAccount, recordSessionAccount } from '@main/core/telemetry/internal-account';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { forgetServerSession } from '@main/core/workspaces/workspace-session';
 import {
@@ -15,6 +16,7 @@ import {
 } from '@main/core/workspaces/workspaces-store';
 import { db } from '@main/db/client';
 import { type SwitchServerRow, switchServers } from '@main/db/schema';
+import { log } from '@main/lib/logger';
 import {
   urlOrigin,
   type AddServerParams,
@@ -375,8 +377,14 @@ export async function getSessionCookie(serverId: string): Promise<string | null>
 
 export async function setSessionCookie(serverId: string, jwt: string): Promise<void> {
   await encryptedAppSecretsStore.setSecret(cookieSecretKey(serverId), jwt);
+  await recordSessionAccount(serverId, jwt).catch((error: unknown) => {
+    log.warn('switch-servers: could not record whether the account is internal', { error });
+  });
 }
 
 export async function deleteSessionCookie(serverId: string): Promise<void> {
   await encryptedAppSecretsStore.deleteSecret(cookieSecretKey(serverId));
+  await forgetSessionAccount(serverId).catch((error: unknown) => {
+    log.warn('switch-servers: could not forget whether the account was internal', { error });
+  });
 }

@@ -1,9 +1,10 @@
-import type { TelemetryConfig } from './config';
+import type { TelemetryConfig, TelemetryFlintEnv } from './config';
 import {
   TELEMETRY_EVENT_PROPERTIES,
   type TelemetryEventMap,
   type TelemetryEventName,
 } from './events';
+import type { TelemetryInternal } from './internal-account';
 
 const SEND_TIMEOUT_MS = 10_000;
 
@@ -69,6 +70,10 @@ export type TelemetryContext = {
   osType: string;
   osVersion: string;
   build: TelemetryConfig['build'];
+  /** The Amplitude project the event belongs in, which the relay routes on. */
+  flintEnv: TelemetryFlintEnv;
+  /** Whether the person is staff, from their account's email domain. */
+  internal: TelemetryInternal;
   timeMs: number;
 };
 
@@ -163,6 +168,8 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
             'service.name': SERVICE_NAME,
             'service.version': context.appVersion,
             'flint.client_id': context.clientId,
+            flint_env: context.flintEnv,
+            flint_internal: context.internal,
             'os.type': context.osType,
             'os.version': context.osVersion,
           }),

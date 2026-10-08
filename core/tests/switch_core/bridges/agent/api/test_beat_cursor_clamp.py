@@ -1,10 +1,9 @@
-"""A heartbeat cursor is clamped to the buffer head before anything adopts it.
+"""A heartbeat's cursor is clamped to the buffer head before anything adopts it.
 
 The event buffer is in memory, so restarting switch-core resets the sequence to
 zero while clients keep beating the number they had reached. Nothing downstream
 can undo that: `beat()` and `confirm()` both refuse to move a cursor backwards,
-and the stream's own rewind on resume is re-poisoned by the next heartbeat two
-seconds later.
+and the stream's own rewind on resume is re-poisoned by the next heartbeat.
 
 The result is silent. The connection is claimed, heartbeats succeed and posting
 works, so the session looks healthy while every event up to the stale cursor is
@@ -13,11 +12,9 @@ skipped — and `confirm()` marks those events consumed on the way past.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.agent.api.handlers import connection_beat
-from switch_core.bridges.agent.api.schemas import ConnectionBeatRequest
+from switch_core.bridges.agent.api.handlers import _record_beat
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
     AgentConnectionRegistry,
@@ -67,17 +64,11 @@ def _connect(protocol: _Protocol, cursor: int = 0) -> Any:
     return conn
 
 
-async def _beat(protocol: _Protocol, cursor: int) -> Any:
-    # Fenced with the only incarnation these tests ever open. A client that
-    # declares the current revision and then ticks without one is refused, and
-    # nothing here is about that.
+def _beat(protocol: _Protocol, cursor: int) -> Any:
+    # Fenced with the only incarnation these tests ever open, as the socket
+    # does with the incarnation it opened.
     current = protocol.connections.require(AGENT_ID, CONN_ID).stream_generation
-    return await connection_beat(
-        AGENT_ID,
-        ConnectionBeatRequest(connection_id=CONN_ID, cursor=cursor, generation=current),
-        SimpleNamespace(id=AGENT_ID),  # type: ignore[arg-type]
-        protocol,  # type: ignore[arg-type]
-    )
+    return _record_beat(protocol, AGENT_ID, CONN_ID, cursor, current)  # type: ignore[arg-type]
 
 
 async def test_a_cursor_past_the_head_is_pulled_back_to_it() -> None:
@@ -86,11 +77,11 @@ async def test_a_cursor_past_the_head_is_pulled_back_to_it() -> None:
     protocol = _Protocol()
     conn = _connect(protocol)
 
-    result = await _beat(protocol, cursor=9)
+    beaten = _beat(protocol, cursor=9)
 
     assert protocol.event_buffer.head(AGENT_ID) == 0
     assert conn.cursor == 0
-    assert result["cursor"] == 0
+    assert beaten.cursor == 0
 
 
 async def test_the_first_event_after_a_restart_is_still_delivered() -> None:
@@ -101,7 +92,7 @@ async def test_the_first_event_after_a_restart_is_still_delivered() -> None:
     conn = _connect(protocol)
     protocol.connections.claim_room(conn, ROOM_ID, takeover=True)
 
-    await _beat(protocol, cursor=9)
+    _beat(protocol, cursor=9)
     protocol.event_buffer.enqueue(AGENT_ID, ROOM_ID, _message())
 
     delivered = protocol.event_buffer.read_from(AGENT_ID, conn.cursor, rooms={ROOM_ID})
@@ -114,7 +105,7 @@ async def test_a_cursor_within_the_buffer_is_left_alone() -> None:
     for _ in range(3):
         protocol.event_buffer.enqueue(AGENT_ID, ROOM_ID, _message())
 
-    await _beat(protocol, cursor=2)
+    _beat(protocol, cursor=2)
 
     assert conn.cursor == 2
 
@@ -129,7 +120,7 @@ async def test_the_clamped_value_is_what_gets_confirmed() -> None:
         lambda agent_id, connection_id, cursor: confirmed.append(cursor)
     )
 
-    await _beat(protocol, cursor=9)
+    _beat(protocol, cursor=9)
 
     assert confirmed == [0]
 
@@ -139,6 +130,6 @@ async def test_a_heartbeat_from_the_old_boot_cannot_undo_the_gap_position():
     protocol.event_buffer = EventBuffer(sequence_base=2 << 32)
     sequence = protocol.event_buffer.enqueue(AGENT_ID, ROOM_ID, _message())
     conn = _connect(protocol, cursor=2 << 32)
-    await _beat(protocol, cursor=(1 << 32) + 2)
+    _beat(protocol, cursor=(1 << 32) + 2)
     assert conn.cursor == 2 << 32
     assert protocol.event_buffer.read_from(AGENT_ID, conn.cursor)[0].seq == sequence

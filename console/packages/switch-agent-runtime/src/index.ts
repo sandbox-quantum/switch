@@ -26,7 +26,7 @@ export {
   type ContractRange,
 } from './artifacts';
 export {
-  BEAT_INTERVAL_MS,
+  OpenRefused,
   EVICTION_CLOSED,
   EVICTION_CREDENTIALS_REJECTED,
   EVICTION_HEARTBEAT_LAPSED,
@@ -55,7 +55,7 @@ export {
   type RoomDelivery,
   type RoomReservation,
 } from './room-admission';
-export { readSse, type SseFrame } from './sse';
+export type { SocketFrame } from './event-stream';
 export type {
   AgentBridgeEvent,
   AttachmentRef,

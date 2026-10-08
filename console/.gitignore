@@ -6,6 +6,7 @@ out/
 
 # The connection-model benchmark's own bundle of its host entrypoint.
 packages/*/dist-bench/
+packages/*/dist-package/
 
 # App-specific outputs
 apps/*/out/

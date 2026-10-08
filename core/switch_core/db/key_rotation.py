@@ -59,6 +59,10 @@ async def reencrypt_stale_text(
     Raises `UndecryptableError` for a value no key opens: that is a key
     removed too early, and continuing would leave a credential nothing can
     read while reporting the rotation done.
+
+    The empty string is skipped like NULL: a hash-only API key (a controller
+    credential, an enrollment code) stores `""` because the column is NOT NULL,
+    and there is nothing in it to open.
     """
     stored = model.__table__.c[column]
     # Rows are named by their primary key, which is not always a single `id`.
@@ -66,6 +70,7 @@ async def reencrypt_stale_text(
     rows = await session.execute(
         select(*keys, stored).where(
             stored.is_not(None),
+            stored != "",
             ~stored.startswith(keyring.current_prefix(), autoescape=True),
         )
     )

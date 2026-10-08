@@ -58,6 +58,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
@@ -65,8 +66,10 @@ from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.placement import (
     ControllerState,
     controller_state,
+    is_revoked,
     require_placement,
 )
+from switch_core.management.process_lease import ProcessLeases, read_leases
 from switch_core.management.schemas import (
     PROVIDER_KNOWN_AGENT_TYPES,
     ControllerDescription,
@@ -121,6 +124,7 @@ class ManagementService:
         operations: AgentControllerOperationStore,
         api_keys: ApiKeyStore,
         agents: AgentStore,
+        processes: SwitchCoreProcessStore,
         presence: ControllerPresence,
         clock: Callable[[], datetime],
     ) -> None:
@@ -132,17 +136,20 @@ class ManagementService:
         self.operations = operations
         self.api_keys = api_keys
         self.agents = agents
+        self.processes = processes
         self._clock = clock
 
     def now(self) -> datetime:
         return self._clock()
 
-    def state_of(self, controller: AgentController) -> ControllerState:
-        return controller_state(
-            controller,
-            now=self.now(),
-            interval_seconds=self.settings.status_interval_seconds,
-        )
+    async def leases(self, session: AsyncSession) -> ProcessLeases:
+        """Every switch-core process's lease, which a controller's state
+        needs: read once per request, before the states it decides."""
+        return await read_leases(session, self.processes)
+
+    @staticmethod
+    def state_of(controller: AgentController, leases: ProcessLeases) -> ControllerState:
+        return controller_state(controller, leases)
 
     # ── Credentials and enrollment ────────────────────────────────────────────
 
@@ -286,7 +293,7 @@ class ManagementService:
         controller = await self.controllers.get_by_api_key(session, tenant_id, key.id)
         if controller is None or controller.id != controller_id:
             raise invalid
-        if self.state_of(controller) == "revoked":
+        if is_revoked(controller):
             raise ManagementError(
                 401, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )
@@ -534,8 +541,9 @@ class ManagementService:
         controllers = await self.controllers.list_for_owner(
             session, tenant_id, owner_id
         )
+        leases = await self.leases(session)
         return [
-            controller_view(controller, self.state_of(controller))
+            controller_view(controller, self.state_of(controller, leases), leases)
             for controller in controllers
         ]
 
@@ -554,10 +562,33 @@ class ManagementService:
         that is the name the room is told when the machine is offline.
         """
         await self.owned_controller(session, tenant_id, owner_id, controller_id)
+        return await self._update_details(session, tenant_id, controller_id, changes)
+
+    async def update_own_controller(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        changes: dict[str, str | None],
+    ) -> dict[str, Any]:
+        """The controller renames itself or changes its description, with the
+        same limits and effects as its owner's change."""
+        await self._principal_controller(session, principal)
+        return await self._update_details(
+            session, principal.tenant_id, principal.controller_id, changes
+        )
+
+    async def _update_details(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        changes: dict[str, str | None],
+    ) -> dict[str, Any]:
         controller = await self.controllers.update_details(
             session, tenant_id, controller_id, changes
         )
-        view = controller_view(controller, self.state_of(controller))
+        leases = await self.leases(session)
+        view = controller_view(controller, self.state_of(controller, leases), leases)
         await session.commit()
         if "name" in changes:
             self.presence.rename_controller(controller_id, controller.name)
@@ -604,6 +635,7 @@ class ManagementService:
         row: AgentDefinitionRow,
         agent: Agent,
         controllers: dict[str, AgentController],
+        leases: ProcessLeases,
     ) -> dict[str, Any]:
         controller = None
         if row.controller_id is not None:
@@ -618,15 +650,21 @@ class ManagementService:
             row,
             agent,
             controller,
-            self.state_of(controller) if controller is not None else None,
+            self.state_of(controller, leases) if controller is not None else None,
         )
 
     async def list_managed_agents(
         self, session: AsyncSession, tenant_id: str, owner_id: str
     ) -> list[dict[str, Any]]:
-        controllers: dict[str, AgentController] = {}
+        controllers = {
+            controller.id: controller
+            for controller in await self.controllers.list_for_owner(
+                session, tenant_id, owner_id
+            )
+        }
+        leases = await self.leases(session)
         return [
-            await self._view(session, tenant_id, row, agent, controllers)
+            await self._view(session, tenant_id, row, agent, controllers, leases)
             for row, agent in await self.definitions.list_for_owner(
                 session, tenant_id, owner_id
             )
@@ -655,7 +693,9 @@ class ManagementService:
         row, agent = await self._owned_definition(
             session, tenant_id, owner_id, agent_id
         )
-        return await self._view(session, tenant_id, row, agent, {})
+        return await self._view(
+            session, tenant_id, row, agent, {}, await self.leases(session)
+        )
 
     async def _check_target(
         self,
@@ -676,6 +716,7 @@ class ManagementService:
             require_placement(
                 controller,
                 provider,
+                leases=await self.leases(session),
                 now=self.now(),
                 interval_seconds=self.settings.status_interval_seconds,
             )
@@ -777,7 +818,9 @@ class ManagementService:
             request.controller_id,
         )
         agent = await self._owned_agent(session, owner_id, result.agent_id)
-        return await self._view(session, tenant_id, row, agent, {})
+        return await self._view(
+            session, tenant_id, row, agent, {}, await self.leases(session)
+        )
 
     async def put_managed_agent(
         self,
@@ -874,7 +917,9 @@ class ManagementService:
             and existing.desired_state == target.desired_state
             and existing.definition == target.definition
         ):
-            return await self._view(session, tenant_id, existing, agent, {})
+            return await self._view(
+                session, tenant_id, existing, agent, {}, await self.leases(session)
+            )
 
         previous_controller_id = existing.controller_id if existing else None
         if existing is None or existing.definition != target.definition:
@@ -920,7 +965,9 @@ class ManagementService:
         await self._bind(session, tenant_id, row)
         self._nudge(revisions)
         agent = await self._owned_agent(session, owner_id, agent.id)
-        return await self._view(session, tenant_id, row, agent, {})
+        return await self._view(
+            session, tenant_id, row, agent, {}, await self.leases(session)
+        )
 
     async def delete_managed_agent(
         self, session: AsyncSession, tenant_id: str, owner_id: str, agent_id: str
@@ -991,7 +1038,7 @@ class ManagementService:
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
         )
-        if self.state_of(controller) == "revoked":
+        if is_revoked(controller):
             raise ManagementError(
                 409, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )

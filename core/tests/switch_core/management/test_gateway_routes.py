@@ -27,6 +27,7 @@ from tests.switch_core.management.harness import (
     create_managed_agent,
     definition,
     enroll_console,
+    ensure_connected,
     platform,
     provider,
     report_status,
@@ -265,6 +266,7 @@ class TestPlacement:
         assert unplace.status_code == 200
         assert unplace.json()["controller_id"] is None
         assert unplace.json()["controller_state"] is None
+        assert unplace.json()["controller_name"] is None
 
 
 class TestManagedAgents:
@@ -579,6 +581,7 @@ async def report_machine(
         del report["machine"]["workspaces_dir"]
     else:
         report["machine"]["workspaces_dir"] = workspaces_dir
+    await ensure_connected(client, controller)
     response = await client.put(
         f"/v1/management/controllers/{controller.controller_id}/status",
         json=report,
@@ -763,6 +766,8 @@ class TestRevocation:
         [agent] = agents.json()
         assert agent["agent_id"] == created.json()["agent_id"]
         assert agent["controller_state"] == "revoked"
+        assert agent["controller_name"] == listed.json()[0]["name"]
+        assert agent["controller_kind"] == listed.json()[0]["kind"]
         assert refused.status_code == 401
         assert refused.json()["error"]["code"] == "controller_revoked"
 

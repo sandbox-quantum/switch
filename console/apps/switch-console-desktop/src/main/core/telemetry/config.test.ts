@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  flintEnvFor,
   resolveTelemetryEnvironment,
   TELEMETRY_RELAY_ENDPOINT,
   type TelemetryBuildChannel,
   type TelemetryEnvironment,
 } from './config';
 
-function resolve(build: TelemetryBuildChannel, env: TelemetryEnvironment['env'] = {}) {
-  return resolveTelemetryEnvironment({ build, env });
+function resolve(
+  build: TelemetryBuildChannel,
+  env: TelemetryEnvironment['env'] = {},
+  release = build !== 'dev'
+) {
+  return resolveTelemetryEnvironment({ build, release, env });
 }
 
 describe('a dev run', () => {
@@ -18,7 +23,7 @@ describe('a dev run', () => {
   it('reports to the relay once opted in', () => {
     expect(resolve('dev', { SWITCHDASH_TELEMETRY_DEV: '1' })).toEqual({
       enabled: true,
-      config: { endpoint: TELEMETRY_RELAY_ENDPOINT, build: 'dev' },
+      config: { endpoint: TELEMETRY_RELAY_ENDPOINT, build: 'dev', flintEnv: 'local' },
     });
   });
 
@@ -47,7 +52,11 @@ describe.each(['stable', 'canary'] as const)('a %s build', (build) => {
     // this replaced, there is no build that is inert for want of a key.
     expect(resolve(build)).toEqual({
       enabled: true,
-      config: { endpoint: TELEMETRY_RELAY_ENDPOINT, build },
+      config: {
+        endpoint: TELEMETRY_RELAY_ENDPOINT,
+        build,
+        flintEnv: build === 'canary' ? 'staging' : 'prod',
+      },
     });
   });
 
@@ -66,5 +75,26 @@ describe.each(['stable', 'canary'] as const)('a %s build', (build) => {
     const resolution = resolve(build, { SWITCHDASH_TELEMETRY_DEV: '1' });
 
     expect(resolution.enabled && resolution.config.build).toBe(build);
+  });
+});
+
+describe('the Amplitude project a build reports to', () => {
+  // The relay files each event under the project its flint_env names, so only a
+  // released stable build's events are production's.
+  it.each([
+    ['stable', true, 'prod'],
+    ['canary', true, 'staging'],
+    ['stable', false, 'dev'],
+    ['canary', false, 'dev'],
+    ['dev', false, 'local'],
+    ['dev', true, 'local'],
+  ] as const)('is %s, released %s → %s', (build, release, environment) => {
+    expect(flintEnvFor({ build, release })).toBe(environment);
+  });
+
+  it('is carried in the resolved config, so every event of a build agrees', () => {
+    const resolution = resolve('stable', {}, false);
+
+    expect(resolution.enabled && resolution.config.flintEnv).toBe('dev');
   });
 });

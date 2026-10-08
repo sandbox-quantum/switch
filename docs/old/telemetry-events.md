@@ -57,6 +57,83 @@ choices are load-bearing rather than incidental:
 - **A name prefix per product**, because one Amplitude project holds several.
   The Console sends `switch_console.<event>`; the server sends
   `switch_core.<event>`.
+- **Numbers go as `doubleValue`, booleans as `boolValue`.** The relay delivers
+  both typed to Amplitude and Datadog — zero and `false` included — so a count
+  can be summed and a flag filtered on at the far end. A number sent as text
+  arrives as a category instead. The relay's own test suite pins this end to
+  end; the tests beside each encoder pin the half Switch controls.
+- **Non-finite numbers are refused before sending.** JSON has no NaN or
+  infinity, so neither could arrive as a number whatever the relay did with it.
+- **At most 100 attributes per record.** The relay drops any record over 128
+  and still answers 200. The margin is held by a test over every event, on both
+  the server and the Console.
+- **At most 16 KiB per event.** The relay drops an event over 32 KiB before it
+  reaches Amplitude, because Amplitude refuses a request over 1 MB. It answers
+  200 and counts the drop. A test over every event, at its largest possible
+  values, holds the margin on both clients; the largest today is about 3 KiB.
+
+### Which Amplitude project
+
+The relay keeps one Amplitude project per environment and files each event
+under the one its `flint_env` resource attribute names: `prod`, `staging`,
+`dev` or `local`. An event naming none goes to production, and one naming
+anything else is dropped and counted. So every event says where it belongs,
+even `prod`:
+
+- **The server** sends `TELEMETRY_ENVIRONMENT`, which defaults to `prod`
+  because every customer's deployment is production. Flint's own development
+  deployment sets `dev`; `.env.example`, which `just init-env` copies for a
+  developer's machine, sets `local`. Any other value stops the server at
+  startup. It is set by the Helm chart's `switchCore.telemetry.environment`,
+  and forwarded by the standalone compose file.
+- **Switch Console** sends one per build: `prod` from a released stable build,
+  `staging` from a released canary, `dev` from a packaged build that is not a
+  release (a test build, or one packaged on a laptop), and `local` when run
+  from source. The release workflow stamps tagged builds `VITE_RELEASE=1`, and
+  a test holds every build step to it. A server Console runs for the user is
+  given Console's.
+
+`flint_env` rides on the resource, beside the client id. It describes where
+the reporting process runs, not anything inside the deployment, so it is not
+an identifier in the sense of the rule above.
+
+### Internal usage
+
+Staff use the product too, and their usage is real but is not adoption. Three
+signals tell it apart, none of them an identifier:
+
+- **`flint_internal`** on the resource: `"true"` or `"false"` from the server,
+  set by `TELEMETRY_INTERNAL` (Helm `switchCore.telemetry.internal`) on the
+  company's own deployments and never on a customer's. Switch Console sends
+  `"true"` when any account it is signed in to a Switch server with is on
+  `sandboxaq.com` or `sandboxquantum.com`, `"false"` when only other accounts
+  are, and `"unknown"` when none is; only that answer leaves the machine. A
+  server Console runs for the user is given Console's answer.
+- **`user_internal_count`** in the daily snapshot: accounts on those domains,
+  so a deployment that serves both staff and customers can be split.
+- Each deployment's `flint.client_id`, for the company's own deployments by
+  name.
+
+`tenant_id` is deliberately not one of them: no identifier for anything inside
+a deployment is ever sent, and a tenant is inside one.
+
+### What the relay's 200 means
+
+The relay answers `200` once it has accepted a payload, before it forwards
+anything: it batches, and at response time it does not yet know whether
+Amplitude will take the events. So a `200` means *received*, never *delivered*,
+and a sender cannot learn from the response that an event was lost. That is
+deliberate. An error status would be either a `400` the sender can do nothing
+about or a `500` that makes it retry the same payload forever.
+
+Making loss visible is therefore the relay's job, not the sender's: counting
+what it receives, what its own checks drop, and what Amplitude and Datadog
+refuse, and alerting on those counts. The relay's own repository documents the
+metrics, the alerts and how they are switched on, and the gaps that remain.
+
+What that leaves to Switch is not sending anything the relay would drop: the
+event name in both places, finite numbers, the attribute and size margins, and a
+valid client id.
 
 ## The rule: abstracted counts, never specifics
 
@@ -245,8 +322,12 @@ never invisible.
 | `tenant_failed_count` | number | tenants whose queries raised and were stepped over. One tenant's failure no longer takes the whole pass down, so the pair is what makes a partial pass self-describing: without it, every count dropping at once is indistinguishable from a deployment losing its users |
 | `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly fifteen queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
 | `user_count` | number | user accounts that exist |
-| `user_active_1d` | number | distinct humans who interacted in 24h |
+| `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
+| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account |
 | `user_active_7d` | number | same over 7 days |
+| `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
+| `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d` |
+| `chat_identity_active_7d` | number | same over 7 days |
 | `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
 | `room_agent_created_count` | number | unarchived rooms an agent created for itself |
 | `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |
@@ -373,11 +454,14 @@ onboarding. A bundled connector registered before the flag existed is marked
 on the setup step's next run; if it first connects before that, its one
 `connector_added` reports `false`.
 
-**`seconds_since_configured` is not setup time for an old connector.** The
-event fires on the first connect *seen with telemetry on*. A connector that
-already existed when telemetry was switched on reports its whole age on its
-first connect afterwards. Deployments that predate telemetry send `-1` in
-`seconds_since_install`, so filtering to `>= 0` drops most of them.
+**`connector_added` fires only for a first connect that was seen.** A
+connector's first connect is recorded whether telemetry is on or not, so one
+that first connected while telemetry was off never reports `connector_added`:
+its setup went unmeasured, and reporting it later would report its whole age.
+Connectors that already existed when this tracking arrived are recorded by a
+migration and never report either. Servers released before it reported an old
+connector's age instead, often millions of seconds; filtering to
+`seconds_since_install >= 0` drops most of those.
 
 `seconds_since_configured` and `failed_attempts_before_success` are what answer
 "is one platform too hard". Elapsed time from install mostly measures when

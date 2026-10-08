@@ -6,7 +6,7 @@ import { readSse, type SseFrame } from './sse';
  *
  * These moved here with the parser. They used to sit beside a drift check that
  * compared two copies of this file; the copies are gone, so the check is too,
- * but the behaviour it protected still needs testing — and now testing it once
+ * but the behaviour it protected still needs testing, and now testing it once
  * genuinely covers every client, which was the point of the move.
  */
 
@@ -40,7 +40,7 @@ describe('SSE framing', () => {
   });
 
   it('leaves id undefined when the server sends none', async () => {
-    // Control frames carry no sequence — treating a missing id as 0 would drag
+    // Control frames carry no sequence, treating a missing id as 0 would drag
     // the cursor backwards and replay the whole buffer on reconnect.
     const frames = await parse(['event: connection_state\ndata: {"rooms":[]}\n\n']);
     expect(frames[0].id).toBeUndefined();

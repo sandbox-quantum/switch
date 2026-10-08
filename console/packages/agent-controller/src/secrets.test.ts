@@ -2,7 +2,16 @@ import { chmodSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
+import {
+  CommandFailure,
+  type CommandRunner,
+  CONTROLLER_CREDENTIAL,
+  defaultSecretStoreKind,
+  FileSecretStore,
+  KeychainSecretStore,
+  MemorySecretStore,
+  SecretServiceStore,
+} from './secrets';
 
 let dir: string;
 
@@ -64,5 +73,62 @@ describe('MemorySecretStore', () => {
   it('refuses a name a file store would refuse', async () => {
     expect(() => new MemorySecretStore({ '../escape': 'x' }, 'test')).toThrow(/Invalid/);
     await expect(new MemorySecretStore({}, 'test').set('../x', 'y')).rejects.toThrow(/Invalid/);
+  });
+});
+
+describe('OS keychain stores', () => {
+  type Call = { file: string; args: string[]; input: string | null };
+  function runner(answer: (call: Call) => { stdout: string } | CommandFailure) {
+    const calls: Call[] = [];
+    const run: CommandRunner = async (file, args, input) => {
+      const call = { file, args, input };
+      calls.push(call);
+      const result = answer(call);
+      if (result instanceof CommandFailure) throw result;
+      return result;
+    };
+    return { calls, run };
+  }
+
+  it('keeps the macOS keychain value off the command line, and reads a missing one as none', async () => {
+    const { calls, run } = runner((call) =>
+      call.args[0] === 'find-generic-password'
+        ? new CommandFailure(call.file, call.args, 44, 'not found', 'exit 44')
+        : { stdout: '' }
+    );
+    const store = new KeychainSecretStore('/data', run);
+    await store.set(CONTROLLER_CREDENTIAL, 'swcc_secret-value');
+    expect(calls[0].args).toEqual(['-i']);
+    expect(calls[0].input).toContain('-w "swcc_secret-value"');
+    expect(calls[0].input).toContain(`-a "${CONTROLLER_CREDENTIAL}@/data"`);
+    expect(calls.flatMap((call) => call.args).join(' ')).not.toContain('swcc_secret-value');
+    expect(await store.get(CONTROLLER_CREDENTIAL)).toBeNull();
+  });
+
+  it('fails loud on a keychain error that is not "not found"', async () => {
+    const { run } = runner(
+      (call) => new CommandFailure(call.file, call.args, 51, 'user interaction is not allowed', 'x')
+    );
+    await expect(new KeychainSecretStore('/data', run).get(CONTROLLER_CREDENTIAL)).rejects.toThrow(
+      /user interaction is not allowed/
+    );
+  });
+
+  it('gives secret-tool the value on stdin, and reads a silent exit 1 as none', async () => {
+    const { calls, run } = runner((call) =>
+      call.args[0] === 'lookup'
+        ? new CommandFailure(call.file, call.args, 1, '', 'exit 1')
+        : { stdout: '' }
+    );
+    const store = new SecretServiceStore('/data', run);
+    await store.set(CONTROLLER_CREDENTIAL, 'swcc_secret-value');
+    expect(calls[0].input).toBe('swcc_secret-value');
+    expect(calls[0].args).not.toContain('swcc_secret-value');
+    expect(await store.get(CONTROLLER_CREDENTIAL)).toBeNull();
+  });
+
+  it('defaults to the keychain on a Mac only', () => {
+    expect(defaultSecretStoreKind('darwin')).toBe('keychain');
+    expect(defaultSecretStoreKind('linux')).toBe('file');
   });
 });

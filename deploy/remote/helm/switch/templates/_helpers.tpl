@@ -794,6 +794,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ .Values.switchCore.telemetry.endpoint | quote }}
 - name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
   value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
+- name: TELEMETRY_ENVIRONMENT
+  value: {{ .Values.switchCore.telemetry.environment | quote }}
+- name: TELEMETRY_INTERNAL
+  value: {{ .Values.switchCore.telemetry.internal | quote }}
 {{- end }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding

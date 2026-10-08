@@ -169,6 +169,35 @@ The canary app only reads GitHub's 10 most recent releases, and core and stable
 releases count toward them. If 10 of those are published after the newest canary,
 canary installs find no update until the next canary is tagged.
 
+## switch-agent-controller release (separate)
+
+The headless agents controller (`console/packages/agent-controller`), which runs
+managed agents on a customer's own Linux or macOS machine, releases on its own tag,
+`switch-agent-controller-v<version>`, via
+`.github/workflows/agent-controller-release.yml`:
+
+```bash
+git tag switch-agent-controller-v0.2.0 <commit on main>
+git push origin switch-agent-controller-v0.2.0
+```
+
+- **The tag sets the version.** It must be `x.y.z`; the workflow stamps it into the
+  package on the runner, so `package.json` is not bumped. The controller reports it
+  to Switch and compares it with newer releases.
+- **What it publishes:** a GitHub Release holding
+  `switch-agent-controller-<version>.tgz` (one npm package with the CLI and the
+  shared-host bundle, no dependencies) and `install.sh`. It is never marked Latest,
+  so Switch Console's stable updater never sees it.
+- **How installs find it:** `install.sh` and `switch-agent-controller update` list the
+  repository's releases and take the highest non-draft, non-prerelease controller tag
+  that carries its package. No npm registry or token is involved.
+- **Canary visibility:** each controller release counts toward the 10 most recent
+  releases the Console canary updater reads (see Canary builds above).
+- **Not gated:** the workflow needs no approval. It tests the controller, packs it,
+  installs the package and runs it once before releasing.
+
+`workflow_dispatch` runs everything except the release, for verification.
+
 ## Where artifacts are published
 
 The images, the chart, and the standalone compose artifact all go to **GitHub

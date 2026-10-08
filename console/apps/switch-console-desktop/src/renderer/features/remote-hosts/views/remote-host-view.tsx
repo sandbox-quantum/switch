@@ -38,7 +38,6 @@ import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import { isHostBlocked } from '@shared/core/remote-hosts/reachability';
 import { switchServersStore } from '../../switch-servers/switch-servers-store';
 import { workspacesStore } from '../../workspaces/workspaces-store';
-import { HostMachineCard } from '../host-machine-card';
 import { hostReachabilityStore } from '../host-reachability-store';
 import { hostSetupStore } from '../host-setup-store';
 import { HostUnreachablePanel } from '../host-unreachable-panel';
@@ -315,16 +314,6 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
                       </div>
                     ))}
                   </section>
-                )}
-
-                {serverId && (
-                  <div className="pt-4">
-                    <HostMachineCard
-                      sshHost={sshHost}
-                      serverId={serverId}
-                      workspaceId={workspaceId}
-                    />
-                  </div>
                 )}
 
                 {serverId && workspaceId && (

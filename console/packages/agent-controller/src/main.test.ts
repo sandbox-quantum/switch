@@ -2,8 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EXIT_CONFIGURATION, EXIT_OK } from './exit-codes';
-import { main } from './main';
+import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
+import { infoChange, main } from './main';
+import { dataLayout } from './paths';
+import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import { ControllerStore } from './store';
 
 let dir: string;
@@ -152,10 +154,131 @@ describe('main', () => {
     expect(lastLine()).toMatch(/must use https/);
   });
 
+  it("set-info changes the machine's name and description, and records the name", async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.close();
+    await new FileSecretStore(dataLayout(dir).secrets).set(CONTROLLER_CREDENTIAL, 'swcc_test');
+    const calls: { method: string; url: string; body: unknown; auth: string | null }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        const headers = new Headers(init.headers);
+        calls.push({
+          method: String(init.method),
+          url,
+          body: init.body ? JSON.parse(String(init.body)) : null,
+          auth: headers.get('Authorization'),
+        });
+        const body = url.endsWith('/token')
+          ? {
+              access_token: 'swct_test',
+              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            }
+          : { id: 'controller-1', name: 'build-box', description: null, state: 'online' };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+    const code = await main([
+      'set-info',
+      '--name',
+      ' build-box ',
+      '--description',
+      '',
+      '--data-dir',
+      dir,
+    ]);
+    vi.unstubAllGlobals();
+    expect(code).toBe(EXIT_OK);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['POST', 'https://switch.example.com/v1/management/controllers/controller-1/token'],
+      ['PATCH', 'https://switch.example.com/v1/management/controllers/controller-1'],
+    ]);
+    expect(calls[0]!.body).toEqual({ credential: 'swcc_test' });
+    expect(calls[1]!.body).toEqual({ name: 'build-box', description: null });
+    expect(calls[1]!.auth).toBe('Bearer swct_test');
+    const reopened = ControllerStore.open(join(dir, 'controller.db'));
+    expect(reopened.identity()?.name).toBe('build-box');
+    reopened.close();
+  });
+
+  it('set-info refuses what it cannot send, before calling Switch', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    expect(await main(['set-info', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe(
+      'switch-agent-controller: set-info needs --name, --description, or both.'
+    );
+    expect(await main(['set-info', '--name', '  ', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe('switch-agent-controller: --name must not be blank.');
+    expect(await main(['set-info', '--name', 'box', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/holds no enrolled controller/);
+    vi.unstubAllGlobals();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('set-info exits 1 when Switch refuses the change', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.close();
+    await new FileSecretStore(dataLayout(dir).secrets).set(CONTROLLER_CREDENTIAL, 'swcc_test');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.endsWith('/token')
+          ? new Response(
+              JSON.stringify({
+                access_token: 'swct_test',
+                expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+              }),
+              { status: 200 }
+            )
+          : new Response(
+              JSON.stringify({
+                error: { code: 'validation_error', message: 'name too long', retryable: false },
+              }),
+              { status: 422 }
+            )
+      )
+    );
+    expect(await main(['set-info', '--name', 'box', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    vi.unstubAllGlobals();
+    expect(lastLine()).toBe('switch-agent-controller: validation_error: name too long');
+    const reopened = ControllerStore.open(join(dir, 'controller.db'));
+    expect(reopened.identity()?.name).toBe('box');
+    reopened.close();
+  });
+
   it('exits 2 when it is not enrolled', async () => {
     expect(await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle])).toBe(
       EXIT_CONFIGURATION
     );
     expect(lastLine()).toMatch(/not enrolled/);
+  });
+});
+
+describe('infoChange', () => {
+  it('trims, clears a blank description, and keeps to the limits', () => {
+    expect(infoChange({ name: ' box ' })).toEqual({ name: 'box' });
+    expect(infoChange({ description: '  ' })).toEqual({ description: null });
+    expect(infoChange({ name: 'x'.repeat(200), description: 'y'.repeat(500) })).toEqual({
+      name: 'x'.repeat(200),
+      description: 'y'.repeat(500),
+    });
+    expect(() => infoChange({ name: 'x'.repeat(201) })).toThrow(/at most 200/);
+    expect(() => infoChange({ description: 'y'.repeat(501) })).toThrow(/at most 500/);
   });
 });

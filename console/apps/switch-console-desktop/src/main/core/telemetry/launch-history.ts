@@ -1,0 +1,105 @@
+import { resolveAppVersion } from '@main/core/app/utils';
+import { KV } from '@main/db/kv';
+import { log } from '@main/lib/logger';
+import { IS_CANARY } from '@shared/app-identity';
+import type { TelemetryInstallKind } from './events';
+import { trackEvent } from './telemetry-service';
+
+/**
+ * Which kind of launch this is, from what the last launch recorded.
+ *
+ * `new` is the first launch an installation ever makes, so counting it counts
+ * new installs; `updated` is the first launch on a different version than the
+ * last one, an upgrade; `same` is everything else. An installation with a
+ * database but no record predates this tracking, and its first launch with it
+ * is on a version it was not installed at, so it reads as `updated`.
+ */
+export function installKindFor({
+  lastVersion,
+  version,
+  databaseExisted,
+}: {
+  lastVersion: string | null;
+  version: string;
+  databaseExisted: boolean;
+}): TelemetryInstallKind {
+  if (lastVersion === null) return databaseExisted ? 'updated' : 'new';
+  return lastVersion === version ? 'same' : 'updated';
+}
+
+/**
+ * One record per channel: canary and stable share a database, and comparing
+ * one's version with the other's would read every switch between them as an
+ * upgrade.
+ */
+const store = new KV<Record<string, string>>('telemetry-launches');
+
+/**
+ * This launch's recording, once boot has started it. Kept as the promise rather
+ * than its result, because boot does not wait for it and something can ask
+ * before it settles. Settles to null when the launch could not be recorded.
+ */
+let recording: Promise<TelemetryInstallKind | null> | null = null;
+
+type LaunchInputs = {
+  version: string;
+  channel: 'canary' | 'stable';
+  databaseExisted: boolean;
+};
+
+/**
+ * Record this launch and say which kind it is. Recorded on every launch,
+ * whether or not usage is shared: it is local, and the next launch has to know
+ * this one happened to tell an upgrade from a relaunch.
+ */
+export async function recordLaunch({
+  version,
+  channel,
+  databaseExisted,
+}: LaunchInputs): Promise<TelemetryInstallKind> {
+  const key = `lastLaunchedVersion.${channel}`;
+  const lastVersion = (await store.get(key)) ?? null;
+  const kind = installKindFor({ lastVersion, version, databaseExisted });
+  await store.set(key, version);
+  return kind;
+}
+
+/** What recording this launch needs, read when boot starts it. */
+export async function readThisLaunch(): Promise<LaunchInputs> {
+  return {
+    version: await resolveAppVersion(),
+    channel: IS_CANARY ? 'canary' : 'stable',
+    // Imported here, not at the top: the client opens the database on import.
+    databaseExisted: (await import('@main/db/client')).databaseExistedAtStart,
+  };
+}
+
+/**
+ * Record this launch and report it as `app_launched`. Never rejects, so boot
+ * can start it without waiting on it: nothing telemetry does may stop the app
+ * opening. A launch that cannot be recorded is logged and goes unreported,
+ * rather than reported with a kind nobody worked out.
+ */
+export async function reportLaunch(read: () => Promise<LaunchInputs>): Promise<void> {
+  const recorded = (async () => recordLaunch(await read()))();
+  recording = recorded.catch(() => null);
+  try {
+    trackEvent('app_launched', { install_kind: await recorded });
+  } catch (error) {
+    log.warn('telemetry: could not record this launch, so app_launched is not sent', { error });
+  }
+}
+
+/**
+ * This launch's kind, waited for rather than read: boot does not wait for the
+ * recording, so the window can open and the first-run notice be answered before
+ * the database has said. Never rejects. A launch that could not be recorded, or
+ * that nothing started recording, is `unknown` — never a kind nobody worked out.
+ */
+export async function launchInstallKind(): Promise<TelemetryInstallKind | 'unknown'> {
+  if (recording === null) {
+    log.warn('telemetry: install kind asked for, but nothing has recorded this launch');
+    return 'unknown';
+  }
+  return (await recording) ?? 'unknown';
+}

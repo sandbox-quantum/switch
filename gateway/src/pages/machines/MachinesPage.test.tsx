@@ -12,6 +12,11 @@ const laptop: Controller = {
   version: "0.1.0",
   state: "online",
   last_seen_at: new Date().toISOString(),
+  connection: {
+    connected_at: new Date().toISOString(),
+    disconnected_at: null,
+    disconnect_reason: null,
+  },
   assignment_revision: 3,
   created_at: "2026-10-01T00:00:00Z",
   revoked_at: null,
@@ -149,6 +154,39 @@ describe("MachinesPage", () => {
     expect(screen.queryByText("1 / 1")).toBeNull();
     // Only what is wanted says running; nothing claims the agent actually is.
     expect(screen.getAllByText("running")).toHaveLength(1);
+  });
+
+  it("shows a machine that stopped as offline, and its agents as unreachable", async () => {
+    const stopped: Controller = {
+      ...laptop,
+      state: "offline",
+      connection: {
+        ...laptop.connection!,
+        disconnected_at: new Date().toISOString(),
+        disconnect_reason: "socket_closed",
+      },
+    };
+    mockManagement({
+      "GET /controllers": [200, [stopped]],
+      "GET /agents": [200, [{ ...pmAgent, controller_state: "offline" }]],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText("offline")).toBeTruthy();
+    expect(screen.getByText("Not connected")).toBeTruthy();
+    expect(screen.getByText("machine offline")).toBeTruthy();
+    expect(screen.queryByText("failed: invalid_credential")).toBeNull();
+  });
+
+  it("shows a machine that never connected as unknown", async () => {
+    mockManagement({
+      "GET /controllers": [200, [{ ...laptop, state: "unknown", connection: null, status: null }]],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText("unknown")).toBeTruthy();
+    expect(screen.getByText("Unknown")).toBeTruthy();
   });
 
   it("describes revoking without per-agent keys", async () => {

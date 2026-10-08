@@ -55,7 +55,11 @@ function deps(): ReconcileDeps {
     ensureCredentials: async (agentId) => {
       if (runtime.credentials.get(agentId)?.endpoint === endpoint) return false;
       minted.push(agentId);
-      await runtime.writeCredentials(agentId, { endpoint, token: `swlr_${minted.length}` });
+      await runtime.writeCredentials(agentId, {
+        endpoint,
+        token: `swlr_${minted.length}`,
+        hub: `${endpoint.replace('http', 'ws')}/hub`,
+      });
       return true;
     },
     forgetAgent: (agentId) => void forgotten.push(agentId),
@@ -85,7 +89,11 @@ describe('reconcile', () => {
   it('starts a running agent: points it at the relay, launches its watcher', async () => {
     await reconcile(assignment(agent()), deps());
     expect(minted).toEqual(['agent-1']);
-    expect(runtime.credentials.get('agent-1')).toEqual({ endpoint: RELAY, token: 'swlr_1' });
+    expect(runtime.credentials.get('agent-1')).toEqual({
+      endpoint: RELAY,
+      token: 'swlr_1',
+      hub: `${RELAY.replace('http', 'ws')}/hub`,
+    });
     const [launch] = runtime.launches();
     expect(launch!.options).toEqual({
       isolation: 'shared',

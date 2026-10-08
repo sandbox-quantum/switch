@@ -339,6 +339,22 @@ class SwitchConfig(BaseSettings):
     # to how long this process has been up.
     telemetry_snapshot_interval_hours: float = 24.0
 
+    # Which Amplitude project this deployment's usage lands in, sent as
+    # `flint_env`. The relay keeps one project per environment and files an
+    # event naming none, or `prod`, under production — which is what every
+    # customer's deployment is, and why it is the default. Our own non-customer
+    # servers say so here: `dev` for the development deployment, `local` for a
+    # developer's machine (`just init-env` writes it), so their usage never
+    # reads as adoption. Any other value is refused at startup, because the
+    # relay drops an event naming an environment it has no project for.
+    telemetry_environment: Literal["prod", "staging", "dev", "local"] = "prod"
+
+    # Whether this deployment is one of the company's own, sent as
+    # `flint_internal` so staff usage can be told from adoption. A customer's
+    # deployment never sets it. Within a deployment, staff accounts are counted
+    # separately by email domain whether or not this is set.
+    telemetry_internal: bool = False
+
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
@@ -511,6 +527,16 @@ class SwitchConfig(BaseSettings):
     # `report_within_s`; a controller that has not reported for three of these
     # is shown as unknown and refused new placements.
     controller_status_interval_seconds: int = 60
+    # Share one read of a room's new messages between every client in it
+    # (`transport/room_cache.py`). Without it, a room of N agents reads each
+    # new page N times, which is what exhausted the pool in a restart burst.
+    # The limits bound memory, not correctness: anything outside them is read
+    # from the database, as every client did before the cache.
+    room_delivery_cache_max_bytes: int = 64 * 1024 * 1024
+    room_delivery_cache_max_rooms: int = 5000
+    # At least one delivery page (200), or a fill could not be held.
+    room_delivery_cache_max_rows_per_room: int = 1000
+    room_delivery_cache_max_age_seconds: float = 300.0
 
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such

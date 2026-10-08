@@ -246,7 +246,6 @@ class TestRefusals:
                     "POST",
                     f"/v1/management/controllers/{second.controller_id}/credential/rotate",
                 ),
-                ("GET", f"/v1/controllers/{second.controller_id}/events"),
             ]:
                 response = await client.request(method, path, headers=first.headers)
                 assert response.status_code == 403, (method, path, response.text)

@@ -274,6 +274,12 @@ export class HostControllerService {
     });
   }
 
+  /** Whether the host's controller runs an older bundle than this Console carries. */
+  async outdated(record: HostControllerRecord): Promise<boolean> {
+    const local = await this.deps.bundles.controller();
+    return posix.basename(record.bundle) !== `agent-controller-${local.hash}.mjs`;
+  }
+
   /** Starts the controller again, on this build's bundle; its agents keep running meanwhile. */
   async restart(sshHost: string, serverId: string): Promise<void> {
     await this.exclusive(sshHost, serverId, async () => {
@@ -311,7 +317,7 @@ export class HostControllerService {
     const moved = await this.deps.movedAgents(sshHost, serverId);
     if (moved.length)
       throw new MovedAgentsHereError(
-        `${sshHost} runs ${moved.join(', ')} for this Console. Bring them back with Stop managing (or Bring all back) before turning it off.`,
+        `${sshHost} runs ${moved.join(', ')} as managed agents for this Console. Delete those agents before turning it off.`,
         moved
       );
     await this.exclusive(sshHost, serverId, async () => {
@@ -349,6 +355,45 @@ export class HostControllerService {
   }
 
   /**
+   * Enrolls the host afresh when the server no longer knows the machine it
+   * was enrolled as: its database was reset or restored, say. The old
+   * controller is stopped and its identity wiped on the host (there is nothing
+   * on the server to revoke), then the host enrolls again in the same
+   * workspace. Refused while the server still lists the machine, which is
+   * turned off and on instead.
+   */
+  async enrollAgain(sshHost: string, serverId: string): Promise<void> {
+    const record = await this.deps.records.get(sshHost, serverId);
+    if (!record) throw new Error(`${sshHost} is not a machine for this server.`);
+    const remote = await this.deps.management.read(record.workspaceId, record.controllerId);
+    if (remote.kind !== 'ok')
+      throw new Error(
+        remote.kind === 'error'
+          ? `Switch could not be asked about ${sshHost}: ${remote.message}`
+          : 'This server no longer has agent management turned on.'
+      );
+    if (remote.controller && remote.controller.state !== 'revoked')
+      throw new Error(
+        `Switch still lists ${sshHost} as a machine. Turn it off and on again instead.`
+      );
+    await this.exclusive(sshHost, serverId, async () => {
+      const shell = await this.deps.shell(sshHost);
+      try {
+        await this.stopOn(shell, record, { turnOff: true, wipe: true });
+      } finally {
+        shell.close();
+      }
+      await this.deps.records.delete(sshHost, serverId);
+      this.deps.log.warn('Switch no longer knew an SSH host as a machine; enrolling it again', {
+        sshHost,
+        serverId,
+        controllerId: record.controllerId,
+      });
+    });
+    await this.enable(sshHost, serverId, record.workspaceId);
+  }
+
+  /**
    * The host is being removed from Console: its controllers go first. Refused,
    * with nothing changed, while any of them runs agents moved from this Console.
    */
@@ -359,7 +404,7 @@ export class HostControllerService {
       moved.push(...(await this.deps.movedAgents(sshHost, record.serverId)));
     if (moved.length)
       throw new MovedAgentsHereError(
-        `${sshHost} runs ${moved.join(', ')} for this Console, so it cannot be removed yet. Bring the agents back first: Bring all back on the host’s page, or Stop managing on each agent.`,
+        `${sshHost} runs ${moved.join(', ')} as managed agents for this Console, so it cannot be removed yet. Delete those agents first.`,
         moved
       );
     for (const record of records) await this.disable(sshHost, record.serverId, { force: true });

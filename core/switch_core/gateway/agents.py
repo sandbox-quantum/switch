@@ -110,6 +110,8 @@ async def delete_agent_by_name(
         )
     if hosted_launch_of(agent.metadata_) is not None:
         raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
+    # Not held across the delete, which opens its own sessions and calls every bridge.
+    await session.commit()
     try:
         await protocol.delete_agent(agent_name=agent_name)
     except ValueError as exc:
@@ -143,6 +145,8 @@ async def delete_agent(
         )
     if hosted_launch_of(agent.metadata_) is not None:
         raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
+    # Not held across the delete, which opens its own sessions and calls every bridge.
+    await session.commit()
     try:
         await protocol.delete_agent(agent_id=agent_id)
     except ValueError as exc:
@@ -299,6 +303,8 @@ async def register_known_subagents(
                 ),
             )
 
+    # Not held across registration, which opens its own session and calls every bridge.
+    await session.commit()
     results: list[BulkRegisterResult] = []
     for d in derived:
         try:

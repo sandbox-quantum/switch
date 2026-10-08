@@ -31,7 +31,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from switch_core.artifacts import contract_range
+from switch_core.artifacts import ARTIFACT_VERSIONS, contract_range
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.hosted_workers import (
     IDLE_FRESH_FOR_SECONDS,
@@ -55,13 +55,20 @@ from switch_core.bridges.agent.protocol.liveness import TAKEN_OVER as TAKEN_OVER
 from switch_core.bridges.agent.protocol.liveness import CloseCode as CloseCode
 from switch_core.bridges.agent.protocol.liveness import Closure as Closure
 from switch_core.logging_context import log_context
-from switch_core.observability.catalogue import AGENT_CONNECTIONS_EXPIRED
+from switch_core.observability.catalogue import (
+    AGENT_CONNECTIONS_EXPIRED,
+    AGENT_CONNECTIONS_OPENED,
+)
 from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
 Scope = Literal["single", "all"]
 DeliveryFilter = Literal["all", "addressed"]
+# How a connection's stream reaches its client. `sse` is the event stream an
+# agent runtime built before the WebSocket still asks for, served for a
+# compatibility window and counted apart so we can see those clients drain.
+Transport = Literal["websocket", "sse"]
 
 # Refuse a client that cannot meet this server's protocol rather than degrading
 # in ways neither side can see. The runtime lives on the user's machine and
@@ -269,6 +276,11 @@ class WorkerAlreadyAttachedError(ConnectionError_):
         self.agent_id = agent_id
 
 
+# How many closed connection ids are remembered for the reconnect counter.
+# Far more than the live fleet, so a lapse storm is still recognised when its
+# agents come back.
+_RECENTLY_CLOSED_LIMIT = 10_000
+
 #: The hosted launch moved to a newer revision than the one this worker was
 #: attached for. Terminal: the worker's capability is obsolete, and only a
 #: restart onto the current bundle can attach again.
@@ -355,6 +367,20 @@ class ClientDeclaration:
         }
 
 
+def client_label(declaration: ClientDeclaration) -> str:
+    """The declared artifact as a metric value: a registered name, or a bucket.
+
+    The client says what it is, so only names in the artifact registry pass
+    through. The declared version is never a label: it is the client's own
+    string and unbounded, and stays in the `[CONN] opened` log line instead.
+    """
+    if not declaration.artifact:
+        return "unknown"
+    if declaration.artifact in ARTIFACT_VERSIONS:
+        return declaration.artifact
+    return "other"
+
+
 class ProtocolVersionError(ConnectionError_):
     """A client's declared agent-protocol range cannot meet this server's.
 
@@ -405,6 +431,8 @@ class AgentConnection:
     # agent belongs to that no sibling has claimed.
     rooms: set[str] = field(default_factory=set)
     stream_attached: bool = False
+    # What the attached stream travels over, as of the last attach.
+    stream_transport: Transport = "websocket"
     # How many heartbeats this connection has received. Diagnostic: it is the
     # difference between a client that never started beating and one that beat
     # and then stopped, which the timestamp alone cannot tell you.
@@ -439,6 +467,18 @@ class AgentConnection:
 
     def is_alive(self, now: float) -> bool:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
+
+
+# The `(transport, client)` an agent run by an agents controller counts under:
+# it travels on its controller's connection, whatever that connection uses.
+CONTROLLER_LABEL = ("controller", "agents-controller")
+
+
+def connection_transport(conn: AgentConnection) -> str:
+    """`websocket` or `sse` while a stream is attached, by what it travels over;
+    `detached` while it has dropped and the connection waits out its heartbeat
+    window for a reconnect."""
+    return conn.stream_transport if conn.stream_attached else "detached"
 
 
 class AgentConnectionRegistry:
@@ -478,6 +518,10 @@ class AgentConnectionRegistry:
         # presence is their controller's. Every presence question below asks
         # it first for those agents, and this registry for the rest.
         self.controllers = ControllerPresence(on_bound=self._close_for_controller)
+        # Why each recently closed connection id closed, so its next open can
+        # be counted as a return after a lapse rather than a first connect.
+        # Insertion-ordered and capped: only the counter reads it.
+        self._recently_closed: dict[str, str] = {}
 
     def _new_incarnation(self) -> int:
         """The next never-before-used incarnation number.
@@ -505,6 +549,7 @@ class AgentConnectionRegistry:
         cursor: int,
         declaration: ClientDeclaration,
         expected_generation: int | None,
+        transport: Transport = "websocket",
     ) -> AgentConnection:
         """Open a connection, or reattach to one the client already owns.
 
@@ -563,18 +608,25 @@ class AgentConnectionRegistry:
             existing.last_beat = time.monotonic()
             existing.closure = None
             existing.stream_attached = True
+            existing.stream_transport = transport
             existing.stream_generation = self._new_incarnation()
+            # Wake the stream this one replaces, so its client hears it was
+            # taken over now rather than on the stream's next idle tick.
+            existing.wake.set()
             # A reattach can come from an upgraded client, so the declaration
             # is replaced rather than kept. The connection outlives the socket;
             # what is on the other end of it need not.
             existing.declaration = declaration
             self._reset_worker(existing)
+            metrics().increment(AGENT_CONNECTIONS_OPENED, {"kind": "reattach"})
             logger.info(
-                "[CONN] reattached agent=%s connection=%s scope=%s generation=%s",
+                "[CONN] reattached agent=%s connection=%s scope=%s generation=%s "
+                "transport=%s",
                 agent_id,
                 connection_id,
                 scope,
                 existing.stream_generation,
+                transport,
             )
             return existing
 
@@ -593,14 +645,19 @@ class AgentConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
+            stream_transport=transport,
             stream_generation=self._new_incarnation(),
             declaration=declaration,
         )
         self._by_id[connection_id] = conn
         owned.add(connection_id)
+        metrics().increment(
+            AGENT_CONNECTIONS_OPENED,
+            {"kind": self._recently_closed.pop(connection_id, "fresh")},
+        )
         logger.info(
             "[CONN] opened agent=%s connection=%s scope=%s filter=%s spawn=%s "
-            "client=%s version=%s protocol=%s",
+            "client=%s version=%s protocol=%s transport=%s",
             agent_id,
             connection_id,
             scope,
@@ -611,6 +668,7 @@ class AgentConnectionRegistry:
             f"{floor}-{declaration.speaks}"
             if declaration.declares_protocol
             else "unknown",
+            transport,
         )
         return conn
 
@@ -659,6 +717,14 @@ class AgentConnectionRegistry:
             self._drop_placements(conn)
         self.relays.fail_connection(conn.id, None)
         conn.wake.set()
+        lapsed = closure is HEARTBEAT_LAPSED
+        self._remember_closed(connection_id, "after_lapse" if lapsed else "after_close")
+        if lapsed:
+            # Counted here rather than in the sweep: a lapse is also noticed
+            # when the dead connection is next used (`require`) and by its own
+            # event stream, and counting only the sweep under-reported lapses
+            # against the reconnects that follow them.
+            metrics().increment(AGENT_CONNECTIONS_EXPIRED, {})
         # `beats` and the age separate the two ways a connection dies, which
         # otherwise look identical in the log: a client that never beat at all
         # (beats=0 — it is not running the heartbeat, or cannot reach us) versus
@@ -709,6 +775,12 @@ class AgentConnectionRegistry:
                 ),
             )
 
+    def _remember_closed(self, connection_id: str, kind: str) -> None:
+        self._recently_closed.pop(connection_id, None)
+        self._recently_closed[connection_id] = kind
+        while len(self._recently_closed) > _RECENTLY_CLOSED_LIMIT:
+            del self._recently_closed[next(iter(self._recently_closed))]
+
     def sweep(self) -> list[AgentConnection]:
         """Close connections whose heartbeat has lapsed. Returns those closed."""
         now = time.monotonic()
@@ -722,10 +794,6 @@ class AgentConnectionRegistry:
             gone = self.close(conn.id, HEARTBEAT_LAPSED)
             if gone is not None:
                 closed.append(gone)
-        if closed:
-            # A gauge of live connections cannot show churn: agents
-            # reconnecting as fast as they expire hold it perfectly flat.
-            metrics().increment(AGENT_CONNECTIONS_EXPIRED, {}, float(len(closed)))
         return closed
 
     # ------------------------------------------------------------------
@@ -1360,6 +1428,26 @@ class AgentConnectionRegistry:
         return {
             conn.agent_id for conn in self._by_id.values() if conn.is_alive(now)
         } | self.controllers.live_agent_ids()
+
+    def live_agents_by_transport(self) -> dict[tuple[str, str], int]:
+        """Agents with a live connection, per `(transport, client)` label.
+
+        Counted like `live_agent_ids`: an agent is one, however many
+        connections it holds, but an agent connected two different ways counts
+        once under each, so the labels can sum to more than the agent count.
+        An agent run by an agents controller has no connection of its own and
+        counts under `CONTROLLER_LABEL` while its controller is live.
+        """
+        now = time.monotonic()
+        agents: dict[tuple[str, str], set[str]] = {}
+        for conn in self._by_id.values():
+            if conn.is_alive(now):
+                key = (connection_transport(conn), client_label(conn.declaration))
+                agents.setdefault(key, set()).add(conn.agent_id)
+        controlled = self.controllers.live_agent_ids()
+        if controlled:
+            agents.setdefault(CONTROLLER_LABEL, set()).update(controlled)
+        return {key: len(ids) for key, ids in agents.items()}
 
     def live_connection_ids(self) -> set[str]:
         """Every connection currently alive, by id.

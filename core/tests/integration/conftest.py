@@ -88,6 +88,7 @@ from switch_core.room_service import RoomService
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.client import NullTrustClient
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
@@ -555,6 +556,17 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             invites=invites,
         )
 
+        room_cache = RoomDeliveryCache(
+            session_factory=session_factory,
+            message_store=session_env.message_store,
+            limits=RoomCacheLimits(
+                max_bytes=config.room_delivery_cache_max_bytes,
+                max_rooms=config.room_delivery_cache_max_rooms,
+                max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
+                max_age_seconds=config.room_delivery_cache_max_age_seconds,
+            ),
+        )
+
         client_factory = ClientFactory(
             client_store=session_env.client_store,
             session_factory=session_factory,
@@ -566,6 +578,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             listener=message_listener,
             invites=invites,
             ephemeral=ephemeral,
+            room_cache=room_cache,
         )
         client_factory.register(
             "agent",
@@ -606,6 +619,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             collab_bridge_store=session_env.bridge_store,
             resource_service=resource_service,
             session_factory=session_factory,
+            room_cache=room_cache,
         )
 
         protocol = AgentCore(

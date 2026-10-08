@@ -164,6 +164,72 @@ class AgentControllerStore:
         )
         return result.scalar_one_or_none() is not None
 
+    async def record_connected(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        connection_id: str,
+        process_id: str,
+        connected_at: datetime,
+    ) -> bool:
+        """Record that the controller's socket attached to this connection,
+        held by this process. It replaces whatever the row held: the process
+        holding the live socket is the authority. Returns whether the
+        controller's row exists. `updated_at` is left alone: connecting is
+        not an edit."""
+        result = await session.execute(
+            update(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+            )
+            .values(
+                connection_id=connection_id,
+                connection_process_id=process_id,
+                connected_at=connected_at,
+                disconnected_at=None,
+                disconnect_reason=None,
+                updated_at=AgentController.updated_at,
+            )
+            .returning(AgentController.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def record_disconnected(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        connection_id: str,
+        disconnected_at: datetime,
+        reason: str,
+    ) -> bool:
+        """Record that the controller's socket on this connection went, and
+        why. Written only while the row still names this connection, so a
+        process closing a connection the controller has since replaced
+        through another process leaves the replacement standing. Returns
+        whether the row was written."""
+        result = await session.execute(
+            update(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+                AgentController.connection_id == connection_id,
+            )
+            .values(
+                disconnected_at=disconnected_at,
+                disconnect_reason=reason,
+                updated_at=AgentController.updated_at,
+            )
+            .returning(AgentController.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def set_credential(
         self,
         session: AsyncSession,

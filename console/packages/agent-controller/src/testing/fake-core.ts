@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { OpenWebSocket, SocketLike } from '../api';
 import type {
   AgentCursor,
   Assignment,
@@ -18,6 +19,56 @@ type Recorded = {
   /** Bytes in the body, for the routes that only count them. */
   bytes: number;
 };
+
+/**
+ * A WebSocket held in memory: what the controller sends lands in `received`,
+ * and what the fake core sends arrives as `message` events, one per turn of
+ * the event loop, in order.
+ */
+class FakeSocket extends EventTarget {
+  readyState = 0;
+  readonly url: string;
+  readonly headers: Record<string, string>;
+  onSend: (data: string) => void = () => {};
+
+  constructor(url: string, headers: Record<string, string>) {
+    super();
+    this.url = url;
+    this.headers = headers;
+  }
+
+  send(data: string): void {
+    if (this.readyState === 1) this.onSend(String(data));
+  }
+
+  close(code = 1000): void {
+    this.end(code);
+  }
+
+  open(): void {
+    this.readyState = 1;
+    this.dispatchEvent(new Event('open'));
+  }
+
+  deliver(event: string, data: unknown): void {
+    if (this.readyState !== 1) return;
+    const text = JSON.stringify({ event, data });
+    setImmediate(() => {
+      if (this.readyState !== 3)
+        this.dispatchEvent(Object.assign(new Event('message'), { data: text }));
+    });
+  }
+
+  /** Closes after whatever was sent before it has arrived. */
+  end(code: number): void {
+    if (this.readyState >= 2) return;
+    this.readyState = 2;
+    setImmediate(() => {
+      this.readyState = 3;
+      this.dispatchEvent(Object.assign(new Event('close'), { code }));
+    });
+  }
+}
 
 type StreamConnection = {
   id: string;
@@ -51,6 +102,8 @@ export class FakeCore {
   readonly results = new Map<string, OperationResult>();
   readonly opens: Record<string, AgentCursor>[] = [];
   readonly beats: Record<string, number>[] = [];
+  /** The machine's name and description, as `PATCH .../controllers/{id}` changes them. */
+  info: { name: string; description: string | null } = { name: 'laptop', description: null };
   /** Answers the next request to a path with this, once. */
   readonly scripted: { method: string; path: string; status: number; body: unknown }[] = [];
   /** What `GET .../media` sends, in these chunks; `waitBetween` holds back all but the first. */
@@ -63,7 +116,8 @@ export class FakeCore {
   private generations = 0;
   private current: StreamConnection | null = null;
   private readonly connections = new Map<string, StreamConnection>();
-  private readonly streams = new Map<ServerResponse, StreamConnection>();
+  private readonly streams = new Map<FakeSocket, StreamConnection>();
+  private readonly pings = new Set<ReturnType<typeof setInterval>>();
   private server: Server | null = null;
   url = '';
 
@@ -82,7 +136,8 @@ export class FakeCore {
   }
 
   async stop(): Promise<void> {
-    for (const stream of this.streams.keys()) stream.destroy();
+    for (const ping of this.pings) clearInterval(ping);
+    for (const stream of this.streams.keys()) stream.end(1001);
     this.server?.closeAllConnections();
     await new Promise<void>((resolve) => this.server?.close(() => resolve()) ?? resolve());
   }
@@ -109,8 +164,7 @@ export class FakeCore {
   }
 
   push(event: string, data: unknown): void {
-    for (const stream of this.streams.keys())
-      stream.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    for (const stream of this.streams.keys()) stream.deliver(event, data);
   }
 
   /** An agent's domain event on the controller stream, as Switch wraps it. */
@@ -119,10 +173,85 @@ export class FakeCore {
     this.push('agent.event', { agent_id: agentId, seq, event: { ...event, sequence: seq } });
   }
 
-  /** Ends the open streams; the connection itself lives on. */
-  closeStreams(): void {
-    for (const stream of this.streams.keys()) stream.end();
+  /** Ends the open sockets; the connection itself lives on. */
+  closeStreams(code = 1000): void {
+    for (const stream of this.streams.keys()) stream.end(code);
     this.streams.clear();
+  }
+
+  /** The controller's socket, held by this fake core rather than a server. */
+  readonly openWebSocket: OpenWebSocket = (url, headers) => {
+    const socket = new FakeSocket(url, headers);
+    setImmediate(() => this.attach(socket));
+    return socket as unknown as SocketLike;
+  };
+
+  private attach(socket: FakeSocket): void {
+    const url = new URL(socket.url.replace(/^ws/, 'http'));
+    this.requests.push({
+      method: 'WS',
+      path: url.pathname,
+      search: url.search,
+      headers: Object.fromEntries(
+        Object.entries(socket.headers).map(([name, value]) => [name.toLowerCase(), value])
+      ),
+      body: null,
+      bytes: 0,
+    });
+    socket.open();
+    const refuse = (status: number, code: string) => {
+      socket.deliver('refused', { status, detail: { code, message: `refused: ${code}` } });
+      socket.end(4000 + status);
+    };
+    if (url.pathname !== `/v1/controllers/${this.controllerId}/connection/ws`)
+      return refuse(404, 'not_found');
+    const bearer = socket.headers.Authorization?.replace(/^Bearer /, '') ?? '';
+    if (this.revoked) return refuse(401, 'controller_revoked');
+    if (!this.tokens.has(bearer)) return refuse(401, 'token_expired');
+    const connection = this.connections.get(url.searchParams.get('connection_id') ?? '');
+    if (!connection) return refuse(404, 'unknown_connection');
+    if (connection.superseded) return refuse(409, 'taken_over');
+    if (Number(url.searchParams.get('generation')) !== connection.generation)
+      return refuse(409, 'stale_generation');
+    socket.deliver('connection_state', {
+      controller_id: this.controllerId,
+      assignment_revision: this.assignment.revision,
+      report_within_s: this.reportWithinS,
+      connection_id: connection.id,
+      generation: connection.generation,
+      heartbeat_interval_s: this.heartbeatIntervalS,
+    });
+    // Every bound agent is attached afresh on each socket, from where the
+    // connection was opened.
+    for (const agentId of this.bound()) {
+      const cursor = connection.cursors[agentId];
+      socket.deliver('agent.attached', {
+        agent_id: agentId,
+        from_seq: typeof cursor === 'number' ? cursor : (this.heads.get(agentId) ?? 0),
+        rooms: this.rooms.get(agentId) ?? [],
+      });
+    }
+    this.streams.set(socket, connection);
+    const ping = setInterval(() => socket.deliver('ping', {}), this.heartbeatIntervalS * 1000);
+    this.pings.add(ping);
+    socket.onSend = (data) => {
+      const message = JSON.parse(data) as { type?: string; cursors?: Record<string, number> };
+      if (message.type !== 'pong') return;
+      if (connection.superseded || !this.connections.has(connection.id)) {
+        socket.deliver('evicted', {
+          code: connection.superseded ? 'taken_over' : 'unknown_connection',
+          reason: 'this connection is no longer current',
+        });
+        socket.end(1000);
+        return;
+      }
+      this.beats.push(message.cursors ?? {});
+    };
+    socket.addEventListener('close', () => {
+      clearInterval(ping);
+      this.pings.delete(ping);
+      this.streams.delete(socket);
+    });
   }
 
   /** Forgets the connection, as a lapsed heartbeat would: the next attach or beat is a 404. */
@@ -249,10 +378,11 @@ export class FakeCore {
         this.current.superseded = true;
         for (const [stream, connection] of this.streams)
           if (connection === this.current) {
-            stream.write(
-              `event: evicted\ndata: ${JSON.stringify({ code: 'taken_over', reason: 'another connection of this controller took over' })}\n\n`
-            );
-            stream.end();
+            stream.deliver('evicted', {
+              code: 'taken_over',
+              reason: 'another connection of this controller took over',
+            });
+            stream.end(1000);
           }
       }
       const connection: StreamConnection = {
@@ -270,51 +400,11 @@ export class FakeCore {
         agents: this.bound(),
       });
     }
-    if (method === 'GET' && url.pathname === `${streamBase}/events`) {
-      const connection = this.connections.get(url.searchParams.get('connection_id') ?? '');
-      if (!connection) return this.refuse(res, 404, 'unknown_connection');
-      if (connection.superseded) return this.refuse(res, 409, 'taken_over');
-      if (Number(url.searchParams.get('generation')) !== connection.generation)
-        return this.refuse(res, 409, 'stale_generation');
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-      const frame = (event: string, data: unknown) =>
-        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      frame('connection_state', {
-        controller_id: this.controllerId,
-        assignment_revision: this.assignment.revision,
-        report_within_s: this.reportWithinS,
-        connection_id: connection.id,
-        generation: connection.generation,
-        heartbeat_interval_s: this.heartbeatIntervalS,
-      });
-      // Every bound agent is attached afresh on each stream, from where the
-      // connection was opened.
-      for (const agentId of this.bound()) {
-        const cursor = connection.cursors[agentId];
-        frame('agent.attached', {
-          agent_id: agentId,
-          from_seq: typeof cursor === 'number' ? cursor : (this.heads.get(agentId) ?? 0),
-          rooms: this.rooms.get(agentId) ?? [],
-        });
-      }
-      this.streams.set(res, connection);
-      res.on('close', () => this.streams.delete(res));
-      return;
-    }
-    if (method === 'POST' && url.pathname === `${streamBase}/connection/beat`) {
-      const beat = body as {
-        connection_id: string;
-        generation: number;
-        cursors: Record<string, number>;
-      };
-      const connection = this.connections.get(beat.connection_id);
-      if (!connection) return this.refuse(res, 404, 'unknown_connection');
-      if (connection.superseded) return this.refuse(res, 409, 'taken_over');
-      if (beat.generation !== connection.generation)
-        return this.refuse(res, 409, 'stale_generation');
-      if ('placements' in (body as object)) return this.refuse(res, 422, 'validation_error');
-      this.beats.push(beat.cursors);
-      return this.json(res, 200, { agents: this.bound() });
+    if (method === 'PATCH' && url.pathname === base) {
+      const change = body as { name?: string; description?: string | null };
+      if (change.name !== undefined) this.info.name = change.name;
+      if (change.description !== undefined) this.info.description = change.description;
+      return this.json(res, 200, { id: this.controllerId, ...this.info, state: 'online' });
     }
     if (method === 'GET' && url.pathname === `${base}/assignment`) {
       const etag = `"${this.assignment.revision}"`;

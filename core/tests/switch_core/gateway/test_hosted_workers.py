@@ -13,11 +13,16 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocketDisconnect
 from sqlalchemy import event as orm_event
 from sqlalchemy import select
 
-from switch_core.bridges.agent.api.handlers import connection_placements, poll_events
+from switch_core.bridges.agent.api import handlers
+from switch_core.bridges.agent.api.handlers import (
+    connection_placements,
+    connection_socket,
+    poll_events,
+)
 from switch_core.bridges.agent.api.hosted_cutover_routes import (
     router as hosted_cutover_router,
 )
@@ -1231,3 +1236,134 @@ async def test_relay_with_real_auth_opens_two_transactions(worker_app):
             json={"message": {"health": True}, "timeout_ms": 50},
         )
     ).status_code == 401
+
+
+class _Socket:
+    """The handler's side of a WebSocket, in this test's event loop.
+
+    Records what is sent and how it closes, and hands the handler whatever the
+    test queues as the client's messages; `None` is the client going away.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.close_code: int | None = None
+        self._incoming: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self._changed = asyncio.Event()
+
+    async def accept(self) -> None:
+        return None
+
+    async def send_json(self, message: dict[str, Any]) -> None:
+        self.sent.append(message)
+        self._changed.set()
+
+    async def receive_json(self) -> dict[str, Any]:
+        message = await self._incoming.get()
+        if message is None:
+            raise WebSocketDisconnect(1000)
+        return message
+
+    async def close(self, code: int = 1000) -> None:
+        if self.close_code is None:
+            self.close_code = code
+        self._changed.set()
+
+    def leave(self) -> None:
+        self._incoming.put_nowait(None)
+
+    async def frames(self, count: int) -> list[tuple[str, dict[str, Any]]]:
+        """The next `count` frames sent, pings skipped."""
+
+        def received() -> list[tuple[str, dict[str, Any]]]:
+            return [(m["event"], m["data"]) for m in self.sent if m["event"] != "ping"]
+
+        async def wait() -> None:
+            while len(received()) < count:
+                self._changed.clear()
+                await self._changed.wait()
+
+        await asyncio.wait_for(wait(), timeout=2)
+        return received()[:count]
+
+
+async def _open_socket(
+    service,
+    agent: Agent,
+    *,
+    capability: str | None,
+    connection_id: str | None = None,
+    speaks: int = 7,
+    state_version: int | None = 1,
+) -> tuple[_Socket, asyncio.Task[None]]:
+    socket = _Socket()
+    task = asyncio.create_task(
+        connection_socket(
+            websocket=socket,  # type: ignore[arg-type]
+            agent_id=agent.id,
+            agent=agent,
+            protocol=service,
+            config=service.config,
+            connection_id=connection_id or str(uuid4()),
+            scope="all",
+            spawn_capable=True,
+            protocol_version=speaks,
+            worker_capability=capability,
+            host_boot_id="boot-a",
+            host_instance_id="instance-a",
+            worker_state_version=state_version,
+        )
+    )
+    return socket, task
+
+
+@pytest.mark.parametrize(
+    ("change", "refused"),
+    [
+        ({"capability": None}, (403, "worker_capability_required")),
+        ({"capability": "not-it"}, (403, "worker_capability_obsolete")),
+        ({"speaks": 6}, (426, "upgrade_required")),
+        ({"state_version": None}, (426, "upgrade_required")),
+    ],
+)
+async def test_the_socket_refuses_a_worker_open_as_the_stream_does(
+    worker_app, change: dict[str, Any], refused: tuple[int, str]
+):
+    _, _, agent_id, service, factory, prepared = worker_app
+    agent = await _agent(factory, agent_id)
+    opening = {"capability": prepared["worker_capability"], **change}
+    assert await _refusal(_open(service, agent, **opening)) == refused
+
+    socket, task = await _open_socket(service, agent, **opening)
+    await asyncio.wait_for(task, timeout=2)
+
+    status, code = refused
+    ((event, data),) = await socket.frames(1)
+    assert event == "refused"
+    assert data["status"] == status
+    assert data["detail"]["code"] == code
+    assert socket.close_code == 4000 + status
+    assert service.connections.for_agent(agent_id) == []
+
+
+async def test_a_worker_over_the_socket_is_sent_its_frames(worker_app, monkeypatch):
+    # Pings every 50 ms, so the socket notices its client leave promptly.
+    monkeypatch.setattr(handlers, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    _, _, agent_id, service, factory, prepared = worker_app
+    agent = await _agent(factory, agent_id)
+    conn_id = str(uuid4())
+    socket, task = await _open_socket(
+        service, agent, capability=prepared["worker_capability"], connection_id=conn_id
+    )
+    try:
+        (state, _), (attached, data) = await socket.frames(2)
+        assert (state, attached) == ("connection_state", "worker_attached")
+        assert set(data) == WORKER_ATTACHED_FIELDS
+        conn = service.connections.get(conn_id)
+        assert conn.worker is not None and conn.stream_transport == "websocket"
+
+        assert service.connections.ring_worker(agent_id, "wake", {"entries": []})
+        assert (await socket.frames(3))[2] == ("wake", {"entries": []})
+    finally:
+        socket.leave()
+        await asyncio.wait_for(task, timeout=2)

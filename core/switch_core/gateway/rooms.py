@@ -91,6 +91,28 @@ async def _require_room(
     return room
 
 
+async def _require_room_released(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room_id: str,
+    user: User,
+    action: Action,
+    is_admin: bool,
+) -> Room:
+    """`_require_room`, then end the read's transaction.
+
+    For a route that goes on to call `RoomService` or `RoomYamlService`, which
+    open sessions of their own and may call Matrix or a messaging platform.
+    Holding this read's connection while waiting for another from the same
+    pool is how the pool runs dry under load: every connection held by a
+    request that is waiting for one more. The room stays readable after the
+    commit (`expire_on_commit=False`).
+    """
+    room = await _require_room(session, room_store, room_id, user, action, is_admin)
+    await session.commit()
+    return room
+
+
 async def _external_channel_url(room: Room) -> str | None:
     """Native deeplink to open the room's external channel in the messaging
     app, built by the live collaboration adapter. None when not bridged, the
@@ -149,6 +171,9 @@ async def _build_room_detail(
 
     roles = await _list_room_role_details(session, room.id, protocol)
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
+    # Not held across the deeplink, which can ask the platform on a cache miss.
+    await session.commit()
+    external_channel_url = await _external_channel_url(room)
 
     return RoomDetail(
         id=room.id,
@@ -162,7 +187,7 @@ async def _build_room_detail(
         bridge_id=room.bridge_id,
         bridge_display_name=bridge_display_name,
         bridge_type=bridge_type,
-        external_channel_url=await _external_channel_url(room),
+        external_channel_url=external_channel_url,
         group_id=room.group_id,
         group_name=group_name,
         read_visibility=room.read_visibility,
@@ -478,7 +503,7 @@ async def export_room_yaml(
 ) -> Response:
     """Export a room to YAML in the same surface ``/rooms/from-yaml`` accepts.
     Each section can be dropped via its boolean toggle (default included)."""
-    await _require_room(session, room_store, room_id, user, "read", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "read", is_admin)
     yaml_text = await rooms_yaml.export(
         room_id,
         agents=agents,
@@ -520,7 +545,9 @@ async def patch_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    target = await _require_room(session, room_store, room_id, user, "write", is_admin)
+    target = await _require_room_released(
+        session, room_store, room_id, user, "write", is_admin
+    )
     # Changing a room's access permission (read/write visibility) is reserved
     # for the room's owner and tenant admins — plain write access (which a
     # publicly-writable room grants to everyone) is not enough. Otherwise any
@@ -677,7 +704,7 @@ async def put_protection(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.update_protection_config(room_id, req.protection_config)
     except ValueError:
@@ -704,7 +731,7 @@ async def put_observe(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.update_observe_config(room_id, req.observe_config)
     except ValueError:
@@ -731,7 +758,7 @@ async def post_room_agents(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.add_agents_to_room(
             room_id,
@@ -764,7 +791,7 @@ async def patch_room_agent(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.set_join_event_listeners(
             room_id, {agent_id: req.receives_join_events}
@@ -792,7 +819,7 @@ async def delete_room_agent(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.remove_agents_from_room(room_id, [agent_id])
     except ValueError as e:
@@ -819,7 +846,7 @@ async def post_room_users(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.add_users_to_room(room_id, req.user_names)
     except ValueError as e:
@@ -845,7 +872,7 @@ async def _set_archived(
     user: User,
     is_admin: bool,
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.set_room_archived(room_id, archived)
     except ValueError:
@@ -922,7 +949,7 @@ async def delete_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
-    await _require_room(session, room_store, room_id, user, "delete", is_admin)
+    await _require_room_released(session, room_store, room_id, user, "delete", is_admin)
     try:
         await room_service.delete_room(room_id)
     except ValueError:
@@ -951,6 +978,8 @@ async def bulk_delete_rooms(
                 "Skipping room %s during bulk delete: not authorized", room_id
             )
             continue
+        # See `_require_room_released`.
+        await session.commit()
         await room_service.delete_room(room_id)
         deleted += 1
     return BulkDeleteResponse(deleted=deleted)
@@ -980,6 +1009,8 @@ async def bulk_archive_rooms(
                 "Skipping room %s during bulk archive: not authorized", room_id
             )
             continue
+        # See `_require_room_released`.
+        await session.commit()
         await room_service.set_room_archived(room_id, req.archived)
         updated += 1
     return BulkArchiveResponse(updated=updated)

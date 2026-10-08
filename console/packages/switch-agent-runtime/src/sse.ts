@@ -2,8 +2,8 @@
  * The agent bridge's SSE framing.
  *
  * One implementation, imported by everything that speaks the protocol: the
- * local MCP runtime next to the agent, and Switch Console. It used to exist twice —
- * separate deployables, no shared package — and the copies drifted within a day
+ * local MCP runtime next to the agent, and Switch Console. It used to exist twice
+ * (separate deployables, no shared package) and the copies drifted within a day
  * of being made. This package is what removed the excuse.
  *
  * Deliberately free of imports and of anything specific to a host: it is the

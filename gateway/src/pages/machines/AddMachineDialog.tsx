@@ -12,11 +12,19 @@ import {
   DialogTitle,
   IconButton,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
 import { useEffect, useState } from "react";
-import { createEnrollmentCode, type EnrollmentCode, enrollCommand } from "../../data/management";
+import {
+  createEnrollmentCode,
+  type EnrollmentCode,
+  enrollCommand,
+  installCommand,
+  MAX_MACHINE_DESCRIPTION,
+  MAX_MACHINE_NAME,
+} from "../../data/management";
 import { MONO_SX, formatDate } from "../../theme/hootFormat";
 
 function CopyBlock({ text, label }: { text: string; label: string }) {
@@ -46,9 +54,11 @@ function CopyBlock({ text, label }: { text: string; label: string }) {
 }
 
 /**
- * Issues a one-time enrollment code and shows the command that enrolls a
- * machine's agents controller with it. The code is shown once: closing the
- * dialog discards it, and a new open issues a new one.
+ * Issues a one-time enrollment code and shows the commands that install a
+ * machine's agents controller and enroll it with that code. The code is shown
+ * once: closing the dialog discards it, and a new open issues a new one. The
+ * optional name and description go into the commands, so the machine enrolls
+ * with them.
  */
 export default function AddMachineDialog({
   open,
@@ -59,12 +69,23 @@ export default function AddMachineDialog({
 }) {
   const [enrollment, setEnrollment] = useState<EnrollmentCode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  const nameError =
+    name.trim().length > MAX_MACHINE_NAME ? `At most ${MAX_MACHINE_NAME} characters.` : null;
+  const descriptionError =
+    description.trim().length > MAX_MACHINE_DESCRIPTION
+      ? `At most ${MAX_MACHINE_DESCRIPTION} characters.`
+      : null;
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setEnrollment(null);
     setError(null);
+    setName("");
+    setDescription("");
     createEnrollmentCode()
       .then((issued) => {
         if (!cancelled) setEnrollment(issued);
@@ -84,27 +105,67 @@ export default function AddMachineDialog({
         <DialogContentText sx={{ mb: 2 }}>
           Run the agents controller on the machine that should run your agents (a laptop, your
           own VM or a server). Enroll it once with the code below; it then runs whatever agents
-          you place on it here.
+          you place on it here. It needs Linux or macOS with Node 22.13 or later, and the CLI of
+          each provider your agents use (such as <code>claude</code> or <code>codex</code>),
+          signed in as the user the controller runs as.
         </DialogContentText>
         {error && <Alert severity="error">Could not issue an enrollment code: {error}</Alert>}
         {!error && !enrollment && <CircularProgress size={24} />}
         {enrollment && (
           <Stack spacing={2}>
+            <Stack spacing={2}>
+              <TextField
+                label="Name (optional)"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                error={nameError !== null}
+                helperText={nameError ?? "Defaults to the machine's host name."}
+                size="small"
+                fullWidth
+              />
+              <TextField
+                label="Description (optional)"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                error={descriptionError !== null}
+                helperText={descriptionError ?? "What the machine is for, e.g. the build box in the office."}
+                size="small"
+                fullWidth
+              />
+            </Stack>
             <Box>
-              <Typography variant="subtitle2" gutterBottom>
-                Enrollment command
-              </Typography>
-              {enrollment.server_url ? (
-                <>
-                  <CopyBlock
-                    text={enrollCommand(enrollment.server_url, enrollment.code)}
-                    label="Copy command"
-                  />
-                  <Typography variant="caption" color="text.secondary">
-                    <code>--server</code> is this Switch's API address. If the machine reaches
-                    Switch at a different address, change it to that one.
-                  </Typography>
-                </>
+              {enrollment.server_url && (nameError || descriptionError) ? (
+                <Alert severity="warning">Shorten the name or description to see the commands.</Alert>
+              ) : enrollment.server_url ? (
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Install, enroll and start
+                    </Typography>
+                    <CopyBlock
+                      text={installCommand(enrollment.server_url, enrollment.code, { name, description })}
+                      label="Copy install command"
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      Installs the newest controller with npm, enrolls this machine, and runs the
+                      controller as a service of your user. <code>--server</code> is this Switch's
+                      API address. If the machine reaches Switch at a different address, change it
+                      to that one.
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Already installed
+                    </Typography>
+                    <CopyBlock
+                      text={enrollCommand(enrollment.server_url, enrollment.code, { name, description })}
+                      label="Copy enroll command"
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      Then start it with <code>switch-agent-controller install-service</code>.
+                    </Typography>
+                  </Box>
+                </Stack>
               ) : (
                 <Alert severity="warning">
                   This server does not say where its Switch API is, so no enrollment command
@@ -122,9 +183,9 @@ export default function AddMachineDialog({
               <CopyBlock text={enrollment.code} label="Copy code" />
             </Box>
             <Alert severity="info">
-              Single use, valid until {formatDate(enrollment.expires_at)}. After enrolling, start
-              it with <code>switch-agent-controller run</code>; the machine appears in the list
-              once it reports.
+              Single use, valid until {formatDate(enrollment.expires_at)}. The machine appears in
+              the list once its controller reports. If it does not, run{" "}
+              <code>switch-agent-controller doctor</code> on it to see what is missing.
             </Alert>
           </Stack>
         )}
