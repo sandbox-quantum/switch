@@ -125,6 +125,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -189,6 +190,31 @@ jobs:
             ${{ needs.prep.outputs.latest == 'true' && format('{0}/{1}/{2}:latest', env.REGISTRY, env.IMAGE_NAMESPACE, matrix.image) || '' }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+      - name: Set up Trivy
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.72.0
+
+      - name: Scan the published image (report-only)
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prep.outputs.version }}
+        run: |
+          trivy image --platform linux/amd64 --scanners vuln --exit-code 0 --ignore-unfixed \
+            --severity HIGH,CRITICAL --format sarif -o "trivy-${{ matrix.image }}.sarif" "$IMAGE_REF"
+
+      - name: Upload image scan to code scanning
+        if: ${{ always() && needs.prep.outputs.push == 'true' && hashFiles(format('trivy-{0}.sarif', matrix.image)) != '' }}
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy-${{ matrix.image }}.sarif
+          category: trivy-image-${{ matrix.image }}
 
   chart:
     name: Package & publish Helm chart
