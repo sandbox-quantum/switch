@@ -27,6 +27,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session
+from switch_core.gateway.service_connections import service_refusal
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
@@ -312,7 +313,7 @@ async def confirm(
             secret=ConnectionSecret(dict(flow.credentials)),
         )
     except ServiceError as error:
-        raise HTTPException(error.status_code, error.message) from None
+        return service_refusal(error)
     github.flows.pop(flow_id, None)
     logger.info(
         "GitHub account linked: tenant=%s user=%s github_user=%s",
@@ -377,7 +378,7 @@ async def disconnect(
         warning = await broker.disconnect(session, user.id, "github")
     except ServiceError as error:
         if error.code != CONNECTOR_NOT_CONNECTED:
-            raise HTTPException(error.status_code, error.message) from None
+            return service_refusal(error)
         warning = None
     for key, flow in list(github.flows.items()):
         if (flow.tenant_id, flow.user_id) == (require_tenant_id(), user.id):

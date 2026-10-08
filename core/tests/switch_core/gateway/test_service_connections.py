@@ -151,6 +151,12 @@ class TestConnections:
         assert response.json() == {"warning": None}
         assert len(vendor.connections_revoked) == 1
         assert again.status_code == 404
+        # The message where every client reads it, and the reason beside it.
+        assert again.json() == {
+            "detail": "GitHub is not connected.",
+            "code": "connector_not_connected",
+            "retryable": False,
+        }
         async with harness.session_factory() as session:
             assert await STORE.list_grants(session, agent_id) == []
         assert (await _actions(harness))[-1] == AuditAction.SERVICE_DISCONNECTED
