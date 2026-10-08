@@ -1,7 +1,7 @@
 slug: github
 name: GitHub
 category: Source control
-description: Clone, branch, push and open pull requests in the repository you grant.
+description: Clone, branch, push and open pull requests in the repositories you grant.
 enabled: true
 auth:
   type: oauth

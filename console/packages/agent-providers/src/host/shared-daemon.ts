@@ -8,7 +8,6 @@ import { type ControlContext, ensureSessions, ensureThroughWatcher, serveControl
 import { OBSOLETE_BUNDLE_EXIT_CODE } from './exit-codes';
 import { dirMode } from './host-permissions';
 import { hostedUnitGitHubEnvironment, prepareHostedAgent } from './hosted-bootstrap';
-import { ensureHostedRepository } from './hosted-github';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
@@ -119,10 +118,7 @@ async function main(): Promise<void> {
         'An agent unit is prepared with its systemd credentials; CREDENTIALS_DIRECTORY is not set.'
       );
     await rm(join(configPath!, 'watcher', 'supervisor', 'failure.json'), { force: true });
-    await prepareHostedAgent(
-      { agentRoot: configPath!, credentialsDirectory },
-      { ensureRepository: ensureHostedRepository }
-    );
+    await prepareHostedAgent({ agentRoot: configPath!, credentialsDirectory });
     return;
   }
   if (root === '--models') {

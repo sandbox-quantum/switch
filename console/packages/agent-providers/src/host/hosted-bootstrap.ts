@@ -3,11 +3,8 @@ import { copyFile, lstat, mkdir, readFile, realpath, stat } from 'node:fs/promis
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import {
-  type ensureHostedRepository,
-  githubLaunchEnvironment,
   HOSTED_GITHUB_CLI_ENV,
   HOSTED_GITHUB_CREDENTIALS_ENV,
-  HOSTED_GITHUB_REPOSITORY_ENV,
   prepareGitHubCli,
 } from './hosted-github';
 import {
@@ -28,11 +25,6 @@ const absolutePath = z
   .string()
   .min(1)
   .refine((value) => isAbsolute(value), 'must be an absolute path');
-const repositoryName = z
-  .string()
-  .regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/);
-
-const INHERITED_ENV = ['PATH', 'USER', 'SHELL', 'LANG', 'LC_ALL', 'TERM'] as const;
 const PLAN_FILE = 'hosted-deployment.json';
 const CONFIG_FILE = 'config.json';
 const STATE_VERSION_FILE = 'state-version.json';
@@ -123,21 +115,16 @@ async function createControlledDirectories(environment: Record<string, string>):
 
 /**
  * What an agents controller writes into an agent's root for its unit: the
- * repository the workspace is a worktree of, if any, and what the provider is
- * given to read.
+ * connections the owner granted the agent, where it works, and what the
+ * provider is given to read. Nothing is cloned: the workspace starts empty.
  */
-export const hostedWorkspaceSchema = z
-  .strictObject({
-    repository: repositoryName.nullable(),
-    /** The bare mirror the workspace is a worktree of. */
-    mirrorPath: absolutePath.nullable(),
-    workspacePath: absolutePath,
-    skills: z.union([z.tuple([]), hostedSkillsSchema]),
-    instructions: z.string(),
-  })
-  .refine((workspace) => (workspace.repository === null) === (workspace.mirrorPath === null), {
-    message: 'A repository and its mirror are given together.',
-  });
+export const hostedWorkspaceSchema = z.strictObject({
+  /** Granted connection slugs; `github` sets up git's credential helper and the `gh` wrapper. */
+  connections: z.array(z.string().min(1)),
+  workspacePath: absolutePath,
+  skills: z.union([z.tuple([]), hostedSkillsSchema]),
+  instructions: z.string(),
+});
 export type HostedWorkspace = z.infer<typeof hostedWorkspaceSchema>;
 
 /** Beside the agent root's `watcher/` state; read by `prepareHostedAgent`. */
@@ -205,10 +192,9 @@ async function migrateWorkerRoot(root: string, config: SharedHostConfig): Promis
 
 /**
  * What an agent unit's watcher (`shared-host-daemon --unit`) sets on itself
- * for its session hosts to inherit when its workspace is a worktree of a
- * repository, so `git` and `gh` in a session renew the repository token
- * through the unit's Switch credentials as the preparation did
- * (`hostedGitHubEnvironment`). Empty for a workspace with no repository.
+ * for its session hosts to inherit when its agent was granted GitHub, so
+ * `git` and `gh` in a session get installation tokens through the unit's
+ * Switch credentials (`hostedGitHubEnvironment`). Empty without the grant.
  */
 export async function hostedUnitGitHubEnvironment(
   agentRoot: string,
@@ -223,33 +209,29 @@ export async function hostedUnitGitHubEnvironment(
     throw new Error(
       `${workspacePath} is invalid: ${parsed.error.issues[0]?.message ?? 'invalid value'}.`
     );
-  if (parsed.data.repository === null) return {};
+  if (!parsed.data.connections.includes('github')) return {};
   if (!config.execution) throw new Error('An agent unit names no Switch credentials.');
   return {
     [HOSTED_GITHUB_CREDENTIALS_ENV]: config.execution.credentialsPath,
-    [HOSTED_GITHUB_REPOSITORY_ENV]: parsed.data.repository,
     [HOSTED_GITHUB_CLI_ENV]: join(root, 'bin'),
   };
-}
-
-export interface HostedAgentPreparation {
-  ensureRepository: typeof ensureHostedRepository;
 }
 
 /**
  * Prepares an agent's root before its unit's watcher starts, as the agent's
  * user (`shared-host-daemon --prepare <agentRoot>`): migrates a worker
  * volume's layout, writes the provider sign-in the controller handed over
- * into the provider's home, makes the workspace a worktree of the selected
- * repository, and installs the granted skills.
+ * into the provider's home, makes the (empty) workspace directory when it is
+ * missing, writes the `gh` wrapper when GitHub is granted, and makes the
+ * installed connection skills the granted ones.
  *
  * Reads `watcher/config.json` and `workspace.json` from the agent root, and
  * the credentials `agent` and `provider` from `credentialsDirectory`.
  */
-export async function prepareHostedAgent(
-  input: { agentRoot: string; credentialsDirectory: string },
-  dependencies: HostedAgentPreparation
-): Promise<void> {
+export async function prepareHostedAgent(input: {
+  agentRoot: string;
+  credentialsDirectory: string;
+}): Promise<void> {
   if (!isAbsolute(input.agentRoot)) throw new Error('The agent root must be an absolute path.');
   if (!isAbsolute(input.credentialsDirectory))
     throw new Error('The credentials directory must be an absolute path.');
@@ -301,33 +283,10 @@ export async function prepareHostedAgent(
       `${workspacePath} is invalid: ${parsedWorkspace.error.issues[0]?.message ?? 'invalid value'}.`
     );
   const workspace = parsedWorkspace.data;
-  if (workspace.repository !== null && workspace.mirrorPath !== null) {
-    const inherited = Object.fromEntries(
-      INHERITED_ENV.flatMap((key) => {
-        const value = process.env[key];
-        return value === undefined ? [] : [[key, value]];
-      })
-    );
-    await dependencies.ensureRepository({
-      workspace: workspace.workspacePath,
-      mirror: workspace.mirrorPath,
-      repository: workspace.repository,
-      agentId,
-      env: {
-        ...inherited,
-        ...environment,
-        ...githubLaunchEnvironment(),
-        [HOSTED_GITHUB_CREDENTIALS_ENV]: credentialsPath,
-        [HOSTED_GITHUB_REPOSITORY_ENV]: workspace.repository,
-      },
-    });
-    await prepareGitHubCli(root);
-  } else {
-    await mkdir(workspace.workspacePath, { recursive: true, mode: 0o700 });
-  }
-  if (workspace.skills.length > 0) {
-    if (!supportsHostedSkills(provider))
-      throw new Error('This provider has no skills directory to install connection skills into.');
+  await mkdir(workspace.workspacePath, { recursive: true, mode: 0o700 });
+  if (workspace.connections.includes('github')) await prepareGitHubCli(root);
+  if (supportsHostedSkills(provider))
     await installHostedSkills(hostedSkillsDirectory(provider, environment), workspace.skills);
-  }
+  else if (workspace.skills.length > 0)
+    throw new Error('This provider has no skills directory to install connection skills into.');
 }

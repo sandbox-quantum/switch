@@ -4,7 +4,7 @@ import secrets
 import time
 from datetime import UTC, datetime
 from html import escape
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 from urllib.parse import parse_qs, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -30,8 +30,11 @@ from switch_core.providers.github import (
     GitHubConnections,
     GitHubError,
     GitHubFlow,
-    repository_writable,
     revoke_oauth,
+)
+from switch_core.providers.github_installation import (
+    granted_repositories,
+    visible_installation,
 )
 from switch_core.providers.github_tasks import finish_shielded
 from switch_core.web_page import render_page, status_icon
@@ -506,41 +509,30 @@ async def connection_status(
     }
 
 
-async def writable_repository_name(
+async def check_github_grant(
     user_id: str,
     session: AsyncSession,
     config: SwitchConfig,
     github: GitHubConnections,
-    installation_id: int,
-    repository_id: int,
-) -> str:
-    """The `owner/name` of a repository the user's GitHub App installation
-    shares with Switch and the user can push to; 422 otherwise."""
+    installations: list[tuple[int, Literal["all"] | list[int]]],
+) -> None:
+    """Check that the user can grant GitHub `installations` (each an
+    installation id and its `"all"` or repository ids) to a cloud agent: they
+    see each installation, and they can push to each repository a list names
+    (or, for `"all"`, to at least one). 422 otherwise."""
     access = await connection_status(user_id, session, config, github)
     if access["status"] != "connected":
-        raise HTTPException(
-            422, "Connect GitHub before choosing a repository for a cloud agent."
+        raise GitHubReconnectRequired(
+            "Connect GitHub before granting it to a cloud agent."
         )
-    repository = next(
-        (
-            repo
-            for installation in access["installations"]
-            if installation["id"] == installation_id
-            for repo in installation["repositories"]
-            if repo["id"] == repository_id
-        ),
-        None,
-    )
-    if repository is None:
-        raise HTTPException(
-            422, "Your GitHub account no longer has access to the selected repository."
-        )
-    if not repository_writable(repository):
-        raise HTTPException(
-            422,
-            "Your GitHub account needs write access to this repository to run a cloud agent.",
-        )
-    return str(repository["name"])
+    for installation_id, repositories in installations:
+        try:
+            granted_repositories(
+                visible_installation(access["installations"], installation_id),
+                repositories,
+            )
+        except GitHubError as error:
+            raise HTTPException(422, str(error)) from None
 
 
 @router.delete("")

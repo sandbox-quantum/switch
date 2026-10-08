@@ -290,7 +290,6 @@ async function ec2Run(
         now: Date.now,
         idleCheckMs: 60_000,
         forceRestartAfterMs: 30 * 60_000,
-        repositoryName: (agentId) => client.repositoryName(agentId),
       });
       return new AgentRuntimes(systemd, systemd);
     },

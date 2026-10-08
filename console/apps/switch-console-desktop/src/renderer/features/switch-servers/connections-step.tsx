@@ -12,6 +12,7 @@ import {
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type { GitHubInstallation } from '@shared/core/switch-servers/github-connection';
 import { ConnectionIcon } from './connection-icon';
 import { filterConnections } from './connections-filter';
 import { gitHubReconnectMessage, ManagedGitHubStep } from './managed-github-step';
@@ -32,7 +33,8 @@ const STATUS_LABEL: Record<CardStatus, string> = {
  * expired or revoked authorization is checked against the live status.
  */
 export type GitHubLiveStatus =
-  | { status: 'checking' | 'connected' | 'not_connected' }
+  | { status: 'checking' | 'not_connected' }
+  | { status: 'connected'; installations: GitHubInstallation[] }
   | { status: 'reconnect' | 'error'; message: string };
 
 export type ConnectionCatalog = {
@@ -42,12 +44,18 @@ export type ConnectionCatalog = {
   reload: () => Promise<void>;
 };
 
-export function useConnectionCatalog(serverId: string): ConnectionCatalog {
+/** Loads nothing while `serverId` is null. */
+export function useConnectionCatalog(serverId: string | null): ConnectionCatalog {
   const [connections, setConnections] = useState<ConnectionCatalogEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [github, setGitHub] = useState<GitHubLiveStatus | null>(null);
   const reload = useCallback(async () => {
     setError(null);
+    if (serverId === null) {
+      setConnections(null);
+      setGitHub(null);
+      return;
+    }
     let entries: ConnectionCatalogEntry[];
     try {
       entries = await rpc.switchServers.getConnectionCatalog(serverId);
@@ -62,7 +70,12 @@ export function useConnectionCatalog(serverId: string): ConnectionCatalog {
     }
     setGitHub({ status: 'checking' });
     try {
-      setGitHub({ status: (await rpc.switchServers.getGitHubConnection(serverId)).status });
+      const connection = await rpc.switchServers.getGitHubConnection(serverId);
+      setGitHub(
+        connection.status === 'connected'
+          ? { status: 'connected', installations: connection.installations }
+          : { status: 'not_connected' }
+      );
     } catch (cause) {
       const reconnectMessage = gitHubReconnectMessage(cause);
       setGitHub(
@@ -210,7 +223,6 @@ export function ConnectionsStep({
       />
     );
 
-  const githubConnected = catalog.github?.status === 'connected';
   return (
     <>
       <ConnectionsGrid catalog={catalog} query={query} onQueryChange={setQuery} onOpen={setOpen} />
@@ -221,7 +233,7 @@ export function ConnectionsStep({
         <Button variant="ghost" onClick={onSkip}>
           Set up later
         </Button>
-        {githubConnected && <Button onClick={onContinue}>Continue to agent</Button>}
+        <Button onClick={onContinue}>Continue to agent</Button>
       </DialogFooter>
     </>
   );

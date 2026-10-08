@@ -2,7 +2,7 @@ import { type AdvancedConfig, advancedConfigProblem } from '@switch-console/plug
 import { switchCloudEnabled } from '@main/core/switch-servers/switch-cloud';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import type { CloudRepositorySelection } from '@shared/core/switch-servers/github-connection';
+import type { ConnectionGrant } from '@shared/core/switch-servers/connection-grants';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { MachineRef } from './agent-migration';
 import type { MigrationLog, TargetLookup } from './agent-migration-service';
@@ -14,8 +14,11 @@ export type AddManagedAgentParams = {
   machineId: string;
   /** The working directory, absolute on the machine; null for a fresh workspace the machine chooses. */
   dir: string | null;
-  /** The GitHub repository a Switch cloud machine makes the agent's workspace a worktree of. */
-  repository: CloudRepositorySelection | null;
+  /**
+   * The connections a Switch cloud agent is granted, empty for none; null for
+   * an agent on any other machine, whose definition carries no grants.
+   */
+  connections: ConnectionGrant[] | null;
   name: string;
   providerId: AgentProviderId;
   serverId: string;
@@ -58,9 +61,7 @@ export type NewManagedAgentDeps = {
       icon_url: string | null;
       controller_id: string;
       desired_state: 'running' | 'stopped';
-      definition: ManagedDefinition & {
-        repository: { installation_id: number; repository_id: number } | null;
-      };
+      definition: ManagedDefinition & { connections?: ConnectionGrant[] };
     }
   ): Promise<ManagedCreateOutcome>;
   log: MigrationLog;
@@ -97,7 +98,7 @@ export class NewManagedAgentService {
    * refuses it in its own words.
    */
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
-    if (input.repository && !switchCloudEnabled())
+    if (input.connections !== null && !switchCloudEnabled())
       return {
         kind: 'error',
         message:
@@ -119,10 +120,7 @@ export class NewManagedAgentService {
       instructions: input.instructions,
       auto_approve: input.autoApprove,
       directory: input.dir,
-      repository: input.repository && {
-        installation_id: input.repository.installationId,
-        repository_id: input.repository.repositoryId,
-      },
+      ...(input.connections !== null ? { connections: input.connections } : {}),
     };
 
     const created = await this.deps.create(workspaceId, {

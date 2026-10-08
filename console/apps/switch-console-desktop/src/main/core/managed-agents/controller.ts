@@ -67,6 +67,7 @@ export const managedAgentsController = createRPCController({
             autoApprove: agent.autoApprove,
             directory: agent.directory,
             isolation: agent.isolation,
+            connections: agent.connections,
           },
           status: agent.status,
         };
@@ -151,5 +152,6 @@ function definitionBody(changes: ManagedAgentChanges['definition']): Record<stri
   if (changes.autoApprove !== undefined) body.auto_approve = changes.autoApprove;
   if (changes.directory !== undefined) body.directory = changes.directory;
   if (changes.isolation !== undefined) body.isolation = changes.isolation;
+  if (changes.connections !== undefined) body.connections = changes.connections;
   return body;
 }

@@ -3,8 +3,8 @@
 Preparing the machine links it to its owner's ec2 controller and hands the
 machine that controller's credential, the same one for every retry at a
 revision. The controller exchanges it only from the machine's own instance,
-reads its owner's provider logins sealed for it, and fetches repository tokens
-for the agents it runs. KMS is stubbed; everything else is real.
+reads its owner's provider logins sealed for it, and fetches the GitHub
+installation tokens granted to the agents it runs. KMS is stubbed; everything else is real.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from switch_core.gateway.provider_connections import (
     router as provider_connections_router,
 )
 from switch_core.providers import sealing
-from switch_core.providers.github_installation import RepositoryCredential
+from switch_core.providers.github_installation import InstallationCredential
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.providers.sealing import SealingNotConfigured
 from tests.switch_core.hosted_machine_helpers import seed_machine
@@ -72,7 +72,10 @@ KEY_ARN = "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000
 DATA_KEY = bytes(range(32))
 INSTANCE = "i-00000000000000001"
 BOOT = "boot-00000001"
-REPOSITORY = {"installation_id": 123, "repository_id": 456}
+GITHUB_GRANT = {
+    "slug": "github",
+    "installations": [{"installation_id": 123, "repositories": [456]}],
+}
 FIXTURE_SLOT_ID = "slot-a"
 FIXTURE_OWNER_ID = "3f1c2b4a-0000-4000-8000-0000000000b1"
 FIXTURE_CONTROLLER_ID = "3f1c2b4a-0000-4000-8000-0000000000e1"
@@ -214,16 +217,13 @@ async def cloud(
 
     monkeypatch.setattr(sealing, "kms_client", lambda region: FakeKms())
     issue = AsyncMock(
-        return_value=RepositoryCredential(
-            "SYNTHETIC-REPOSITORY",
+        return_value=InstallationCredential(
+            "SYNTHETIC-INSTALLATION",
             datetime.now(UTC) + timedelta(hours=1),
-            456,
-            "example/project",
+            123,
+            "example",
+            ["Example/Project"],
         )
-    )
-    monkeypatch.setattr(
-        "switch_core.bridges.agent.api.hosted_routes.GitHubConnections",
-        lambda _: SimpleNamespace(client_id="synthetic-app"),
     )
     monkeypatch.setattr(
         "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
@@ -254,8 +254,27 @@ async def cloud(
                         },
                     },
                 ],
-            }
+            },
+            {
+                "id": 321,
+                "account": "other",
+                "repositories": [
+                    {
+                        "id": 654,
+                        "name": "other/tool",
+                        "permissions": {
+                            "push": True,
+                            "maintain": False,
+                            "admin": False,
+                        },
+                    },
+                ],
+            },
         ]
+    )
+    monkeypatch.setattr(
+        "switch_core.bridges.agent.api.hosted_routes.GitHubConnections",
+        lambda _: SimpleNamespace(client_id="synthetic-app", repositories=repositories),
     )
     gateway.state.github_connections = SimpleNamespace(
         repositories=repositories, install_url="https://github.example/install"
@@ -513,7 +532,7 @@ class TestEnsure:
         assert envelope.status_code == 200, envelope.text
         assert _open(envelope.json())["credential"] == "PLACEHOLDER-CLAUDE-TOKEN"
 
-    async def test_an_agent_in_a_repository_is_placed_before_the_machine_reports(
+    async def test_an_agent_with_a_github_grant_is_placed_before_the_machine_reports(
         self, cloud: Cloud
     ) -> None:
         owner = await add_member(cloud.factory, "ada")
@@ -528,7 +547,7 @@ class TestEnsure:
             owner,
             name="cloud-helper",
             controller_id=ensured.json()["controller_id"],
-            definition_body=definition(repository=REPOSITORY),
+            definition_body=definition(connections=[GITHUB_GRANT]),
         )
 
         assert created.status_code == 201, created.text
@@ -539,13 +558,12 @@ class TestEnsure:
             )
         assert row is not None
         assert row.controller_id == ensured.json()["controller_id"]
-        assert row.definition["repository"] == REPOSITORY
+        assert row.definition["connections"] == [GITHUB_GRANT]
+        assert "repository" not in row.definition
         assert row.definition["isolation"] == "isolated"
-        assert (
-            row.definition["directory"] == f"/data/worktrees/{agent_id}/example/project"
-        )
+        assert row.definition["directory"] == f"/data/worktrees/{agent_id}/workspace"
 
-    async def test_an_agent_without_a_repository_works_in_a_fresh_workspace(
+    async def test_an_agent_without_grants_works_in_a_fresh_workspace(
         self, cloud: Cloud
     ) -> None:
         owner = await add_member(cloud.factory, "ada")
@@ -594,19 +612,41 @@ class TestEnsure:
         assert "already exists" in again.json()["error"]["message"]
 
     @pytest.mark.parametrize(
-        ("connected", "repository", "message"),
+        ("connected", "installations", "code", "message"),
         [
-            (False, REPOSITORY, "Connect GitHub"),
+            (
+                False,
+                [{"installation_id": 123, "repositories": "all"}],
+                "github_reconnect_required",
+                "Connect GitHub",
+            ),
             (
                 True,
-                {"installation_id": 123, "repository_id": 999},
+                [{"installation_id": 999, "repositories": "all"}],
+                "validation_error",
+                "installation 999",
+            ),
+            (
+                True,
+                [{"installation_id": 123, "repositories": [999]}],
+                "validation_error",
                 "no longer has access",
             ),
-            (True, {"installation_id": 123, "repository_id": 789}, "write access"),
+            (
+                True,
+                [{"installation_id": 123, "repositories": [456, 789]}],
+                "validation_error",
+                "write access",
+            ),
         ],
     )
-    async def test_a_repository_the_owner_cannot_push_to_registers_nothing(
-        self, cloud: Cloud, connected: bool, repository: dict[str, int], message: str
+    async def test_a_grant_the_owner_cannot_give_registers_nothing(
+        self,
+        cloud: Cloud,
+        connected: bool,
+        installations: list[dict[str, Any]],
+        code: str,
+        message: str,
     ) -> None:
         owner = await add_member(cloud.factory, "ada")
         if connected:
@@ -621,17 +661,158 @@ class TestEnsure:
             owner,
             name="cloud-helper",
             controller_id=ensured.json()["controller_id"],
-            definition_body=definition(repository=repository),
+            definition_body=definition(
+                connections=[{"slug": "github", "installations": installations}]
+            ),
         )
 
         assert created.status_code == 422, created.text
-        assert created.json()["error"]["code"] == "validation_error"
+        assert created.json()["error"]["code"] == code
         assert message in created.json()["error"]["message"]
         async with cloud.factory() as session:
             assert (
                 await session.scalar(select(Agent).where(Agent.name == "cloud-helper"))
                 is None
             )
+
+    @pytest.mark.parametrize(
+        "connections",
+        [
+            [{"slug": "gitlab", "installations": []}],
+            [{"slug": "jira"}],
+            [GITHUB_GRANT, GITHUB_GRANT],
+            [{"slug": "github", "installations": []}],
+            [
+                {
+                    "slug": "github",
+                    "installations": [
+                        {"installation_id": 123, "repositories": "all"},
+                        {"installation_id": 123, "repositories": [456]},
+                    ],
+                }
+            ],
+            [
+                {
+                    "slug": "github",
+                    "installations": [{"installation_id": 123, "repositories": []}],
+                }
+            ],
+            [
+                {
+                    "slug": "github",
+                    "installations": [
+                        {"installation_id": 123, "repositories": [456, 456]}
+                    ],
+                }
+            ],
+            [
+                {
+                    "slug": "github",
+                    "installations": [
+                        {"installation_id": 123, "repositories": ["456"]}
+                    ],
+                }
+            ],
+            [
+                {
+                    "slug": "github",
+                    "installations": [{"installation_id": 123, "repositories": "some"}],
+                }
+            ],
+            [
+                {
+                    "slug": "github",
+                    "installations": [
+                        {"installation_id": 123, "repositories": list(range(1, 502))}
+                    ],
+                }
+            ],
+        ],
+    )
+    async def test_a_malformed_grant_is_refused_before_github_is_asked(
+        self, cloud: Cloud, connections: list[dict[str, Any]]
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        ensured = await cloud.client.post(
+            "/gateway/hosted-machines/ensure", cookies=cookies_for(owner)
+        )
+        assert ensured.status_code == 200, ensured.text
+
+        created = await create_managed_agent(
+            cloud.client,
+            owner,
+            name="cloud-helper",
+            controller_id=ensured.json()["controller_id"],
+            definition_body=definition(connections=connections),
+        )
+
+        assert created.status_code == 422, created.text
+        assert created.json()["error"]["code"] == "validation_error"
+        cloud.repositories.assert_not_awaited()
+
+    async def test_the_owner_changes_the_grant_through_the_definition(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        ensured = await cloud.client.post(
+            "/gateway/hosted-machines/ensure", cookies=cookies_for(owner)
+        )
+        created = await create_managed_agent(
+            cloud.client,
+            owner,
+            name="cloud-helper",
+            controller_id=ensured.json()["controller_id"],
+        )
+        assert created.status_code == 201, created.text
+        agent_id = created.json()["agent_id"]
+        body = created.json()["definition"]
+        grant = {
+            "slug": "github",
+            "installations": [
+                {"installation_id": 123, "repositories": "all"},
+                {"installation_id": 321, "repositories": [654]},
+            ],
+        }
+
+        granted = await cloud.client.patch(
+            f"/gateway/management/agents/{agent_id}",
+            json={"definition": {**body, "connections": [grant]}},
+            cookies=cookies_for(owner),
+        )
+        assert granted.status_code == 200, granted.text
+        assert granted.json()["definition"]["connections"] == [grant]
+        assert cloud.repositories.await_count == 1
+
+        refused = await cloud.client.patch(
+            f"/gateway/management/agents/{agent_id}",
+            json={
+                "definition": {
+                    **body,
+                    "connections": [
+                        {
+                            "slug": "github",
+                            "installations": [
+                                {"installation_id": 123, "repositories": [789]}
+                            ],
+                        }
+                    ],
+                }
+            },
+            cookies=cookies_for(owner),
+        )
+        assert refused.status_code == 422, refused.text
+        assert "write access" in refused.json()["error"]["message"]
+
+        stopped = await cloud.client.patch(
+            f"/gateway/management/agents/{agent_id}",
+            json={"desired_state": "stopped"},
+            cookies=cookies_for(owner),
+        )
+        assert stopped.status_code == 200, stopped.text
+        assert stopped.json()["definition"]["connections"] == [grant]
+        assert cloud.repositories.await_count == 2
 
 
 class TestExchange:
@@ -927,7 +1108,16 @@ class TestTheEnvelopeEndpoint:
         assert (await cloud.envelope(controller, "cursor")).status_code == 404
 
 
-class TestRepositoryCredential:
+ALL_GRANT = {
+    "slug": "github",
+    "installations": [
+        {"installation_id": 123, "repositories": [456]},
+        {"installation_id": 321, "repositories": "all"},
+    ],
+}
+
+
+class TestConnectionCredentials:
     async def _agent(
         self, cloud: Cloud, controller: EnrolledController, **overrides: Any
     ) -> str:
@@ -943,35 +1133,172 @@ class TestRepositoryCredential:
         return str(created.json()["agent_id"])
 
     async def _fetch(
-        self, cloud: Cloud, controller: EnrolledController, agent_id: str
+        self,
+        cloud: Cloud,
+        controller: EnrolledController,
+        agent_id: str,
+        installation_id: Any = 123,
     ) -> httpx.Response:
         return await cloud.client.post(
-            "/hosted/github-credential",
+            "/hosted/connections/github/credential",
+            json={"installation_id": installation_id},
             headers={**controller.headers, "X-Switch-Agent-Id": agent_id},
         )
 
-    async def test_a_cloud_controller_fetches_its_agents_repository_token(
+    async def _list(
+        self, cloud: Cloud, controller: EnrolledController, agent_id: str
+    ) -> httpx.Response:
+        return await cloud.client.get(
+            "/hosted/connections",
+            headers={**controller.headers, "X-Switch-Agent-Id": agent_id},
+        )
+
+    async def test_lists_the_grants_with_live_names(self, cloud: Cloud) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        controller = await cloud.cloud_controller(owner)
+        agent_id = await self._agent(cloud, controller, connections=[ALL_GRANT])
+
+        response = await self._list(cloud, controller, agent_id)
+
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert response.json() == {
+            "connections": [
+                {
+                    "slug": "github",
+                    "installations": [
+                        {
+                            "installation_id": 123,
+                            "account": "example",
+                            "repositories": ["Example/Project"],
+                        },
+                        {
+                            "installation_id": 321,
+                            "account": "other",
+                            "repositories": "all",
+                        },
+                    ],
+                }
+            ]
+        }
+
+    async def test_an_agent_with_no_grants_lists_none(self, cloud: Cloud) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        controller = await cloud.cloud_controller(owner)
+        agent_id = await self._agent(cloud, controller)
+
+        response = await self._list(cloud, controller, agent_id)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"connections": []}
+        cloud.repositories.assert_not_awaited()
+
+    async def test_a_stale_grant_is_listed_as_an_error_beside_the_others(
         self, cloud: Cloud
     ) -> None:
         owner = await add_member(cloud.factory, "ada")
         await _connect_github(cloud, owner)
         controller = await cloud.cloud_controller(owner)
-        agent_id = await self._agent(cloud, controller, repository=REPOSITORY)
+        agent_id = await self._agent(cloud, controller, connections=[ALL_GRANT])
+        cloud.repositories.return_value = cloud.repositories.return_value[:1]
 
-        response = await self._fetch(cloud, controller, agent_id)
+        response = await self._list(cloud, controller, agent_id)
+
+        assert response.status_code == 200, response.text
+        healthy, stale = response.json()["connections"][0]["installations"]
+        assert healthy == {
+            "installation_id": 123,
+            "account": "example",
+            "repositories": ["Example/Project"],
+        }
+        assert set(stale) == {"installation_id", "account", "error"}
+        assert stale["installation_id"] == 321
+        assert stale["account"] is None
+        assert "installation 321" in stale["error"]
+        assert (await self._fetch(cloud, controller, agent_id, 123)).status_code == 200
+
+    async def test_a_grant_the_owner_can_no_longer_push_to_names_its_account(
+        self, cloud: Cloud
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        controller = await cloud.cloud_controller(owner)
+        agent_id = await self._agent(cloud, controller, connections=[ALL_GRANT])
+        for installation in cloud.repositories.return_value:
+            if installation["id"] == 321:
+                for repo in installation["repositories"]:
+                    repo["permissions"] = {
+                        "push": False,
+                        "maintain": False,
+                        "admin": False,
+                    }
+
+        response = await self._list(cloud, controller, agent_id)
+
+        assert response.status_code == 200, response.text
+        stale = response.json()["connections"][0]["installations"][1]
+        assert stale["account"] == "other"
+        assert "cannot push" in stale["error"]
+
+    @pytest.mark.parametrize(
+        ("installation_id", "repositories"), [(123, [456]), (321, "all")]
+    )
+    async def test_mints_a_token_for_the_granted_installation_only(
+        self, cloud: Cloud, installation_id: int, repositories: Any
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        controller = await cloud.cloud_controller(owner)
+        agent_id = await self._agent(cloud, controller, connections=[ALL_GRANT])
+
+        response = await self._fetch(cloud, controller, agent_id, installation_id)
 
         assert response.status_code == 200, response.text
         assert response.headers["cache-control"] == "no-store"
-        assert response.json()["token"] == "SYNTHETIC-REPOSITORY"
-        assert response.json()["repository"] == "example/project"
-        _, access_token, installation_id, repository_id = cloud.issue.await_args.args
-        assert (access_token, installation_id, repository_id) == (
+        assert response.json()["token"] == "SYNTHETIC-INSTALLATION"
+        assert set(response.json()) == {
+            "token",
+            "expires_at",
+            "installation_id",
+            "account",
+            "repositories",
+        }
+        _, access_token, minted_installation, minted_repositories = (
+            cloud.issue.await_args.args
+        )
+        assert (access_token, minted_installation, minted_repositories) == (
             "SYNTHETIC-GITHUB",
-            123,
-            456,
+            installation_id,
+            repositories,
         )
 
-    async def test_an_agent_without_a_repository_gets_none(self, cloud: Cloud) -> None:
+    @pytest.mark.parametrize("installation_id", [999, 0, True, "123"])
+    async def test_an_installation_not_granted_is_refused(
+        self, cloud: Cloud, installation_id: Any
+    ) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        controller = await cloud.cloud_controller(owner)
+        agent_id = await self._agent(cloud, controller, connections=[GITHUB_GRANT])
+
+        response = await self._fetch(cloud, controller, agent_id, installation_id)
+
+        assert response.status_code in (403, 422), response.text
+        if installation_id == 999:
+            assert response.status_code == 403
+        cloud.issue.assert_not_awaited()
+
+    async def test_another_granted_installation_is_refused(self, cloud: Cloud) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        controller = await cloud.cloud_controller(owner)
+        agent_id = await self._agent(cloud, controller, connections=[GITHUB_GRANT])
+
+        assert (await self._fetch(cloud, controller, agent_id, 321)).status_code == 403
+        cloud.issue.assert_not_awaited()
+
+    async def test_an_agent_with_no_grants_gets_none(self, cloud: Cloud) -> None:
         owner = await add_member(cloud.factory, "ada")
         await _connect_github(cloud, owner)
         controller = await cloud.cloud_controller(owner)
@@ -980,13 +1307,65 @@ class TestRepositoryCredential:
         assert (await self._fetch(cloud, controller, agent_id)).status_code == 403
         cloud.issue.assert_not_awaited()
 
-    async def test_an_agent_in_a_repository_is_given_the_github_skill(
+    async def test_an_owner_who_must_reconnect_is_told_so(self, cloud: Cloud) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        controller = await cloud.cloud_controller(owner)
+        agent_id = await self._agent(cloud, controller, connections=[GITHUB_GRANT])
+        async with cloud.factory() as session:
+            row = await session.scalar(
+                select(ProviderConnection).where(
+                    ProviderConnection.user_id == owner.id,
+                    ProviderConnection.provider == "github",
+                )
+            )
+            assert row is not None
+            await session.delete(row)
+            await session.commit()
+
+        response = await self._fetch(cloud, controller, agent_id)
+
+        assert response.status_code == 422, response.text
+        assert response.json()["code"] == "github_reconnect_required"
+        cloud.issue.assert_not_awaited()
+
+    async def test_a_grant_changed_while_minting_revokes_the_token(
         self, cloud: Cloud
     ) -> None:
         owner = await add_member(cloud.factory, "ada")
         await _connect_github(cloud, owner)
         controller = await cloud.cloud_controller(owner)
-        in_repository = await self._agent(cloud, controller, repository=REPOSITORY)
+        agent_id = await self._agent(cloud, controller, connections=[GITHUB_GRANT])
+        credential = cloud.issue.return_value
+
+        async def issue_then_change(*args: Any) -> InstallationCredential:
+            async with cloud.factory() as session:
+                row = await session.scalar(
+                    select(AgentDefinition).where(AgentDefinition.agent_id == agent_id)
+                )
+                assert row is not None
+                row.revision += 1
+                await session.commit()
+            return credential
+
+        cloud.issue.side_effect = issue_then_change
+        revoke = AsyncMock()
+        signer = SimpleNamespace(issue=cloud.issue, revoke=revoke)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(
+                "switch_core.bridges.agent.api.hosted_routes.GitHubInstallationCredentials",
+                lambda *_: signer,
+            )
+            response = await self._fetch(cloud, controller, agent_id)
+
+        assert response.status_code == 409, response.text
+        revoke.assert_awaited_once_with("SYNTHETIC-INSTALLATION")
+
+    async def test_each_granted_connection_gives_its_skill(self, cloud: Cloud) -> None:
+        owner = await add_member(cloud.factory, "ada")
+        await _connect_github(cloud, owner)
+        controller = await cloud.cloud_controller(owner)
+        granted = await self._agent(cloud, controller, connections=[GITHUB_GRANT])
 
         assigned = await cloud.client.get(
             f"/v1/management/controllers/{controller.controller_id}/assignment",
@@ -995,11 +1374,12 @@ class TestRepositoryCredential:
 
         assert assigned.status_code == 200, assigned.text
         (entry,) = assigned.json()["agents"]
-        assert entry["agent_id"] == in_repository
+        assert entry["agent_id"] == granted
+        assert entry["definition"]["connections"] == ["github"]
+        assert "repository" not in entry["definition"]
         assert entry["definition"]["skills"] == deployment_skills(CATALOG, ["github"])
-        assert [skill["slug"] for skill in entry["definition"]["skills"]] == ["github"]
 
-    async def test_an_agent_without_a_repository_is_given_no_skill(
+    async def test_an_agent_with_no_grants_is_given_no_skill(
         self, cloud: Cloud
     ) -> None:
         owner = await add_member(cloud.factory, "ada")
@@ -1013,6 +1393,7 @@ class TestRepositoryCredential:
 
         assert assigned.status_code == 200, assigned.text
         (entry,) = assigned.json()["agents"]
+        assert entry["definition"]["connections"] == []
         assert entry["definition"]["skills"] == []
 
     async def test_a_console_controller_gets_none(self, cloud: Cloud) -> None:
@@ -1022,11 +1403,10 @@ class TestRepositoryCredential:
         agent_id = await self._agent(cloud, console)
 
         assert (await self._fetch(cloud, console, agent_id)).status_code == 403
+        assert (await self._list(cloud, console, agent_id)).status_code == 403
         cloud.issue.assert_not_awaited()
 
-    async def test_a_console_controller_is_refused_a_repository(
-        self, cloud: Cloud
-    ) -> None:
+    async def test_a_console_controller_is_refused_a_grant(self, cloud: Cloud) -> None:
         owner = await add_member(cloud.factory, "ada")
         console = await enroll_console(cloud.harness, cloud.client, owner)
         await report_status(cloud.client, console, 1, providers=[provider("claude")])
@@ -1036,7 +1416,7 @@ class TestRepositoryCredential:
             owner,
             name="cloud-helper",
             controller_id=console.controller_id,
-            definition_body=definition(repository=REPOSITORY),
+            definition_body=definition(connections=[GITHUB_GRANT]),
         )
 
         assert created.status_code == 422, created.text

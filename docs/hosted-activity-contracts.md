@@ -1080,7 +1080,7 @@ revision, credential}` with `Cache-Control: no-store`.
   than main's copy-once, in hosted mode only. `revoked` stops every host
   (`supervision.stop`), reports idle, and makes addressed events answer
   "provider disconnected" instead of starting sessions. GitHub installation
-  tokens (`/hosted/github-credential`, `github_issued_tokens`) are unchanged.
+  tokens (`/hosted/connections/github/credential`) are unchanged.
 - **Wake while revoked** does not start the VM: `note_addressed` refuses to
   wake a launch whose provider connection is missing, and the room is told to
   have the owner reconnect. #538's `note_addressed` has no such check.

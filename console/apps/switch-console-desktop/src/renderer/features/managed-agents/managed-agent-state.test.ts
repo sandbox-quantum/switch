@@ -26,6 +26,7 @@ const AGENT: ManagedAgentView = {
     autoApprove: false,
     directory: null,
     isolation: 'shared',
+    connections: [],
   },
   status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
 };

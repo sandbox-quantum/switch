@@ -42,7 +42,7 @@ const options = (isolation: 'shared' | 'isolated'): LaunchOptions => ({
   replaceIdentity: false,
   clearTakenOver: false,
   skills: [],
-  repository: null,
+  connections: [],
 });
 
 function runtimes() {

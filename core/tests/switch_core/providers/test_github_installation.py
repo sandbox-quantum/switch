@@ -40,6 +40,7 @@ def response_body():
             "pull_requests": "write",
             "metadata": "read",
         },
+        "repository_selection": "selected",
         "repositories": [{"id": 789}],
     }
 
@@ -50,12 +51,18 @@ def user_access():
             return_value=[
                 {
                     "id": 456,
+                    "account": "example",
                     "repositories": [
                         {
                             "id": 789,
                             "name": "example/project",
                             "permissions": {"push": True},
-                        }
+                        },
+                        {
+                            "id": 790,
+                            "name": "example/read-only",
+                            "permissions": {"push": False},
+                        },
                     ],
                 }
             ]
@@ -83,14 +90,64 @@ async def test_signs_request_and_limits_worker_to_users_selected_repository(
 
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
     github = user_access()
-    credential = await issuer.issue(github, "SYNTHETIC-USER-TOKEN", 456, 789)
+    credential = await issuer.issue(github, "SYNTHETIC-USER-TOKEN", 456, [789])
     github.repositories.assert_awaited_once_with("SYNTHETIC-USER-TOKEN")
-    assert credential.repository_name == "example/project"
+    assert credential.installation_id == 456
+    assert credential.account == "example"
+    assert credential.repositories == ["example/project"]
     assert credential.token not in repr(credential)
 
 
+async def test_all_reaches_each_repository_the_owner_can_push_to(signing, monkeypatch):
+    issuer, _ = signing
+    github = user_access()
+    github.repositories.return_value[0]["repositories"].append(
+        {"id": 700, "name": "example/admin", "permissions": {"admin": True}}
+    )
+    requested = {}
+
+    async def post(_client, url, **kwargs):
+        requested.update(kwargs["json"])
+        body = response_body()
+        body["repositories"] = [{"id": 789}, {"id": 700}]
+        return httpx.Response(201, json=body)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    credential = await issuer.issue(github, "SYNTHETIC-USER-TOKEN", 456, "all")
+    assert requested == {
+        "repository_ids": [700, 789],
+        "permissions": {"contents": "write", "pull_requests": "write"},
+    }
+    assert credential.repositories == "all"
+
+
+async def test_all_with_no_repository_the_owner_can_push_to_mints_nothing(
+    signing, monkeypatch
+):
+    github = user_access()
+    github.repositories.return_value[0]["repositories"] = [
+        {"id": 790, "name": "example/read-only", "permissions": {"push": False}}
+    ]
+    post = AsyncMock()
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    with pytest.raises(GitHubError, match="cannot push"):
+        await signing[0].issue(github, "SYNTHETIC-USER-TOKEN", 456, "all")
+    post.assert_not_called()
+
+
 @pytest.mark.parametrize(
-    "installation,repository", [(456, 999), (999, 789), (0, 789), (True, 789)]
+    "installation,repository",
+    [
+        (456, [999]),
+        (999, [789]),
+        (999, "all"),
+        (0, [789]),
+        (True, [789]),
+        (456, []),
+        (456, [789, 789]),
+        (456, [True]),
+        (456, "some"),
+    ],
 )
 async def test_refuses_unowned_or_invalid_selection_before_minting(
     signing, monkeypatch, installation, repository
@@ -108,6 +165,8 @@ async def test_refuses_unowned_or_invalid_selection_before_minting(
     "change",
     [
         {"repositories": [{"id": 789}, {"id": 999}]},
+        {"repositories": []},
+        {"repository_selection": "all"},
         {
             "permissions": {
                 "contents": "write",
@@ -128,7 +187,7 @@ async def test_rejects_overbroad_or_invalid_credential(signing, monkeypatch, cha
         AsyncMock(return_value=httpx.Response(201, json=body)),
     )
     with pytest.raises(GitHubError) as raised:
-        await signing[0].issue(user_access(), "SYNTHETIC-USER-TOKEN", 456, 789)
+        await signing[0].issue(user_access(), "SYNTHETIC-USER-TOKEN", 456, [789])
     assert "SYNTHETIC" not in str(raised.value)
 
 
@@ -145,7 +204,7 @@ async def test_remote_errors_do_not_expose_tokens_or_response_bodies(
         ),
     )
     with pytest.raises(GitHubError) as raised:
-        await signing[0].issue(user_access(), "SYNTHETIC-USER-TOKEN", 456, 789)
+        await signing[0].issue(user_access(), "SYNTHETIC-USER-TOKEN", 456, [789])
     assert "SYNTHETIC" not in str(raised.value)
 
 
@@ -167,12 +226,12 @@ async def test_read_only_repository_cannot_mint_write_token(
     post = AsyncMock()
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
     with pytest.raises(GitHubError, match="needs write access"):
-        await signing[0].issue(github, "SYNTHETIC", 456, 789)
+        await signing[0].issue(github, "SYNTHETIC", 456, [789])
     post.assert_not_called()
 
 
 @pytest.mark.parametrize("status", [204, 401, 404, 422])
-async def test_repository_revocation_is_idempotent(monkeypatch, status):
+async def test_installation_token_revocation_is_idempotent(monkeypatch, status):
     request = AsyncMock(return_value=httpx.Response(status))
     monkeypatch.setattr(httpx.AsyncClient, "delete", request)
     await GitHubInstallationCredentials.revoke("SYNTHETIC-REPOSITORY")
@@ -184,7 +243,7 @@ async def test_transient_token_issue_is_retryable(signing, monkeypatch, status):
     from_error = httpx.Response(status)
     monkeypatch.setattr(httpx.AsyncClient, "post", AsyncMock(return_value=from_error))
     with pytest.raises(GitHubUnavailableError):
-        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, 789)
+        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, [789])
 
 
 async def test_rejected_minted_scope_is_revoked(signing, monkeypatch):
@@ -196,7 +255,7 @@ async def test_rejected_minted_scope_is_revoked(signing, monkeypatch):
         AsyncMock(return_value=httpx.Response(201, json=body)),
     )
     with pytest.raises(GitHubError):
-        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, 789)
+        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, [789])
     httpx.AsyncClient.delete.assert_awaited_once()
     assert (
         httpx.AsyncClient.delete.call_args.kwargs["headers"]["Authorization"]
@@ -222,5 +281,5 @@ async def test_only_rate_limited_403_is_retryable(
         AsyncMock(return_value=httpx.Response(403, headers=headers, json=body)),
     )
     with pytest.raises(GitHubError) as raised:
-        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, 789)
+        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, [789])
     assert isinstance(raised.value, GitHubUnavailableError) == retryable

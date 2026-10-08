@@ -20,24 +20,31 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import User, require_tenant_id
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_protocol, get_session
+from switch_core.gateway.github_connections import (
+    GitHubReconnectRequired,
+    check_github_grant,
+)
 from switch_core.gateway.github_connections import service as github_service
-from switch_core.gateway.github_connections import writable_repository_name
 from switch_core.management import reason_codes
 from switch_core.management.advanced_config import advanced_config_schema
 from switch_core.management.dependencies import get_management
 from switch_core.management.errors import ManagementError, ManagementRoute
 from switch_core.management.schemas import (
+    ConnectionGrant,
     ConsoleControllerRequest,
     ControllerDescription,
     CreateManagedAgentRequest,
     CreateOperationRequest,
     PatchManagedAgentRequest,
     PutManagedAgentRequest,
-    RepositoryRef,
     UpdateControllerRequest,
     wire_time,
 )
-from switch_core.management.service import ManagementService, placement_from
+from switch_core.management.service import (
+    CheckConnections,
+    ManagementService,
+    placement_from,
+)
 
 router = APIRouter(route_class=ManagementRoute, tags=["agent management"])
 
@@ -45,6 +52,43 @@ Management = Annotated[ManagementService, Depends(get_management)]
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 Protocol = Annotated[AgentCore, Depends(get_protocol)]
+Config = Annotated[SwitchConfig, Depends(get_config)]
+
+
+def owner_connections_check(
+    request: Request, session: AsyncSession, user: User, config: SwitchConfig
+) -> CheckConnections:
+    """Checks the connections an owner grants against their own sign-ins."""
+
+    async def check(grants: list[ConnectionGrant]) -> None:
+        for grant in grants:
+            try:
+                await check_github_grant(
+                    user.id,
+                    session,
+                    config,
+                    github_service(request),
+                    [
+                        (installation.installation_id, installation.repositories)
+                        for installation in grant.installations
+                    ],
+                )
+            except GitHubReconnectRequired as exc:
+                raise ManagementError(
+                    422, reason_codes.GITHUB_RECONNECT_REQUIRED, str(exc.detail)
+                ) from exc
+            except HTTPException as exc:
+                unavailable = exc.status_code >= 500
+                raise ManagementError(
+                    exc.status_code,
+                    reason_codes.INTERNAL
+                    if unavailable
+                    else reason_codes.VALIDATION_ERROR,
+                    str(exc.detail),
+                    retryable=unavailable,
+                ) from exc
+
+    return check
 
 
 @router.post("/enrollment-codes", status_code=201)
@@ -151,29 +195,15 @@ async def create_managed_agent(
     user: CurrentUser,
     management: Management,
     protocol: Protocol,
-    config: Annotated[SwitchConfig, Depends(get_config)],
+    config: Config,
 ) -> dict[str, Any]:
-    async def repository_name(repository: RepositoryRef) -> str:
-        try:
-            return await writable_repository_name(
-                user.id,
-                session,
-                config,
-                github_service(request),
-                repository.installation_id,
-                repository.repository_id,
-            )
-        except HTTPException as exc:
-            unavailable = exc.status_code >= 500
-            raise ManagementError(
-                exc.status_code,
-                reason_codes.INTERNAL if unavailable else reason_codes.VALIDATION_ERROR,
-                str(exc.detail),
-                retryable=unavailable,
-            ) from exc
-
     return await management.create_managed_agent(
-        session, require_tenant_id(), user.id, body, protocol, repository_name
+        session,
+        require_tenant_id(),
+        user.id,
+        body,
+        protocol,
+        owner_connections_check(request, session, user, config),
     )
 
 
@@ -181,10 +211,12 @@ async def create_managed_agent(
 async def put_managed_agent(
     agent_id: str,
     body: PutManagedAgentRequest,
+    request: Request,
     session: Session,
     user: CurrentUser,
     management: Management,
     protocol: Protocol,
+    config: Config,
 ) -> dict[str, Any]:
     return await management.put_managed_agent(
         session,
@@ -193,6 +225,7 @@ async def put_managed_agent(
         agent_id,
         placement_from(body.controller_id, body.desired_state, body.definition),
         protocol,
+        owner_connections_check(request, session, user, config),
     )
 
 
@@ -200,10 +233,12 @@ async def put_managed_agent(
 async def patch_managed_agent(
     agent_id: str,
     body: PatchManagedAgentRequest,
+    request: Request,
     session: Session,
     user: CurrentUser,
     management: Management,
     protocol: Protocol,
+    config: Config,
 ) -> dict[str, Any]:
     return await management.patch_managed_agent(
         session,
@@ -215,6 +250,7 @@ async def patch_managed_agent(
         controller_id=body.controller_id,
         controller_id_given="controller_id" in body.model_fields_set,
         protocol=protocol,
+        check_connections=owner_connections_check(request, session, user, config),
     )
 
 

@@ -1,9 +1,14 @@
 #!/usr/bin/env node
-import { runGitHubCli, runGitHubCredentialHelper } from './hosted-github';
+import { runGitHubCli, runGitHubCredentialHelper, runGitHubList } from './hosted-github';
 
 async function main(): Promise<void> {
   if (process.argv[2] === '--github-cli') {
     await runGitHubCli(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === '--list') {
+    if (process.argv.length !== 3) throw new Error('--list takes no arguments.');
+    await runGitHubList();
     return;
   }
   if (process.argv[2] === '--git-credential') {
@@ -12,7 +17,7 @@ async function main(): Promise<void> {
     return;
   }
   throw new Error(
-    'Usage: switch-hosted-bootstrap --git-credential <operation> | --github-cli <arguments>'
+    'Usage: switch-hosted-bootstrap --git-credential <operation> | --github-cli <arguments> | --list'
   );
 }
 

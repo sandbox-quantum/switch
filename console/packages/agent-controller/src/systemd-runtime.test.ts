@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -83,13 +84,8 @@ let clock: number;
 let systemctl: FakeSystemctl;
 let logins: FakeLogins;
 let runtime: SystemdRuntime;
-/** What the repository lookup answers, or throws; and who it was asked for. */
-let repositoryAnswer: () => string;
-let repositoryLookups: string[];
 
 beforeEach(() => {
-  repositoryAnswer = () => 'Example-Org/Example.Repo';
-  repositoryLookups = [];
   dir = mkdtempSync(join(tmpdir(), 'controller-systemd-'));
   layout = ec2Layout({ dataRoot: join(dir, 'data'), runRoot: join(dir, 'run') });
   clock = Date.parse('2026-01-01T12:00:00Z');
@@ -104,10 +100,6 @@ beforeEach(() => {
     now: () => clock,
     idleCheckMs: 60_000,
     forceRestartAfterMs: 30 * 60_000,
-    repositoryName: async (agentId) => {
-      repositoryLookups.push(agentId);
-      return repositoryAnswer();
-    },
   });
 });
 
@@ -122,7 +114,7 @@ const START: LaunchOptions = {
   replaceIdentity: false,
   clearTakenOver: false,
   skills: [],
-  repository: null,
+  connections: [],
 };
 
 function template(agentId = 'agent-1', cwd = join(dir, 'data', 'worktrees', agentId, 'scout')) {
@@ -143,7 +135,6 @@ function template(agentId = 'agent-1', cwd = join(dir, 'data', 'worktrees', agen
 }
 
 const UNIT = 'switch-agent@agent-1.service';
-const REPOSITORY = { installation_id: 123, repository_id: 456 };
 
 describe('SystemdRuntime', () => {
   it('names the unit credentials, and refuses an id a unit cannot carry', () => {
@@ -176,8 +167,7 @@ describe('SystemdRuntime', () => {
       spawn: true,
     });
     expect(JSON.parse(readFileSync(join(root, 'workspace.json'), 'utf8'))).toEqual({
-      repository: null,
-      mirrorPath: null,
+      connections: [],
       workspacePath: join(layout.worktreeRoot('agent-1'), 'scout'),
       skills: [],
       instructions: '',
@@ -194,46 +184,49 @@ describe('SystemdRuntime', () => {
     expect(workspace.skills).toEqual(skills);
   });
 
-  it('names the repository and the agent’s own mirror for the unit to make the workspace a worktree of', async () => {
-    const cwd = join(layout.worktreeRoot('agent-1'), 'example-org', 'example.repo');
-    await runtime.launch('agent-1', template('agent-1', cwd), { ...START, repository: REPOSITORY });
-    expect(repositoryLookups).toEqual(['agent-1']);
+  it('names the granted connections for the unit to set up, and clones nothing', async () => {
+    const cwd = join(layout.worktreeRoot('agent-1'), 'workspace');
+    await runtime.launch('agent-1', template('agent-1', cwd), {
+      ...START,
+      connections: ['github'],
+    });
     const workspace = JSON.parse(
       readFileSync(join(layout.agentRoot('agent-1'), 'workspace.json'), 'utf8')
     );
-    expect(workspace).toMatchObject({
-      repository: 'Example-Org/Example.Repo',
-      mirrorPath: join(layout.agentRoot('agent-1'), 'repos', 'example-org', 'example.repo.git'),
+    expect(workspace).toEqual({
+      connections: ['github'],
       workspacePath: cwd,
+      skills: [],
+      instructions: '',
     });
-    const config = JSON.parse(
-      readFileSync(join(layout.watcherRoot('agent-1'), 'config.json'), 'utf8')
-    );
-    expect(config.start.input.cwd).toBe(cwd);
+    expect(existsSync(join(layout.agentRoot('agent-1'), 'repos'))).toBe(false);
     expect(systemctl.verbs()).toEqual([`start ${UNIT}`]);
   });
 
-  it('does not start an agent whose repository it cannot name', async () => {
-    repositoryAnswer = () => {
-      throw new Error('The owner must reconnect GitHub.');
-    };
-    await expect(
-      runtime.launch('agent-1', template(), { ...START, repository: REPOSITORY })
-    ).rejects.toMatchObject({
-      reason: 'repo_clone_failed',
-      message: expect.stringContaining('reconnect GitHub'),
-    });
-    expect(systemctl.verbs()).toEqual([]);
-  });
+  it('restarts a unit whose granted connections or skills changed, since it reads them as it starts', async () => {
+    const cwd = join(layout.worktreeRoot('agent-1'), 'workspace');
+    await runtime.launch('agent-1', template('agent-1', cwd), START);
+    await runtime.launch('agent-1', template('agent-1', cwd), START);
+    expect(systemctl.verbs()).toEqual([`start ${UNIT}`, `start ${UNIT}`]);
 
-  it('refuses a repository agent whose directory is not under its worktrees', async () => {
-    await expect(
-      runtime.launch('agent-1', template('agent-1', join(layout.agentRoot('agent-1'), 'work')), {
-        ...START,
-        repository: REPOSITORY,
-      })
-    ).rejects.toMatchObject({ reason: 'definition_invalid' });
-    expect(repositoryLookups).toEqual([]);
+    await runtime.launch('agent-1', template('agent-1', cwd), {
+      ...START,
+      connections: ['github'],
+    });
+    expect(systemctl.verbs().at(-1)).toBe(`restart ${UNIT}`);
+
+    const skills = [{ slug: 'github', files: { 'SKILL.md': '# GitHub' } }];
+    await runtime.launch('agent-1', template('agent-1', cwd), {
+      ...START,
+      connections: ['github'],
+      skills,
+    });
+    expect(systemctl.verbs().at(-1)).toBe(`restart ${UNIT}`);
+
+    await runtime.launch('agent-1', template('agent-1', cwd), START);
+    expect(systemctl.verbs().at(-1)).toBe(`restart ${UNIT}`);
+    await runtime.launch('agent-1', template('agent-1', cwd), START);
+    expect(systemctl.verbs().at(-1)).toBe(`start ${UNIT}`);
   });
 
   it('refuses a working directory outside the agent’s own, and a linked agent root', async () => {

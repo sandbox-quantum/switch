@@ -17,11 +17,17 @@ only connection that works; every other service in the catalog is shown as
   connection skills.
 - **CLIs.** Baked into the VM image (`gh` today). Nothing is downloaded at
   boot.
-- **GitHub stays required** for a cloud launch, since the workspace is a
-  GitHub repository. Every cloud launch is therefore granted the GitHub
-  connection. Claude Code, Codex and OpenCode agents also get its skill.
-  Cursor and Antigravity agents get no connection skills, because they have
-  no skills directory.
+- **Grants.** The owner grants connections per cloud agent, in the agent
+  definition's `connections`. GitHub is optional. For each GitHub App
+  installation the owner grants all repositories or selected ones. "All" means
+  each repository of the installation the owner can push to when the token is
+  minted: Switch names those repositories in every installation token, so a
+  repository the owner loses push access to drops out, and an "all" grant
+  fails for an account where the owner can push to more than 500 (GitHub's
+  limit on a token's repositories); grant selected repositories there. Nothing is cloned: the agent clones what it needs.
+  Claude Code, Codex and OpenCode agents get the skill of each granted
+  connection. Cursor and Antigravity agents get no connection skills, because
+  they have no skills directory.
 
 ## Catalog
 
@@ -41,7 +47,7 @@ catalog/<slug>/
 slug: github                # must equal the directory name
 name: GitHub
 category: Source control
-description: Clone, branch, push and open pull requests in the repository you grant.
+description: Clone, branch, push and open pull requests in the repositories you grant.
 enabled: true               # false = "Coming soon" placeholder
 auth:
   type: oauth               # oauth | api_key
@@ -118,7 +124,10 @@ document:
 4. **Bootstrap** (runs as the agent) applies the same limits. It refuses skills
    for a provider that has no skills directory. Before it starts the worker,
    on every start, it replaces each skill in the provider's skills directory,
-   writing to a temporary directory first and then renaming it into place:
+   writing to a temporary directory first and then renaming it into place.
+   It marks each skill it installs (a `.switch-connection-skill` file) and
+   removes a marked skill whose connection is no longer granted; skills the
+   agent or its owner added are left alone:
 
    | Provider | Directory |
    |---|---|
@@ -155,15 +164,14 @@ is now a Connections grid:
 - the GitHub card opens the existing GitHub connection step, and going back
   returns to the grid and refreshes it;
 - placeholder cards are disabled and marked "Coming soon";
-- "Continue to agent" appears once GitHub is connected.
+- "Continue to agent" is always offered: GitHub is optional, and the agent
+  form grants connections (or none).
 
 The renderer gets the catalog through `rpc.switchServers.getConnectionCatalog`,
 which calls the gateway from the main process.
 
 ## Not in v1
 
-- Choosing, per launch, which connections an agent gets. Today GitHub is
-  always granted.
 - Other services: their auth flows, credential storage and delivery
   (credential files, environment wrappers), and "Test connection" checks.
 - Custom catalog entries, and more than one account per service.

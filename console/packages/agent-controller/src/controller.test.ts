@@ -34,6 +34,7 @@ function agent(revision: number, overrides: Partial<AgentAssignment> = {}): Agen
       directory: null,
       isolation: 'shared',
       skills: [],
+      connections: [],
     },
     ...overrides,
   };
@@ -357,7 +358,7 @@ describe('runController', () => {
       replaceIdentity: false,
       clearTakenOver: false,
       skills: [],
-      repository: null,
+      connections: [],
     });
     await runtime.writeCredentials('agent-1', {
       endpoint: `http://127.0.0.1:${port}`,
@@ -450,7 +451,7 @@ describe('runController', () => {
       restart: true,
       clearTakenOver: true,
       skills: [],
-      repository: null,
+      connections: [],
     });
     expect(runtime.probes).toBeGreaterThan(probesBefore);
     stop.abort();

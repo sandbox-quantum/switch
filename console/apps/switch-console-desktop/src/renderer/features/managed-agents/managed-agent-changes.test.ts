@@ -48,6 +48,7 @@ const AGENT: ManagedAgentView = {
     autoApprove: false,
     directory: '/work/pm',
     isolation: 'shared',
+    connections: [],
   },
   status: null,
 };
@@ -68,6 +69,16 @@ describe('editOf', () => {
     };
     expect(editOf(AGENT, SCHEMA, before, after)).toEqual({
       changes: { definition: { autoApprove: true, isolation: 'isolated', model: 'sonnet' } },
+    });
+  });
+
+  it('sends the whole connection grant list when it changed', () => {
+    const before = draftOf(AGENT, SCHEMA, null);
+    const connections = [
+      { slug: 'github', installations: [{ installation_id: 7, repositories: [42] }] },
+    ];
+    expect(editOf(AGENT, SCHEMA, before, { ...before, connections }).changes.definition).toEqual({
+      connections,
     });
   });
 

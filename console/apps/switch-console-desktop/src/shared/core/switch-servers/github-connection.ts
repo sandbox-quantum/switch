@@ -16,14 +16,13 @@ export const gitHubConnectionSchema = z.discriminatedUnion('status', [
   }),
 ]);
 export type GitHubConnection = z.infer<typeof gitHubConnectionSchema>;
+/** A GitHub App installation the owner can see, with the repositories it shares with Switch. */
+export type GitHubInstallation = Extract<
+  GitHubConnection,
+  { status: 'connected' }
+>['installations'][number];
 export const gitHubFlowSchema = z.object({
   status: z.enum(['pending', 'checking', 'ready', 'failed']),
   login: z.string(),
 });
 export type GitHubFlow = z.infer<typeof gitHubFlowSchema>;
-
-/** A repository the owner's GitHub App installation gives access to, by id. */
-export type CloudRepositorySelection = {
-  installationId: number;
-  repositoryId: number;
-};

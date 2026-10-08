@@ -12,6 +12,7 @@ import type {
   ManagedAgentView,
   OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
+import type { ConnectionGrant } from '@shared/core/switch-servers/connection-grants';
 import { machineWorkspaceFor } from './managed-agent-state';
 
 /**
@@ -53,6 +54,8 @@ export type Draft = {
   /** Where it runs on its machine; empty for wherever the machine chooses. */
   directory: string;
   ownProcess: boolean;
+  /** The connections it is granted. */
+  connections: ConnectionGrant[];
   /** The model, and every field of the provider's schema. */
   form: FormState;
 };
@@ -83,6 +86,7 @@ export function draftOf(
     autoApprove: agent.definition.autoApprove,
     directory: shownDirectory(agent, machine),
     ownProcess: agent.definition.isolation === 'isolated',
+    connections: agent.definition.connections,
     form: {
       ...emptyForm(schema),
       ...formFromAttributes(schema, agent.definition.advancedConfig),
@@ -129,6 +133,8 @@ export function editOf(
     );
     definition.advancedConfig = { ...Object.fromEntries(unknown), ...advancedConfig };
   }
+  if (JSON.stringify(after.connections) !== JSON.stringify(before.connections))
+    definition.connections = after.connections;
   if (after.autoApprove !== before.autoApprove) definition.autoApprove = after.autoApprove;
   if (after.instructions !== before.instructions) definition.instructions = after.instructions;
 

@@ -47,6 +47,7 @@ function assigned(agentId: string): AgentAssignment {
       directory: null,
       isolation: 'shared',
       skills: [],
+      connections: [],
     },
   };
 }
@@ -617,14 +618,36 @@ describe('forwarding to Switch', () => {
     expect(forwarded.body).toEqual({ row: 1 });
   });
 
+  it('forwards the hosted connections listing as the controller, naming the agent', async () => {
+    const listing = {
+      connections: [
+        {
+          slug: 'github',
+          installations: [{ installation_id: 123, account: 'example', repositories: 'all' }],
+        },
+      ],
+    };
+    core.scripted.push({ method: 'GET', path: '/hosted/connections', status: 200, body: listing });
+    const response = await fetch(`${relay.endpoint}/hosted/connections`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(listing);
+    const forwarded = core.requests.at(-1)!;
+    expect(forwarded.method).toBe('GET');
+    expect(forwarded.path).toBe('/hosted/connections');
+    expect(forwarded.headers.authorization).toMatch(/^Bearer access-token-/);
+    expect(forwarded.headers['x-switch-agent-id']).toBe(AGENT);
+  });
+
   it('forwards a hosted GitHub credential request as the controller, naming the agent', async () => {
     core.scripted.push({
       method: 'POST',
-      path: '/hosted/github-credential',
+      path: '/hosted/connections/github/credential',
       status: 200,
       body: { token: 'placeholder', expires_at: '2026-01-01T01:00:00Z' },
     });
-    const response = await post('/hosted/github-credential', { repository: 'org/repo' });
+    const response = await post('/hosted/connections/github/credential', { installation_id: 123 });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       token: 'placeholder',
@@ -634,7 +657,14 @@ describe('forwarding to Switch', () => {
     expect(forwarded.method).toBe('POST');
     expect(forwarded.headers.authorization).toMatch(/^Bearer access-token-/);
     expect(forwarded.headers['x-switch-agent-id']).toBe(AGENT);
-    expect(forwarded.body).toEqual({ repository: 'org/repo' });
+    expect(forwarded.body).toEqual({ installation_id: 123 });
+  });
+
+  it('no longer relays the single-repository GitHub credential route', async () => {
+    const before = core.requests.length;
+    const response = await post('/hosted/github-credential', {});
+    expect(response.status).toBe(404);
+    expect(core.requests.length).toBe(before);
   });
 
   it('names the room of a shared agent’s call from its host in the controller', async () => {

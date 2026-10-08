@@ -10,7 +10,7 @@ import {
 const PARAMS: AddManagedAgentParams = {
   machineId: 'controller-1',
   dir: '/work/pm',
-  repository: null,
+  connections: null,
   name: 'pm-agent',
   providerId: 'claude',
   serverId: 'server-1',
@@ -106,7 +106,6 @@ describe('NewManagedAgentService.add', () => {
           instructions: 'Be brief.',
           auto_approve: true,
           directory: '/work/pm',
-          repository: null,
         },
       },
     ]);
@@ -127,16 +126,46 @@ describe('NewManagedAgentService.add', () => {
     expect(h.created).toMatchObject([{ definition: { directory: null } }]);
   });
 
-  it('names the GitHub repository a Switch cloud machine clones for the agent', async () => {
+  it('grants a Switch cloud agent its connections, and names no repository', async () => {
     vi.stubEnv('SWITCH_CLOUD_ENABLED', 'true');
-    await new NewManagedAgentService(h.deps).add({
+    const connections = [
+      {
+        slug: 'github',
+        installations: [
+          { installation_id: 123, repositories: 'all' as const },
+          { installation_id: 456, repositories: [111, 222] },
+        ],
+      },
+    ];
+    await new NewManagedAgentService(h.deps).add({ ...PARAMS, dir: null, connections });
+    expect(h.created).toHaveLength(1);
+    const { definition } = h.created[0] as { definition: Record<string, unknown> };
+    expect(definition).toEqual({
+      provider: 'claude',
+      model: 'opus',
+      advanced_config: { effort: 'high', tools: ['Read'] },
+      instructions: 'Be brief.',
+      auto_approve: true,
+      directory: null,
+      connections,
+    });
+    expect(definition).not.toHaveProperty('repository');
+  });
+
+  it('sends an empty grant list for a Switch cloud agent given no connection', async () => {
+    vi.stubEnv('SWITCH_CLOUD_ENABLED', 'true');
+    const result = await new NewManagedAgentService(h.deps).add({
       ...PARAMS,
       dir: null,
-      repository: { installationId: 12, repositoryId: 34 },
+      connections: [],
     });
-    expect(h.created).toMatchObject([
-      { definition: { directory: null, repository: { installation_id: 12, repository_id: 34 } } },
-    ]);
+    expect(result.kind).toBe('created');
+    expect(h.created).toMatchObject([{ definition: { directory: null, connections: [] } }]);
+  });
+
+  it('gives an agent on any other machine no connections field', async () => {
+    await new NewManagedAgentService(h.deps).add(PARAMS);
+    expect((h.created[0] as { definition: object }).definition).not.toHaveProperty('connections');
   });
 
   it('refuses a cloud machine agent while Switch Cloud is turned off', async () => {
@@ -144,7 +173,7 @@ describe('NewManagedAgentService.add', () => {
     const result = await new NewManagedAgentService(h.deps).add({
       ...PARAMS,
       dir: null,
-      repository: { installationId: 12, repositoryId: 34 },
+      connections: [],
     });
     expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('turned off') });
     expect(h.created).toEqual([]);

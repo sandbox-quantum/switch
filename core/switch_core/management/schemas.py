@@ -17,7 +17,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from switch_core.connections.loader import CATALOG, SKILL_PROVIDERS, deployment_skills
 from switch_core.db.models import Agent, AgentController, AgentControllerOperation
@@ -87,13 +94,59 @@ class PublicKey(_StatusBody):
 AGENT_ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
 
-class RepositoryRef(_GatewayBody):
-    """The GitHub repository an agent works in, through the owner's GitHub
-    App installation. A Switch cloud controller clones it for the agent and
-    asks Core for the agent's repository token."""
+# GitHub's limit on the repositories one installation token can name.
+MAX_GRANTED_REPOSITORIES = 500
 
-    installation_id: int = Field(gt=0)
-    repository_id: int = Field(gt=0)
+
+class GitHubInstallationGrant(_GatewayBody):
+    """One GitHub App installation granted to an agent: every repository in
+    it the owner can push to (`"all"`), or the listed repository ids."""
+
+    installation_id: int = Field(gt=0, strict=True)
+    repositories: Literal["all"] | list[StrictInt]
+
+    @field_validator("repositories")
+    @classmethod
+    def _repositories_are_a_set_of_ids(
+        cls, value: Literal["all"] | list[StrictInt]
+    ) -> Literal["all"] | list[StrictInt]:
+        if value == "all":
+            return value
+        if not value:
+            raise ValueError('repositories must be "all" or a non-empty list of ids')
+        if len(value) > MAX_GRANTED_REPOSITORIES:
+            raise ValueError(
+                f"at most {MAX_GRANTED_REPOSITORIES} repositories can be granted "
+                "in one installation"
+            )
+        if any(item <= 0 for item in value):
+            raise ValueError("repository ids must be positive integers")
+        if len(set(value)) != len(value):
+            raise ValueError("repository ids must be unique")
+        return value
+
+
+class GitHubGrant(_GatewayBody):
+    """The GitHub connection granted to a Switch cloud agent. Core mints the
+    agent installation tokens limited to these grants."""
+
+    slug: Literal["github"]
+    installations: list[GitHubInstallationGrant] = Field(min_length=1)
+
+    @field_validator("installations")
+    @classmethod
+    def _installations_are_unique(
+        cls, value: list[GitHubInstallationGrant]
+    ) -> list[GitHubInstallationGrant]:
+        ids = [grant.installation_id for grant in value]
+        if len(set(ids)) != len(ids):
+            raise ValueError("each installation can be granted only once")
+        return value
+
+
+# The connections a definition can grant: enabled catalog entries whose
+# credentials Core can deliver to a cloud agent.
+ConnectionGrant = GitHubGrant
 
 
 class DefinitionV1(_GatewayBody):
@@ -111,7 +164,8 @@ class DefinitionV1(_GatewayBody):
     # `isolated`: it runs as a process of its own (a systemd unit on a cloud
     # machine, which runs every agent isolated).
     isolation: Isolation = "shared"
-    repository: RepositoryRef | None = None
+    # Connections granted to a Switch cloud agent, at most one per slug.
+    connections: list[ConnectionGrant] = Field(default_factory=list)
 
     @field_validator("instructions")
     @classmethod
@@ -120,6 +174,20 @@ class DefinitionV1(_GatewayBody):
             raise ValueError(
                 f"instructions must be at most {MAX_INSTRUCTIONS_BYTES} bytes"
             )
+        return value
+
+    @field_validator("connections")
+    @classmethod
+    def _connections_are_granted_once(
+        cls, value: list[ConnectionGrant]
+    ) -> list[ConnectionGrant]:
+        slugs = [grant.slug for grant in value]
+        if len(set(slugs)) != len(slugs):
+            raise ValueError("each connection can be granted only once")
+        for slug in slugs:
+            entry = CATALOG.get(slug)
+            if entry is None or not entry.definition.enabled:
+                raise ValueError(f"connection {slug} is not available")
         return value
 
     @model_validator(mode="after")
@@ -510,11 +578,12 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
     The definition is the v1 shape, `directory` included, rather than the
     target contract's (which nests it as `local.directory` and adds fields v1
     does not have); `agent-controllers-v1.md` defines it this way.
-    `repository` is present only for a definition that names one. `skills`
-    are the connection skills its provider is given: GitHub's for an agent
-    that works in a repository, as a cloud worker gives its agents."""
+    `connections` are the slugs of the connections granted to the agent,
+    sorted. `skills` are the connection skills its provider is given: one per
+    granted connection, for a provider that loads skills."""
     definition = row.definition
     provider = definition["provider"]
+    connections = sorted({grant["slug"] for grant in definition.get("connections", [])})
     return {
         "agent_id": row.agent_id,
         "revision": row.revision,
@@ -530,13 +599,9 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),
             "isolation": definition.get("isolation", "shared"),
-            **(
-                {"repository": definition["repository"]}
-                if definition.get("repository") is not None
-                else {}
-            ),
-            "skills": deployment_skills(CATALOG, ["github"])
-            if definition.get("repository") is not None and provider in SKILL_PROVIDERS
+            "connections": connections,
+            "skills": deployment_skills(CATALOG, connections)
+            if provider in SKILL_PROVIDERS
             else [],
         },
     }

@@ -127,8 +127,6 @@ export class SystemdRuntime implements AgentRuntime {
       idleCheckMs: number;
       /** How long an agent waiting on a new login is let finish before it is restarted anyway. */
       forceRestartAfterMs: number;
-      /** The `owner/name` of the repository an agent works in; see `ControllerClient.repositoryName`. */
-      repositoryName: (agentId: string) => Promise<string>;
     }
   ) {
     this.unsubscribe = deps.logins.onRevision((change) => this.queue(change));
@@ -257,12 +255,6 @@ export class SystemdRuntime implements AgentRuntime {
       throw new Error(
         `The launch configuration for agent ${agentId} names no provider executable.`
       );
-    if (options.repository !== null && !within(layout.worktreeRoot(agentId), cwd))
-      throw new ReasonedError(
-        'definition_invalid',
-        `Agent ${agentId} works in a repository, so its directory must be its worktree under ${layout.worktreeRoot(agentId)}, not ${cwd}.`
-      );
-    const repository = options.repository === null ? null : await this.repositoryName(agentId);
 
     await mkdir(layout.agentsRoot, { recursive: true, mode: 0o750 });
     await mkdir(layout.worktreesRoot, { recursive: true, mode: 0o750 });
@@ -281,35 +273,24 @@ export class SystemdRuntime implements AgentRuntime {
       ...controlledEnvironment(agentRoot, provider),
     };
     const workspace = hostedWorkspaceSchema.parse({
-      repository,
-      mirrorPath: repository === null ? null : this.mirrorPath(agentId, repository),
+      connections: options.connections,
       workspacePath: cwd,
       skills: options.skills,
       instructions: '',
     });
-    await this.writeShared(join(agentRoot, HOSTED_WORKSPACE_FILE), JSON.stringify(workspace));
+    const workspacePath = join(agentRoot, HOSTED_WORKSPACE_FILE);
+    const previousWorkspace = await readOptional(workspacePath);
+    await this.writeShared(workspacePath, JSON.stringify(workspace));
     await this.writeFlags(watcherRoot, { enabled: true, spawn: true });
     await this.writeShared(join(watcherRoot, 'template.json'), JSON.stringify(template));
     await this.writeShared(join(watcherRoot, 'config.json'), JSON.stringify(config));
     this.pending.delete(agentId);
-    await this.deps.systemctl(['start', unit]);
-  }
-
-  private async repositoryName(agentId: string): Promise<string> {
-    try {
-      return await this.deps.repositoryName(agentId);
-    } catch (error) {
-      throw new ReasonedError(
-        'repo_clone_failed',
-        `Could not look up the repository agent ${agentId} works in: ${errorMessage(error)}`
-      );
-    }
-  }
-
-  /** The agent's own mirror of the repository: `<agent>/repos/<owner>/<name>.git`, lowercased. */
-  private mirrorPath(agentId: string, repository: string): string {
-    const [owner, name] = repository.toLowerCase().split('/');
-    return join(this.deps.layout.reposRoot(agentId), owner!, `${name}.git`);
+    // A unit reads its workspace only as it starts: its preparation installs
+    // the skills and the `gh` wrapper, and its watcher hands its sessions the
+    // GitHub environment of the connections granted then.
+    const workspaceChanged =
+      previousWorkspace !== null && previousWorkspace !== JSON.stringify(workspace);
+    await this.deps.systemctl([workspaceChanged ? 'restart' : 'start', unit]);
   }
 
   async stop(agentId: string, options: { wait: boolean }): Promise<void> {

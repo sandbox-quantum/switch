@@ -35,15 +35,18 @@ are bounded. Cross-AZ migration and arbitrary disk adoption remain disabled.
 
 ## GitHub App credential preparation
 
-The backend helper `switch_core.providers.github_installation` can issue a
-repository-scoped installation token after checking that the initiating user's
-GitHub account still has access to that repository in the selected installation.
+The backend helper `switch_core.providers.github_installation` issues an
+installation token limited to an agent's grant of one installation: the selected
+repositories, or each repository of the installation the owner can push to. It
+first checks that the owner's GitHub account still sees the installation and can
+push to those repositories.
 It signs with an operator-supplied RSA key and requests only contents and pull
 request write access. Credentials must stay on the backend and in the worker's
 private credential transport, never in Console responses or persisted launch specs.
 
-Console uses the shared New Agent form, a saved provider connection and a selected
-GitHub repository. A user's first cloud agent reserves a machine slot from the
+Console uses the shared New Agent form and a saved provider connection. GitHub
+access is optional: the owner grants GitHub App installations, with all or
+selected repositories, and the agent clones what it needs. A user's first cloud agent reserves a machine slot from the
 operator-configured pool. The controller creates the data volume, writes the
 assignment secret with that volume ID, and then starts the VM. Later agents of the
 same user run on that machine. An agent is ready only after its watcher connects. Agents can start sessions automatically when addressed or use
@@ -62,10 +65,11 @@ agents of that user share them. The server launch capacity and the controller's
 machine slot pool impose separate global limits. See
 [machine lifecycle](#machine-lifecycle) for the settings.
 
-Managed workers request a fresh installation token before checkout and each Git
-or GitHub CLI command. The agent-authenticated renewal route checks the saved
-assignment, workspace membership and current GitHub repository access. It never
-accepts a caller-selected repository. Personal tokens remain an operator option.
+Cloud agents request a fresh installation token for each Git or GitHub CLI
+command (`POST /hosted/connections/github/credential`). The route checks the
+saved assignment, workspace membership, the agent's grant of the installation
+and current GitHub repository access. It refuses an installation that is not
+granted. Personal tokens remain an operator option.
 
 ### Enable Console launches
 
@@ -370,7 +374,7 @@ Stored credentials are encrypted and scoped to the current user and tenant.
 The backend refreshes expiring user tokens and asks GitHub for current repository
 access. Disconnect deletes local connection storage, not the installation on
 GitHub. Authorization attempts expire after ten minutes and on backend restart.
-Workers receive repository-scoped installation tokens. GitHub uninstall and suspend
+Agents receive installation tokens limited to their grants. GitHub uninstall and suspend
 webhooks are not implemented; access is checked again when tokens are issued.
 
 ### Machine lifecycle

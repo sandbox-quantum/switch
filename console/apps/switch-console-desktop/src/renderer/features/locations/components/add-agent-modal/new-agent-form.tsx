@@ -14,7 +14,10 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
-import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
+import { connectionGrantsProblem } from '@renderer/features/switch-servers/connection-grants';
+import { ConnectionGrantsEditor } from '@renderer/features/switch-servers/connection-grants-editor';
+import { useConnectionCatalog } from '@renderer/features/switch-servers/connections-step';
+import { ConnectionsModal } from '@renderer/features/switch-servers/ConnectionsModal';
 import { ManagedProviderConnectionStep } from '@renderer/features/switch-servers/managed-provider-connection-step';
 import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import { isSwitchCloudServer } from '@renderer/features/switch-servers/switch-cloud-origin';
@@ -35,7 +38,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
+import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import {
@@ -52,12 +55,11 @@ import {
   describeRemoteDirRefusal,
   isAbsoluteRemoteDir,
 } from '@shared/core/remote-hosts/remote-dir';
-import type { CloudRepositorySelection } from '@shared/core/switch-servers/github-connection';
+import type { ConnectionGrant } from '@shared/core/switch-servers/connection-grants';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
 import { CloudAgentProvider } from './cloud-agent-provider';
-import { CloudAgentRepository } from './cloud-agent-repository';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
 import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
@@ -111,11 +113,11 @@ export const NewAgentForm = observer(function NewAgentForm({
   initialRunLocation,
 }: NewAgentFormProps) {
   const queryClient = useQueryClient();
-  const [connectingGitHub, setConnectingGitHub] = useState(false);
+  const [connectingServices, setConnectingServices] = useState(false);
   const [connectingProvider, setConnectingProvider] = useState(false);
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const [cloudProviderConnected, setCloudProviderConnected] = useState(false);
-  const [cloudRepository, setCloudRepository] = useState<CloudRepositorySelection | null>(null);
+  const [connectionGrants, setConnectionGrants] = useState<ConnectionGrant[]>([]);
   const { navigate } = useNavigate();
   const { setCloseGuard } = useModalContext();
   const showAddServerModal = useShowModal('addServerModal');
@@ -148,6 +150,15 @@ export const NewAgentForm = observer(function NewAgentForm({
   // Switch Cloud offers everything any server does, and running in the cloud besides.
   const isManagedCloud = !!selectedServer && isSwitchCloudServer(selectedServer);
   const isCloudRun = runHost === 'cloud';
+  const catalog = useConnectionCatalog(isCloudRun ? (pickState.serverId ?? null) : null);
+  const githubInstallations =
+    catalog.github?.status === 'connected' ? catalog.github.installations : [];
+  const grantsProblem = isCloudRun
+    ? connectionGrantsProblem(
+        connectionGrants,
+        (id) => githubInstallations.find((installation) => installation.id === id)?.account ?? null
+      )
+    : null;
 
   // On a server with agent management the server lists where agents can run:
   // every machine the user owns there. Null when it does not run management.
@@ -394,7 +405,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     !!pickState.providerId &&
     (isMachineRun || needsCloudMachine || dir.trim().length > 0) &&
     (!needsCloudMachine || cloudProviderConnected) &&
-    (!isCloudRun || cloudRepository !== null) &&
+    grantsProblem === null &&
     remoteDirIsAbsolute &&
     machineProviderReady &&
     runHostReachable &&
@@ -402,7 +413,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     machineReason === null &&
     submitState === 'idle' &&
     !connectingProvider &&
-    !connectingGitHub;
+    !connectingServices;
 
   // Why "Add agent" is greyed out, in one line, shown on hover over the button.
   const disabledReason: string | null =
@@ -410,8 +421,8 @@ export const NewAgentForm = observer(function NewAgentForm({
       ? null
       : needsCloudMachine && !cloudProviderConnected
         ? 'Connect the provider.'
-        : isCloudRun && !cloudRepository
-          ? 'Connect GitHub and choose a repository.'
+        : grantsProblem !== null
+          ? grantsProblem
           : !pickState.serverId
             ? 'Add a Switch server to register this agent on.'
             : form.agentName.trim().length === 0
@@ -545,7 +556,7 @@ export const NewAgentForm = observer(function NewAgentForm({
             machineId,
             // A Switch cloud machine makes the agent's workspace itself.
             dir: isCloudRun ? null : trimmedRemoteDir || null,
-            repository: isCloudRun ? cloudRepository : null,
+            connections: isCloudRun ? connectionGrants : null,
             model: managedSettingsRef.current.model,
             advancedConfig: managedSettingsRef.current.advancedConfig,
           });
@@ -648,9 +659,9 @@ export const NewAgentForm = observer(function NewAgentForm({
     void queryClient.invalidateQueries({
       queryKey: ['cloud-agent-connections', pickState.serverId],
     });
-    void queryClient.invalidateQueries({ queryKey: ['cloud-agent-github', pickState.serverId] });
+    void catalog.reload();
     setConnectingProvider(false);
-    setConnectingGitHub(false);
+    setConnectingServices(false);
   };
 
   return (
@@ -664,15 +675,14 @@ export const NewAgentForm = observer(function NewAgentForm({
           onDone={finishConnection}
         />
       )}
-      {connectingGitHub && pickState.serverId && (
-        <ManagedGitHubStep
+      {connectingServices && pickState.serverId && (
+        <ConnectionsModal
           serverId={pickState.serverId}
-          onBack={finishConnection}
-          onSkip={finishConnection}
-          onContinue={finishConnection}
+          onClose={finishConnection}
+          onSuccess={finishConnection}
         />
       )}
-      <div hidden={connectingProvider || connectingGitHub}>
+      <div hidden={connectingProvider || connectingServices}>
         <ModalLayout
           header={
             <DialogHeader showCloseButton={submitState === 'idle'}>
@@ -842,7 +852,7 @@ export const NewAgentForm = observer(function NewAgentForm({
                     {serverMachine.state !== 'online'
                       ? machineReason
                       : isCloudMachineRun
-                        ? 'Runs as a managed agent on your Switch cloud machine, in a worktree of the repository chosen below.'
+                        ? 'Runs as a managed agent on your Switch cloud machine, in a workspace of its own.'
                         : `Runs as a managed agent on ${serverMachine.name}.`}
                   </span>
                 </p>
@@ -940,11 +950,19 @@ export const NewAgentForm = observer(function NewAgentForm({
             )}
 
             {isCloudRun && pickState.serverId && (
-              <CloudAgentRepository
-                serverId={pickState.serverId}
-                onSelection={setCloudRepository}
-                onConnectGitHub={() => setConnectingGitHub(true)}
-              />
+              <Field>
+                <FieldLabel>Connections</FieldLabel>
+                <FieldDescription>
+                  What the agent can reach on your behalf. You can change this later in its
+                  settings.
+                </FieldDescription>
+                <ConnectionGrantsEditor
+                  catalog={catalog}
+                  value={connectionGrants}
+                  onChange={setConnectionGrants}
+                  onConnect={() => setConnectingServices(true)}
+                />
+              </Field>
             )}
 
             {canConfigureAgent && !!pickState.providerId && managedRun && pickState.serverId && (

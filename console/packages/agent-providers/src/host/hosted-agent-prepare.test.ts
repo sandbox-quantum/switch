@@ -1,7 +1,17 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it } from 'vitest';
 import { buildSharedHostConfig } from './build-shared-config';
 import {
   type HostedWorkspace,
@@ -73,8 +83,7 @@ async function arrange(input: {
   config?: SharedHostConfig;
 }): Promise<HostedWorkspace> {
   const workspace: HostedWorkspace = {
-    repository: null,
-    mirrorPath: null,
+    connections: [],
     workspacePath: join(base, 'worktrees', AGENT, 'workspace'),
     skills: [],
     instructions: 'Review pull requests.',
@@ -97,91 +106,120 @@ function connected(
   return { status: 'connected', revision: '3', provider, kind, credential };
 }
 
-const unused = { ensureRepository: vi.fn() };
-
 async function modeOf(path: string): Promise<number> {
   return (await stat(path)).mode & 0o777;
 }
 
-it('writes a codex sign-in, prepares the repository and installs skills', async () => {
+it('writes a codex sign-in, makes the empty workspace, sets up gh for GitHub and installs skills', async () => {
   const login = JSON.stringify({ tokens: { access_token: 'codex-placeholder' } });
   const workspace = await arrange({
     provider: 'codex',
     credential: connected('codex', 'auth-json', login),
     workspace: {
-      repository: 'example/project',
-      mirrorPath: join(base, 'repos', 'example', 'project.git'),
-      workspacePath: join(base, 'worktrees', AGENT, 'example', 'project'),
+      connections: ['github'],
       skills: [{ slug: 'github', files: { 'SKILL.md': '# GitHub\n' } }],
     },
   });
-  const ensureRepository = vi.fn(async () => {});
 
-  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, { ensureRepository });
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
 
   const auth = join(agentRoot, 'provider-home', 'auth.json');
   expect(await readFile(auth, 'utf8')).toBe(login);
   expect(await modeOf(auth)).toBe(0o600);
-  expect(ensureRepository).toHaveBeenCalledOnce();
-  const [call] = ensureRepository.mock.calls[0] as unknown as [
-    {
-      workspace: string;
-      mirror: string;
-      repository: string;
-      agentId: string;
-      env: NodeJS.ProcessEnv;
-    },
-  ];
-  expect(call).toMatchObject({
-    workspace: workspace.workspacePath,
-    mirror: workspace.mirrorPath,
-    repository: 'example/project',
-    agentId: AGENT,
-  });
-  expect(call.env).toMatchObject({
-    SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: join(credentials, 'agent'),
-    SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
-    GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
-    CODEX_HOME: join(agentRoot, 'provider-home'),
-  });
-  expect(call.env.GH_TOKEN).toBeUndefined();
+  expect(await readdir(workspace.workspacePath)).toEqual([]);
+  await expect(stat(join(agentRoot, 'repos'))).rejects.toThrow();
   expect(
     await readFile(join(agentRoot, 'provider-home', 'skills', 'github', 'SKILL.md'), 'utf8')
   ).toBe('# GitHub\n');
-  expect((await stat(join(agentRoot, 'bin', 'gh'))).isFile()).toBe(true);
+  const wrapper = await readFile(join(agentRoot, 'bin', 'gh'), 'utf8');
+  expect(wrapper).toContain('--github-cli');
+  expect(wrapper).not.toContain('token');
+  const grants = join(agentRoot, 'bin', 'switch-github-grants');
+  expect(await readFile(grants, 'utf8')).toMatch(
+    /^#!\/bin\/sh\nexec '[^']+' '[^']+hosted-bootstrap\.mjs' --list "\$@"\n$/
+  );
+  expect(await modeOf(grants)).toBe(0o700);
 });
 
-it("hands the unit's sessions the repository and credentials the preparation used", async () => {
+it('removes a connection skill no longer granted and keeps skills it did not install', async () => {
+  const credential = connected('claude', 'setup-token', 'token-placeholder');
+  const skills = join(agentRoot, 'provider-home', 'claude', 'skills');
+  await arrange({
+    provider: 'claude',
+    credential,
+    workspace: {
+      connections: ['github'],
+      skills: [{ slug: 'github', files: { 'SKILL.md': '# GitHub\n' } }],
+    },
+  });
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
+  await mkdir(join(skills, 'own-notes'), { recursive: true });
+  await writeFile(join(skills, 'own-notes', 'SKILL.md'), '# Mine\n');
+  expect((await readdir(skills)).sort()).toEqual(['github', 'own-notes']);
+
+  await arrange({ provider: 'claude', credential, workspace: { connections: [], skills: [] } });
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
+
+  expect(await readdir(skills)).toEqual(['own-notes']);
+  expect(await readFile(join(skills, 'own-notes', 'SKILL.md'), 'utf8')).toBe('# Mine\n');
+});
+
+it('keeps a skill of a connection slug that it did not install', async () => {
+  const skills = join(agentRoot, 'provider-home', 'claude', 'skills');
+  await mkdir(join(skills, 'github'), { recursive: true });
+  await writeFile(join(skills, 'github', 'SKILL.md'), '# Mine\n');
   await arrange({
     provider: 'claude',
     credential: connected('claude', 'setup-token', 'token-placeholder'),
-    workspace: {
-      repository: 'example/project',
-      mirrorPath: join(base, 'repos', 'example', 'project.git'),
-      workspacePath: join(base, 'worktrees', AGENT, 'example', 'project'),
-    },
   });
-  const ensureRepository = vi.fn(async () => {});
-  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, { ensureRepository });
-  const [call] = ensureRepository.mock.calls[0] as unknown as [{ env: NodeJS.ProcessEnv }];
+
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
+
+  expect(await readFile(join(skills, 'github', 'SKILL.md'), 'utf8')).toBe('# Mine\n');
+});
+
+it('keeps what an existing workspace holds', async () => {
+  const workspace = await arrange({
+    provider: 'claude',
+    credential: connected('claude', 'setup-token', 'token-placeholder'),
+    workspace: { connections: ['github'] },
+  });
+  await mkdir(workspace.workspacePath, { recursive: true });
+  await writeFile(join(workspace.workspacePath, 'notes.md'), 'kept\n');
+
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
+
+  expect(await readFile(join(workspace.workspacePath, 'notes.md'), 'utf8')).toBe('kept\n');
+});
+
+it("hands the unit's sessions its credentials and the gh wrapper when GitHub is granted", async () => {
+  await arrange({
+    provider: 'claude',
+    credential: connected('claude', 'setup-token', 'token-placeholder'),
+    workspace: { connections: ['github'] },
+  });
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
 
   const env = await hostedUnitGitHubEnvironment(agentRoot, config('claude'));
 
   expect(env).toEqual({
-    SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: call.env.SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS,
-    SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
+    SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: join(credentials, 'agent'),
     SWITCH_HOSTED_GITHUB_CLI: join(agentRoot, 'bin'),
   });
   expect((await stat(join(env.SWITCH_HOSTED_GITHUB_CLI!, 'gh'))).isFile()).toBe(true);
 });
 
-it('hands sessions nothing for a workspace with no repository', async () => {
+it('hands sessions nothing, and writes no gh wrapper, without a GitHub grant', async () => {
   await arrange({
     provider: 'claude',
     credential: connected('claude', 'setup-token', 'token-placeholder'),
+    workspace: { connections: ['linear'] },
   });
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
 
   expect(await hostedUnitGitHubEnvironment(agentRoot, config('claude'))).toEqual({});
+  await expect(stat(join(agentRoot, 'bin', 'gh'))).rejects.toThrow();
+  await expect(stat(join(agentRoot, 'bin', 'switch-github-grants'))).rejects.toThrow();
 });
 
 it.each([
@@ -194,12 +232,12 @@ it.each([
     credential: connected(provider, 'auth-json', login),
   });
 
-  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused);
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
 
   expect(await readFile(join(agentRoot, relative), 'utf8')).toBe(login);
   expect(await modeOf(join(agentRoot, relative))).toBe(0o600);
   expect((await stat(workspace.workspacePath)).isDirectory()).toBe(true);
-  expect(unused.ensureRepository).not.toHaveBeenCalled();
+  await expect(stat(join(agentRoot, 'bin', 'gh'))).rejects.toThrow();
 });
 
 it.each([
@@ -210,7 +248,7 @@ it.each([
   async (provider, kind) => {
     await arrange({ provider, credential: connected(provider, kind, 'token-placeholder') });
 
-    await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused);
+    await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
 
     await expect(stat(join(agentRoot, 'provider-home', 'auth.json'))).rejects.toThrow();
     await expect(stat(join(agentRoot, 'provider-data', 'opencode'))).rejects.toThrow();
@@ -220,14 +258,14 @@ it.each([
 it('refuses a disconnected provider', async () => {
   await arrange({ provider: 'codex', credential: { status: 'revoked' } });
   await expect(
-    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
+    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials })
   ).rejects.toThrow('The provider was disconnected');
 });
 
 it('refuses a sign-in for another provider', async () => {
   await arrange({ provider: 'codex', credential: connected('claude', 'api-key', 'placeholder') });
   await expect(
-    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
+    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials })
   ).rejects.toThrow('is for claude, not codex');
 });
 
@@ -240,7 +278,7 @@ it('refuses a launch configuration that reads credentials from elsewhere', async
     config: other,
   });
   await expect(
-    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
+    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials })
   ).rejects.toThrow("reads its Switch credentials from somewhere other than this unit's");
 });
 
@@ -257,7 +295,7 @@ it('refuses Switch credentials for another agent', async () => {
     })
   );
   await expect(
-    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
+    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials })
   ).rejects.toThrow('belongs to a different agent');
 });
 
@@ -265,11 +303,11 @@ it('refuses an invalid workspace description', async () => {
   await arrange({
     provider: 'claude',
     credential: connected('claude', 'api-key', 'placeholder'),
-    workspace: { repository: 'example/project' },
+    workspace: { repository: 'example/project' } as Partial<HostedWorkspace>,
   });
   await expect(
-    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
-  ).rejects.toThrow('A repository and its mirror are given together.');
+    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials })
+  ).rejects.toThrow('is invalid');
 });
 
 it("seeds the watcher with a worker volume's assignments, once", async () => {
@@ -282,7 +320,7 @@ it("seeds the watcher with a worker volume's assignments, once", async () => {
   await writeFile(join(agentRoot, 'assignments.jsonl'), 'worker assignments\n');
   await writeFile(join(agentRoot, 'placements.json'), '{"placements":{}}');
 
-  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused);
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
   expect(await readFile(join(agentRoot, 'watcher', 'assignments.jsonl'), 'utf8')).toBe(
     'worker assignments\n'
   );
@@ -292,7 +330,7 @@ it("seeds the watcher with a worker volume's assignments, once", async () => {
 
   await writeFile(join(agentRoot, 'watcher', 'placements.json'), '{"placements":{"a":"b"}}');
   await rm(join(agentRoot, 'watcher', 'assignments.jsonl'));
-  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused);
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
   await expect(stat(join(agentRoot, 'watcher', 'assignments.jsonl'))).rejects.toThrow();
 });
 
@@ -303,7 +341,7 @@ it('refuses a worker volume that belongs to another agent', async () => {
     JSON.stringify({ version: 1, spec: { session: { agentId: 'another-agent' } } })
   );
   await expect(
-    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
+    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials })
   ).rejects.toThrow(`does not belong to agent ${AGENT}`);
 });
 
@@ -314,6 +352,6 @@ it('refuses a worker volume whose layout migration never finished', async () => 
     JSON.stringify({ version: 1, spec: { session: { agentId: AGENT } } })
   );
   await expect(
-    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials }, unused)
+    prepareHostedAgent({ agentRoot, credentialsDirectory: credentials })
   ).rejects.toThrow('layout migration never finished');
 });

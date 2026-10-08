@@ -37,6 +37,7 @@ const assignment = {
         directory: null,
         isolation: 'shared' as const,
         skills: [],
+        connections: [],
       },
     },
   ],

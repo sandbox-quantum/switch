@@ -1788,7 +1788,7 @@ describe('agent management calls', () => {
     });
   });
 
-  it('carries the repository the server holds over a PUT of the definition', async () => {
+  it('carries the connections the server holds over a PUT of the definition', async () => {
     const definition = {
       provider: 'claude',
       model: null,
@@ -1797,10 +1797,12 @@ describe('agent management calls', () => {
       auto_approve: false,
       directory: null,
     };
-    const repository = { installation_id: 7, repository_id: 42 };
+    const connections = [
+      { slug: 'github', installations: [{ installation_id: 7, repositories: [42] }] },
+    ];
     fetchMock
       .mockImplementationOnce(async () =>
-        respond(200, { agent_id: 'agent-1', definition: { ...definition, repository } })
+        respond(200, { agent_id: 'agent-1', definition: { ...definition, connections } })
       )
       .mockImplementationOnce(async () => respond(200, {}));
     await putManagedAgent(SERVER, 'agent-1', {
@@ -1814,7 +1816,7 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({
       controller_id: 'controller-1',
       desired_state: 'running',
-      definition: { ...definition, instructions: 'Be brief.', repository },
+      definition: { ...definition, instructions: 'Be brief.', connections },
     });
 
     fetchMock
@@ -1872,6 +1874,9 @@ describe('agent management calls', () => {
             auto_approve: true,
             directory: '/work/scout',
             isolation: 'isolated',
+            connections: [
+              { slug: 'github', installations: [{ installation_id: 7, repositories: 'all' }] },
+            ],
           },
           status: {
             process: 'failed',
@@ -1918,6 +1923,9 @@ describe('agent management calls', () => {
         isolation: 'isolated',
         directory: '/work/scout',
         autoApprove: true,
+        connections: [
+          { slug: 'github', installations: [{ installation_id: 7, repositories: 'all' }] },
+        ],
         status: {
           process: 'failed',
           attached: false,
@@ -1942,6 +1950,7 @@ describe('agent management calls', () => {
         isolation: 'shared',
         directory: null,
         autoApprove: false,
+        connections: [],
         status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
       },
       {
@@ -1960,6 +1969,7 @@ describe('agent management calls', () => {
         isolation: 'shared',
         directory: null,
         autoApprove: false,
+        connections: [],
         status: null,
       },
     ]);
@@ -1979,6 +1989,23 @@ describe('agent management calls', () => {
     );
     await expect(fetchManagedAgent(SERVER, 'agent-1')).rejects.toThrow(
       /advanced configuration for managed agent agent-1/
+    );
+  });
+
+  it('refuses connection grants it cannot read rather than dropping them', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, {
+        agent_id: 'agent-1',
+        name: 'scout',
+        display_name: null,
+        controller_id: null,
+        desired_state: 'running',
+        definition: { provider: 'claude', connections: [{ slug: 'github', installations: 'all' }] },
+        status: null,
+      })
+    );
+    await expect(fetchManagedAgent(SERVER, 'agent-1')).rejects.toThrow(
+      /connection grants for managed agent agent-1/
     );
   });
 

@@ -76,9 +76,11 @@ _AGENT_SESSIONS_PREFIX = "/agent-sessions/"
 # from `X-Switch-Agent-Id` alone.
 _NOT_AN_AGENT_SEGMENT = frozenset({"rooms", "feature-flags"})
 # Routes outside `/agents/` a controller may also act as an agent on, naming
-# it with `X-Switch-Agent-Id`: a Switch cloud controller fetches each of its
-# agents' repository tokens here.
-_ACT_AS_PATHS = frozenset({"/hosted/github-credential"})
+# it with `X-Switch-Agent-Id`: a Switch cloud controller reads each of its
+# agents' connection grants and fetches their connection credentials here.
+_ACT_AS_PATHS = frozenset(
+    {"/hosted/connections", "/hosted/connections/github/credential"}
+)
 # Registration: a controller registers nothing, so its token is refused here.
 _REGISTRATION_SEGMENTS = frozenset({"register-known", "register-known-bulk"})
 # The connection surface a controller serves its agents itself, from its own

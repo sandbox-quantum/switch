@@ -71,8 +71,7 @@ async function writeUnitState(flags: { enabled: boolean }): Promise<void> {
   await writeFile(
     join(agentRoot, 'workspace.json'),
     JSON.stringify({
-      repository: null,
-      mirrorPath: null,
+      connections: [],
       workspacePath: join(base, 'workspace'),
       skills: [],
       instructions: '',
@@ -145,8 +144,7 @@ it('prepares an agent root from its systemd credentials', async () => {
   await writeFile(
     join(agentRoot, 'workspace.json'),
     JSON.stringify({
-      repository: null,
-      mirrorPath: null,
+      connections: [],
       workspacePath: join(base, 'workspace'),
       skills: [],
       instructions: '',

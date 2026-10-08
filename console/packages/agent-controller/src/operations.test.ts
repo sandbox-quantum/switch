@@ -21,6 +21,7 @@ function entry(desired: 'running' | 'stopped' = 'running'): AgentAssignment {
       directory: null,
       isolation: 'shared',
       skills: [],
+      connections: [],
     },
   };
 }

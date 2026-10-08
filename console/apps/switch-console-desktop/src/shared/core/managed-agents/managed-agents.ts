@@ -1,5 +1,6 @@
 import type { RepoAgentField } from '@switch-console/core/agents/plugins';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
+import type { ConnectionGrant } from '@shared/core/switch-servers/connection-grants';
 
 /**
  * An agent whose configuration lives on its Switch server: what it is, the
@@ -33,6 +34,8 @@ export type ManagedAgentView = {
      */
     directory: string | null;
     isolation: 'shared' | 'isolated';
+    /** The connections it is granted; empty for none. Only a cloud agent has any. */
+    connections: ConnectionGrant[];
   };
   /** What its machine last reported for it, or null before it has. */
   status: {

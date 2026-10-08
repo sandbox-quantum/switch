@@ -44,6 +44,9 @@ NOT_FOUND = "not_found"
 VALIDATION_ERROR = "validation_error"
 INSTANCE_MISMATCH = "instance_mismatch"
 RELAY_RESOLVED = "relay_resolved"
+# The owner's GitHub sign-in is missing or expired, so a GitHub grant cannot
+# be checked; the same code the GitHub connection routes answer.
+GITHUB_RECONNECT_REQUIRED = "github_reconnect_required"
 
 ALL_REASON_CODES = frozenset(
     {
@@ -81,5 +84,6 @@ ALL_REASON_CODES = frozenset(
         VALIDATION_ERROR,
         INSTANCE_MISMATCH,
         RELAY_RESOLVED,
+        GITHUB_RECONNECT_REQUIRED,
     }
 )

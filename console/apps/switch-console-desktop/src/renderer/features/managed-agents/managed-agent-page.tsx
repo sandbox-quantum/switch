@@ -26,6 +26,10 @@ import { AutoApproveRow } from '@renderer/features/locations/components/settings
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { connectionGrantsProblem } from '@renderer/features/switch-servers/connection-grants';
+import { ConnectionGrantsEditor } from '@renderer/features/switch-servers/connection-grants-editor';
+import { useConnectionCatalog } from '@renderer/features/switch-servers/connections-step';
+import { switchCloudFeature } from '@renderer/features/switch-servers/switch-cloud-feature';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -46,6 +50,7 @@ import {
   isValidProviderId,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
+import type { ConnectionGrant } from '@shared/core/switch-servers/connection-grants';
 import { InlineEditableText } from './inline-editable-text';
 import {
   type Draft,
@@ -55,7 +60,7 @@ import {
   managedAdvancedFields,
   MODEL_FIELD,
 } from './managed-agent-changes';
-import { managedAgentLabel } from './managed-agent-state';
+import { isCloudManagedAgent, managedAgentLabel } from './managed-agent-state';
 import { ManagedMachinePill } from './managed-machine-card';
 import {
   MANAGED_AGENTS_KEY,
@@ -114,6 +119,11 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
       setError(
         'Give the agent a description before saving: it is how people and agents know what it is for.'
       );
+      return;
+    }
+    const grantsProblem = connectionGrantsProblem(draft.connections, () => null);
+    if (grantsProblem) {
+      setError(grantsProblem);
       return;
     }
     const target = { workspaceId: agent.workspaceId, agentId: agent.agentId };
@@ -321,6 +331,13 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                 }
               />
             </section>
+            {switchCloudFeature.enabled && isCloudManagedAgent(agent) && (
+              <ManagedAgentConnections
+                serverId={agent.serverId}
+                value={draft.connections}
+                onChange={(connections) => setValue('connections', connections)}
+              />
+            )}
             <div className="flex flex-col gap-2">
               <AdvancedConfigDisclosure
                 fields={fields}
@@ -368,6 +385,43 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
       )}
       <AgentSaveBar />
     </div>
+  );
+}
+
+/**
+ * What a cloud agent can reach on its owner's behalf. Saved with the rest of
+ * the page; Switch checks each grant against the owner's own access.
+ */
+function ManagedAgentConnections({
+  serverId,
+  value,
+  onChange,
+}: {
+  serverId: string;
+  value: ConnectionGrant[];
+  onChange: (value: ConnectionGrant[]) => void;
+}) {
+  const catalog = useConnectionCatalog(serverId);
+  const showConnections = useShowModal('connectionsModal');
+  const installations = catalog.github?.status === 'connected' ? catalog.github.installations : [];
+  const problem = connectionGrantsProblem(
+    value,
+    (id) => installations.find((installation) => installation.id === id)?.account ?? null
+  );
+  return (
+    <section className="flex flex-col gap-3">
+      <SectionLabel>Connections</SectionLabel>
+      <p className="text-sm text-foreground-muted">
+        What the agent can reach on your behalf. It gets working credentials for each grant.
+      </p>
+      <ConnectionGrantsEditor
+        catalog={catalog}
+        value={value}
+        onChange={onChange}
+        onConnect={() => showConnections({ serverId, onClose: () => void catalog.reload() })}
+      />
+      {problem && <p className="text-xs text-foreground-destructive">{problem}</p>}
+    </section>
   );
 }
 

@@ -1,20 +1,26 @@
-import { execFile, spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  ensureHostedRepository,
+  type GitHubInstallation,
+  type GrantedGitHubInstallation,
   githubLaunchEnvironment,
-  githubRedactions,
   gitHubCredentialResponse,
   hostedGitHubEnvironment,
+  listGitHubInstallations,
+  ownerFromCredentialPath,
+  ownerFromRemoteUrl,
+  ownerFromRepoArgument,
   readGitHubCredential,
   renewGitHubCredential,
+  repoArgument,
+  runGitHubList,
+  selectCliInstallation,
   validateGitHubCredential,
 } from './hosted-github';
-import { redactHostedText } from './hosted-log';
 
 const roots: string[] = [];
 const token = 'synthetic-github-credential';
@@ -41,116 +47,7 @@ it('provides credentials only for the exact GitHub HTTPS host', () => {
   expect(gitHubCredentialResponse('erase', 'protocol=https\nhost=github.com\n', token)).toBe('');
 });
 
-it('renews only the assigned repository credential and hides failed response bodies', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hosted-github-refresh-'));
-  roots.push(root);
-  const credentials = join(root, 'switch.json');
-  await writeFile(
-    credentials,
-    JSON.stringify({
-      env: {
-        SWITCH_API_ENDPOINT: 'https://switch.example.com/api/agent',
-        SWITCH_API_TOKEN: 'synthetic-switch-credential',
-      },
-    })
-  );
-  const request = vi.fn(
-    async () =>
-      new Response(
-        JSON.stringify({
-          token,
-          repository: 'example/project',
-          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-        })
-      )
-  );
-  vi.stubGlobal('fetch', request);
-  expect(await renewGitHubCredential(credentials, 'example/project')).toBe(token);
-  expect(request.mock.calls[0]).toEqual([
-    'https://switch.example.com/api/agent/hosted/github-credential',
-    expect.objectContaining({ method: 'POST', redirect: 'error' }),
-  ]);
-  await expect(renewGitHubCredential(credentials, 'example/other')).rejects.toThrow(
-    'Could not renew'
-  );
-  request.mockImplementation(async () => new Response('remote-secret-body', { status: 403 }));
-  await expect(renewGitHubCredential(credentials, 'example/project')).rejects.toThrow(
-    'Could not renew'
-  );
-});
-
-it("renews over plain HTTP only through an agents controller's relay on this machine", async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hosted-github-relay-'));
-  roots.push(root);
-  const credentials = join(root, 'agent');
-  const request = vi.fn(
-    async () =>
-      new Response(
-        JSON.stringify({
-          token,
-          repository: 'example/project',
-          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-        })
-      )
-  );
-  vi.stubGlobal('fetch', request);
-  const endpoint = async (value: string) =>
-    writeFile(
-      credentials,
-      JSON.stringify({
-        env: {
-          SWITCH_API_ENDPOINT: value,
-          SWITCH_API_TOKEN: 'synthetic-relay-credential',
-        },
-      })
-    );
-  await endpoint('http://127.0.0.1:47100');
-  expect(await renewGitHubCredential(credentials, 'example/project')).toBe(token);
-  expect((request.mock.calls as unknown[][])[0]?.[0]).toBe(
-    'http://127.0.0.1:47100/hosted/github-credential'
-  );
-  for (const remote of ['http://switch.example.com', 'http://127.0.0.1.example.com:47100']) {
-    await endpoint(remote);
-    await expect(renewGitHubCredential(credentials, 'example/project')).rejects.toThrow(
-      'Could not renew'
-    );
-  }
-  expect(request).toHaveBeenCalledOnce();
-});
-
-describe('hostedGitHubEnvironment', () => {
-  const host = {
-    SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/credentials/unit/agent',
-    SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
-    SWITCH_HOSTED_GITHUB_CLI: '/data/agents/agent/bin',
-  };
-
-  it('gives nothing on a host that is not an agent unit with a repository', () => {
-    expect(hostedGitHubEnvironment({}, '/usr/bin:/bin')).toEqual({});
-  });
-
-  it("points git's helper and gh at the unit's credentials, ahead of anything else on PATH", () => {
-    const env = hostedGitHubEnvironment(host, '/data/agents/agent/bin:/usr/local/bin:/usr/bin');
-    expect(env).toMatchObject({
-      ...githubLaunchEnvironment(),
-      SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/credentials/unit/agent',
-      SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
-      PATH: '/data/agents/agent/bin:/usr/local/bin:/usr/bin',
-    });
-    expect(env.GIT_CONFIG_VALUE_1).toContain('--git-credential');
-    expect(hostedGitHubEnvironment(host, undefined).PATH).toBe('/data/agents/agent/bin');
-  });
-
-  it('refuses a host that sets only some of its variables', () => {
-    expect(() =>
-      hostedGitHubEnvironment({ SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project' }, '/bin')
-    ).toThrow('set together');
-  });
-});
-
-it('keeps raw and common transport encodings out of redacted output', () => {
-  const secrets = githubRedactions(token);
-  for (const value of secrets) expect(redactHostedText(value, secrets)).toBe('[REDACTED]');
+it('puts no credential in the launch environment', () => {
   expect(JSON.stringify(githubLaunchEnvironment())).not.toContain(token);
 });
 
@@ -272,286 +169,489 @@ it.each([
   expect(request).not.toHaveBeenCalled();
 });
 
-it.each([409, 503, 422])('retries a token renewal only for retryable status %s', async (status) => {
-  const root = await mkdtemp(join(tmpdir(), 'hosted-github-retry-'));
+const servers: Server[] = [];
+afterEach(async () => {
+  for (const server of servers.splice(0))
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+const INSTALLATIONS: GitHubInstallation[] = [
+  { installation_id: 123, account: 'acme', repositories: 'all' },
+  { installation_id: 456, account: 'example-user', repositories: ['example-user/demo'] },
+];
+
+const UNAVAILABLE: GrantedGitHubInstallation[] = [
+  ...INSTALLATIONS,
+  {
+    installation_id: 789,
+    account: 'stale-org',
+    error: 'Your GitHub account cannot push to any repository of stale-org.',
+  },
+  {
+    installation_id: 321,
+    account: null,
+    error: 'Your GitHub account no longer has access to GitHub installation 321.',
+  },
+];
+
+function listing(installations: GrantedGitHubInstallation[] = INSTALLATIONS) {
+  return { connections: [{ slug: 'github', installations }] };
+}
+
+function credential(installationId: number, overrides: Record<string, unknown> = {}) {
+  return {
+    token,
+    expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    installation_id: installationId,
+    account: 'acme',
+    repositories: 'all',
+    ...overrides,
+  };
+}
+
+async function switchCredentials(endpoint: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'hosted-github-switch-'));
   roots.push(root);
-  const path = join(root, 'switch.json');
+  const path = join(root, 'agent');
   await writeFile(
     path,
     JSON.stringify({
-      env: {
-        SWITCH_API_ENDPOINT: 'https://switch.example.com/api/agent',
-        SWITCH_API_TOKEN: 'synthetic-switch-credential',
-      },
+      env: { SWITCH_API_ENDPOINT: endpoint, SWITCH_API_TOKEN: 'synthetic-switch-credential' },
     })
   );
-  const request = vi
-    .fn()
-    .mockResolvedValueOnce(new Response('unavailable', { status }))
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          token,
-          repository: 'example/project',
-          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-        })
+  return path;
+}
+
+describe('listing and renewal through Switch', () => {
+  it('lists the granted GitHub installations, ignoring other connections', async () => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    const request = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            connections: [{ slug: 'linear', installations: 'whatever' }, ...listing().connections],
+          })
+        )
+    );
+    vi.stubGlobal('fetch', request);
+    expect(await listGitHubInstallations(credentials)).toEqual(INSTALLATIONS);
+    expect(request.mock.calls[0]).toEqual([
+      'https://switch.example.com/api/agent/hosted/connections',
+      expect.objectContaining({ method: 'GET', redirect: 'error' }),
+    ]);
+  });
+
+  it('lists a granted installation Switch could not confirm with its reason', async () => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(listing(UNAVAILABLE))))
+    );
+    expect(await listGitHubInstallations(credentials)).toEqual(UNAVAILABLE);
+  });
+
+  it.each([
+    [
+      403,
+      { detail: 'This GitHub installation is not granted to the agent.' },
+      'Could not renew GitHub access: Switch answered 403: This GitHub installation is not granted to the agent.',
+    ],
+    [
+      422,
+      { detail: 'The owner must reconnect GitHub.', code: 'github_reconnect_required' },
+      "Could not renew GitHub access: Switch answered 422 (github_reconnect_required): The owner must reconnect GitHub. The agent's owner must reconnect GitHub in Switch.",
+    ],
+    [
+      409,
+      { detail: 'The agent or its GitHub connection changed.\nPlease retry.' },
+      'Could not renew GitHub access: Switch answered 409: The agent or its GitHub connection changed. Please retry.',
+    ],
+  ])('names the reason Switch gives for refusing with %s', async (status, body, message) => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(body), { status }))
+    );
+    await expect(renewGitHubCredential(credentials, 123)).rejects.toThrow(message);
+  });
+
+  it('names the status, and only the status, when Switch gives no JSON reason', async () => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('<html>remote-secret-body</html>', { status: 503 }))
+    );
+    const failure = listGitHubInstallations(credentials);
+    await expect(failure).rejects.toThrow(
+      'Could not read the GitHub access granted to this agent: Switch answered 503'
+    );
+    await expect(failure).rejects.not.toThrow('remote-secret-body');
+  });
+
+  it('prints each granted account for --list, with the reason for one that is unavailable', async () => {
+    vi.stubEnv(
+      'SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS',
+      await switchCredentials('https://switch.example.com/api/agent')
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(listing(UNAVAILABLE))))
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runGitHubList();
+      expect(log.mock.calls.map(([line]) => line)).toEqual([
+        'acme: all repositories',
+        'example-user: example-user/demo',
+        'stale-org: unavailable: Your GitHub account cannot push to any repository of stale-org.',
+        'installation 321: unavailable: Your GitHub account no longer has access to GitHub installation 321.',
+      ]);
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('lists nothing when GitHub is not among the grants', async () => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ connections: [] })))
+    );
+    expect(await listGitHubInstallations(credentials)).toEqual([]);
+  });
+
+  it('renews a token for exactly the installation asked for, and hides failed bodies', async () => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    const request = vi.fn(async () => new Response(JSON.stringify(credential(123))));
+    vi.stubGlobal('fetch', request);
+    expect(await renewGitHubCredential(credentials, 123)).toBe(token);
+    const [url, init] = request.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/api/agent/hosted/connections/github/credential');
+    expect(init).toMatchObject({ method: 'POST', redirect: 'error' });
+    expect(JSON.parse(String(init.body))).toEqual({ installation_id: 123 });
+    await expect(renewGitHubCredential(credentials, 456)).rejects.toThrow('Could not renew');
+    request.mockImplementation(async () => new Response('remote-secret-body', { status: 403 }));
+    await expect(renewGitHubCredential(credentials, 123)).rejects.toThrow('Could not renew');
+    try {
+      await renewGitHubCredential(credentials, 123);
+    } catch (error) {
+      expect(String(error)).not.toContain('remote-secret-body');
+    }
+  });
+
+  it('refuses a token about to expire', async () => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify(
+              credential(123, { expires_at: new Date(Date.now() + 1_000).toISOString() })
+            )
+          )
       )
     );
-  vi.stubGlobal('fetch', request);
-  if (status === 422) {
-    await expect(renewGitHubCredential(path, 'example/project')).rejects.toThrow('Could not renew');
-    expect(request).toHaveBeenCalledTimes(1);
-  } else {
-    expect(await renewGitHubCredential(path, 'example/project')).toBe(token);
-    expect(request).toHaveBeenCalledTimes(2);
-  }
+    await expect(renewGitHubCredential(credentials, 123)).rejects.toThrow('Could not renew');
+  });
+
+  it("reaches Switch over plain HTTP only through an agents controller's relay on this machine", async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify(credential(123))));
+    vi.stubGlobal('fetch', request);
+    expect(
+      await renewGitHubCredential(await switchCredentials('http://127.0.0.1:47100'), 123)
+    ).toBe(token);
+    expect((request.mock.calls as unknown[][])[0]?.[0]).toBe(
+      'http://127.0.0.1:47100/hosted/connections/github/credential'
+    );
+    for (const remote of ['http://switch.example.com', 'http://127.0.0.1.example.com:47100']) {
+      const credentials = await switchCredentials(remote);
+      await expect(renewGitHubCredential(credentials, 123)).rejects.toThrow('Could not renew');
+      await expect(listGitHubInstallations(credentials)).rejects.toThrow('Could not read');
+    }
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it.each([409, 503, 422])('retries only for retryable status %s', async (status) => {
+    const credentials = await switchCredentials('https://switch.example.com/api/agent');
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('unavailable', { status }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(credential(123))));
+    vi.stubGlobal('fetch', request);
+    if (status === 422) {
+      await expect(renewGitHubCredential(credentials, 123)).rejects.toThrow('Could not renew');
+      expect(request).toHaveBeenCalledTimes(1);
+    } else {
+      expect(await renewGitHubCredential(credentials, 123)).toBe(token);
+      expect(request).toHaveBeenCalledTimes(2);
+    }
+  });
 });
 
-describe('ensureHostedRepository', () => {
-  const exec = promisify(execFile);
-  const AGENT = '00000000-0000-4000-8000-000000000001';
-  const OTHER = '00000000-0000-4000-8000-000000000002';
+describe('hostedGitHubEnvironment', () => {
+  const host = {
+    SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/credentials/unit/agent',
+    SWITCH_HOSTED_GITHUB_CLI: '/data/agents/agent/bin',
+  };
 
-  /** util-linux `flock <file> <command...>`, which macOS lacks. */
-  const FLOCK_SHIM = [
-    '#!/usr/bin/env python3',
-    'import fcntl, os, sys',
-    'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)',
-    'os.set_inheritable(fd, True)',
-    'fcntl.flock(fd, fcntl.LOCK_EX)',
-    'os.execvp(sys.argv[2], sys.argv[2:])',
-    '',
-  ].join('\n');
+  it('gives nothing on a host that is not an agent unit granted GitHub', () => {
+    expect(hostedGitHubEnvironment({}, '/usr/bin:/bin')).toEqual({});
+  });
 
-  async function repositories() {
-    const root = await realpath(await mkdtemp(join(tmpdir(), 'hosted-repository-')));
-    roots.push(root);
-    const bin = join(root, 'bin');
-    await mkdir(bin);
-    await writeFile(join(bin, 'flock'), FLOCK_SHIM);
-    await chmod(join(bin, 'flock'), 0o755);
-    const upstream = join(root, 'upstream');
-    const env: NodeJS.ProcessEnv = {
-      PATH: `${bin}:${process.env.PATH}`,
-      HOME: root,
-      GIT_CONFIG_NOSYSTEM: '1',
-      GIT_TERMINAL_PROMPT: '0',
-      GIT_AUTHOR_NAME: 'Fixture',
-      GIT_AUTHOR_EMAIL: 'fixture@example.test',
-      GIT_COMMITTER_NAME: 'Fixture',
-      GIT_COMMITTER_EMAIL: 'fixture@example.test',
-      GIT_CONFIG_COUNT: '1',
-      GIT_CONFIG_KEY_0: `url.file://${upstream}/.insteadOf`,
-      GIT_CONFIG_VALUE_0: 'https://github.com/',
+  it("points git's helper and gh at the unit's credentials, ahead of anything else on PATH", () => {
+    const env = hostedGitHubEnvironment(host, '/data/agents/agent/bin:/usr/local/bin:/usr/bin');
+    expect(env).toMatchObject({
+      ...githubLaunchEnvironment(),
+      SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/credentials/unit/agent',
+      PATH: '/data/agents/agent/bin:/usr/local/bin:/usr/bin',
+    });
+    expect(env).not.toHaveProperty('SWITCH_HOSTED_GITHUB_REPOSITORY');
+    expect(env.GIT_CONFIG_VALUE_1).toContain('--git-credential');
+    expect(env).toMatchObject({
+      GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+      GIT_CONFIG_VALUE_3: 'true',
+    });
+    expect(hostedGitHubEnvironment(host, undefined).PATH).toBe('/data/agents/agent/bin');
+  });
+
+  it('refuses a host that sets only some of its variables', () => {
+    expect(() =>
+      hostedGitHubEnvironment({ SWITCH_HOSTED_GITHUB_CLI: '/data/agents/agent/bin' }, '/bin')
+    ).toThrow('set together');
+  });
+});
+
+describe('owners', () => {
+  it('reads the owner from a credential request path', () => {
+    expect(ownerFromCredentialPath('acme/project.git')).toBe('acme');
+    expect(ownerFromCredentialPath('Acme/project')).toBe('Acme');
+    expect(ownerFromCredentialPath(undefined)).toBeNull();
+    expect(ownerFromCredentialPath('../x')).toBeNull();
+  });
+
+  it('reads the owner from the -R forms gh accepts, and from github.com remotes only', () => {
+    expect(ownerFromRepoArgument('acme/project')).toBe('acme');
+    expect(ownerFromRepoArgument('github.com/acme/project')).toBe('acme');
+    expect(ownerFromRepoArgument('https://github.com/acme/project.git')).toBe('acme');
+    expect(ownerFromRepoArgument('gitlab.example.com/acme/project')).toBeNull();
+    expect(ownerFromRepoArgument('project')).toBeNull();
+    expect(ownerFromRemoteUrl('git@github.com:acme/project.git')).toBe('acme');
+    expect(ownerFromRemoteUrl('ssh://git@github.com/acme/project.git')).toBe('acme');
+    expect(ownerFromRemoteUrl('https://github.com/acme/project')).toBe('acme');
+    expect(ownerFromRemoteUrl('https://gitlab.example.com/acme/project.git')).toBeNull();
+    expect(ownerFromRemoteUrl('git@gitlab.example.com:acme/project.git')).toBeNull();
+  });
+
+  it('finds -R/--repo in a gh command line, before any --', () => {
+    expect(repoArgument(['pr', 'list', '-R', 'acme/x'])).toBe('acme/x');
+    expect(repoArgument(['pr', 'list', '-Racme/x'])).toBe('acme/x');
+    expect(repoArgument(['pr', 'list', '--repo', 'acme/x'])).toBe('acme/x');
+    expect(repoArgument(['pr', 'list', '--repo=acme/x'])).toBe('acme/x');
+    expect(repoArgument(['pr', 'create', '--', '-R', 'acme/x'])).toBeUndefined();
+    expect(repoArgument(['pr', 'list'])).toBeUndefined();
+  });
+});
+
+describe('selectCliInstallation', () => {
+  const select = (input: {
+    args?: string[];
+    ghRepo?: string;
+    origin?: string | null;
+    installations?: GrantedGitHubInstallation[];
+  }) => {
+    const originUrl = vi.fn(async () => input.origin ?? null);
+    return {
+      originUrl,
+      result: selectCliInstallation({
+        installations: input.installations ?? INSTALLATIONS,
+        args: input.args ?? ['pr', 'list'],
+        ghRepo: input.ghRepo,
+        originUrl,
+      }),
     };
-    const git = async (...args: string[]) => (await exec('git', args, { env })).stdout.trim();
-    const seed = join(root, 'seed');
-    await git('init', '--bare', '-b', 'main', join(upstream, 'example', 'project.git'));
-    await git('init', '--bare', '-b', 'main', join(upstream, 'example', 'other.git'));
-    await git('init', '-b', 'main', seed);
-    const commit = async (message: string) => {
-      await writeFile(join(seed, 'README.md'), `${message}\n`);
-      await git('-C', seed, 'add', 'README.md');
-      await git('-C', seed, 'commit', '-m', message);
-      await git('-C', seed, 'push', '-q', 'https://github.com/example/project.git', 'main');
-      return git('-C', seed, 'rev-parse', 'HEAD');
-    };
-    const mirror = join(root, 'repos', 'example', 'project.git');
-    const workspace = (agentId: string) => join(root, 'worktrees', agentId, 'example', 'project');
-    const ensure = (agentId: string, repository = 'example/project', at = mirror) =>
-      ensureHostedRepository({
-        workspace: workspace(agentId),
-        mirror: at,
-        repository,
-        agentId,
-        env,
+  };
+
+  it('picks by the -R owner first, without regard to case', async () => {
+    const { result, originUrl } = select({
+      args: ['pr', 'list', '-R', 'Example-User/demo'],
+      ghRepo: 'acme/x',
+      origin: 'https://github.com/acme/x.git',
+    });
+    expect((await result).installation_id).toBe(456);
+    expect(originUrl).not.toHaveBeenCalled();
+  });
+
+  it('picks by the repository a gh repo command names', async () => {
+    const { result } = select({ args: ['repo', 'clone', 'example-user/demo', '--', '--depth=1'] });
+    expect((await result).installation_id).toBe(456);
+  });
+
+  it('picks by GH_REPO next', async () => {
+    const { result, originUrl } = select({
+      ghRepo: 'example-user/demo',
+      origin: 'https://github.com/acme/x.git',
+    });
+    expect((await result).installation_id).toBe(456);
+    expect(originUrl).not.toHaveBeenCalled();
+  });
+
+  it("picks by the current directory's github.com origin next", async () => {
+    expect((await select({ origin: 'git@github.com:acme/x.git' }).result).installation_id).toBe(
+      123
+    );
+  });
+
+  it('uses the only granted installation when nothing names an owner', async () => {
+    const { result } = select({
+      installations: [INSTALLATIONS[1]!],
+      origin: 'https://gitlab.example.com/acme/x.git',
+    });
+    expect((await result).installation_id).toBe(456);
+  });
+
+  it('fails naming the granted accounts when several are granted and nothing names one', async () => {
+    await expect(select({}).result).rejects.toThrow(
+      /Several GitHub accounts are granted to this agent \(acme, example-user\); pass -R owner\/repo/
+    );
+  });
+
+  it('fails naming the granted accounts for an owner that is not granted', async () => {
+    await expect(select({ args: ['pr', 'list', '-R', 'other/x'] }).result).rejects.toThrow(
+      "GitHub account 'other' is not granted to this agent. Granted accounts: acme, example-user."
+    );
+  });
+
+  it("fails with Switch's reason for a granted installation it could not confirm", async () => {
+    await expect(
+      select({ installations: UNAVAILABLE, args: ['pr', 'list', '-R', 'Stale-Org/x'] }).result
+    ).rejects.toThrow(
+      'GitHub access to stale-org granted to this agent is unavailable: Your GitHub account cannot push to any repository of stale-org.'
+    );
+    await expect(select({ installations: [UNAVAILABLE[3]!] }).result).rejects.toThrow(
+      'GitHub access to installation 321 granted to this agent is unavailable'
+    );
+  });
+
+  it('still picks a healthy installation beside one Switch could not confirm', async () => {
+    const { result } = select({ installations: UNAVAILABLE, ghRepo: 'acme/x' });
+    expect((await result).installation_id).toBe(123);
+  });
+
+  it('names an installation Switch could not confirm among the granted accounts', async () => {
+    await expect(
+      select({ installations: UNAVAILABLE, args: ['pr', 'list', '-R', 'other/x'] }).result
+    ).rejects.toThrow(
+      'Granted accounts: acme, example-user, stale-org (unavailable: Your GitHub account cannot push to any repository of stale-org.), installation 321 (unavailable: Your GitHub account no longer has access to GitHub installation 321.).'
+    );
+  });
+
+  it('fails when no installation is granted', async () => {
+    await expect(select({ installations: [] }).result).rejects.toThrow(
+      'No GitHub account is granted to this agent.'
+    );
+  });
+});
+
+describe('the git credential helper against a relay', () => {
+  async function relay(installations: GrantedGitHubInstallation[] = INSTALLATIONS) {
+    const requests: { method: string; url: string; body: string; auth: string }[] = [];
+    const server = createServer(async (req: IncomingMessage, res) => {
+      let body = '';
+      for await (const chunk of req) body += String(chunk);
+      requests.push({
+        method: req.method!,
+        url: req.url!,
+        body,
+        auth: req.headers.authorization ?? '',
       });
-    return { root, env, git, commit, mirror, workspace, ensure };
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'GET' && req.url === '/hosted/connections')
+        return res.end(JSON.stringify(listing(installations)));
+      if (req.method === 'POST' && req.url === '/hosted/connections/github/credential') {
+        const installationId = (JSON.parse(body) as { installation_id: number }).installation_id;
+        return res.end(
+          JSON.stringify(credential(installationId, { token: `${token}-${installationId}` }))
+        );
+      }
+      res.statusCode = 404;
+      res.end('{}');
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const { port } = server.address() as { port: number };
+    return { requests, credentials: await switchCredentials(`http://127.0.0.1:${port}`) };
   }
 
-  it('creates the mirror and a worktree on the agent branch at the default branch', async () => {
-    const { git, commit, mirror, workspace, ensure } = await repositories();
-    const head = await commit('first');
-    await mkdir(workspace(AGENT), { recursive: true });
-    await ensure(AGENT);
-    expect(await git('--git-dir', mirror, 'rev-parse', '--is-bare-repository')).toBe('true');
-    expect(await git('--git-dir', mirror, 'config', 'remote.origin.url')).toBe(
-      'https://github.com/example/project.git'
+  async function helperGit(credentials: string) {
+    const root = await mkdtemp(join(tmpdir(), 'hosted-github-helper-'));
+    roots.push(root);
+    const script = join(root, 'helper.mjs');
+    const moduleUrl = new URL('./hosted-github.ts', import.meta.url).href;
+    await writeFile(
+      script,
+      `import { runGitHubCredentialHelper } from ${JSON.stringify(moduleUrl)}; await runGitHubCredentialHelper(process.argv.at(-1));`
     );
-    expect(await git('--git-dir', mirror, 'config', 'remote.origin.fetch')).toBe(
-      '+refs/heads/*:refs/remotes/origin/*'
-    );
-    expect(await git('-C', workspace(AGENT), 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(
-      `switch/${AGENT}`
-    );
-    expect(await git('-C', workspace(AGENT), 'rev-parse', 'HEAD')).toBe(head);
-    expect(await readFile(join(workspace(AGENT), 'README.md'), 'utf8')).toBe('first\n');
-  });
-
-  it('gives a second agent its own worktree over the same mirror', async () => {
-    const { git, commit, mirror, workspace, ensure } = await repositories();
-    const head = await commit('first');
-    await ensure(AGENT);
-    await ensure(OTHER);
-    for (const agentId of [AGENT, OTHER]) {
-      const common = await git('-C', workspace(agentId), 'rev-parse', '--git-common-dir');
-      expect(await realpath(resolve(workspace(agentId), common))).toBe(mirror);
-      expect(await git('-C', workspace(agentId), 'rev-parse', 'HEAD')).toBe(head);
-    }
-    expect(await git('-C', workspace(OTHER), 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(
-      `switch/${OTHER}`
-    );
-    const listed = await git('--git-dir', mirror, 'worktree', 'list', '--porcelain');
-    expect(listed).toContain(`worktree ${workspace(AGENT)}`);
-    expect(listed).toContain(`worktree ${workspace(OTHER)}`);
-  });
-
-  it('accepts its existing worktree on a rerun and still fetches', async () => {
-    const { git, commit, mirror, workspace, ensure } = await repositories();
-    const first = await commit('first');
-    await ensure(AGENT);
-    await writeFile(join(workspace(AGENT), 'work.txt'), 'in progress\n');
-    const second = await commit('second');
-    await ensure(AGENT);
-    expect(await git('--git-dir', mirror, 'rev-parse', 'refs/remotes/origin/main')).toBe(second);
-    expect(await git('-C', workspace(AGENT), 'rev-parse', 'HEAD')).toBe(first);
-    expect(await readFile(join(workspace(AGENT), 'work.txt'), 'utf8')).toBe('in progress\n');
-  });
-
-  it('refuses a non-empty workspace that is not a worktree of the mirror', async () => {
-    const { commit, mirror, workspace, ensure, git } = await repositories();
-    await commit('first');
-    await mkdir(workspace(AGENT), { recursive: true });
-    await writeFile(join(workspace(AGENT), 'stray.txt'), 'kept\n');
-    await expect(ensure(AGENT)).rejects.toThrow(
-      'Could not prepare the selected GitHub repository (the workspace holds files that are not its worktree).'
-    );
-    expect(await readFile(join(workspace(AGENT), 'stray.txt'), 'utf8')).toBe('kept\n');
-    expect(await git('--git-dir', mirror, 'worktree', 'list', '--porcelain')).not.toContain(
-      workspace(AGENT)
-    );
-  });
-
-  it('shares the mirror with an agent that names the repository in another case', async () => {
-    const { git, commit, mirror, workspace, ensure } = await repositories();
-    const head = await commit('first');
-    await ensure(AGENT);
-    await ensure(OTHER, 'Example/Project');
-    const common = await git('-C', workspace(OTHER), 'rev-parse', '--git-common-dir');
-    expect(await realpath(resolve(workspace(OTHER), common))).toBe(mirror);
-    expect(await git('-C', workspace(OTHER), 'rev-parse', 'HEAD')).toBe(head);
-  });
-
-  it('refuses a mirror whose origin is a different repository', async () => {
-    const { commit, mirror, workspace, ensure, git } = await repositories();
-    await commit('first');
-    await git('init', '--bare', mirror);
-    await git(
-      '--git-dir',
-      mirror,
-      'remote',
-      'add',
-      'origin',
-      'https://github.com/example/other.git'
-    );
-    await expect(ensure(AGENT)).rejects.toThrow(
-      'Could not prepare the selected GitHub repository (the mirror belongs to a different repository).'
-    );
-    await expect(readFile(join(workspace(AGENT), 'README.md'))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
-  });
-
-  it('moves a worktree of a shared mirror onto its own without writing the shared one', async () => {
-    const { root, git, commit, mirror: shared, workspace, ensure } = await repositories();
-    const own = join(root, 'agents', AGENT, 'repos', 'example', 'project.git');
-    const marker = join(root, 'hook-ran');
-    await commit('first');
-    await ensure(AGENT, 'example/project', shared);
-    await ensure(OTHER, 'example/project', shared);
-    const ws = workspace(AGENT);
-    await writeFile(join(ws, 'WORK.md'), 'committed\n');
-    await git('-C', ws, 'add', 'WORK.md');
-    await git('-C', ws, 'commit', '-q', '-m', 'Work');
-    const work = await git('-C', ws, 'rev-parse', 'HEAD');
-    await writeFile(join(ws, 'staged.txt'), 'staged\n');
-    await git('-C', ws, 'add', 'staged.txt');
-    await writeFile(join(ws, 'untracked.txt'), 'untracked\n');
-    await mkdir(join(shared, 'planted'));
-    await writeFile(join(shared, 'planted', 'pre-commit'), `#!/bin/sh\ntouch ${marker}\n`);
-    await chmod(join(shared, 'planted', 'pre-commit'), 0o755);
-    await git('--git-dir', shared, 'config', 'core.hooksPath', join(shared, 'planted'));
-    await exec('chmod', ['-R', 'a-w', shared]);
-    try {
-      await ensure(AGENT, 'example/project', own);
-      await ensure(AGENT, 'example/project', own);
-    } finally {
-      await exec('chmod', ['-R', 'u+w', shared]);
-    }
-    const common = await git('-C', ws, 'rev-parse', '--git-common-dir');
-    expect(await realpath(resolve(ws, common))).toBe(own);
-    expect(await git('-C', ws, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(`switch/${AGENT}`);
-    expect(await git('-C', ws, 'rev-parse', 'HEAD')).toBe(work);
-    expect(await git('-C', ws, 'diff', '--cached', '--name-only')).toBe('staged.txt');
-    expect(await readFile(join(ws, 'untracked.txt'), 'utf8')).toBe('untracked\n');
-    expect(await git('--git-dir', own, 'worktree', 'list', '--porcelain')).toContain(
-      `worktree ${ws}`
-    );
-    expect(await git('--git-dir', own, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe(
-      `refs/heads/switch/${AGENT}`
-    );
-    await git('-C', ws, 'commit', '-q', '-m', 'Staged');
-    await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
-    await git('-C', ws, 'push', '-q', 'origin', `switch/${AGENT}`);
-    expect(
-      await git(
-        '--git-dir',
-        join(root, 'upstream', 'example', 'project.git'),
-        'rev-parse',
-        `switch/${AGENT}`
-      )
-    ).toBe(await git('-C', ws, 'rev-parse', 'HEAD'));
-    expect(await git('--git-dir', shared, 'rev-parse', `switch/${AGENT}`)).toBe(work);
-    expect(await git('-C', workspace(OTHER), 'rev-parse', '--git-common-dir')).toBe(shared);
-  });
-
-  it('waits for the mirror lock before touching the mirror', async () => {
-    const { root, commit, mirror, ensure, git } = await repositories();
-    await commit('first');
-    await ensure(AGENT);
-    const second = await commit('second');
-    const holder = spawn(
-      'python3',
-      [
-        '-c',
-        'import fcntl, os, sys\n' +
-          'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n' +
-          'fcntl.flock(fd, fcntl.LOCK_EX)\n' +
-          'print("locked", flush=True)\n' +
-          'sys.stdin.read()\n',
-        `${mirror}.lock`,
-      ],
-      { cwd: root, stdio: ['pipe', 'pipe', 'inherit'] }
-    );
-    try {
-      await new Promise<void>((resolve, reject) => {
-        holder.once('error', reject);
-        holder.stdout!.once('data', () => resolve());
+    const env = {
+      PATH: process.env.PATH,
+      HOME: root,
+      GIT_CONFIG_NOSYSTEM: '1',
+      ...githubLaunchEnvironment(script),
+      SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: credentials,
+    };
+    return (input: string) =>
+      new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+        const child = execFile('git', ['credential', 'fill'], { env }, (error, stdout, stderr) =>
+          resolve({ code: error ? 1 : 0, stdout, stderr })
+        );
+        child.stdin!.end(input);
       });
-      let settled = false;
-      const pending = ensure(AGENT).finally(() => {
-        settled = true;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 750));
-      expect(settled).toBe(false);
-      expect(await git('--git-dir', mirror, 'rev-parse', 'refs/remotes/origin/main')).not.toBe(
-        second
-      );
-      holder.stdin!.end();
-      await pending;
-      expect(await git('--git-dir', mirror, 'rev-parse', 'refs/remotes/origin/main')).toBe(second);
-    } finally {
-      holder.kill();
-    }
-  }, 15_000);
+  }
+
+  it('answers the token of the installation that owns the repository in the path', async () => {
+    const { requests, credentials } = await relay();
+    const git = await helperGit(credentials);
+    const result = await git('url=https://github.com/Example-User/demo.git\n\n');
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`password=${token}-456`);
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      'GET /hosted/connections',
+      'POST /hosted/connections/github/credential',
+    ]);
+    expect(JSON.parse(requests[1]!.body)).toEqual({ installation_id: 456 });
+    expect(requests[0]!.auth).toBe('Bearer synthetic-switch-credential');
+  });
+
+  it('answers nothing for an owner that is not granted, and says which accounts are', async () => {
+    const { requests, credentials } = await relay();
+    const git = await helperGit(credentials);
+    const result = await git('url=https://github.com/other/project.git\n\n');
+    expect(result.code).toBe(1);
+    expect(result.stdout).not.toContain('password=');
+    expect(result.stderr).toContain(
+      "GitHub account 'other' is not granted to this agent. Granted accounts: acme, example-user."
+    );
+    expect(requests.map((request) => request.method)).toEqual(['GET']);
+  });
+
+  it("answers nothing for an installation Switch could not confirm, and gives Switch's reason", async () => {
+    const { requests, credentials } = await relay(UNAVAILABLE);
+    const git = await helperGit(credentials);
+    const result = await git('url=https://github.com/stale-org/project.git\n\n');
+    expect(result.code).toBe(1);
+    expect(result.stdout).not.toContain('password=');
+    expect(result.stderr).toContain(
+      'GitHub access to stale-org granted to this agent is unavailable: Your GitHub account cannot push to any repository of stale-org.'
+    );
+    expect(requests.map((request) => request.method)).toEqual(['GET']);
+  });
+
+  it('answers a healthy installation beside one Switch could not confirm', async () => {
+    const { credentials } = await relay(UNAVAILABLE);
+    const git = await helperGit(credentials);
+    const result = await git('url=https://github.com/acme/project.git\n\n');
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`password=${token}-123`);
+  });
 });

@@ -83,11 +83,11 @@ from switch_core.management.placement import (
 )
 from switch_core.management.schemas import (
     PROVIDER_KNOWN_AGENT_TYPES,
+    ConnectionGrant,
     ControllerDescription,
     CreateManagedAgentRequest,
     DefinitionV1,
     PublicKey,
-    RepositoryRef,
     StatusReport,
     assignment_entry,
     controller_view,
@@ -107,6 +107,10 @@ OPERATION_TTL = timedelta(hours=1)
 OPERATION_LIST_LIMIT = 200
 
 V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
+
+# Checks that the owner can grant these connections to an agent; raises a
+# `ManagementError` when they cannot.
+CheckConnections = Callable[[list[ConnectionGrant]], Awaitable[None]]
 
 CLOUD_CONTROLLER_KIND = "ec2"
 CLOUD_CONTROLLER_NAME = "Switch cloud"
@@ -949,13 +953,13 @@ class ManagementService:
         owner_id: str,
         request: CreateManagedAgentRequest,
         protocol: AgentCore,
-        repository_name: Callable[[RepositoryRef], Awaitable[str]],
+        check_connections: CheckConnections,
     ) -> dict[str, Any]:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
         refusal leaves nothing behind; a failure after registering deletes the
-        registered agent again. `repository_name` resolves the `owner/name` of
-        the repository a Switch cloud agent works in."""
+        registered agent again. `check_connections` checks that the owner can
+        grant the definition's connections."""
         controller = await self._check_target(
             session,
             tenant_id,
@@ -964,17 +968,14 @@ class ManagementService:
             request.definition.provider,
             check_placement=True,
         )
-        refuse_repository_off_cloud(request.definition, controller)
+        refuse_connections_off_cloud(request.definition, controller)
+        if request.definition.connections:
+            await check_connections(request.definition.connections)
         agent_id: str | None = None
         if controller is not None and controller.kind == CLOUD_CONTROLLER_KIND:
             # Its worktree there is named by its id, so the id comes first.
             agent_id = str(uuid4())
-            repository = request.definition.repository
-            definition = cloud_definition(
-                request.definition,
-                agent_id,
-                None if repository is None else await repository_name(repository),
-            )
+            definition = cloud_definition(request.definition, agent_id)
         else:
             definition = with_directory(request.definition, controller, request.name)
         try:
@@ -1058,12 +1059,20 @@ class ManagementService:
         agent_id: str,
         target: _Placement,
         protocol: AgentCore,
+        check_connections: CheckConnections,
     ) -> dict[str, Any]:
         """Adopt an agent the caller owns, or replace its definition and placement."""
         agent = await self._owned_agent(session, owner_id, agent_id)
         existing = await self.definitions.get_for_agent(session, tenant_id, agent_id)
         return await self._apply(
-            session, tenant_id, owner_id, agent, existing, target, protocol
+            session,
+            tenant_id,
+            owner_id,
+            agent,
+            existing,
+            target,
+            protocol,
+            check_connections,
         )
 
     async def patch_managed_agent(
@@ -1078,6 +1087,7 @@ class ManagementService:
         controller_id: str | None,
         controller_id_given: bool,
         protocol: AgentCore,
+        check_connections: CheckConnections,
     ) -> dict[str, Any]:
         existing, agent = await self._owned_definition(
             session, tenant_id, owner_id, agent_id
@@ -1094,7 +1104,14 @@ class ManagementService:
             ),
         )
         return await self._apply(
-            session, tenant_id, owner_id, agent, existing, target, protocol
+            session,
+            tenant_id,
+            owner_id,
+            agent,
+            existing,
+            target,
+            protocol,
+            check_connections,
         )
 
     async def _apply(
@@ -1106,6 +1123,7 @@ class ManagementService:
         existing: AgentDefinitionRow | None,
         target: _Placement,
         protocol: AgentCore,
+        check_connections: CheckConnections,
     ) -> dict[str, Any]:
         definition = DefinitionV1.model_validate(target.definition)
         moved = existing is None or existing.controller_id != target.controller_id
@@ -1120,7 +1138,13 @@ class ManagementService:
             definition.provider,
             check_placement=moved or to_running,
         )
-        refuse_repository_off_cloud(definition, controller)
+        refuse_connections_off_cloud(definition, controller)
+        granted = existing.definition.get("connections", []) if existing else []
+        if (
+            definition.connections
+            and [grant.model_dump() for grant in definition.connections] != granted
+        ):
+            await check_connections(definition.connections)
         directory = definition.directory
         if (
             moved
@@ -1385,38 +1409,36 @@ def placed_directory(
     names none: on a Switch cloud machine its own worktree, which is the only
     place that machine runs it; elsewhere the machine's workspace for it."""
     if controller is not None and controller.kind == CLOUD_CONTROLLER_KIND:
-        return worktree_path(agent_id, None)
+        return worktree_path(agent_id)
     return default_directory(controller, name)
 
 
-def cloud_definition(
-    definition: DefinitionV1, agent_id: str, repository: str | None
-) -> DefinitionV1:
+def cloud_definition(definition: DefinitionV1, agent_id: str) -> DefinitionV1:
     """A new agent's definition on a Switch cloud machine, which runs every
-    agent isolated, in its own worktree of `repository` (its `owner/name`)
-    unless the definition names a directory."""
+    agent isolated, in its own workspace unless the definition names a
+    directory."""
     return definition.model_copy(
         update={
             "isolation": "isolated",
-            "directory": definition.directory or worktree_path(agent_id, repository),
+            "directory": definition.directory or worktree_path(agent_id),
         }
     )
 
 
-def refuse_repository_off_cloud(
+def refuse_connections_off_cloud(
     definition: DefinitionV1, controller: AgentController | None
 ) -> None:
-    """Only a Switch cloud machine clones a repository for its agents."""
+    """Only an agent on a Switch cloud machine is given connection credentials."""
     if (
-        definition.repository is not None
+        definition.connections
         and controller is not None
         and controller.kind != CLOUD_CONTROLLER_KIND
     ):
         raise ManagementError(
             422,
             reason_codes.VALIDATION_ERROR,
-            "Only an agent on a Switch cloud machine can work in a GitHub "
-            "repository; choose your Switch cloud machine, or no repository.",
+            "Only an agent on a Switch cloud machine can be granted connections; "
+            "choose your Switch cloud machine, or grant no connections.",
         )
 
 

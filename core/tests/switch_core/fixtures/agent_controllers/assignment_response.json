@@ -18,6 +18,7 @@
         "auto_approve": false,
         "directory": "/home/example/src/project",
         "isolation": "shared",
+        "connections": [],
         "skills": []
       }
     }

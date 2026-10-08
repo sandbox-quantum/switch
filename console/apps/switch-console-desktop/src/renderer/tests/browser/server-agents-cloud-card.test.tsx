@@ -172,6 +172,7 @@ function managedCloudAgent(): ManagedAgentView {
       autoApprove: false,
       directory: null,
       isolation: 'shared',
+      connections: [],
     },
     status: null,
   };

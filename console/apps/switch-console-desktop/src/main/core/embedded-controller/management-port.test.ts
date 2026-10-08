@@ -42,6 +42,7 @@ const agent = (agentId: string, controllerId: string | null, name: string): Mana
   advancedConfig: {},
   instructions: '',
   isolation: 'shared',
+  connections: [],
   directory: null,
   autoApprove: false,
   status: null,

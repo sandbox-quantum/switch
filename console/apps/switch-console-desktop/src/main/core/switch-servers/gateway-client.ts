@@ -18,6 +18,10 @@ import type {
 } from '@shared/core/switch-servers/claude-credential';
 import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
 import {
+  type ConnectionGrant,
+  connectionGrantSchema,
+} from '@shared/core/switch-servers/connection-grants';
+import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
@@ -2576,6 +2580,8 @@ export type ManagedAgent = {
    */
   directory: string | null;
   autoApprove: boolean;
+  /** The connections it is granted; empty for none. */
+  connections: ConnectionGrant[];
   status: {
     process: string;
     attached: boolean;
@@ -2615,6 +2621,7 @@ type ManagedAgentJson = {
     directory?: unknown;
     auto_approve?: unknown;
     isolation?: unknown;
+    connections?: unknown;
   } | null;
   status: {
     process: string;
@@ -2720,6 +2727,22 @@ function advancedConfigOf(agentId: string, value: unknown): Record<string, Advan
   );
 }
 
+const connectionGrantsSchema = z.array(connectionGrantSchema);
+
+/**
+ * A definition's connection grants as the server holds them. Absent reads as
+ * none; a shape Console cannot read is refused rather than dropped, since
+ * saving the definition back would lose it.
+ */
+function connectionGrantsOf(agentId: string, value: unknown): ConnectionGrant[] {
+  if (value === undefined || value === null) return [];
+  const parsed = connectionGrantsSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new Error(
+    `The server sent connection grants for managed agent ${agentId} that Console cannot read: ${parsed.error.message}`
+  );
+}
+
 function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
   return {
     agentId: json.agent_id,
@@ -2738,6 +2761,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     isolation: json.definition?.isolation === 'isolated' ? 'isolated' : 'shared',
     directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
     autoApprove: json.definition?.auto_approve === true,
+    connections: connectionGrantsOf(json.agent_id, json.definition?.connections),
     status: json.status
       ? {
           process: json.status.process,
@@ -2866,9 +2890,9 @@ export type ManagedAgentDefinitionBody = {
 /**
  * Adopt an agent the signed-in user owns onto a controller, or replace its
  * definition and placement (`PUT /gateway/management/agents/{id}`). The PUT
- * replaces the whole definition, so the repository a Switch cloud agent works
- * in, which no caller edits, is carried over from the definition the server
- * holds.
+ * replaces the whole definition, so the connections a Switch cloud agent is
+ * granted, which no caller of this edits, are carried over from the definition
+ * the server holds.
  */
 export async function putManagedAgent(
   server: SwitchServer,
@@ -2880,18 +2904,21 @@ export async function putManagedAgent(
   }
 ): Promise<void> {
   const path = `/agents/${encodeURIComponent(agentId)}`;
-  let repository: unknown = null;
+  let connections: unknown = undefined;
   try {
     const res = await managementFetch(server, path, { authenticated: true });
     const current = (await res.json()) as { definition: Record<string, unknown> | null };
-    repository = current.definition?.repository ?? null;
+    connections = current.definition?.connections;
   } catch (error) {
     if (managementErrorCode(error) !== 'not_found') throw error;
   }
   await managementFetch(server, path, {
     authenticated: true,
     method: 'PUT',
-    body: repository === null ? body : { ...body, definition: { ...body.definition, repository } },
+    body:
+      connections === undefined
+        ? body
+        : { ...body, definition: { ...body.definition, connections } },
   });
 }
 
@@ -2912,8 +2939,8 @@ export async function createManagedAgent(
     controller_id: string;
     desired_state: 'running' | 'stopped';
     definition: ManagedAgentDefinitionBody & {
-      /** The GitHub repository a Switch cloud machine clones for the agent, by id. */
-      repository: { installation_id: number; repository_id: number } | null;
+      /** The connections a Switch cloud agent is granted; absent for any other agent. */
+      connections?: ConnectionGrant[];
     };
   }
 ): Promise<string> {

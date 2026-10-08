@@ -37,6 +37,7 @@ function entry(overrides: Partial<AgentAssignment> = {}): AgentAssignment {
       directory: null,
       isolation: 'shared',
       skills: [],
+      connections: [],
     },
     ...overrides,
   };

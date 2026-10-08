@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -56,9 +56,39 @@ export function hostedSkillsDirectory(
   return join(base, 'skills');
 }
 
-/** Replace each granted skill so a restart always carries the deployment's copy. */
-export async function installHostedSkills(directory: string, skills: HostedSkills): Promise<void> {
+/**
+ * Written into each skill directory this installs, and nothing else writes it
+ * (a skill's own paths cannot start with a dot), so a connection skill can be
+ * told apart from one the agent or its owner put there.
+ */
+export const CONNECTION_SKILL_MARKER = '.switch-connection-skill';
+
+async function isConnectionSkill(path: string): Promise<boolean> {
+  try {
+    return (await lstat(join(path, CONNECTION_SKILL_MARKER))).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * Makes the connection skills in `directory` the granted ones: replaces each
+ * granted skill so a restart always carries the deployment's copy, and
+ * removes a connection skill that is no longer granted. Leaves every other
+ * skill alone.
+ */
+export async function installHostedSkills(
+  directory: string,
+  skills: HostedSkills | []
+): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  const granted = new Set(skills.map((skill) => skill.slug));
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || granted.has(entry.name)) continue;
+    const path = join(directory, entry.name);
+    if (await isConnectionSkill(path)) await rm(path, { recursive: true, force: true });
+  }
   for (const skill of skills) {
     const staging = join(directory, `.${skill.slug}.${randomUUID()}`);
     try {
@@ -67,6 +97,7 @@ export async function installHostedSkills(directory: string, skills: HostedSkill
         await mkdir(dirname(target), { recursive: true, mode: 0o700 });
         await writeFile(target, content, { mode: 0o600, flag: 'wx' });
       }
+      await writeFile(join(staging, CONNECTION_SKILL_MARKER), '', { mode: 0o600, flag: 'wx' });
       const destination = join(directory, skill.slug);
       await rm(destination, { recursive: true, force: true });
       await rename(staging, destination);

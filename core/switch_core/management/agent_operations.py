@@ -31,10 +31,10 @@ from switch_core.management.advanced_config import provider_fields
 from switch_core.management.errors import ManagementError
 from switch_core.management.placement import provider_auth
 from switch_core.management.schemas import (
+    ConnectionGrant,
     CreateManagedAgentRequest,
     DefinitionV1,
     PatchManagedAgentRequest,
-    RepositoryRef,
     agent_status_from,
     wire_time_or_none,
 )
@@ -239,7 +239,7 @@ class ManagementAgentOperations:
                 ) from exc
             try:
                 view = await self._service.create_managed_agent(
-                    session, tenant_id, owner_id, request, protocol, _no_repository
+                    session, tenant_id, owner_id, request, protocol, _no_connections
                 )
             except ManagementError as exc:
                 sentence = _placement_sentence(exc.code, controller.name, spec.provider)
@@ -410,6 +410,7 @@ class ManagementAgentOperations:
                     controller_id=request.controller_id,
                     controller_id_given="controller_id" in request.model_fields_set,
                     protocol=protocol,
+                    check_connections=_no_connections,
                 )
             except ManagementError as exc:
                 machine = controller.name if controller is not None else "(none)"
@@ -424,10 +425,10 @@ class ManagementAgentOperations:
         return entry
 
 
-async def _no_repository(repository: RepositoryRef) -> str:
-    """An agent created through the agent tools is given no repository, so
-    there is none to name."""
+async def _no_connections(grants: list[ConnectionGrant]) -> None:
+    """The agent tools neither grant nor change an agent's connections, so
+    there is none to check."""
     raise RuntimeError(
-        "An agent created through the agent tools names no repository, yet "
-        f"one was asked for: {repository.installation_id}/{repository.repository_id}"
+        "The agent tools grant no connections, yet some were to be checked: "
+        f"{[grant.slug for grant in grants]}"
     )

@@ -39,7 +39,7 @@ const LAUNCH = {
   replaceIdentity: false,
   clearTakenOver: false,
   skills: [],
-  repository: null,
+  connections: [],
 };
 
 let dir: string;
@@ -233,7 +233,7 @@ describe('InProcessRuntime', () => {
       replaceIdentity: true,
       clearTakenOver: true,
       skills: [],
-      repository: null,
+      connections: [],
     });
     await waitFor(() => opened.length === 2, 'the second watcher');
     expect(opened[0]!.signal.aborted).toBe(true);

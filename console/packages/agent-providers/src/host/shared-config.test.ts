@@ -284,7 +284,6 @@ it("gives an agent unit's sessions git and gh through the unit's credentials, ov
     );
     vi.stubEnv('PATH', '/usr/local/bin:/usr/bin:/bin');
     vi.stubEnv('SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS', credentialsPath);
-    vi.stubEnv('SWITCH_HOSTED_GITHUB_REPOSITORY', 'example/project');
     vi.stubEnv('SWITCH_HOSTED_GITHUB_CLI', join(root, 'bin'));
     const config = buildSharedHostConfig({
       session: { sessionId: 'session', agentId: 'agent', provider: 'claude' },
@@ -314,8 +313,9 @@ it("gives an agent unit's sessions git and gh through the unit's credentials, ov
     const { input } = await prepareSharedConfig(root, config, runtime);
     expect(input.env).toMatchObject({
       SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: credentialsPath,
-      SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
       GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+      GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+      GIT_CONFIG_VALUE_3: 'true',
       GIT_TERMINAL_PROMPT: '0',
       PATH: `${join(root, 'bin')}:/usr/local/bin:/usr/bin:/bin`,
     });
@@ -324,6 +324,138 @@ it("gives an agent unit's sessions git and gh through the unit's credentials, ov
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+async function hostedSession(root: string, saved: Record<string, string>) {
+  const credentialsPath = join(root, 'credentials.json');
+  await writeFile(
+    credentialsPath,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'http://127.0.0.1:47100',
+        SWITCH_API_TOKEN: 'relay-token',
+        SWITCH_AGENT_ID: 'agent',
+      },
+    })
+  );
+  const config = buildSharedHostConfig({
+    session: { sessionId: 'session', agentId: 'agent', provider: 'claude' },
+    launch: { cwd: root, runtimeMode: 'full-access', env: saved, model: undefined },
+    capabilities: { approvals: true, userInput: true },
+    execution: {
+      credentialsPath,
+      inheritEnv: [...EXECUTION_INHERIT_ENV],
+      binaryPath: 'claude',
+      codexConfig: '',
+      skill: '',
+      context: '',
+      agentDefinition: undefined,
+    },
+    ids: { hostId: 'host', epoch: 'epoch', connectionId: 'connection' },
+  });
+  const runtime = { transport: 'http' as const, url: 'http://127.0.0.1:4321/mcp', headers: {} };
+  return {
+    credentialsPath,
+    input: async () => (await prepareSharedConfig(root, config, runtime)).input.env,
+  };
+}
+
+describe('a session saved by an earlier hosted host', () => {
+  const savedBy = async (root: string) => {
+    const oldWrapper = join(root, 'old-root', 'bin');
+    await mkdir(oldWrapper, { recursive: true });
+    await writeFile(
+      join(oldWrapper, 'gh'),
+      `#!/bin/sh\nexec '/usr/bin/node' '/opt/switch/agent-providers/hosted-bootstrap.mjs' --github-cli "$@"\n`
+    );
+    await writeFile(
+      join(oldWrapper, 'switch-github-grants'),
+      `#!/bin/sh\nexec '/usr/bin/node' '/opt/switch/agent-providers/hosted-bootstrap.mjs' --list "$@"\n`
+    );
+    return {
+      oldWrapper,
+      saved: {
+        GH_HOST: 'github.com',
+        GH_PROMPT_DISABLED: '1',
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_CONFIG_COUNT: '3',
+        GIT_CONFIG_KEY_0: 'credential.helper',
+        GIT_CONFIG_VALUE_0: '',
+        GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+        GIT_CONFIG_VALUE_1:
+          "!'/usr/bin/node' '/opt/switch/agent-providers/hosted-bootstrap.mjs' --git-credential",
+        GIT_CONFIG_KEY_2: 'core.askPass',
+        GIT_CONFIG_VALUE_2: '',
+        GIT_CONFIG_KEY_4: 'leftover.key',
+        GIT_CONFIG_VALUE_4: 'leftover',
+        SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: '/run/gone/switch.json',
+        SWITCH_HOSTED_GITHUB_REPOSITORY: 'example/project',
+        PATH: `${oldWrapper}:/usr/local/bin:/usr/bin:/bin`,
+      },
+    };
+  };
+
+  it('gets the current GitHub environment, and nothing it saved, when GitHub is granted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      const { oldWrapper, saved } = await savedBy(root);
+      const session = await hostedSession(root, saved);
+      vi.stubEnv('SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS', session.credentialsPath);
+      vi.stubEnv('SWITCH_HOSTED_GITHUB_CLI', join(root, 'bin'));
+      const env = await session.input();
+      expect(env).toMatchObject({
+        GIT_CONFIG_COUNT: '4',
+        GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+        GIT_CONFIG_VALUE_3: 'true',
+        SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: session.credentialsPath,
+        PATH: `${join(root, 'bin')}:/usr/local/bin:/usr/bin:/bin`,
+      });
+      expect(env.PATH).not.toContain(oldWrapper);
+      expect(env.GIT_CONFIG_KEY_4).toBeUndefined();
+      expect(env.SWITCH_HOSTED_GITHUB_REPOSITORY).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('gets no GitHub environment at all when GitHub is not granted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      const { saved } = await savedBy(root);
+      const session = await hostedSession(root, saved);
+      vi.stubEnv('SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS', undefined);
+      vi.stubEnv('SWITCH_HOSTED_GITHUB_CLI', undefined);
+      const env = await session.input();
+      expect(
+        Object.keys(env).filter(
+          (key) => key.startsWith('GIT_') || key.startsWith('GH_') || key.startsWith('SWITCH_')
+        )
+      ).toEqual([]);
+      expect(env.PATH).toBe('/usr/local/bin:/usr/bin:/bin');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps Git configuration of its own when it carries no hosted GitHub setup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      const session = await hostedSession(root, {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'user.name',
+        GIT_CONFIG_VALUE_0: 'Example',
+      });
+      vi.stubEnv('SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS', undefined);
+      vi.stubEnv('SWITCH_HOSTED_GITHUB_CLI', undefined);
+      expect(await session.input()).toMatchObject({
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'user.name',
+        GIT_CONFIG_VALUE_0: 'Example',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('agent definitions in the launch spec', () => {

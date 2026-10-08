@@ -30,6 +30,7 @@ function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): Agent
       directory: null,
       isolation: 'shared',
       skills: [],
+      connections: [],
       ...definition,
     },
   };
@@ -94,7 +95,7 @@ describe('reconcile', () => {
       replaceIdentity: false,
       clearTakenOver: true,
       skills: [],
-      repository: null,
+      connections: [],
     });
     expect(launch!.template.start.input.cwd).toBe('/data/workspaces/scout');
     expect(launch!.template.execution!.credentialsPath).toBe(
@@ -278,13 +279,27 @@ describe('reconcile', () => {
     expect(runtime.launches()[0]!.options).toMatchObject({ isolation: 'isolated', skills });
   });
 
-  it('hands an isolated agent the repository its definition names, and none otherwise', async () => {
-    const repository = { installation_id: 123, repository_id: 456 };
-    await reconcile(assignment(agent({}, { isolation: 'isolated', repository })), deps());
+  it('hands an isolated agent its granted connections, and none otherwise', async () => {
+    await reconcile(
+      assignment(agent({}, { isolation: 'isolated', connections: ['github'] })),
+      deps()
+    );
     await reconcile(assignment(agent({ agent_id: 'agent-2' }, { name: 'other' })), deps());
     const [first, second] = runtime.launches();
-    expect(first!.options.repository).toEqual(repository);
-    expect(second!.options.repository).toBeNull();
+    expect(first!.options.connections).toEqual(['github']);
+    expect(second!.options.connections).toEqual([]);
+  });
+
+  it('refuses granted connections on a shared agent host', async () => {
+    await reconcile(
+      assignment(agent({}, { isolation: 'shared', connections: ['github'] })),
+      deps()
+    );
+    expect(store.agent('agent-1')?.failure).toMatchObject({
+      reason: 'definition_invalid',
+      detail: expect.stringContaining('github'),
+    });
+    expect(runtime.launches()).toEqual([]);
   });
 
   it('records skills it cannot install as invalid', async () => {

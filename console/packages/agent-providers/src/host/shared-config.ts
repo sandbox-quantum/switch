@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { HttpMcpServerSpec } from '../adapter';
 import { prepareCodexSessionHome } from '../codex/home';
 import { EXECUTION_INHERIT_ENV } from './agent-env';
-import { hostedGitHubEnvironment } from './hosted-github';
+import { hostedGitHubEnvironment, withoutHostedGitHubEnvironment } from './hosted-github';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
 
@@ -94,7 +94,7 @@ export async function prepareSharedConfig(
       execution.shellSetup,
       execution.inheritEnv
     );
-    input.env = { ...inherited, ...input.env };
+    input.env = await withoutHostedGitHubEnvironment({ ...inherited, ...input.env });
     Object.assign(input.env, hostedGitHubEnvironment(process.env, input.env.PATH));
     if (config.start.provider === 'codex')
       input.env.CODEX_HOME = await prepareCodexSessionHome({

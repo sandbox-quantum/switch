@@ -50,7 +50,10 @@ vi.mock('@renderer/features/agent-migration/managed-agent-section', () => ({
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
   agentsStore: { agentsOnServer: () => [] },
 }));
-vi.mock('@renderer/lib/modal/modal-provider', () => ({ useShowModal: () => vi.fn() }));
+vi.mock('@renderer/lib/modal/modal-provider', () => ({
+  useShowModal: () => vi.fn(),
+  useModalContext: () => ({ setCloseGuard: vi.fn(), hasActiveCloseGuard: false }),
+}));
 
 import { ManagedAgentPage } from '@renderer/features/managed-agents/managed-agent-page';
 
@@ -73,6 +76,7 @@ const AGENT: ManagedAgentView = {
     autoApprove: false,
     directory: '/work/pm',
     isolation: 'shared',
+    connections: [],
   },
   status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
 };

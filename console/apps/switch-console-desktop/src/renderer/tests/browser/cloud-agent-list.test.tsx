@@ -432,6 +432,7 @@ function managed(
       autoApprove: false,
       directory: null,
       isolation: 'shared',
+      connections: [],
     },
     status: null,
   };

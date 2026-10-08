@@ -123,6 +123,7 @@ const definition = {
   directory: null,
   isolation: 'shared',
   skills: [],
+  connections: [],
 };
 
 describe('received messages', () => {
@@ -150,6 +151,39 @@ describe('received messages', () => {
       agents: [{ agent_id: 'a', revision: 1, desired_state: 'running', definition: withoutSkills }],
     });
     expect(parsed.agents[0]!.definition.skills).toEqual([]);
+  });
+
+  it('reads the granted connections, and none from a Core that sends none', () => {
+    const { connections: _, ...withoutConnections } = definition;
+    const parsed = assignmentSchema.parse({
+      revision: 1,
+      agents: [
+        {
+          agent_id: 'a',
+          revision: 1,
+          desired_state: 'running',
+          definition: { ...definition, connections: ['github'] },
+        },
+        { agent_id: 'b', revision: 1, desired_state: 'running', definition: withoutConnections },
+      ],
+    });
+    expect(parsed.agents[0]!.definition.connections).toEqual(['github']);
+    expect(parsed.agents[1]!.definition.connections).toEqual([]);
+  });
+
+  it('no longer reads a single repository from a definition', () => {
+    const parsed = assignmentSchema.parse({
+      revision: 1,
+      agents: [
+        {
+          agent_id: 'a',
+          revision: 1,
+          desired_state: 'running',
+          definition: { ...definition, repository: { installation_id: 1, repository_id: 2 } },
+        },
+      ],
+    });
+    expect(parsed.agents[0]!.definition).not.toHaveProperty('repository');
   });
 
   it('reads an enum value it does not know as unknown', () => {
