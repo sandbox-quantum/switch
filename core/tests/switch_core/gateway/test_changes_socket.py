@@ -166,3 +166,25 @@ def test_closing_the_socket_drops_its_subscription(
             break
         time.sleep(0.01)
     assert feed.subscriber_count("t1", "ada") == 0
+
+
+def test_a_user_past_the_socket_cap_is_refused_with_429(
+    client: TestClient, feed: LocalUserChanges, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client opening sockets in a loop stops at the cap; the user's open
+    sockets are untouched, and another user is not affected."""
+    _signed_in(monkeypatch)
+    for _ in range(changes.MAX_SOCKETS_PER_USER):
+        feed.subscribe("t1", "ada")
+    with client.websocket_connect("/changes/ws") as ws:
+        refused = ws.receive_json()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+    assert refused["event"] == "refused"
+    assert refused["data"]["status"] == 429
+    assert closed.value.code == 4429
+    assert feed.subscriber_count("t1", "ada") == changes.MAX_SOCKETS_PER_USER
+
+    _signed_in(monkeypatch, user_id="grace")
+    with client.websocket_connect("/changes/ws") as ws:
+        assert ws.receive_json()["event"] == "hello"

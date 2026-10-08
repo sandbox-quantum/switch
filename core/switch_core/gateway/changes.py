@@ -20,6 +20,12 @@ status, like the agent socket. The socket holds no database connection while
 it is open. It is closed with 4401 when the cookie it was opened with
 expires, so a client reconnects with the cookie it has renewed since.
 
+A user holds at most `MAX_SOCKETS_PER_USER` of these at once. Console opens
+one per server, so the cap only meets a client opening sockets in a loop, which
+would otherwise hold a file handle and a subscription per socket. Past it the
+socket is refused with 429 (close 4429), and Console backs off and keeps
+polling, so a refused socket costs a delay, never a stale list.
+
 A client reads everything again each time the socket opens, so a notice lost
 while it was closed costs nothing more than that read.
 """
@@ -55,6 +61,9 @@ PING_INTERVAL_SECONDS = 25.0
 _SILENT_PINGS = 3
 # The close code for a session cookie that has expired: 4000 plus 401.
 _EXPIRED = 4401
+# Sockets one user may hold on this process: one per Console is the norm, so this
+# leaves room for several machines and windows and stops a runaway client.
+MAX_SOCKETS_PER_USER = 16
 
 
 @router.websocket("/changes/ws")
@@ -73,15 +82,19 @@ async def changes_socket(
             websocket, session_factory, user_store, config
         )
     except HTTPException as exc:
-        await websocket.send_json(
-            {
-                "event": "refused",
-                "data": {"status": exc.status_code, "detail": exc.detail},
-            }
-        )
-        await websocket.close(code=4000 + exc.status_code)
+        await _refuse(websocket, exc.status_code, exc.detail)
         return
 
+    # No await between the count and the subscribe, so two sockets opening at
+    # once cannot both slip under the cap.
+    if (
+        changes.subscriber_count(caller.tenant_id, caller.user_id)
+        >= MAX_SOCKETS_PER_USER
+    ):
+        await _refuse(
+            websocket, 429, f"At most {MAX_SOCKETS_PER_USER} change sockets per user."
+        )
+        return
     subscription = changes.subscribe(caller.tenant_id, caller.user_id)
     heard = asyncio.Event()
     listener = asyncio.create_task(_listen(websocket, heard))
@@ -107,6 +120,13 @@ async def changes_socket(
         await websocket.close(code=code)
     except RuntimeError:
         pass  # the client closed it first
+
+
+async def _refuse(websocket: WebSocket, status: int, detail: object) -> None:
+    await websocket.send_json(
+        {"event": "refused", "data": {"status": status, "detail": detail}}
+    )
+    await websocket.close(code=4000 + status)
 
 
 async def _serve(
