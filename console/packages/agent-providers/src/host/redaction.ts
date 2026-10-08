@@ -72,12 +72,14 @@ export function tokenForms(token: string): string[] {
  * GitHub's token shapes, matched whether or not this process issued the token:
  * one a sibling session fetched, or fetched before this session resumed or its
  * host restarted, or cut short in a title, all of which an exact value misses.
- * Four characters after the prefix tell a cut token from prose. No word
- * boundary before it: escaped or encoded text glues a token to what precedes
- * it (`\nghs_…` in JSON, `%3Aghs_…` in a URL).
+ * At a word boundary, four characters after the prefix tell a cut token from
+ * prose. Glued to what precedes it, as escaped or encoded text has a token
+ * (`\nghs_…` in JSON, `%3Aghs_…` in a URL), only a whole one counts, so a word
+ * that merely contains a prefix (`laughs_total`, `highs_`) is left alone.
  */
 const TOKEN_SHAPES = [
-  /(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{4,}/g,
+  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{4,}/g,
+  /(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,})/g,
   // `x-access-token:<token>` in base64, as Git sends it and a Git trace shows it.
   /eC1hY2Nlc3MtdG9rZW46[A-Za-z0-9+/]*={0,2}/g,
 ];
@@ -235,9 +237,11 @@ const SHAPE_TAIL = 256;
 function longLineCut(line: Buffer): number {
   const text = line.toString('latin1');
   let cut = text.length - SHAPE_TAIL;
+  // A run longer than any token is not one, and is not held back.
   for (const shape of TOKEN_SHAPES)
     for (const match of text.matchAll(shape))
-      if (match.index + match[0].length > cut) cut = Math.min(cut, match.index);
+      if (match.index + match[0].length > cut && cut - match.index <= SHAPE_TAIL)
+        cut = Math.min(cut, match.index);
   return Math.max(cut, 0);
 }
 

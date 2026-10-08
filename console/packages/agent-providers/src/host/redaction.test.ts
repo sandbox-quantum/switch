@@ -204,6 +204,17 @@ describe('tokens no exact value catches', () => {
     expect(redactions.text('ghost_writer gh_cli ghs_ab and gho_')).toBe(
       'ghost_writer gh_cli ghs_ab and gho_'
     );
+    expect(redactions.text('laughs_total highs_and_lows weighs_more')).toBe(
+      'laughs_total highs_and_lows weighs_more'
+    );
+  });
+
+  it('does not hold back a long run that only looks like a token', () => {
+    const shapes = new ShapeLineRedactor();
+    const written = shapes.push(Buffer.from(`ghs_${'a'.repeat(200 * 1024)}`));
+    expect(written.length).toBeGreaterThan(0);
+    // All but the last line-tail was written, not held.
+    expect(shapes.finish().length).toBeLessThanOrEqual(256);
   });
 
   it('redacts the cut-off start of an issued token at the end of a title', () => {
