@@ -41,7 +41,8 @@ import { telemetryService } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
-import { DatabaseFromNewerBuildError, initializeDatabase } from './db/initialize';
+import { initializeDatabase } from './db/initialize';
+import { databaseOpenFailureDialog } from './db/open-failure-dialog';
 import { logAppExit, logAppStart, registerAppDiagnostics } from './lib/app-diagnostics';
 import {
   getLogFilePath,
@@ -119,29 +120,8 @@ void app.whenReady().then(async () => {
     }
   } catch (error) {
     log.error('Failed to initialize database:', error);
-    // The one failure with no UI to fall back on: the app is about to quit, so
-    // whatever the user needs to act has to be in this box. Name the likely
-    // causes and where the log is, then the raw error under its own heading.
-    const logPath = getLogFilePath();
-    // A database written by a newer build (Canary shares this data directory)
-    // has its own cause and remedy; the generic list below would mislead.
-    const cause =
-      error instanceof DatabaseFromNewerBuildError
-        ? 'The database was last opened by a newer version of the app, such as a Canary build, and this version cannot read it. Open the newer version, or update this one to the latest release.'
-        : 'The usual causes are another copy of the app already running, a full disk, or the database file having been moved or made read-only. Closing the other copy and reopening is worth trying first.';
-    dialog.showErrorBox(
-      `${PRODUCT_NAME} could not open its database`,
-      [
-        `${PRODUCT_NAME} cannot start without it, so it is closing.`,
-        '',
-        cause,
-        logPath ? `\nFull details are in the log: ${logPath}` : '',
-        '',
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-      ]
-        .filter((line) => line !== '')
-        .join('\n')
-    );
+    const { title, body } = databaseOpenFailureDialog(error, PRODUCT_NAME, getLogFilePath());
+    dialog.showErrorBox(title, body);
     app.quit();
     return;
   }

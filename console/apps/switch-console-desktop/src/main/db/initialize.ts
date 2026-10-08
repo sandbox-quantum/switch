@@ -42,27 +42,26 @@ function migrationTagFromKey(key: string): string | null {
 
 /**
  * The database has migrations applied that this build does not know about: it
- * was last opened by a newer build (typically Canary, which shares the stable
- * channel's data directory — CHOO-3384).
+ * was last opened by a newer build, or one that diverged from this one —
+ * typically Canary, which shares the stable channel's data directory, or a
+ * stable hotfix tagged off main (CHOO-3384).
  *
- * The runner skips every migration at or below the newest applied timestamp, so
- * without this check an older build applies nothing, reports success and boots
- * on a schema it was not written for. The first query that touches a changed
- * table then fails, and the renderer is left on a blank window. Refusing to open
- * the database with a clear message is the only safe outcome: downgrading a
- * schema is not something the migrations can do.
+ * Opening it anyway means booting on a schema this build was not written for:
+ * the first query that touches a changed table fails, and the renderer is left
+ * on a blank window. Refusing with a clear message is the only safe outcome, as
+ * downgrading a schema is not something the migrations can do.
  */
 export class DatabaseFromNewerBuildError extends Error {
   readonly unknownMigrations: number;
 
-  constructor(newestApplied: number, newestKnown: number, unknownMigrations: number) {
+  constructor(unknownTimestamps: number[], newestKnown: number) {
     super(
-      `The database was last opened by a newer version of the app: it has ${unknownMigrations} ` +
-        `migration(s) this version does not know about (newest applied ${newestApplied}, ` +
-        `newest known ${newestKnown}). Open it with the newer version, or update this one.`
+      `The database was last opened by a newer or different version of the app: it has ` +
+        `${unknownTimestamps.length} migration(s) this version does not know about ` +
+        `(ledger timestamps ${unknownTimestamps.join(', ')}; newest known ${newestKnown}).`
     );
     this.name = 'DatabaseFromNewerBuildError';
-    this.unknownMigrations = unknownMigrations;
+    this.unknownMigrations = unknownTimestamps.length;
   }
 }
 
@@ -112,24 +111,32 @@ export function applyMigrations(
     Object.keys(sqlFiles).map((key) => [migrationTagFromKey(key), key] as const)
   );
 
-  const lastRow = connection
-    .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at DESC LIMIT 1')
-    .get() as { created_at: number } | undefined;
-  const lastTimestamp = lastRow?.created_at ?? 0;
-
-  const newestKnown = entries.reduce((max, entry) => Math.max(max, entry.when), 0);
-  if (lastTimestamp > newestKnown) {
-    const { count } = connection
-      .prepare('SELECT COUNT(*) AS count FROM __drizzle_migrations WHERE created_at > ?')
-      .get(newestKnown) as { count: number };
-    const error = new DatabaseFromNewerBuildError(lastTimestamp, newestKnown, count);
-    migrationLog.error('Database was migrated by a newer build', {
+  // Each ledger row is matched to its journal entry by timestamp, rather than
+  // treating the newest timestamp as "everything up to here is applied". A
+  // high-water mark cannot see a migration from a build that diverged from this
+  // one (a stable hotfix stamped after Canary's newest looks like the newer
+  // build), and it skips an entry stamped below a migration applied out of
+  // order — both boot the app on a schema it was not written for.
+  const appliedTimestamps = new Set(
+    (
+      connection.prepare('SELECT created_at FROM __drizzle_migrations').all() as {
+        created_at: number;
+      }[]
+    ).map((row) => Number(row.created_at))
+  );
+  const knownTimestamps = new Set(entries.map((entry) => entry.when));
+  const unknownTimestamps = [...appliedTimestamps]
+    .filter((timestamp) => !knownTimestamps.has(timestamp))
+    .sort((a, b) => a - b);
+  if (unknownTimestamps.length) {
+    const newestKnown = Math.max(0, ...knownTimestamps);
+    migrationLog.error('Database was migrated by a newer or different build', {
       event: 'db_migration_newer_schema',
-      newestApplied: lastTimestamp,
+      unknownTimestamps,
       newestKnown,
-      unknownMigrations: count,
+      unknownMigrations: unknownTimestamps.length,
     });
-    throw error;
+    throw new DatabaseFromNewerBuildError(unknownTimestamps, newestKnown);
   }
 
   // Apply migrations with foreign keys disabled. SQLite's table-recreation
@@ -143,7 +150,7 @@ export function applyMigrations(
     // fact, so which one was being applied is recorded as it happens.
     connection.transaction(() => {
       for (const entry of entries) {
-        if (entry.when <= lastTimestamp) continue;
+        if (appliedTimestamps.has(entry.when)) continue;
 
         const sqlKey = sqlByTag.get(entry.tag);
         if (!sqlKey) throw new Error(`Missing bundled SQL for migration: ${entry.tag}`);
