@@ -71,9 +71,21 @@ export function toolState(item: Item, turn: TurnStatus): ToolState {
   return turn === 'interrupted' || turn === 'error' ? 'failed' : 'running';
 }
 
-/** Whether the turn is under way with nothing to show for it yet. */
+/**
+ * The tool cards a turn shows. Assistant text is left out: what the agent
+ * means the room to read it posts there, and the room message is the copy
+ * shown.
+ */
+export function turnTools(turn: TurnActivity): Item[] {
+  return turn.items.filter((item) => item.kind === 'tool-activity');
+}
+
+/** Whether the turn is under way with no tool run yet. */
 export function isThinking(turn: TurnActivity): boolean {
-  return (turn.status === 'queued' || turn.status === 'running') && turn.items.length === 0;
+  return (
+    (turn.status === 'queued' || turn.status === 'running') &&
+    !turn.items.some((item) => item.kind === 'tool-activity')
+  );
 }
 
 /**

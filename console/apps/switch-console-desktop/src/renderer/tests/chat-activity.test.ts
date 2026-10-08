@@ -106,6 +106,17 @@ describe('bindTurns', () => {
     expect(isThinking(bound.get('m1')!)).toBe(false);
   });
 
+  it('keeps a turn thinking while it has written text but run no tool', () => {
+    const turn = {
+      turnId: 't1',
+      status: 'running' as const,
+      items: [item('t1', 'assistant-message', { text: 'draft' })],
+      requests: [],
+    };
+    expect(isThinking(turn)).toBe(true);
+    expect(isThinking({ ...turn, items: [item('t1', 'tool-activity')] })).toBe(false);
+  });
+
   it('shows an unfinished tool of an interrupted turn as failed', () => {
     const tool = item('t', 'tool-activity', { status: 'in-progress' });
     expect(toolState(tool, 'running')).toBe('running');
