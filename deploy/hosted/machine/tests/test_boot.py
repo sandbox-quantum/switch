@@ -221,6 +221,7 @@ def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(monk
     ]
     assert setup[setup.index("--agents-dir") + 1] == str(tmp_path / "agents")
     assert setup[setup.index("--user") + 1] == "switch-controller"
+    assert "--no-block" in setup
     assert commands.calls.index(enroll) < commands.calls.index(setup)
 
 

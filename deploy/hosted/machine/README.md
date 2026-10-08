@@ -42,9 +42,11 @@ the owner gives the machine.
      with this same code is kept: an earlier attempt of this boot enrolled,
      then failed before Switch linked the controller.
    - Then, on every boot, it runs `switch-agent-controller install-service
-     --separate-users` with the agents' directories in `/data/agents`. That
-     command is idempotent, and the root volume can be new after an image
-     change.
+     --separate-users --no-block` with the agents' directories in
+     `/data/agents`. That command is idempotent, and the root volume can be
+     new after an image change. It queues the controller's start: the
+     controller's unit is ordered after the boot service, so systemd starts it
+     once the boot completes.
 5. Core links the controller to the machine as a Switch cloud controller
    (kind `ec2`). The controller's status reports are the machine's heartbeat:
    the first one after the instance was seen running makes the machine
