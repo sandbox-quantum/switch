@@ -8,15 +8,19 @@ import pytest
 from pydantic import ValidationError
 
 from switch_core.management.advanced_config import (
-    ADVANCED_FIELDS,
     advanced_config_schema,
     validate_advanced_config,
 )
-from switch_core.management.schemas import DefinitionV1, Provider
+from switch_core.management.schemas import DefinitionV1
 
 
-def test_every_provider_a_definition_names_has_a_schema() -> None:
-    assert set(ADVANCED_FIELDS) == set(Provider.__args__)  # type: ignore[attr-defined]
+def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
+    with pytest.raises(ValidationError) as raised:
+        DefinitionV1(provider="gemini")
+    assert (
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
+        in str(raised.value)
+    )
 
 
 def test_the_served_schema() -> None:

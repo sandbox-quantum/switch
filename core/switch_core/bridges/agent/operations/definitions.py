@@ -2178,7 +2178,8 @@ async def update_agent_detail(
 
     A managed agent (one `list_managed_agents` shows) only, and only with the
     "can manage agents" capability:
-        provider: "claude", "codex", "opencode", "antigravity" or "cursor".
+        provider: A provider's id, as `list_machines` reports it, such as
+            "claude" for Claude Code.
         model: The model to run; "" for the provider's default.
         advanced_config: The provider's advanced settings, replacing the
             current ones whole, keyed by the fields `get_advanced_config`

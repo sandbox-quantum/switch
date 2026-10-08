@@ -1,8 +1,9 @@
 import json
 from datetime import UTC, datetime
-from typing import Annotated, Literal, cast
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import AfterValidator
 from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,9 +30,19 @@ from switch_core.providers.claude_verifier import (
     ClaudeVerifier,
 )
 from switch_core.providers.credentials import validate_provider_credential
+from switch_core.providers.registry import agent_provider
 from switch_core.providers.verification import ACTIVE, latest, queue, summary
 
-OtherProvider = Literal["codex", "cursor", "opencode", "antigravity"]
+
+def _other_provider(value: str) -> str:
+    if value == "claude":
+        raise ValueError("Claude connections have routes of their own.")
+    agent_provider(value)
+    return value
+
+
+# Any provider but Claude, whose connection is verified on its own routes.
+OtherProvider = Annotated[str, AfterValidator(_other_provider)]
 
 router = APIRouter()
 
@@ -87,7 +98,9 @@ async def connect_claude(
         raise HTTPException(400, "Provide a credential and its type.")
     kind = payload["kind"]
     credential = payload["credential"]
-    if kind not in ("api-key", "setup-token") or not isinstance(credential, str):
+    if kind not in agent_provider("claude").credential_kinds or not isinstance(
+        credential, str
+    ):
         raise HTTPException(400, "Choose an API key or subscription setup token.")
     credential = credential.strip()
     prefix = "sk-ant-api" if kind == "api-key" else "sk-ant-oat"

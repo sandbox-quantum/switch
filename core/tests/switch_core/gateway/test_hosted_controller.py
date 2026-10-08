@@ -67,7 +67,7 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.hosted_controller import DELETING_RESUME_AFTER, router
 from switch_core.gateway.hosted_launches import router as launch_router
 from switch_core.gateway.hosted_relay import router as relay_router
-from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.gateway.known_agents import known_agents
 from switch_core.keys import Keyring
 from switch_core.providers.github_installation import (
     GitHubInstallationCredentials,
@@ -108,7 +108,7 @@ async def register_hosted_agent(
     service, *, owner: str, request_id: str, name: str, spec: dict
 ) -> str:
     """Register a launch's agent identity the way launch creation does."""
-    known = KNOWN_AGENTS["claude-code"]
+    known = known_agents()["claude-code"]
     options = known.parse_options(
         {
             "channels_enabled": True,

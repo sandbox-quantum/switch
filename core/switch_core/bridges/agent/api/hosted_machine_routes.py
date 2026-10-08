@@ -23,7 +23,7 @@ from switch_core.bridges.agent.dependencies import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
-from switch_core.connections.loader import CATALOG, SKILL_PROVIDERS, deployment_skills
+from switch_core.connections.loader import CATALOG, deployment_skills
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -35,6 +35,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_machine_store import HostedMachineStore, lock_launch
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.providers.registry import agent_provider
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -185,7 +186,8 @@ async def _agent_entry(
             launch.id,
             provider,
         )
-    if provider not in SKILL_PROVIDERS:
+    supports_skills = agent_provider(provider).supports_skills
+    if not supports_skills:
         logger.warning(
             "Cloud launch %s: %s has no skills directory; granted connection skills are not installed.",
             launch.id,
@@ -211,9 +213,7 @@ async def _agent_entry(
         },
         "repository": launch.repository,
         "spec": launch.spec,
-        "skills": deployment_skills(CATALOG, ["github"])
-        if provider in SKILL_PROVIDERS
-        else [],
+        "skills": deployment_skills(CATALOG, ["github"]) if supports_skills else [],
     }
 
 

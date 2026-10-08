@@ -145,7 +145,9 @@ async def get_advanced_config(provider: str) -> list[dict[str, Any]]:
     the provider, the same "Advanced configuration" Switch Console offers.
 
     Args:
-        provider: "claude", "codex", "opencode", "antigravity" or "cursor".
+        provider: A provider's id, as `list_machines` reports it, such as
+            "claude" for Claude Code. An unknown id is refused with the ids
+            Switch runs.
 
     Returns:
         A list of fields, each {key, label, type, help, placeholder, options,
@@ -199,8 +201,9 @@ async def create_agent(
         machine: The machine's `id`, or its exact `name`, from
             `list_machines`. A name shared by several machines is refused with
             the candidates listed; pass the id instead.
-        provider: The agent CLI to run: "claude" (Claude Code), "codex",
-            "opencode", "antigravity" or "cursor".
+        provider: The agent CLI to run, by its id as `list_machines` reports
+            it, such as "claude" for Claude Code. An unknown id is refused
+            with the ids Switch runs.
         model: The model to run, or null for the provider's default.
         advanced_config: The provider's advanced settings, such as
             {"effort": "high"} for Claude Code or Codex, keyed by the fields

@@ -57,7 +57,7 @@ from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.github_connections import connection_status
 from switch_core.gateway.github_connections import service as get_github
-from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.gateway.known_agents import provider_known_agent
 from switch_core.gateway.provider_connections import get_verifier
 from switch_core.providers.claude_verifier import (
     ClaudeVerificationError,
@@ -70,6 +70,7 @@ from switch_core.providers.github_revocations import (
     revoke_pending,
 )
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.providers.registry import AgentProviderId
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ class LaunchRequest(BaseModel):
     display_name: str | None
     icon_url: str | None
     instructions: str = Field(max_length=32768)
-    provider: Literal["claude", "codex", "opencode", "cursor", "antigravity"] = "claude"
+    provider: AgentProviderId = "claude"
     definition: str = Field(max_length=65536)
     installation_id: int = Field(gt=0, strict=True)
     repository_id: int = Field(gt=0, strict=True)
@@ -291,9 +292,7 @@ async def update_configuration(
 
 
 async def _register(protocol: AgentCore, launch: HostedLaunch, agent_id: str) -> None:
-    provider = launch.spec.get("provider", "claude")
-    known_type = "claude-code" if provider == "claude" else provider
-    known = KNOWN_AGENTS[known_type]
+    known = provider_known_agent(launch.spec.get("provider", "claude"))
     options = known.parse_options(
         {
             "channels_enabled": True,
@@ -312,7 +311,7 @@ async def _register(protocol: AgentCore, launch: HostedLaunch, agent_id: str) ->
         tools=known.tools,
         models=known.models,
         metadata={
-            "known_agent_type": known_type,
+            "known_agent_type": known.provider.known_agent_type,
             "known_agent_options": options.model_dump(),
             "hosted_launch_id": launch.id,
         },

@@ -32,7 +32,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.gateway.known_agents import known_agent
 from switch_core.gateway.schemas import (
     AgentDetail,
     AgentModelSummary,
@@ -317,7 +317,7 @@ async def apply_agent_options(
     md = dict(agent.metadata_) if isinstance(agent.metadata_, dict) else {}
     raw_agent_type = md.get("known_agent_type")
     agent_type = raw_agent_type if isinstance(raw_agent_type, str) else None
-    spec = KNOWN_AGENTS.get(agent_type) if agent_type else None
+    spec = known_agent(agent_type) if agent_type else None
     if spec is None:
         raise AgentOptionsNotEditable(
             "This agent has no known-agent type; options are not editable."

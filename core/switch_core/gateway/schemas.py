@@ -252,7 +252,7 @@ class AgentSummary(BaseModel):
     # under the user's main agent). The UI nests children under their parent.
     parent_agent_id: str | None = None
     # `known_agent_type` is set when this agent was registered via
-    # `/agents/register` with one of the KNOWN_AGENTS specs (e.g. "claude-code").
+    # `/agents/register` with one of the `known_agents()` specs (e.g. "claude-code").
     # `known_agent_options` is the last validated options payload. Together
     # they let the UI render an "edit options" form against the spec's schema.
     known_agent_type: str | None = None

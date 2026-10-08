@@ -14,7 +14,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.gateway.known_agents import known_agents
 
 
 def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
@@ -62,7 +62,7 @@ async def _make_agent(
     await session.flush()
 
     if known:
-        spec = KNOWN_AGENTS["claude-code"]
+        spec = known_agents()["claude-code"]
         opts = spec.parse_options({})
         integration_profile = spec.build_profile(opts).model_dump()
         metadata_ = {

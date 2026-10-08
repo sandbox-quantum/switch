@@ -23,11 +23,6 @@ SKILL_PATH_RE = re.compile(
 )
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
-# Hosts whose agent loads skills from a directory the hosted bootstrap can
-# install into. Cursor and Antigravity have none, so a cloud agent on those
-# providers gets connection credentials but no connection skills.
-SKILL_PROVIDERS = frozenset({"claude", "codex", "opencode"})
-
 
 class CatalogError(RuntimeError):
     pass

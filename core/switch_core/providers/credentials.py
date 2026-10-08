@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl, TypeAdapter, field_validator
 
+from switch_core.providers.registry import agent_provider
+
 
 class OpenCodeApiCredential(BaseModel):
     type: Literal["api"]
@@ -40,17 +42,8 @@ class OpenCodeConsoleCredential(BaseModel):
     organization: str = Field(min_length=1)
 
 
-PROVIDER_KINDS = {
-    "claude": {"api-key", "setup-token"},
-    "codex": {"api-key", "auth-json"},
-    "cursor": {"api-key"},
-    "opencode": {"auth-json"},
-    "antigravity": {"auth-json"},
-}
-
-
 def validate_provider_credential(provider: str, kind: str, credential: str) -> str:
-    if kind not in PROVIDER_KINDS.get(provider, set()):
+    if kind not in agent_provider(provider).credential_kinds:
         raise ValueError("Choose a supported credential type for this provider.")
     credential = credential.strip()
     if not credential or len(credential.encode()) > 16384:

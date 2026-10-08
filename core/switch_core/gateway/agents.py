@@ -40,7 +40,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
-from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.gateway.known_agents import known_agent, known_agents
 from switch_core.gateway.schemas import (
     AgentDetail,
     AgentSummary,
@@ -165,7 +165,7 @@ async def list_known_agent_types() -> list[KnownAgentType]:
             tool_count=len(spec.tools),
             options_schema=spec.options_schema.model_json_schema(),
         )
-        for key, spec in KNOWN_AGENTS.items()
+        for key, spec in known_agents().items()
     ]
 
 
@@ -186,7 +186,7 @@ async def register_known_agent(
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
-    spec = KNOWN_AGENTS.get(req.agent_type)
+    spec = known_agent(req.agent_type)
     if spec is None:
         raise HTTPException(
             status_code=400,
@@ -250,7 +250,7 @@ async def register_known_subagents(
     inherit the parent's `channels_enabled` / `repo_dir` unless overridden in
     `options`.
     """
-    spec = KNOWN_AGENTS.get(req.agent_type)
+    spec = known_agent(req.agent_type)
     if spec is None:
         raise HTTPException(
             status_code=400, detail=f"Unknown agent type: {req.agent_type}"
