@@ -35,8 +35,10 @@ import {
   type ManagedAgent,
   ManagementApiError,
   type Operation,
-  PROVIDERS,
+  fetchProviders,
+  type ProviderInfo,
   type ProviderStatus,
+  providerLabel,
   revokeController,
   unmanageAgent,
   updateManagedAgent,
@@ -102,11 +104,7 @@ const PROCESS_COLOR: Record<string, "success" | "warning" | "error" | "default">
   failed: "error",
 };
 
-function providerLabel(provider: string): string {
-  return PROVIDERS.find((p) => p.value === provider)?.label ?? provider;
-}
-
-function providerChip(status: ProviderStatus) {
+function providerChip(status: ProviderStatus, label: (provider: string) => string) {
   const ok = status.installed && status.auth === "ok";
   const problem = !status.installed
     ? "not installed"
@@ -126,7 +124,7 @@ function providerChip(status: ProviderStatus) {
         size="small"
         variant="outlined"
         color={ok ? "success" : status.installed ? "warning" : "default"}
-        label={problem ? `${providerLabel(status.provider)}: ${problem}` : providerLabel(status.provider)}
+        label={problem ? `${label(status.provider)}: ${problem}` : label(status.provider)}
       />
     </Tooltip>
   );
@@ -149,6 +147,8 @@ export default function MachinesPage() {
   const [controllers, setControllers] = useState<Controller[] | null>(null);
   const [agents, setAgents] = useState<ManagedAgent[] | null>(null);
   const [operations, setOperations] = useState<Operation[] | null>(null);
+  const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
+  const [providersError, setProvidersError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ severity: "success" | "error"; text: string } | null>(
     null,
@@ -185,6 +185,19 @@ export default function MachinesPage() {
     const timer = setInterval(() => void load(), REFRESH_MS);
     return () => clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    fetchProviders().then(setProviders, (err) =>
+      setProvidersError(
+        `Could not load the providers this server runs, so providers show by id: ${errorMessage(err)}`,
+      ),
+    );
+  }, []);
+
+  const label = useCallback(
+    (provider: string) => providerLabel(providers ?? [], provider),
+    [providers],
+  );
 
   const act = useCallback(
     async (what: string, action: () => Promise<unknown>) => {
@@ -265,9 +278,9 @@ export default function MachinesPage() {
           const missing = row.status.providers.filter((p) => !p.installed);
           return (
             <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: "100%", overflow: "hidden" }}>
-              {installed.map(providerChip)}
+              {installed.map((status) => providerChip(status, label))}
               {missing.length > 0 && (
-                <Tooltip title={`Not installed: ${missing.map((p) => providerLabel(p.provider)).join(", ")}`}>
+                <Tooltip title={`Not installed: ${missing.map((p) => label(p.provider)).join(", ")}`}>
                   <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
                     +{missing.length} not installed
                   </Typography>
@@ -367,7 +380,7 @@ export default function MachinesPage() {
         },
       },
     ],
-    [act, busy],
+    [act, busy, label],
   );
 
   const agentColumns = useMemo<GridColDef<ManagedAgent>[]>(
@@ -377,7 +390,7 @@ export default function MachinesPage() {
         field: "provider",
         headerName: "Provider",
         width: 130,
-        valueGetter: (_value, row) => providerLabel(row.definition.provider),
+        valueGetter: (_value, row) => label(row.definition.provider),
       },
       {
         field: "controller_id",
@@ -531,7 +544,7 @@ export default function MachinesPage() {
         },
       },
     ],
-    [act, busy, controllerName],
+    [act, busy, controllerName, label],
   );
 
   const agentName = useCallback(
@@ -550,7 +563,7 @@ export default function MachinesPage() {
         minWidth: 160,
         valueGetter: (_value, row) =>
           agentName(row.agent_id) ??
-          `${controllerName(row.controller_id)}${row.params.provider ? ` · ${providerLabel(String(row.params.provider))}` : ""}`,
+          `${controllerName(row.controller_id)}${row.params.provider ? ` · ${label(String(row.params.provider))}` : ""}`,
       },
       {
         field: "outcome",
@@ -570,7 +583,7 @@ export default function MachinesPage() {
         ),
       },
     ],
-    [agentName, controllerName],
+    [agentName, controllerName, label],
   );
 
   const recentOperations = useMemo(
@@ -590,6 +603,7 @@ export default function MachinesPage() {
           {loadError}
         </Alert>
       )}
+      {providersError && !loadError && <Alert severity="warning">{providersError}</Alert>}
 
       <Box>
         <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
@@ -658,6 +672,7 @@ export default function MachinesPage() {
         open={editing !== null}
         agent={editing === "new" ? null : editing}
         controllers={controllers ?? []}
+        providers={providers ?? []}
         onClose={() => setEditing(null)}
         onSaved={() => void load()}
       />

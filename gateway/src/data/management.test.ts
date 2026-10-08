@@ -4,7 +4,9 @@ import {
   createManagedAgent,
   enrollCommand,
   fetchManagementAvailable,
+  fetchProviders,
   managementError,
+  providerLabel,
   shellQuote,
 } from "./management";
 
@@ -131,5 +133,24 @@ describe("shellQuote", () => {
     expect(shellQuote("two words")).toBe("'two words'");
     expect(shellQuote("it's")).toBe("'it'\\''s'");
     expect(shellQuote("")).toBe("''");
+  });
+});
+
+describe("fetchProviders", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reads the provider list the server serves", async () => {
+    const providers = [{ id: "codex", label: "Codex", advanced_fields: [] }];
+    const fetch = respond(200, { providers });
+    await expect(fetchProviders()).resolves.toEqual(providers);
+    expect(fetch).toHaveBeenCalledWith("/gateway/management/providers", expect.anything());
+  });
+});
+
+describe("providerLabel", () => {
+  it("is the listed label, else the id", () => {
+    const providers = [{ id: "codex", label: "Codex", advanced_fields: [] }];
+    expect(providerLabel(providers, "codex")).toBe("Codex");
+    expect(providerLabel(providers, "newcli")).toBe("newcli");
   });
 });

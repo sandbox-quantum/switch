@@ -5,14 +5,27 @@
 
 const BASE = "/gateway/management";
 
-export type Provider = "claude" | "codex" | "opencode" | "antigravity" | "cursor";
-export const PROVIDERS: { value: Provider; label: string }[] = [
-  { value: "claude", label: "Claude Code" },
-  { value: "codex", label: "Codex" },
-  { value: "opencode", label: "OpenCode" },
-  { value: "antigravity", label: "Antigravity" },
-  { value: "cursor", label: "Cursor CLI" },
-];
+/** A provider's id, one of those `fetchProviders` lists. */
+export type Provider = string;
+
+/** One field of a provider's advanced configuration, as the server describes it. */
+export interface AdvancedField {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "number" | "boolean" | "list" | "select";
+  help: string | null;
+  placeholder: string | null;
+  /** A select's choices, the first (value "") meaning unset; null for other types. */
+  options: { value: string; label: string }[] | null;
+  catalogue: { kind: "model" | "model-variant"; model_field?: string } | null;
+}
+
+/** A provider a definition can name. */
+export interface ProviderInfo {
+  id: Provider;
+  label: string;
+  advanced_fields: AdvancedField[];
+}
 
 export type DesiredState = "running" | "stopped";
 export type Isolation = "shared" | "isolated";
@@ -234,6 +247,16 @@ export async function revokeController(controllerId: string): Promise<void> {
   await request<{ ok: boolean }>(`/controllers/${encodeURIComponent(controllerId)}`, {
     method: "DELETE",
   });
+}
+
+/** Every provider the server runs, in the order to offer them. */
+export async function fetchProviders(): Promise<ProviderInfo[]> {
+  return (await request<{ providers: ProviderInfo[] }>("/providers")).providers;
+}
+
+/** The provider's label, or its id when the server does not list it. */
+export function providerLabel(providers: ProviderInfo[], provider: Provider): string {
+  return providers.find((p) => p.id === provider)?.label ?? provider;
 }
 
 export function fetchManagedAgents(): Promise<ManagedAgent[]> {

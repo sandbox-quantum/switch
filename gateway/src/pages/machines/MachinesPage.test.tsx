@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Controller, ManagedAgent } from "../../data/management";
+import type { Controller, ManagedAgent, ProviderInfo } from "../../data/management";
 import MachinesPage from "./MachinesPage";
 
 const laptop: Controller = {
@@ -94,9 +94,16 @@ const pmAgent: ManagedAgent = {
   updated_at: "2026-10-01T00:00:00Z",
 };
 
+const servedProviders: ProviderInfo[] = [
+  { id: "claude", label: "Claude Code", advanced_fields: [] },
+  { id: "codex", label: "Codex", advanced_fields: [] },
+];
+
 type Call = { path: string; method: string; body: unknown };
 
+/** The management routes, answering GET /providers with `servedProviders` unless `routes` says otherwise. */
 function mockManagement(routes: Record<string, [number, unknown]>) {
+  routes = { "GET /providers": [200, { providers: servedProviders }], ...routes };
   const calls: Call[] = [];
   vi.stubGlobal(
     "fetch",
@@ -294,5 +301,51 @@ describe("MachinesPage", () => {
     expect(
       await screen.findByText("The machine laptop has not reported recently."),
     ).toBeTruthy();
+  });
+
+  it("labels and offers the providers the server lists", async () => {
+    mockManagement({
+      "GET /providers": [
+        200,
+        {
+          providers: [
+            ...servedProviders,
+            { id: "newcli", label: "New CLI", advanced_fields: [] },
+          ],
+        },
+      ],
+      "GET /controllers": [
+        200,
+        [
+          {
+            ...laptop,
+            status: {
+              ...laptop.status!,
+              providers: [{ ...laptop.status!.providers[0]!, provider: "newcli" }],
+            },
+          },
+        ],
+      ],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText("New CLI")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "New managed agent" }));
+    fireEvent.mouseDown(await screen.findByRole("combobox", { name: "Provider" }));
+    const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
+    expect(options).toEqual(["Claude Code", "Codex", "New CLI"]);
+  });
+
+  it("says when the provider list cannot load, and shows providers by id", async () => {
+    mockManagement({
+      "GET /providers": [500, { detail: "boom" }],
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, [pmAgent]],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText(/Could not load the providers this server runs/)).toBeTruthy();
+    expect(await screen.findByText("codex: login expired")).toBeTruthy();
   });
 });
