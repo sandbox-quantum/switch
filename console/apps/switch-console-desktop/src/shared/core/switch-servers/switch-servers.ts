@@ -767,9 +767,11 @@ export type CreateRoomParams = {
   description: string;
   /** Room-specific system prompt shown to agents on connect. Optional. */
   instructions?: string;
-  bridgeId: string;
-  /** Switch agent ids to add as members. May be empty — a bridged room is
-   * valid with no agents, and members can be invited later. */
+  /** The messaging app to bridge the room to, or null for an internal room
+   * that people reach from Switch Console's chats. */
+  bridgeId: string | null;
+  /** Switch agent ids to add as members. May be empty — a room is valid with
+   * no agents, and members can be invited later. */
   agentIds: string[];
 };
 

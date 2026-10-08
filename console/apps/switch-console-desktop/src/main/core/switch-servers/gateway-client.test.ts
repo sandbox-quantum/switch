@@ -511,7 +511,26 @@ describe('room creation', () => {
     expect(slack).toMatchObject({ channelCreationSupported: true, canCreateChannels: false });
   });
 
-  it('always names a bridge and a channel type, never the internal-only escape hatch', async () => {
+  it('makes a room with no bridge internal, not one on the default app', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 0,
+        bridge_display_name: null,
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, { name: 'design', description: 'd', bridgeId: null, agentIds: [] });
+
+    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({ bridge_id: null, internal_only: true });
+  });
+
+  it('names a chosen bridge and a channel type, never the internal-only escape hatch', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         id: 'room-1',

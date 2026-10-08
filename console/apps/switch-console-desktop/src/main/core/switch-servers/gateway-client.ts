@@ -2235,7 +2235,8 @@ export async function createRoom(
     name: string;
     description: string;
     instructions?: string;
-    bridgeId: string;
+    /** Null makes an internal room: no channel, not even on the default app. */
+    bridgeId: string | null;
     agentIds: string[];
   }
 ): Promise<RemoteRoomSummary> {
@@ -2247,6 +2248,7 @@ export async function createRoom(
       description: params.description,
       instructions: params.instructions?.trim() ? params.instructions : null,
       bridge_id: params.bridgeId,
+      ...(params.bridgeId === null ? { internal_only: true } : {}),
       channel_type: 'channel_public',
       agent_ids: params.agentIds,
     },
