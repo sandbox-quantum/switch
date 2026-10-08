@@ -325,6 +325,7 @@ class Ec2Cloud:
             {"Name": "tag:switch:installation-id", "Values": [self._config.installation_id]},
             {"Name": "tag:switch:slot-id", "Values": [machine.slot_id]},
             {"Name": "tag:switch:generation", "Values": [str(machine.generation)]},
+            {"Name": "tag:switch:machine-id", "Values": [machine.machine_id]},
             {"Name": "tag:switch:purpose", "Values": [purpose]},
             {"Name": "tag:switch:managed-by", "Values": [MANAGED_BY]},
         ]
@@ -333,8 +334,11 @@ class Ec2Cloud:
         return self._token(machine, f"instance-{machine.instance_seq}")
 
     def _token(self, machine: Machine, resource: str) -> str:
+        # The machine id keeps tokens apart when a new database restarts the
+        # generations of an installation's slots, which EC2 remembers.
         material = (
-            f"{self._config.installation_id}:{machine.slot_id}:{machine.generation}:{resource}"
+            f"{self._config.installation_id}:{machine.slot_id}:{machine.generation}:"
+            f"{machine.machine_id}:{resource}"
         )
         return f"switch-m-{hashlib.sha256(material.encode()).hexdigest()[:48]}"
 

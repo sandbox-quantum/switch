@@ -111,10 +111,11 @@ def test_tags_filters_and_tokens_use_the_real_generation(tmp_path: Path):
         {"Name": "tag:switch:installation-id", "Values": [cfg.installation_id]},
         {"Name": "tag:switch:slot-id", "Values": ["slot-1"]},
         {"Name": "tag:switch:generation", "Values": ["3"]},
+        {"Name": "tag:switch:machine-id", "Values": [MACHINE_ID]},
         {"Name": "tag:switch:purpose", "Values": ["worker"]},
         {"Name": "tag:switch:managed-by", "Values": ["switch-hosted-controller"]},
     ]
-    material = f"{cfg.installation_id}:slot-1:3:instance-2"
+    material = f"{cfg.installation_id}:slot-1:3:{MACHINE_ID}:instance-2"
     expected = "switch-m-" + hashlib.sha256(material.encode()).hexdigest()[:48]
     assert cloud._token(machine, "instance-2") == expected
     store.close()
@@ -141,3 +142,17 @@ def test_packaged_controller_config_uses_machine_slots():
     raw = json.loads((FIXTURES / "controller.json").read_text())
     with pytest.raises(ConfigError, match="max_machines"):
         ControllerConfig.from_dict({**raw, "max_machines": 2})
+
+
+def test_a_new_database_reusing_the_installation_gets_tokens_and_lookups_of_its_own(
+    tmp_path: Path,
+):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    earlier = replace(machine, machine_id="00000000-0000-4000-8000-00000000beef")
+    cloud = Ec2Cloud(ec2_client(), cfg)
+    assert (machine.slot_id, machine.generation) == (earlier.slot_id, earlier.generation)
+    assert cloud._token(machine, "data-volume") != cloud._token(earlier, "data-volume")
+    assert cloud._launch_token(machine) != cloud._launch_token(earlier)
+    assert cloud._resource_filters(machine, "data") != cloud._resource_filters(earlier, "data")
+    store.close()
