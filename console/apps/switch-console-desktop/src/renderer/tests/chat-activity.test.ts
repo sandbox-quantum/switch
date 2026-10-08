@@ -302,7 +302,9 @@ describe('AgentActivities', () => {
       transport: () =>
         fakeTransport(
           snapshot('session-a', 'epoch-a', {
-            turns: [{ type: 'turn.upsert', turnId: 'turn-1', status: 'completed', commandId: null }],
+            turns: [
+              { type: 'turn.upsert', turnId: 'turn-1', status: 'completed', commandId: null },
+            ],
             items: [
               item('turn-1', 'user-message', { origin: origin('m1') }),
               item('turn-1', 'tool-activity', { title: 'test-tool' }),
