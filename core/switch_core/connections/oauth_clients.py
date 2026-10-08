@@ -158,13 +158,13 @@ class RegisteredClient:
                             ServiceOAuthClient(
                                 service=self._service,
                                 registration_endpoint=endpoint,
-                                client_id=client.client_id,
+                                oauth_client_id=client.client_id,
                                 encrypted_secret=encrypted,
                             )
                         )
                     else:
                         row.registration_endpoint = endpoint
-                        row.client_id = client.client_id
+                        row.oauth_client_id = client.client_id
                         row.encrypted_secret = encrypted
                 await session.commit()
             self._known = (endpoint, client)

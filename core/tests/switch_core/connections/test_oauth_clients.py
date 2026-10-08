@@ -105,7 +105,7 @@ async def test_registers_once_and_keeps_the_client_encrypted(
         "token_endpoint_auth_method": "none",
     }
     [row] = await _rows(session_factory)
-    assert (row.service, row.client_id) == ("example", first.client_id)
+    assert (row.service, row.oauth_client_id) == ("example", first.client_id)
     assert row.registration_endpoint == f"{ISSUER}/register"
     assert first.client_id not in row.encrypted_secret
     stored = json.loads(TEST_KEYRING.decrypt(row.encrypted_secret))
@@ -146,7 +146,7 @@ async def test_a_moved_registration_endpoint_registers_again(
     )
     assert second.client_id != first.client_id
     [row] = await _rows(session_factory)
-    assert (row.client_id, row.registration_endpoint) == (
+    assert (row.oauth_client_id, row.registration_endpoint) == (
         second.client_id,
         f"{ISSUER}/register",
     )
@@ -208,7 +208,7 @@ async def test_the_runtime_role_registers_outside_any_tenant(
     adapter = _adapter(_client(rls_harness.restricted, vendor), vendor)
     client = await adapter._client.credentials(await adapter.endpoints())
     [row] = await _rows(rls_harness.owner)
-    assert row.client_id == client.client_id
+    assert row.oauth_client_id == client.client_id
 
 
 def test_registers_the_redirects_this_server_can_use() -> None:

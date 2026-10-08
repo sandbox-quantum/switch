@@ -28,7 +28,7 @@ def upgrade() -> None:
         "service_oauth_clients",
         sa.Column("service", sa.Text(), nullable=False),
         sa.Column("registration_endpoint", sa.Text(), nullable=False),
-        sa.Column("client_id", sa.Text(), nullable=False),
+        sa.Column("oauth_client_id", sa.Text(), nullable=False),
         sa.Column("encrypted_secret", sa.Text(), nullable=False),
         sa.Column(
             "created_at",

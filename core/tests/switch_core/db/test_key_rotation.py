@@ -240,7 +240,7 @@ async def test_the_deployments_registered_clients_end_up_under_the_current_key(
         await session.execute(
             text(
                 "INSERT INTO service_oauth_clients "
-                "(service, registration_endpoint, client_id, encrypted_secret) "
+                "(service, registration_endpoint, oauth_client_id, encrypted_secret) "
                 "VALUES ('example', 'https://auth.example.test/register', "
                 "'registered-1', :secret)"
             ),
