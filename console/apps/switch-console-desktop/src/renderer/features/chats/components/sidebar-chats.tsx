@@ -1,6 +1,8 @@
 import { Loader2, MessageSquare, MoreHorizontal, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, useState } from 'react';
+import { CloudAgentList } from '@renderer/features/cloud-agents/cloud-agent-list';
+import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import {
   SidebarGroup,
   SidebarItemMiniButton,
@@ -186,6 +188,9 @@ export const SidebarChats = observer(function SidebarChats() {
             ))}
           </Fragment>
         ))}
+        {/* Managing agents (state, machine, cloud sessions) stays reachable from here. */}
+        <ManagedAgentList />
+        <CloudAgentList />
         {agents.length === 0 && !workspaceAgents.isLoading && (
           <p className="px-2 py-2 text-xs text-foreground-muted">
             No chats yet. Start one with the + above.
