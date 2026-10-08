@@ -10,7 +10,7 @@ as it stood when this migration was written, copied rather than imported for
 the reason `265ed188ad6f` gives.
 
 Revision ID: d41c7a9e2b58
-Revises: fabf9b9bff78
+Revises: e4b7d2a91c06
 Create Date: 2026-10-08 18:00:00.000000
 
 """
@@ -22,7 +22,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "d41c7a9e2b58"
-down_revision: str | None = "fabf9b9bff78"
+down_revision: str | None = "e4b7d2a91c06"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

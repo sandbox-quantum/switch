@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
+
 import switch_core.clients.agent_consumer as ac
 from switch_core.clients.agent_consumer import AgentConsumer, _GateOutcome
 from switch_core.clients.room_meta import RoomMeta
@@ -54,6 +56,15 @@ async def _session_factory():  # type: ignore[no-untyped-def]
     yield object()
 
 
+class _FakeMessageTelemetry:
+    def __init__(self) -> None:
+        self.enabled = True
+        self.addressed: list[dict[str, Any]] = []
+
+    def agent_addressed(self, **kwargs: Any) -> None:
+        self.addressed.append(kwargs)
+
+
 class _FakeQueue:
     def __init__(self) -> None:
         self.events: list[Any] = []
@@ -84,20 +95,30 @@ def _fake_client() -> SimpleNamespace:
     ) -> _GateOutcome:
         return _GateOutcome(addressed=True, refusal=None)
 
+    async def _is_available(_session: Any, _agent: Any, _room_id: str) -> bool:
+        ns.availability_checks += 1
+        return True
+
     ns = SimpleNamespace(
-        agent=SimpleNamespace(id="agent-1", name="agent-a"),
+        agent=SimpleNamespace(id="agent-1", name="agent-a", metadata_=None),
+        tenant_id="tenant-1",
         session_factory=_session_factory,
         _event_buffer=queue,
+        _message_telemetry=_FakeMessageTelemetry(),
+        _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
         _attachment_groups={},
         _attachment_group_timers={},
         _resolve_room_meta=_resolve_room_meta,
         _addressed=_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
+        _is_available=_is_available,
+        availability_checks=0,
         queue=queue,
         _note_hosted_addressed=AsyncMock(return_value=None),
     )
     ns._emit_media = AgentConsumer._emit_media.__get__(ns)
+    ns._report_addressed = AgentConsumer._report_addressed.__get__(ns)
     ns._schedule_attachment_group_flush = (
         AgentConsumer._schedule_attachment_group_flush.__get__(ns)
     )
@@ -440,3 +461,86 @@ class TestAddressingSurvivesCoalescing:
         )
 
         assert client.queue.events[0].payload.addressed is True
+
+
+async def test_a_grouped_post_addressed_to_the_agent_is_reported_once() -> None:
+    """Three files in one post are one message asked of the agent, not three:
+    the report follows the coalesced payload, not the parts."""
+    client = _fake_client()
+    for index in range(3):
+        await AgentConsumer.on_media(
+            client,
+            _room(),
+            _media_event(
+                body="@agent-a look at these" if index == 0 else f"f{index}.png",
+                event_id=f"$part-{index}",
+                group={"id": "grp-r", "index": index, "total": 3},
+            ),
+        )
+
+    assert client._message_telemetry.addressed == [
+        {
+            "tenant_id": "tenant-1",
+            "room_id": "room-1",
+            "sender_transport_user_id": "@alice:s",
+            "from_platform": False,
+            "agent_metadata": None,
+            "agent_live": True,
+            "has_attachment": True,
+        }
+    ]
+
+
+@pytest.mark.parametrize("late_index", [0, 2])
+async def test_a_post_split_by_the_timeout_is_reported_once(late_index: int) -> None:
+    """A group that times out incomplete is delivered again when the rest
+    arrives. In a direct room both pieces address the agent, but it is one
+    post: counted with its first part, as the transport counts it."""
+    original = ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS
+    ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS = 0.01
+    try:
+        client = _fake_client()
+
+        async def _direct_room(_event: Any, _meta: RoomMeta) -> bool:
+            return True
+
+        client._addressed = _direct_room
+        on_time = [index for index in range(3) if index != late_index]
+        for batch in (on_time, [late_index]):
+            for index in batch:
+                await AgentConsumer.on_media(
+                    client,
+                    _room(),
+                    _media_event(
+                        body=f"f{index}.png",
+                        event_id=f"$part-{index}",
+                        group={"id": "grp-late", "index": index, "total": 3},
+                    ),
+                )
+            await asyncio.sleep(0.15)
+    finally:
+        ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS = original
+
+    assert len(client.queue.events) == 2
+    assert len(client._message_telemetry.addressed) == 1
+
+
+async def test_media_skips_the_availability_check_while_telemetry_is_off() -> None:
+    """The media path reads it only to report it, so off means no query."""
+    client = _fake_client()
+    client._message_telemetry.enabled = False
+    await AgentConsumer.on_media(
+        client, _room(), _media_event(body="@agent-a look", event_id="$solo")
+    )
+
+    assert client.availability_checks == 0
+    assert len(client.queue.events) == 1
+
+
+async def test_media_that_does_not_address_the_agent_is_not_reported() -> None:
+    client = _fake_client()
+    await AgentConsumer.on_media(
+        client, _room(), _media_event(body="just a picture", event_id="$solo")
+    )
+
+    assert client._message_telemetry.addressed == []

@@ -16,7 +16,7 @@ from typing import Any
 import discord
 import pytest
 
-from switch_core.agent_icon import default_icon_url
+from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     PlatformAdapter,
@@ -36,7 +36,10 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
-from switch_core.bridges.collaboration.slack.avatar import SLACK_SURFACE
+from switch_core.bridges.collaboration.slack.avatar import (
+    SLACK_ICON_URL_MAX,
+    SLACK_SURFACE,
+)
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -58,7 +61,7 @@ TELEGRAM_CHAT = "-1001234567890"
 
 # A DiceBear URL with no background of its own — the only shape Slack's avatar
 # recolour can act on.
-_DICEBEAR = "https://api.dicebear.com/9.x/bottts/png?seed=worker&size=256"
+_DICEBEAR = generated_icon_url("worker")
 
 
 def _run(coro: Any) -> Any:
@@ -235,18 +238,7 @@ class TestAdapterLabelSelection:
 
         rendering = await adapter.agent_rendering("some-slack-bot")
         assert rendering.field_label == "some-slack-bot"
-        assert rendering.icon_url == default_icon_url("some-slack-bot")
-
-    async def test_mattermost_still_pins_the_format_of_its_default_icon(self) -> None:
-        """`default_agent_icon` is consulted through `self`, so the platform
-        that uploads the bytes rather than passing a link on keeps the response
-        format it can accept."""
-        adapter = MattermostAdapter.__new__(MattermostAdapter)
-        PlatformAdapter.__init__(adapter)
-
-        assert await adapter.agent_icon_url("worker") == default_icon_url(
-            "worker", image_format="png"
-        )
+        assert rendering.icon_url == initials_icon_url("some-slack-bot")
 
 
 def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
@@ -438,6 +430,33 @@ def test_slack_still_draws_an_agent_icon_on_its_own_background() -> None:
     _run(adapter.send_message(SLACK_CHANNEL, "worker", "hello"))
 
     assert f"backgroundColor={SLACK_SURFACE}" in client.calls[0]["icon_url"]
+
+
+def test_slack_is_handed_a_generated_icon_short_enough_to_accept() -> None:
+    """Slack refuses the whole post when its icon URL runs past 255 characters,
+    and the generated icon with its shapes spelled out one by one does."""
+    seed = "0faf365b-e9bc-4d38-8438-ab50087065eb"
+    bridge = _bridge(_agent("worker", None, generated_icon_url(seed)))
+    adapter, client = _slack_adapter(bridge)
+
+    _run(adapter.send_message(SLACK_CHANNEL, "worker", "hello"))
+
+    icon = client.calls[0]["icon_url"]
+    assert icon is not None
+    assert len(icon) <= SLACK_ICON_URL_MAX
+
+
+def test_slack_still_posts_when_an_icon_url_is_too_long_to_send() -> None:
+    """An operator's own URL cannot be shortened. Sent anyway, Slack would
+    refuse the message along with it."""
+    signed = "https://cdn.example.com/avatar.png?signature=" + "a" * 300
+    bridge = _bridge(_agent("worker", None, signed))
+    adapter, client = _slack_adapter(bridge)
+
+    _run(adapter.send_message(SLACK_CHANNEL, "worker", "hello"))
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["icon_url"] is None
 
 
 def test_slack_resolves_an_agent_once_per_send() -> None:

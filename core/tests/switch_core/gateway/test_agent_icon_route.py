@@ -12,6 +12,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_icon import generated_icon_url
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.agents import update_agent_icon
 from switch_core.gateway.schemas import UpdateAgentIconRequest
@@ -48,6 +49,32 @@ class TestUpdateAgentIcon:
             stored = await _AGENT_STORE.get(session, agent.id)
             assert stored is not None
             assert stored.icon_url == _ICON
+
+    async def test_an_older_clients_generated_robot_is_stored_as_gaze(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Console builds from before gaze still send the robot their name
+        generates. Stored as sent, it would bring back a robot the migration
+        had already replaced."""
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="a1", owner_id=owner.id)
+
+            summary = await update_agent_icon(
+                agent.id,
+                UpdateAgentIconRequest(
+                    icon_url="https://api.dicebear.com/9.x/bottts/png?seed=a1&size=256"
+                ),
+                session,
+                _AGENT_STORE,
+                owner,
+                await is_admin(session, owner),
+            )
+
+            assert summary.icon_url == generated_icon_url("a1")
+            stored = await _AGENT_STORE.get(session, agent.id)
+            assert stored is not None
+            assert stored.icon_url == generated_icon_url("a1")
 
     async def test_owner_can_change_an_existing_icon(
         self, session_factory: async_sessionmaker[AsyncSession]

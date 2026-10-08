@@ -54,7 +54,7 @@ async function initialIcon(): Promise<{ iconUrl: string | null; iconIsGenerated:
 describe('a new agent', () => {
   it('starts on a concrete generated icon', async () => {
     const { iconUrl } = await initialIcon();
-    expect(iconUrl).toContain('/bottts/png?');
+    expect(iconUrl).toContain('/gaze/png?');
   });
 
   it('counts that icon as generated rather than chosen', async () => {

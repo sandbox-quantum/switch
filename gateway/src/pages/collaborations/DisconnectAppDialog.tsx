@@ -10,7 +10,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import { type InstalledApp, disconnectApp } from "../../data/api";
-import { titleCase } from "../../theme/hootFormat";
+import { platformLabel } from "../../theme/hootFormat";
 
 /**
  * Disconnecting is the only way an install-created connection can be removed,
@@ -44,6 +44,19 @@ const PLATFORM_COPY: Record<string, { noun: string; effect: string }> = {
       "Switch will stop mirroring messages to and from it. The bot stays in " +
       "the server until you remove it in Discord — disconnecting here does " +
       "not remove it.",
+  },
+  // The distributed Teams app holds no per-workspace token to revoke: one
+  // install serves the whole Microsoft organisation, so disconnecting only
+  // stops Switch from using it, the same way Discord's bot stays in its
+  // server until removed there.
+  teams: {
+    noun: "organisation",
+    effect:
+      "Switch stops listening there and is taken out of every team it was " +
+      "in — rooms that used it become internal-only. This does not remove " +
+      "the app itself: a Microsoft admin removes \"Agent Switch\" in the " +
+      "Teams admin center, and the enterprise application in the Microsoft " +
+      "Entra admin center, to take it out of the organisation entirely.",
   },
 };
 const DEFAULT_COPY = {
@@ -93,7 +106,7 @@ export default function DisconnectAppDialog({
       <DialogTitle>Disconnect the app</DialogTitle>
       <DialogContent>
         <DialogContentText>
-          Disconnect Switch from the {titleCase(install?.platform ?? "")}{" "}
+          Disconnect Switch from the {platformLabel(install?.platform ?? "")}{" "}
           {copy.noun} <b>{install?.external_workspace_id}</b>? {copy.effect}
         </DialogContentText>
         <DialogContentText sx={{ mt: 2 }}>

@@ -102,6 +102,11 @@ async function start(
     /** The provider reports work, such as subagents, still running outside any turn. */
     backgroundWork?: { running: boolean };
     resettable?: boolean;
+    /**
+     * Stopping a conversation reports it stopped and exited, as every provider
+     * adapter does, and returns only after the host has had time to look.
+     */
+    stopReports?: boolean;
     /** What the launcher recorded when it created this session's root, if it did. */
     owedStart?: string;
     /** The file's text as written, for one that is not what a launcher writes. */
@@ -207,6 +212,10 @@ async function start(
     interruptTurn: vi.fn(async () => {}),
     stopSession: vi.fn(async () => {
       live = false;
+      if (!opts.stopReports) return;
+      emit({ type: 'session.state.changed', status: 'stopped' });
+      emit({ type: 'session.exited', reason: 'Stopped' });
+      await new Promise((resolve) => setTimeout(resolve, 600));
     }),
     stopAll: vi.fn(async () => {}),
     hasSession: () => live,
@@ -923,6 +932,35 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     await host.parent.ask({ type: 'command', command: reset, requesterName: 'louisa' });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('keeps running through a reset whose provider reports the old conversation stopped', async () => {
+  const host = await start({ resettable: true, stopReports: true });
+  try {
+    const reset: Command = {
+      ...relayed('current', 'room-reset', { type: 'session.reset' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: null,
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: reset,
+      requesterName: 'louisa',
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-reset', status: 'applied' },
+    });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
+    expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
   } finally {
     expect(await host.stop()).toBeNull();
   }
