@@ -917,17 +917,19 @@ export async function hostSessionProcess(input: {
   const redactions = new Redactions();
   parent.onRedactions((values) => redactions.addListed(values));
   const serviceNotices = new ServiceNotices();
+  // A cloud deployment has no sign-in of the machine's to fall back to.
+  const fallback = process.env.SWITCH_HOSTED_BOOTSTRAP !== '1';
   let endpoint: ServiceEndpointServer | null = null;
   try {
     const { grants, unavailable } = input.services;
     if (unavailable !== null)
       serviceNotices.raise(
-        serviceFallbackNotice('github', `its grants could not be read: ${unavailable}`)
+        serviceFallbackNotice('github', `its grants could not be read: ${unavailable}`, fallback)
       );
     if (needsGitHubHelpers(input.services)) {
       if (process.platform === 'win32')
         serviceNotices.raise(
-          serviceFallbackNotice('github', "Switch's GitHub helpers do not run on Windows yet")
+          serviceFallbackNotice('github', "Switch's GitHub helpers do not run on Windows yet", true)
         );
       else
         endpoint = await startServiceEndpoint({
@@ -936,6 +938,7 @@ export async function hostSessionProcess(input: {
           ask: parent.ask,
           redactions,
           notices: serviceNotices,
+          fallback,
           repositoryVisible: githubRepositoryVisible,
         });
     }

@@ -11,6 +11,7 @@ import {
   machineGitHubHelpers,
   parseCredentialRequest,
   repositoryOfPath,
+  revealsSignIn,
   sessionServiceToken,
   writeGitHubWrapper,
 } from './service-github';
@@ -100,6 +101,7 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
       unavailable: null,
       redactions: new Redactions(),
       notices,
+      fallback: !isolate,
       repositoryVisible: async (_token, repository) => repository === 'org/granted',
       ask: async (ask) => {
         asks.push(ask);
@@ -289,6 +291,36 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
     expect(other.stdout.trim()).toBe('token=own-login');
     expect(other.stderr).toContain("gh uses this machine's own GitHub sign-in instead");
     expect(s.shown).toHaveLength(1);
+  });
+
+  it('never runs a gh auth command that shows or hands out the token on a fallback', async () => {
+    const s = await session(false, true);
+    const directory = await fakeGitHubCli(s.root, 'echo "own-login-token"');
+    for (const args of [
+      ['auth', 'token'],
+      ['auth', 'status', '--show-token'],
+      ['auth', 'git-credential', 'get'],
+    ]) {
+      const ran = await runWrapper(s, directory, args);
+      expect(ran.code).toBe(1);
+      expect(ran.stdout).not.toContain('own-login-token');
+      expect(ran.stderr).toContain('not run on this machine');
+    }
+    expect(revealsSignIn(['auth', 'status'])).toBe(false);
+    expect(revealsSignIn(['pr', 'list'])).toBe(false);
+  });
+
+  it('does not fall back in the cloud: gh is refused with the reason', async () => {
+    const s = await session(true, true);
+    const directory = await fakeGitHubCli(s.root, 'echo "ran with ${GH_TOKEN:-no token}"');
+    const ran = await runWrapper(s, directory, ['pr', 'list']);
+    expect(ran.code).toBe(1);
+    expect(ran.stdout).toBe('');
+    expect(ran.stderr).toContain('Agent builder has no GitHub grant.');
+    expect(ran.stderr).not.toContain("this machine's own");
+    expect(s.shown).toEqual([
+      'GitHub through Switch is unavailable in this session (Agent builder has no GitHub grant).',
+    ]);
   });
 
   it("falls back with gh too: the real gh runs with the machine's own login", async () => {

@@ -327,12 +327,27 @@ export async function runGitHubCli(
   }
   // On the owner's own machine, the repository the command is for, so that
   // one the grant does not reach goes to `gh`'s own login instead.
-  const repository = fallbackOf(env) ? await ghRepository(args, env) : null;
+  const fallback = fallbackOf(env) !== null;
+  const repository = fallback ? await ghRepository(args, env) : null;
   let token: string | undefined;
   try {
     token = await githubToken(env, repository);
     if (!token) throw new Error('This session has no GitHub token.');
   } catch (error) {
+    // In the cloud there is no sign-in of the machine's to fall back to,
+    // and a mounted one is not the session's: say why, and stop.
+    if (!fallback) {
+      process.stderr.write(`switch: ${errorText(error)}\n`);
+      return 1;
+    }
+    // A fallback runs as the machine's own login, but never to hand that
+    // login's token out.
+    if (revealsSignIn(args)) {
+      process.stderr.write(
+        `switch: ${errorText(error)} gh auth commands that show or hand out a token are not run on this machine's own sign-in.\n`
+      );
+      return 1;
+    }
     // `gh` then signs in as the machine's own login, if it has one; the
     // session itself is told too.
     process.stderr.write(`switch: ${errorText(error)} ${FALLING_BACK_GH}\n`);
@@ -364,6 +379,17 @@ export async function runGitHubCli(
     }
   }
   return code;
+}
+
+/** Whether a `gh` command prints or hands out the signed-in token: `gh auth token`, `gh auth status --show-token`, `gh auth git-credential`. */
+export function revealsSignIn(args: readonly string[]): boolean {
+  const words = args.filter((arg) => !arg.startsWith('-'));
+  if (words[0] !== 'auth') return false;
+  return (
+    words[1] === 'token' ||
+    words[1] === 'git-credential' ||
+    (words[1] === 'status' && args.some((arg) => arg === '-t' || arg === '--show-token'))
+  );
 }
 
 /**

@@ -33,16 +33,27 @@ export class ServiceNotices {
   }
 }
 
-/** The notice for a repository the agent's grant does not reach, once a repository. */
-export function ungrantedRepositoryNotice(service: string, repository: string): string {
+/**
+ * The notice for a repository the agent's grant does not reach, once a
+ * repository. `fallback` is whether the session falls back to the machine's
+ * own sign-in; the cloud has none, and the command fails.
+ */
+export function ungrantedRepositoryNotice(
+  service: string,
+  repository: string,
+  fallback: boolean
+): string {
   const name = service === 'github' ? 'GitHub' : service;
-  return `${repository} is not in this agent's ${name} grant, so git and gh use this machine's own ${name} sign-in for it, if it has one.`;
+  return fallback
+    ? `${repository} is not in this agent's ${name} grant, so git and gh use this machine's own ${name} sign-in for it, if it has one.`
+    : `${repository} is not in this agent's ${name} grant, so git and gh have no ${name} access to it.`;
 }
 
-/** The notice for a service the session could not get through Switch. */
-export function serviceFallbackNotice(service: string, reason: string): string {
+/** The notice for a service the session could not get through Switch; `fallback` as above. */
+export function serviceFallbackNotice(service: string, reason: string, fallback: boolean): string {
   const name = service === 'github' ? 'GitHub' : service;
-  return `${name} through Switch is unavailable in this session (${reason.replace(/\.$/, '')}), so ${
-    service === 'github' ? 'git and gh use' : 'it uses'
-  } this machine's own ${name} sign-in instead, if it has one.`;
+  const why = `${name} through Switch is unavailable in this session (${reason.replace(/\.$/, '')})`;
+  return fallback
+    ? `${why}, so ${service === 'github' ? 'git and gh use' : 'it uses'} this machine's own ${name} sign-in instead, if it has one.`
+    : `${why}.`;
 }

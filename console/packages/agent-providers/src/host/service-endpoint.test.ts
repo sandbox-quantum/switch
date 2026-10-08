@@ -28,6 +28,7 @@ async function endpoint(
     unavailable,
     redactions,
     notices,
+    fallback: true,
     // The token reaches `org/granted`; GitHub cannot say for `org/unknown`.
     repositoryVisible: async (_token, repository) => {
       checked.push(repository);
@@ -173,6 +174,7 @@ describe('the session service endpoint', () => {
         services: ['github'],
         unavailable: null,
         notices: new ServiceNotices(),
+        fallback: true,
         repositoryVisible: async () => null,
         redactions: new Redactions(),
         ask: () => new Promise(() => {}),

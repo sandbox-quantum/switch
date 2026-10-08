@@ -44,6 +44,8 @@ export async function startServiceEndpoint(input: {
   ask: (ask: HostAsk) => Promise<unknown>;
   redactions: Redactions;
   notices: ServiceNotices;
+  /** Whether a refused request falls back to the machine's own sign-in, as the notices say. */
+  fallback: boolean;
   repositoryVisible: (token: string, repository: string) => Promise<boolean | null>;
 }): Promise<ServiceEndpointServer> {
   const secret = randomBytes(32).toString('hex');
@@ -110,7 +112,7 @@ export async function startServiceEndpoint(input: {
         return {
           status: 403,
           body: { error: `${repository} is not in this agent's ${service} grant.` },
-          notice: ungrantedRepositoryNotice(service, repository.toLowerCase()),
+          notice: ungrantedRepositoryNotice(service, repository.toLowerCase(), input.fallback),
         };
       return { status: 200, body: { token: answer.token, expires_at: answer.expiresAt } };
     }
@@ -181,12 +183,14 @@ export async function startServiceEndpoint(input: {
         ({ status, body, notice }) => {
           // The helper falls back to the machine's own sign-in; say so.
           if (status !== 200)
-            input.notices.raise(notice ?? serviceFallbackNotice(service, String(body.error)));
+            input.notices.raise(
+              notice ?? serviceFallbackNotice(service, String(body.error), input.fallback)
+            );
           reply(status, body);
         },
         (error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
-          input.notices.raise(serviceFallbackNotice(service, message));
+          input.notices.raise(serviceFallbackNotice(service, message, input.fallback));
           reply(500, { error: message });
         }
       );
