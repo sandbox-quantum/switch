@@ -31,6 +31,7 @@ ASSIGNMENT = boot.Assignment(
 )
 CONFIG = boot.MachineConfig(
     controller_user="switch-controller",
+    node="/opt/switch/node/bin/node",
     cli="/opt/switch/controller/bin/switch-agent-controller",
     path="/opt/switch/node/bin:/usr/bin:/bin",
     agent_users=16,
@@ -202,10 +203,21 @@ def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(monk
     commands = FakeCommands({" status ": [(1, "Not enrolled.")]})
     boot.start_controller(commands, CONFIG, ASSIGNMENT, boot.parse_bundle(bundle(), ASSIGNMENT))
     [enroll] = commands.ran("enroll")
-    assert enroll[:4] == ["/usr/sbin/runuser", "-u", "switch-controller", "--"]
+    assert enroll[:6] == [
+        "/usr/sbin/runuser",
+        "-u",
+        "switch-controller",
+        "--",
+        "/opt/switch/node/bin/node",
+        "/opt/switch/controller/bin/switch-agent-controller",
+    ]
     assert enroll[enroll.index("--code") + 1] == CODE
     assert enroll[enroll.index("--data-dir") + 1] == str(tmp_path / ".switch-controller")
     [setup] = commands.ran("install-service")
+    assert setup[:2] == [
+        "/opt/switch/node/bin/node",
+        "/opt/switch/controller/bin/switch-agent-controller",
+    ]
     assert setup[setup.index("--agents-dir") + 1] == str(tmp_path / "agents")
     assert setup[setup.index("--user") + 1] == "switch-controller"
     assert commands.calls.index(enroll) < commands.calls.index(setup)

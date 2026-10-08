@@ -57,6 +57,9 @@ esac
   echo "Node.js does not match the image-build pin" >&2
   exit 1
 }
+# npm and the controller's CLI (#!/usr/bin/env node) run on this Node.js.
+PATH="/opt/switch/node/bin:$PATH"
+export PATH
 
 # The ids every instance of this image uses: see the header.
 controller_uid=2000
@@ -89,7 +92,7 @@ while [ "$slot" -le "$agent_users" ]; do
 done
 
 install -d -o root -g root -m 0755 /opt/switch/controller /usr/local/libexec /etc/switch-hosted /data
-PATH="/opt/switch/node/bin:$PATH" npm install --global --prefix /opt/switch/controller "$controller_package"
+npm install --global --prefix /opt/switch/controller "$controller_package"
 cli=/opt/switch/controller/bin/switch-agent-controller
 "$cli" --version >/dev/null
 
@@ -100,13 +103,15 @@ install -d -o root -g root -m 0755 "/etc/systemd/system/switch-agent-controller-
 install -o root -g root -m 0644 "$source_dir/controller-after-boot.conf" \
   "/etc/systemd/system/switch-agent-controller-$controller_uid.service.d/after-boot.conf"
 
-provider_path=$(find /opt/switch -mindepth 2 -maxdepth 3 -type d -name bin ! -path '/opt/switch/controller/*' | sort | tr '\n' ':')
+provider_path=$(find /opt/switch -mindepth 2 -maxdepth 3 -type d -name bin \
+  ! -path '/opt/switch/controller/*' ! -path '/opt/switch/node/*' | sort | tr '\n' ':')
 cat > /etc/switch-hosted/machine.json <<EOF
 {
   "version": 1,
   "controllerUser": "$controller_user",
+  "node": "$node",
   "cli": "$cli",
-  "path": "${provider_path}/usr/local/bin:/usr/bin:/bin",
+  "path": "/opt/switch/node/bin:${provider_path}/usr/local/bin:/usr/bin:/bin",
   "agentUsers": $agent_users
 }
 EOF
