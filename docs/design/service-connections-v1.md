@@ -525,10 +525,11 @@ the same user can read it and ask for that agent's token; the wrapper hands
 `gh` (and its extensions, and what they start) the token itself as
 `GH_TOKEN`. Containing an agent is what the cloud deployment is for.
 
-One thing a fallback does not do: run a `gh auth` command that shows or
-hands out the machine's token (`auth token`, `auth status --show-token`,
-`auth git-credential`). That keeps the token out of transcripts and the
-bridges; it does not contain the agent, which can still call the real `gh`.
+A fallback does not run the plain `gh auth` commands that print or hand out
+the machine's token (`auth token`, `auth status --show-token`,
+`auth git-credential`), to keep it out of transcripts and the bridges. That
+is a speed bump, not a guarantee: it is a denylist, so a `gh alias` for one
+of them gets past it, and the agent can call the real `gh` anyway.
 
 ## GitHub on the new model
 

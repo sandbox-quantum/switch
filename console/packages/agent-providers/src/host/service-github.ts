@@ -340,8 +340,9 @@ export async function runGitHubCli(
       process.stderr.write(`switch: ${errorText(error)}\n`);
       return 1;
     }
-    // A fallback runs as the machine's own login, but never to hand that
-    // login's token out.
+    // A fallback runs as the machine's own login; the plain ways of printing
+    // its token are not run, to keep it out of transcripts. A speed bump, not
+    // a boundary: an alias, or the real `gh`, still reaches it.
     if (revealsSignIn(args)) {
       process.stderr.write(
         `switch: ${errorText(error)} gh auth commands that show or hand out a token are not run on this machine's own sign-in.\n`
@@ -381,14 +382,18 @@ export async function runGitHubCli(
   return code;
 }
 
-/** Whether a `gh` command prints or hands out the signed-in token: `gh auth token`, `gh auth status --show-token`, `gh auth git-credential`. */
+/**
+ * Whether a `gh` command is one of the plain ways of printing or handing out
+ * the signed-in token: `gh auth token`, `gh auth status --show-token`, `gh auth
+ * git-credential`. A denylist, so a `gh alias` for one of them gets past it.
+ */
 export function revealsSignIn(args: readonly string[]): boolean {
   const words = args.filter((arg) => !arg.startsWith('-'));
   if (words[0] !== 'auth') return false;
   return (
     words[1] === 'token' ||
     words[1] === 'git-credential' ||
-    (words[1] === 'status' && args.some((arg) => arg === '-t' || arg === '--show-token'))
+    (words[1] === 'status' && args.some((arg) => arg === '-t' || arg.startsWith('--show-token')))
   );
 }
 

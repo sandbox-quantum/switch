@@ -299,6 +299,7 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
     for (const args of [
       ['auth', 'token'],
       ['auth', 'status', '--show-token'],
+      ['auth', 'status', '--show-token=true'],
       ['auth', 'git-credential', 'get'],
     ]) {
       const ran = await runWrapper(s, directory, args);
