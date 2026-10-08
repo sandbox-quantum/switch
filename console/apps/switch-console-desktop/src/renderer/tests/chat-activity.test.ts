@@ -278,4 +278,56 @@ describe('AgentActivities', () => {
     expect(activity.turns().size).toBe(0);
     activities.release(activity);
   });
+
+  it('keeps last known activity visible when controller goes offline', async () => {
+    let online = true;
+    const api: ActivityApi = {
+      resolve: async (): Promise<ChatActivityTarget> =>
+        online
+          ? {
+              kind: 'session',
+              target: 'controller',
+              hostAgentKey: 'controller:agent-a',
+              sessionId: 'session-a',
+              controllerId: 'ctl',
+              generation: 'g1',
+              cloud: false,
+            }
+          : {
+              kind: 'unavailable',
+              reason: 'controller-offline',
+              message: "The agent's controller is offline.",
+              wakeAgentKey: null,
+            },
+      transport: () =>
+        fakeTransport(
+          snapshot('session-a', 'epoch-a', {
+            turns: [{ type: 'turn.upsert', turnId: 'turn-1', status: 'completed', commandId: null }],
+            items: [
+              item('turn-1', 'user-message', { origin: origin('m1') }),
+              item('turn-1', 'tool-activity', { title: 'test-tool' }),
+            ],
+          })
+        ).transport,
+      reasoning: async () => null,
+      watchPlacements: () => () => {},
+    };
+    const activities = new AgentActivities(api);
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await vi.waitFor(() => expect(activity.key?.epoch).toBe('epoch-a'));
+    await activity.learnMessages([
+      { messageId: 'm1', sender: { kind: 'human', id: 'user' } } as any,
+    ]);
+    await vi.waitFor(() => expect(activity.turns().size).toBe(1));
+    expect(activity.turns().get('m1')?.items[0].title).toBe('test-tool');
+
+    online = false;
+    await activity.resolve();
+    await vi.waitFor(() => expect(activity.target?.kind).toBe('unavailable'));
+    expect(activity.client).toBeNull();
+    expect(activity.view).toBeNull();
+    expect(activity.turns().size).toBe(1);
+    expect(activity.turns().get('m1')?.items[0].title).toBe('test-tool');
+    activities.release(activity);
+  });
 });

@@ -59,6 +59,8 @@ export class AgentActivity {
   commandIds = new Map<string, string>();
   reasoning = new Map<string, ReasoningTurn>();
   private readonly bindings = new ActivityBindings();
+  private lastKnownKey: ChatActivityKey | null = null;
+  private lastKnownCommandIds = new Map<string, string>();
   private offView: (() => void) | null = null;
   private resolving = false;
 
@@ -69,9 +71,14 @@ export class AgentActivity {
     readonly agentId: string,
     private readonly api: ActivityApi
   ) {
-    makeAutoObservable<AgentActivity, 'api' | 'bindings' | 'offView' | 'resolving'>(this, {
+    makeAutoObservable<
+      AgentActivity,
+      'api' | 'bindings' | 'lastKnownKey' | 'lastKnownCommandIds' | 'offView' | 'resolving'
+    >(this, {
       api: false,
       bindings: false,
+      lastKnownKey: false,
+      lastKnownCommandIds: false,
       offView: false,
       resolving: false,
       client: observable.ref,
@@ -119,11 +126,19 @@ export class AgentActivity {
   turns(): Map<string, TurnActivity> {
     const key = this.key;
     const snapshot = this.view?.snapshot;
-    if (!key || !snapshot) return new Map();
-    return this.bindings.update(
+    if (!key || !snapshot) {
+      if (this.lastKnownKey) {
+        return this.bindings.lastKnown();
+      }
+      return new Map();
+    }
+    const bound = this.bindings.update(
       activityKeyString(key),
       bindTurns(snapshot, this.roomId, this.commandIds)
     );
+    this.lastKnownKey = key;
+    this.lastKnownCommandIds = new Map(this.commandIds);
+    return bound;
   }
 
   async resolve(): Promise<void> {
@@ -207,9 +222,6 @@ export class AgentActivity {
     this.client?.dispose();
     this.client = null;
     this.view = null;
-    this.reasoning = new Map();
-    this.commandIds = new Map();
-    this.bindings.clear();
   }
 }
 

@@ -116,6 +116,10 @@ export class ActivityBindings {
     return this.bound;
   }
 
+  lastKnown(): Map<string, TurnActivity> {
+    return this.bound;
+  }
+
   clear(): void {
     this.key = null;
     this.bound = new Map();
