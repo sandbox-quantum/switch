@@ -171,9 +171,7 @@ class TestEmitMilestone:
             sink=sink,  # type: ignore[arg-type]
             enabled=enabled,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version="1.0.0",
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
             session_factory=session_factory,
@@ -234,9 +232,7 @@ class TestTheSnapshotSchedule:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version="1.0.0",
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
             session_factory=session_factory,

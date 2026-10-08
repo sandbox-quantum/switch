@@ -75,7 +75,8 @@ class TestNothingIdentifyingCanBeSent:
         }
         assert not offenders, (
             f"{sorted(offenders)} name something inside a deployment. Telemetry "
-            "reports counts and durations only — see docs/old/telemetry-events.md. "
+            "never identifies anything inside a deployment — see "
+            "docs/old/telemetry-events.md. "
             "If a new property genuinely needs to identify something, that is a "
             "decision for the InfoSec review, not for this file."
         )
