@@ -16,6 +16,8 @@ metadata (RFC 9728) names the authorization server, whose metadata
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -91,6 +93,12 @@ class SignIn:
 
     secret: ConnectionSecret
     granted_scopes: list[str]
+
+
+def s256(verifier: str) -> str:
+    """The PKCE challenge for `verifier` (RFC 7636, S256)."""
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
 
 def _https(url: object, what: str) -> str:
