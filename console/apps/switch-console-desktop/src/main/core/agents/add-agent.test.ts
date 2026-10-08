@@ -1,5 +1,6 @@
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 const inspectRemoteDir = vi.hoisted(() => vi.fn());
@@ -59,6 +60,7 @@ const h = vi.hoisted(() => {
       apiKey: 'tok-123',
     })),
     createAgent: vi.fn(async (input: Record<string, unknown>) => ({ ...input })),
+    fetchAvatarSettings: vi.fn(async () => ({ thirdPartyAvatarsEnabled: true })),
   };
 });
 
@@ -78,6 +80,9 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
   withWorkspaceSession: (_workspaceId: string, fn: (server: unknown) => unknown) => fn(mockServer),
+}));
+vi.mock('@main/core/switch-servers/gateway-client', () => ({
+  fetchAvatarSettings: h.fetchAvatarSettings,
 }));
 vi.mock('@main/core/locations/store', () => ({
   ensureLocation: vi.fn(async () => ({ id: 'loc-1' })),
@@ -148,6 +153,7 @@ describe('addAgent', () => {
     h.state.repoAgents = h.repoAgents;
     h.state.workdir = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
+    h.fetchAvatarSettings.mockResolvedValue({ thirdPartyAvatarsEnabled: true });
     // `clearAllMocks` resets call records but not implementations: without a
     // default, whichever test last set one decides the answer for the rest.
     inspectRemoteDir.mockResolvedValue({ dir: '/repo', status: 'directory' });
@@ -259,6 +265,46 @@ describe('addAgent', () => {
     expect(h.registerAgentIdentity).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.objectContaining({ agentType: 'claude-code' })
+    );
+  });
+
+  describe('the icon a server that disables third-party avatars is sent', () => {
+    beforeEach(() => {
+      h.fetchAvatarSettings.mockResolvedValue({ thirdPartyAvatarsEnabled: false });
+    });
+
+    it('registers with no icon when nothing was chosen, rather than the name-generated one', async () => {
+      await addAgent(params({ iconUrl: null }));
+      expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ iconUrl: null })
+      );
+    });
+
+    it('strips a third-party icon URL that was already chosen', async () => {
+      // The new-agent form opens on a random DiceBear avatar before the server
+      // is known; this is the backstop for whatever it sends regardless.
+      await addAgent(params({ iconUrl: agentAvatarUrlForName('codex-hoot') }));
+      expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ iconUrl: null })
+      );
+    });
+
+    it('keeps a custom, non-third-party icon URL', async () => {
+      await addAgent(params({ iconUrl: 'https://example.com/avatar.png' }));
+      expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ iconUrl: 'https://example.com/avatar.png' })
+      );
+    });
+  });
+
+  it('falls back to the name-generated avatar when nothing was chosen and the server allows it', async () => {
+    await addAgent(params({ iconUrl: null }));
+    expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ iconUrl: agentAvatarUrlForName('codex-hoot') })
     );
   });
 

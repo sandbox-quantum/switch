@@ -2,17 +2,19 @@ import { getAgents } from '@main/core/agents/getAgents';
 import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentIconBackfill, SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { fetchAgents, GatewayError, updateAgentIcon } from './gateway-client';
+import { fetchAgents, fetchAvatarSettings, GatewayError, updateAgentIcon } from './gateway-client';
 
 /**
  * Give the signed-in user's existing agents the avatar their name generates
- * (CHOO-2171).
+ * (CHOO-2171) — unless the server disables sending names to a third party for
+ * that (`THIRD_PARTY_AVATARS_ENABLED`), in which case this writes nothing at
+ * all.
  *
  * Agents registered before icons existed have none. A current Switch server
- * draws those with the same name-generated avatar this app does, but an older
- * one draws a lettered badge on the chat platforms instead. This writes the
- * avatar in, so an agent this app manages looks the same in the app as it does
- * in Slack whichever server it is on.
+ * that allows it draws those with the same name-generated avatar this app
+ * does, but an older one draws a lettered badge on the chat platforms instead.
+ * This writes the avatar in, so an agent this app manages looks the same in
+ * the app as it does in Slack whichever server it is on.
  *
  * Only agents this install manages are touched, and only those with no icon at
  * all — a chosen icon is never overwritten.
@@ -24,10 +26,11 @@ import { fetchAgents, GatewayError, updateAgentIcon } from './gateway-client';
  * call, and a refusal is taken as "not yours" rather than argued with.
  *
  * **The outcome is reported rather than logged and forgotten.** The app draws a
- * name-derived avatar for any agent the server has no icon for, so on an older
- * server a failed write leaves the app looking correct while the chat platforms
- * — which ask the server — still show the lettered badge. Nothing on screen
- * would say why, so the caller is handed what happened and tells the user.
+ * name-derived avatar for any agent the server has no icon for and allows it,
+ * so on an older server a failed write leaves the app looking correct while the
+ * chat platforms — which ask the server — still show the lettered badge.
+ * Nothing on screen would say why, so the caller is handed what happened and
+ * tells the user.
  */
 export function backfillAgentIcons(
   workspaceId: string,
@@ -68,6 +71,11 @@ async function writeMissingIcons(
   workspaceId: string,
   server: SwitchServer
 ): Promise<AgentIconBackfill> {
+  const avatarSettings = await fetchAvatarSettings(server);
+  if (!avatarSettings.thirdPartyAvatarsEnabled) {
+    return { kind: 'disabled' };
+  }
+
   const [agents, local] = await Promise.all([fetchAgents(server), getAgents()]);
   // `GET /agents` lists the whole workspace, most of which is nothing to do
   // with this computer.

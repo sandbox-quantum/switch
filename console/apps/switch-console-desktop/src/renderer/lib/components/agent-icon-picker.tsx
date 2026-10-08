@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { Pencil, RotateCw, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
 import { Input } from '@renderer/lib/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
@@ -11,8 +12,12 @@ import { cn } from '@renderer/utils/utils';
 
 type PickerTab = 'generated' | 'url';
 
-const TABS: readonly { value: PickerTab; label: string }[] = [
+const BOTH_TABS: readonly { value: PickerTab; label: string }[] = [
   { value: 'generated', label: 'Generated' },
+  { value: 'url', label: 'Image URL' },
+];
+
+const URL_ONLY_TAB: readonly { value: PickerTab; label: string }[] = [
   { value: 'url', label: 'Image URL' },
 ];
 
@@ -24,6 +29,15 @@ const TABS: readonly { value: PickerTab; label: string }[] = [
  * avatar its name generates — the state the ✕ returns to. A new agent does not
  * start there: it opens on a concrete random avatar, since an unnamed agent has no
  * name to draw from.
+ *
+ * A server that disables third-party avatars (`THIRD_PARTY_AVATARS_ENABLED`)
+ * offers neither of those — generating one sends the name to DiceBear, and
+ * drawing from the name here but not on the server would disagree with what
+ * Slack shows anyway — so the picker then offers only a link to an image of
+ * the reader's own, with a line saying why the other option is missing rather
+ * than just not there. While the server's setting is still unknown, the
+ * Generated tab stays to avoid the layout jumping, but nothing is fetched for
+ * it yet.
  */
 export function AgentIconPicker({
   serverId,
@@ -49,16 +63,34 @@ export function AgentIconPicker({
   const [urlDraft, setUrlDraft] = useState('');
   const [urlError, setUrlError] = useState<string | null>(null);
 
+  const thirdPartyAvatarsEnabled = useThirdPartyAvatarsEnabled(serverId);
+  // Hidden only once the server has actually said no — while it is still
+  // unknown this stays up so the popover does not reflow a moment later, it
+  // just offers nothing in it yet (see the query below).
+  const generatedOffered = thirdPartyAvatarsEnabled !== false;
+  const tabs = generatedOffered ? BOTH_TABS : URL_ONLY_TAB;
+
+  // A reader left on the Generated tab when its server turns out to disable
+  // it would be looking at a tab that no longer exists.
+  useEffect(() => {
+    if (!generatedOffered) setTab('url');
+  }, [generatedOffered]);
+
   // An unnamed agent still needs something to seed the grid, or every tile is
   // the same face drawn from the empty string.
   const seedName = name.trim() || 'agent';
   // The server generates the icons on offer, so every client offers the same
-  // ones and an agent created anywhere looks the same.
+  // ones and an agent created anywhere looks the same. Not asked at all until
+  // the server has said it allows them: a server that disables them answers
+  // this with an empty list anyway, but there is no reason to send the name
+  // over the wire to be told that.
   const { data: choices = [], error: choicesError } = useQuery({
     queryKey: ['agent-icon-choices', serverId, seedName, round],
     queryFn: () =>
-      rpc.switchServers.agentIconChoices({ serverId: serverId!, name: seedName, page: round }),
-    enabled: serverId !== null,
+      rpc.switchServers
+        .agentIconChoices({ serverId: serverId!, name: seedName, page: round })
+        .then((result) => result.choices),
+    enabled: serverId !== null && thirdPartyAvatarsEnabled === true,
     staleTime: Infinity,
   });
 
@@ -87,7 +119,7 @@ export function AgentIconPicker({
           !disabled && 'cursor-pointer hover:opacity-80'
         )}
       >
-        <AgentAvatar name={seedName} iconUrl={iconUrl} size={size} />
+        <AgentAvatar name={seedName} iconUrl={iconUrl} serverId={serverId} size={size} />
         {/* Shown at rest rather than on hover: that the picture is editable at
             all is not guessable, and a hover-only affordance answers the
             question only for someone who already suspected the answer. */}
@@ -102,14 +134,16 @@ export function AgentIconPicker({
       </PopoverTrigger>
 
       <PopoverContent align="center" sideOffset={8} className="w-80 gap-3">
-        <SegmentedControl
-          value={tab}
-          onChange={setTab}
-          options={TABS}
-          ariaLabel="How to choose the icon"
-        />
+        {generatedOffered && (
+          <SegmentedControl
+            value={tab}
+            onChange={setTab}
+            options={tabs}
+            ariaLabel="How to choose the icon"
+          />
+        )}
 
-        {tab === 'generated' ? (
+        {tab === 'generated' && generatedOffered ? (
           <div className="flex flex-col gap-2">
             <div className="grid grid-cols-5 gap-2">
               {choices.map((choice) => {
@@ -126,7 +160,7 @@ export function AgentIconPicker({
                       selected ? 'ring-border-focus' : 'ring-transparent hover:ring-border'
                     )}
                   >
-                    <AgentAvatar name={seedName} iconUrl={choice} size={44} />
+                    <AgentAvatar name={seedName} iconUrl={choice} serverId={serverId} size={44} />
                   </button>
                 );
               })}
@@ -134,11 +168,13 @@ export function AgentIconPicker({
             <p className="text-xs text-foreground-muted">
               {serverId === null
                 ? 'Choose a Switch server to see the icons it offers.'
-                : choicesError
-                  ? `The server's icons could not be loaded: ${failureText(choicesError, 'try again')}`
-                  : round === 0
-                    ? "First is generated from the agent's name."
-                    : 'Shuffled — keep going for more.'}
+                : thirdPartyAvatarsEnabled === null
+                  ? 'Checking what this server allows…'
+                  : choicesError
+                    ? `The server's icons could not be loaded: ${failureText(choicesError, 'try again')}`
+                    : round === 0
+                      ? "First is generated from the agent's name."
+                      : 'Shuffled — keep going for more.'}
             </p>
             <button
               type="button"
@@ -152,7 +188,7 @@ export function AgentIconPicker({
         ) : (
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2.5 rounded-md bg-background-tertiary p-2.5">
-              <AgentAvatar name={seedName} iconUrl={iconUrl} size={44} />
+              <AgentAvatar name={seedName} iconUrl={iconUrl} serverId={serverId} size={44} />
               <Input
                 value={urlDraft}
                 placeholder="https://example.com/avatar.png"
@@ -175,7 +211,10 @@ export function AgentIconPicker({
                 urlError ? 'text-foreground-danger' : 'text-foreground-muted'
               )}
             >
-              {urlError ?? 'A direct link to a PNG or JPEG. It is cropped to a circle.'}
+              {urlError ??
+                (generatedOffered
+                  ? 'A direct link to a PNG or JPEG. It is cropped to a circle.'
+                  : "This server doesn't generate icons from a name — paste a direct link to a PNG or JPEG instead. It is cropped to a circle.")}
             </p>
           </div>
         )}
@@ -191,14 +230,16 @@ export function AgentIconPicker({
             className="flex cursor-pointer items-center gap-1.5 text-xs text-foreground-muted hover:text-foreground"
           >
             <X className="size-3.5" />
-            Use the one from the name
+            {generatedOffered ? 'Use the one from the name' : 'Remove'}
           </button>
         )}
         {/* Why the picture is what it is. Without this the avatar appears to
             change arbitrarily as the name is typed. */}
         {iconUrl === null && (
           <p className="text-xs text-foreground-passive">
-            Using the one from the name{name.trim() === '' ? '' : ` "${name.trim()}"`}.
+            {generatedOffered
+              ? `Using the one from the name${name.trim() === '' ? '' : ` "${name.trim()}"`}.`
+              : 'No icon set — shown by its initials.'}
           </p>
         )}
       </PopoverContent>

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { User as UserIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import {
   type AgentPick,
   AgentPickerRow,
@@ -49,11 +50,14 @@ export function TileGrid({ children }: { children: React.ReactNode }) {
 // ── Agents ──────────────────────────────────────────────────────────────────
 
 function agentTileFor(name: string, lists: EntityLists, onRemove: () => void) {
+  const serverId =
+    lists.workspaceId === null ? null : workspacesStore.serverIdFor(lists.workspaceId);
   const found = lists.agents.find((a) => a.name === name);
   return found ? (
     <ChosenAgentTile
       key={name}
       agent={found}
+      serverId={serverId}
       subtitle={agentProviderLabelFor(found.id, lists.workspaceId)}
       onRemove={onRemove}
     />
@@ -61,6 +65,7 @@ function agentTileFor(name: string, lists: EntityLists, onRemove: () => void) {
     <ChosenAgentTile
       key={name}
       agent={{ id: name, name, iconUrl: null }}
+      serverId={serverId}
       subtitle={NOT_ON_SERVER}
       subtitleTone="warning"
       onRemove={onRemove}
@@ -77,6 +82,8 @@ function AgentCombobox({
   exclude: string[];
   onPick: (name: string) => void;
 }) {
+  const serverId =
+    lists.workspaceId === null ? null : workspacesStore.serverIdFor(lists.workspaceId);
   const items = lists.agents.filter((a) => !exclude.includes(a.name));
   return (
     <PickerCombobox
@@ -86,6 +93,7 @@ function AgentCombobox({
       renderItem={(agent) => (
         <AgentPickerRow
           agent={agent}
+          serverId={serverId}
           subtitle={agentProviderLabelFor(agent.id, lists.workspaceId)}
         />
       )}
