@@ -1140,7 +1140,6 @@ class TeamsAdapter(PlatformAdapter):
         self._graph = GraphClient(tokens=self._tokens, http=self._http)
         await self._check_approval()
         await self._adopt_existing_subscriptions()
-        await self._renew_due_subscriptions()
         self._renewal_task = asyncio.create_task(self._renewal_loop())
         self._repair_task = asyncio.create_task(self._repair_loop())
 
@@ -1248,9 +1247,13 @@ class TeamsAdapter(PlatformAdapter):
         tried again minutes later instead of after a full interval, by which
         time a 55-minute subscription has already lapsed. Complements the
         reactive ``reauthorizationRequired`` lifecycle handler, so capture never
-        silently lapses even if a lifecycle notification is missed."""
+        silently lapses even if a lifecycle notification is missed.
+
+        The first round runs at once, for subscriptions adopted at start that
+        are already close to running out — here rather than in `start`, where
+        renewing many of them one by one, waiting out Graph's throttling,
+        would keep the bridge from connecting."""
         while True:
-            await asyncio.sleep(_RENEWAL_CHECK_SECONDS)
             # Caught here, in the loop, because the loop is what keeps every
             # subscription alive: an error escaping it would end the task, and
             # with it renewal, silently and for good.
@@ -1262,6 +1265,7 @@ class TeamsAdapter(PlatformAdapter):
                     "Teams subscription renewal failed this round; trying again in %ss",
                     _RENEWAL_CHECK_SECONDS,
                 )
+            await asyncio.sleep(_RENEWAL_CHECK_SECONDS)
 
     async def _renew_due_subscriptions(self) -> None:
         if self._graph is None:

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -15,6 +15,7 @@ from switch_core.bridges.collaboration.teams.identity import TeamsTokens
 logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+_GRAPH_HOST = urlsplit(GRAPH_BASE).hostname
 # How old our token must be before an authorization refusal is worth re-minting
 # it for. A token issued seconds ago cannot have missed a grant.
 _TOKEN_RETRY_AGE = 30.0
@@ -74,9 +75,10 @@ def _segment(value: str) -> str:
     """One identifier as a single URL path segment.
 
     A team id can arrive from a request, and an unescaped `?`, `#` or `/` in
-    it would move the rest of the URL somewhere else.
+    it would move the rest of the URL somewhere else. `:` and `@` are left as
+    they are: they are legal in a path segment, and every channel id has both.
     """
-    return quote(value, safe="")
+    return quote(value, safe=":@")
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,11 @@ class GraphClient:
             # The next link already carries the query.
             next_url = page.get("@odata.nextLink")
             params = None
+            if next_url is not None and urlsplit(next_url).hostname != _GRAPH_HOST:
+                raise BridgeOperationError(
+                    f"Graph's next page for {what} is not on {_GRAPH_HOST}, so "
+                    "Switch did not send its token there"
+                )
         return items
 
     # ── Provisioning ─────────────────────────────────────────────────────────
@@ -283,7 +290,7 @@ class GraphClient:
         """
         resp = await self._send(
             "GET",
-            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{channel_id}",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{_segment(channel_id)}",
             params={"$select": "id,displayName,description,membershipType,layoutType"},
         )
         if resp.status_code >= 300:
@@ -350,7 +357,7 @@ class GraphClient:
         }
         resp = await self._send(
             "POST",
-            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{channel_id}/members",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels/{_segment(channel_id)}/members",
             json=body,
         )
         if resp.status_code >= 300 and resp.status_code != 409:
@@ -431,7 +438,7 @@ class GraphClient:
     async def uninstall_app(self, *, team_id: str, installation_id: str) -> None:
         resp = await self._send(
             "DELETE",
-            f"{GRAPH_BASE}/teams/{_segment(team_id)}/installedApps/{installation_id}",
+            f"{GRAPH_BASE}/teams/{_segment(team_id)}/installedApps/{_segment(installation_id)}",
         )
         if resp.status_code >= 300 and resp.status_code != 404:
             raise _graph_error(f"remove the app from team {team_id}", resp)

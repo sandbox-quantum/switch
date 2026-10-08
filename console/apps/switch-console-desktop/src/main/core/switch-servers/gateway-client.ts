@@ -1449,7 +1449,7 @@ function mapTeamsTeam(t: TeamsTeamJson): TeamsTeam {
  *
  * Every failure this call can report is recoverable and bridge-specific, so
  * each becomes a typed result instead of a raw throw: 404 means this bridge is
- * not (or is no longer) a running distributed Teams connection, 409 means it
+ * not (or is no longer) a running distributed Teams connection, 503 means it
  * exists but is not running right now, and 502 is Microsoft Graph itself
  * refusing the request — its `detail` is already written for a human.
  */

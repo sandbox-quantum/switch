@@ -92,6 +92,8 @@ def open_ticket(token: str, *, keyring: Keyring) -> InstallTicket:
             workspace_name=decoded["name"],
             bot_token=decoded["tok"],
             scopes=decoded["scopes"],
-            platform_data=decoded["pd"],
+            # Absent from a ticket sealed before platform data existed, which
+            # a confirmation page left open across that deploy still carries.
+            platform_data=decoded.get("pd", {}),
         ),
     )

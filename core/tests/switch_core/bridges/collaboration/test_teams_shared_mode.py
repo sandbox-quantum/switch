@@ -293,6 +293,41 @@ async def test_starting_a_shared_bridge_checks_approval_and_schedules_renewal() 
     await app.aclose()
 
 
+async def test_start_does_not_wait_for_the_first_renewal_round() -> None:
+    """Renewing many adopted subscriptions one by one, waiting out Graph's
+    throttling, must not keep the bridge from connecting; the renewal loop's
+    first round does it straight after."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2/v2.0/token" in str(request.url):
+            token = jwt.encode({"roles": sorted(REQUIRED_GRAPH_ROLES)}, "k" * 32)
+            return httpx.Response(200, json={"access_token": token, "expires_in": 3600})
+        if request.url.path == "/v1.0/subscriptions":
+            return httpx.Response(200, json={"value": []})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    app = _app_over(httpx.MockTransport(handler))
+    adapter = TeamsAdapter(config=_shared_config())
+    app.attach_if_teams(adapter)
+    renewing = asyncio.Event()
+    throttled = asyncio.Event()
+
+    async def slow_renewal() -> None:
+        renewing.set()
+        await throttled.wait()
+
+    adapter._renew_due_subscriptions = slow_renewal  # type: ignore[method-assign]
+
+    async def _noop(*args: Any) -> None:
+        return None
+
+    await asyncio.wait_for(adapter.start(_noop, _noop, _noop, _noop, _noop), 1)
+    await asyncio.wait_for(renewing.wait(), 1)
+
+    await adapter.stop()
+    await app.aclose()
+
+
 # ── Inbound: only this organisation's ────────────────────────────────────────
 
 

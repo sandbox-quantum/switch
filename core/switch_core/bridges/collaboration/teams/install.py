@@ -36,7 +36,7 @@ import logging
 from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any, ClassVar
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -341,7 +341,7 @@ class TeamsAppInstaller(MessagingAppInstaller):
                 catalog_app_id = str(found[0]["id"])
                 if self._package.version not in versions:
                     updated = await http.post(
-                        f"{_GRAPH}/appCatalogs/teamsApps/{catalog_app_id}/appDefinitions",
+                        f"{_GRAPH}/appCatalogs/teamsApps/{quote(catalog_app_id, safe='')}/appDefinitions",
                         content=self._package.archive,
                         headers={**headers, "Content-Type": "application/zip"},
                     )

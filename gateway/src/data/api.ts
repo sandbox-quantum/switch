@@ -956,7 +956,7 @@ export interface TeamPlacements {
 }
 
 // Throws, carrying the server's own words: a 404 means this connection is not
-// on the distributed app, 409 that it is not running right now, and 502 that
+// on the distributed app, 503 that it is not running right now, and 502 that
 // Microsoft refused the call — all of them are read by the panel rather than
 // collapsed into a boolean.
 export async function fetchTeamPlacements(bridgeId: string): Promise<TeamPlacements> {

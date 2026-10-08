@@ -108,6 +108,14 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i++) await act(async () => await Promise.resolve());
 }
 
+/** Under fake timers: let `ms` pass, including React Query's own scheduling. */
+async function tick(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+  await settle();
+}
+
 function findButton(el: HTMLElement, label: string): HTMLButtonElement | undefined {
   return [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
     b.textContent?.includes(label)
@@ -155,13 +163,51 @@ describe('non-listed results', () => {
     expect(el.textContent).toContain('no longer supports Microsoft Teams team placement');
   });
 
-  it('shows the server’s own sentence for a stopped bridge', async () => {
-    listBridgeTeams.mockResolvedValue({
-      kind: 'not-running',
-      message: 'The connection is not running; try again in a moment.',
-    });
-    const el = await render();
-    expect(el.textContent).toContain('The connection is not running; try again in a moment.');
+  it('shows the server’s own sentence for a bridge that does not come back', async () => {
+    vi.useFakeTimers();
+    try {
+      listBridgeTeams.mockResolvedValue({
+        kind: 'not-running',
+        message: 'The connection is not running; try again in a moment.',
+      });
+      const el = await render();
+      await tick(0);
+      expect(el.textContent).toContain('The connection is restarting with your change');
+      expect(el.textContent).not.toContain('not running');
+
+      for (let i = 0; i < 21; i++) await tick(1500);
+
+      expect(el.textContent).toContain('The connection is not running; try again in a moment.');
+      expect(el.textContent).not.toContain('restarting with your change');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits out a restart, then lists the teams', async () => {
+    vi.useFakeTimers();
+    try {
+      listBridgeTeams
+        .mockResolvedValueOnce({ kind: 'not-running', message: 'not running' })
+        .mockResolvedValue({
+          kind: 'listed',
+          teams: [team({ teamId: 't1', name: 'Engineering', isDefault: true })],
+          defaultTeamId: 't1',
+          inCatalog: true,
+          catalogProblem: null,
+        });
+      const el = await render();
+      await tick(0);
+      expect(el.textContent).toContain('The connection is restarting with your change');
+
+      await tick(2000);
+
+      expect(el.textContent).toContain('Engineering');
+      expect(el.textContent).not.toContain('not running');
+      expect(el.textContent).not.toContain('restarting with your change');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows the server’s own sentence for Microsoft Graph’s refusal', async () => {
@@ -457,6 +503,44 @@ describe('making a team the default', () => {
     });
     expect(spy).toHaveBeenCalledWith({ queryKey: ['bridge-teams', 'ws-1', 'b-1'] });
     expect(spy).toHaveBeenCalledWith({ queryKey: ['remote-bridges', 'ws-1'] });
+  });
+
+  it('keeps the choice saving through the restart it causes, then shows the new default', async () => {
+    vi.useFakeTimers();
+    try {
+      listedTwoTeams();
+      setDefaultTeamsTeam.mockResolvedValue({ kind: 'updated', bridge: {} });
+      const el = await render();
+      await tick(0);
+      listBridgeTeams
+        .mockResolvedValueOnce({ kind: 'not-running', message: 'not running' })
+        .mockResolvedValue({
+          kind: 'listed',
+          teams: [
+            team({ teamId: 't1', name: 'Engineering', hasSwitch: true, isDefault: true }),
+            team({ teamId: 't2', name: 'Sales', hasSwitch: true, isDefault: false }),
+          ],
+          defaultTeamId: 't1',
+          inCatalog: true,
+          catalogProblem: null,
+        });
+
+      await act(async () => button(el, 'Make default').click());
+      await tick(0);
+      expect(el.textContent).toContain('The connection is restarting with your change');
+      expect(el.textContent).toContain('Saving…');
+      expect(el.textContent).not.toContain('not running');
+
+      await tick(2000);
+
+      expect(el.textContent).not.toContain('Saving…');
+      expect(el.textContent).not.toContain('restarting with your change');
+      // Sales is no longer the default, so it is the one offered the choice.
+      const sales = [...el.querySelectorAll('li')].find((li) => li.textContent?.includes('Sales'));
+      expect(sales?.textContent).toContain('Make default');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('prompts a sign-in on an expired session', async () => {

@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.collaboration.teams import graph as graph_module
 from switch_core.bridges.collaboration.teams.connector import (
     ACTIVITY_SIZE_LIMIT,
@@ -765,6 +766,49 @@ def test_every_page_of_teams_is_read_and_the_query_is_sent_once() -> None:
     assert [t["id"] for t in teams] == ["T1", "T2"]
     assert recorder.requests[0].url.params["$select"] == "id,displayName"
     assert "$select" not in recorder.requests[1].url.params
+
+
+def test_a_next_page_off_graph_is_not_sent_the_token() -> None:
+    recorder = _PagedRecorder(
+        [
+            {
+                "value": [{"id": "S1"}],
+                "@odata.nextLink": "https://elsewhere.example/v1.0/subscriptions?$skiptoken=2",
+            },
+            {"value": [{"id": "S2"}]},
+        ]
+    )
+
+    with pytest.raises(BridgeOperationError, match="not on graph.microsoft.com"):
+        _run(_graph(recorder).list_subscriptions())
+
+    assert len(recorder.requests) == 1
+
+
+def test_channel_and_installation_ids_stay_one_path_segment() -> None:
+    recorder = _Recorder(200, {"id": "x"})
+    graph = _graph(recorder)
+
+    _run(graph.get_channel(team_id="t1", channel_id="19:a/b?c@thread.tacv2"))
+    assert recorder.last.url.raw_path.split(b"?")[0] == (
+        b"/v1.0/teams/t1/channels/19:a%2Fb%3Fc@thread.tacv2"
+    )
+
+    _run(graph.uninstall_app(team_id="t1", installation_id="NmRi/Mw=="))
+    assert recorder.last.url.raw_path == b"/v1.0/teams/t1/installedApps/NmRi%2FMw%3D%3D"
+
+
+def test_a_real_channel_id_is_sent_as_it_is() -> None:
+    recorder = _Recorder(200, {"id": "x"})
+
+    _run(
+        _graph(recorder).get_channel(team_id="t1", channel_id="19:abc_1-2@thread.tacv2")
+    )
+
+    assert (
+        recorder.last.url.raw_path.split(b"?")[0]
+        == b"/v1.0/teams/t1/channels/19:abc_1-2@thread.tacv2"
+    )
 
 
 def test_a_failed_page_raises() -> None:

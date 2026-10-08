@@ -166,6 +166,96 @@ describe("TeamsPlacementDialog", () => {
     });
   });
 
+  it("waits out the restart a new default team causes instead of reporting it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const before = placements({
+      teams: [
+        { team_id: "t1", name: "Engineering", has_switch: true, is_default: true },
+        { team_id: "t3", name: "Support", has_switch: true, is_default: false },
+      ],
+    });
+    const after = placements({
+      teams: [
+        { team_id: "t1", name: "Engineering", has_switch: true, is_default: false },
+        { team_id: "t3", name: "Support", has_switch: true, is_default: true },
+      ],
+      default_team_id: "t3",
+    });
+    let reads = 0;
+    mockFetch((_url, init) => {
+      if (init?.method === "PATCH") {
+        return jsonResponse(200, { ...bridge, channel_creation_enabled: true });
+      }
+      reads += 1;
+      if (reads === 1) return jsonResponse(200, before);
+      if (reads === 2) {
+        return jsonResponse(503, {
+          detail: "The Teams connection is not running; try again in a moment.",
+        });
+      }
+      return jsonResponse(200, after);
+    });
+    render(
+      <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
+    );
+
+    await screen.findByText("Support");
+    fireEvent.click(screen.getAllByRole("radio")[1]);
+
+    expect(
+      await screen.findByText("The connection is restarting with your change…"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/not running/)).toBeNull();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    await waitFor(() => {
+      expect((screen.getAllByRole("radio")[1] as HTMLInputElement).checked).toBe(true);
+    });
+    expect(reads).toBe(3);
+    expect(screen.queryByRole("alert")).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("reports a connection that does not come back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockFetch(() =>
+      jsonResponse(503, {
+        detail: "The Teams connection is not running; try again in a moment.",
+      }),
+    );
+    render(
+      <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
+    );
+
+    await screen.findByText("The connection is restarting with your change…");
+    await vi.advanceTimersByTimeAsync(1500 * 21);
+
+    expect(
+      await screen.findByText(
+        "The Teams connection is not running; try again in a moment.",
+      ),
+    ).toBeTruthy();
+    vi.useRealTimers();
+  });
+
+  it("stops waiting for a restart once the dialog is closed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = mockFetch(() =>
+      jsonResponse(503, { detail: "The Teams connection is not running." }),
+    );
+    const { rerender } = render(
+      <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
+    );
+    await screen.findByText("The connection is restarting with your change…");
+    rerender(<TeamsPlacementDialog bridge={null} onClose={() => {}} onChanged={() => {}} />);
+    const callsWhenClosed = fetchMock.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(1500 * 5);
+
+    expect(fetchMock.mock.calls.length).toBe(callsWhenClosed);
+    vi.useRealTimers();
+  });
+
   it("disables adding a team and offers the package download when not in the catalogue", async () => {
     mockFetch(() =>
       jsonResponse(
@@ -199,17 +289,13 @@ describe("TeamsPlacementDialog", () => {
 
   it("shows the server's error when the teams list fails to load", async () => {
     mockFetch(() =>
-      jsonResponse(503, {
-        detail: "The Teams connection is not running; try again in a moment.",
-      }),
+      jsonResponse(502, { detail: "Microsoft refused to list the teams." }),
     );
     render(
       <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
     );
 
-    expect(
-      await screen.findByText("The Teams connection is not running; try again in a moment."),
-    ).toBeTruthy();
+    expect(await screen.findByText("Microsoft refused to list the teams.")).toBeTruthy();
   });
 
   it("labels each row's radio and switch for assistive tech", async () => {

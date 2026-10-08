@@ -415,6 +415,34 @@ describe('the attention warning', () => {
     expect(el.textContent).toContain('Approve again in the browser window');
   });
 
+  it('forgets an earlier re-approval once a different warning replaces it', async () => {
+    const withdrawn = bridge({
+      type: 'teams',
+      attention: 'Approval was withdrawn.',
+      teamPlacementSupported: true,
+    });
+    const el = await render(row({ isAdmin: true, bridge: withdrawn }));
+    const approve = [...el.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Approve again'
+    );
+    await act(async () => approve!.click());
+    await settle();
+    expect(el.textContent).toContain('Approve again in the browser window');
+
+    await act(async () =>
+      root!.render(
+        row({
+          isAdmin: true,
+          bridge: { ...withdrawn, attention: 'The app was blocked by your Teams admin.' },
+        })
+      )
+    );
+
+    expect(el.textContent).toContain('The app was blocked by your Teams admin.');
+    expect(el.textContent).not.toContain('Approve again in the browser window');
+    expect(buttonLabels(el)).toContain('Approve again');
+  });
+
   it('shows why re-approving could not start, rather than leaving it unexplained', async () => {
     beginMessagingAppInstall.mockRejectedValue(new Error('install refused'));
     const el = await render(

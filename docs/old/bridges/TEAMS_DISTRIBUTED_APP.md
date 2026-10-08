@@ -214,7 +214,7 @@ What each mistake looks like, in the order an approval meets them:
 
 | What you see | Cause | Fix |
 | --- | --- | --- |
-| Microsoft: `AADSTS500113` — no reply address | No redirect URI on the app registration | Step 2: add it, platform **Web** |
+| Microsoft: `AADSTS500113` (no reply address) or `AADSTS50011` (reply address does not match) | The redirect URI is missing, or differs from the one Switch sends | Step 2: add it exactly, platform **Web** |
 | Microsoft: `AADSTS650056` — misconfigured application | The app registration lists no Graph permissions | Step 4: add them |
 | Microsoft: "Need admin approval" | The person signing in is not an admin | A Global or Privileged Role Administrator approves |
 | Switch: "Microsoft did not say which roles the person signing in holds" | Directory roles are not emitted in tokens | Step 3 |

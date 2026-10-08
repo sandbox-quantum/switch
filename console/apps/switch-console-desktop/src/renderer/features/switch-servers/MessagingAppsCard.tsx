@@ -393,6 +393,14 @@ export function MessagingAppRow({
   const offerReapprove = isAdmin && bridge.teamPlacementSupported && bridge.attention !== null;
   const [reapprovePhase, setReapprovePhase] = useState<'idle' | 'starting' | 'opened'>('idle');
   const [reapproveError, setReapproveError] = useState<string | null>(null);
+  // A different (or cleared) attention note is a new problem: what was done
+  // about the last one says nothing about it.
+  const [reapprovalFor, setReapprovalFor] = useState(bridge.attention);
+  if (bridge.attention !== reapprovalFor) {
+    setReapprovalFor(bridge.attention);
+    setReapprovePhase('idle');
+    setReapproveError(null);
+  }
   const reapprove = async () => {
     if (workspaceId === null) return;
     setReapprovePhase('starting');

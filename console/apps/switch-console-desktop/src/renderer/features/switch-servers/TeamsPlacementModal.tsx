@@ -39,6 +39,15 @@ const QUERY_KEY = (workspaceId: string, bridgeId: string) => [
 ];
 
 /**
+ * Choosing or clearing the default team restarts the connection, which says it
+ * is not running until it is back: something to wait out, not a failure. The
+ * server's sentence is kept for when it does not come back.
+ */
+class ConnectionRestarting extends Error {}
+const RESTART_RETRY_MS = 1500;
+const RESTART_RETRIES = 20;
+
+/**
  * Where Switch's distributed Microsoft Teams app is placed: which teams it can
  * see, whether it is in each one, and which is the default for new rooms.
  *
@@ -60,8 +69,17 @@ export const TeamsPlacementModal = observer(function TeamsPlacementModal({
 
   const teamsQuery = useQuery({
     queryKey,
-    queryFn: () => rpc.workspaces.listBridgeTeams({ workspaceId, bridgeId }),
+    queryFn: async () => {
+      const result = await rpc.workspaces.listBridgeTeams({ workspaceId, bridgeId });
+      if (result.kind === 'not-running') throw new ConnectionRestarting(result.message);
+      return result;
+    },
+    retry: (failureCount, error) =>
+      error instanceof ConnectionRestarting && failureCount < RESTART_RETRIES,
+    retryDelay: RESTART_RETRY_MS,
   });
+  const restarting =
+    teamsQuery.isFetching && teamsQuery.failureReason instanceof ConnectionRestarting;
 
   const [mutatingTeamId, setMutatingTeamId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -169,9 +187,16 @@ export const TeamsPlacementModal = observer(function TeamsPlacementModal({
             Choose which teams Switch is added to, and which one new rooms land in by default.
           </p>
 
+          {restarting && (
+            <p className="flex items-center gap-2 text-xs text-foreground-muted">
+              <Spinner className="size-3.5" />
+              The connection is restarting with your change…
+            </p>
+          )}
+
           <TeamsPlacementBody
             result={teamsQuery.data ?? null}
-            isLoading={teamsQuery.isLoading}
+            isLoading={teamsQuery.isLoading && !restarting}
             fetchError={teamsQuery.error}
             mutatingTeamId={mutatingTeamId}
             savingPackage={savingPackage}
@@ -231,7 +256,9 @@ function TeamsPlacementBody({
   if (fetchError) {
     return (
       <p className="text-xs text-destructive">
-        {failureText(fetchError, 'Could not read this connection’s teams.')}
+        {fetchError instanceof ConnectionRestarting
+          ? fetchError.message
+          : failureText(fetchError, 'Could not read this connection’s teams.')}
       </p>
     );
   }

@@ -1,7 +1,6 @@
 import DownloadOutlined from "@mui/icons-material/DownloadOutlined";
 import {
   Alert,
-  Box,
   Button,
   CircularProgress,
   Dialog,
@@ -18,6 +17,7 @@ import {
 } from "@mui/material";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ApiError,
   type BridgeDetail,
   type TeamPlacement,
   addBridgeToTeam,
@@ -26,6 +26,11 @@ import {
   removeBridgeFromTeam,
   setDefaultTeamsTeam,
 } from "../../data/api";
+
+// Choosing or clearing the default team restarts the connection, which answers
+// 503 until it is running again: something to wait out, not a failure.
+const RESTART_RETRY_MS = 1500;
+const RESTART_RETRIES = 20;
 
 interface Props {
   /** The bridge to manage teams for, or null when the dialog is closed. */
@@ -47,6 +52,7 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
   const [inCatalog, setInCatalog] = useState(true);
   const [catalogProblem, setCatalogProblem] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [togglingTeamId, setTogglingTeamId] = useState<string | null>(null);
@@ -61,32 +67,54 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
   // Each change reloads the list; only the latest load may write it, so an
   // earlier one answering late cannot put back what a later change undid.
   const latestLoad = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopLoading = useCallback(() => {
+    latestLoad.current += 1;
+    if (retryTimer.current !== null) clearTimeout(retryTimer.current);
+    retryTimer.current = null;
+  }, []);
 
   const load = useCallback(() => {
     if (!bridgeId) return;
-    const thisLoad = ++latestLoad.current;
+    stopLoading();
+    const thisLoad = latestLoad.current;
     setLoading(true);
+    setRestarting(false);
     setLoadError(null);
-    fetchTeamPlacements(bridgeId)
-      .then((result) => {
-        if (thisLoad !== latestLoad.current) return;
-        setTeams(result.teams);
-        setDefaultTeamId(result.default_team_id);
-        setInCatalog(result.in_catalog);
-        setCatalogProblem(result.catalog_problem);
-      })
-      .catch((e) => {
-        if (thisLoad !== latestLoad.current) return;
-        setLoadError(e instanceof Error ? e.message : "Failed to load teams");
-      })
-      .finally(() => {
-        if (thisLoad === latestLoad.current) setLoading(false);
-      });
-  }, [bridgeId]);
+    const attempt = (retriesLeft: number) => {
+      fetchTeamPlacements(bridgeId)
+        .then((result) => {
+          if (thisLoad !== latestLoad.current) return;
+          setTeams(result.teams);
+          setDefaultTeamId(result.default_team_id);
+          setInCatalog(result.in_catalog);
+          setCatalogProblem(result.catalog_problem);
+          setRestarting(false);
+          setLoading(false);
+        })
+        .catch((e) => {
+          if (thisLoad !== latestLoad.current) return;
+          if (e instanceof ApiError && e.status === 503 && retriesLeft > 0) {
+            setRestarting(true);
+            retryTimer.current = setTimeout(
+              () => attempt(retriesLeft - 1),
+              RESTART_RETRY_MS,
+            );
+            return;
+          }
+          setRestarting(false);
+          setLoadError(e instanceof Error ? e.message : "Failed to load teams");
+          setLoading(false);
+        });
+    };
+    attempt(RESTART_RETRIES);
+  }, [bridgeId, stopLoading]);
 
   useEffect(() => {
     if (bridgeId) load();
-  }, [bridgeId, load]);
+    return stopLoading;
+  }, [bridgeId, load, stopLoading]);
 
   const busy = togglingTeamId !== null || settingDefaultId !== null;
 
@@ -178,9 +206,14 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
           </Typography>
 
           {loading && (
-            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+            <Stack alignItems="center" spacing={1.5} sx={{ py: 4 }}>
               <CircularProgress size={28} />
-            </Box>
+              {restarting && (
+                <Typography variant="body2" color="text.secondary">
+                  The connection is restarting with your change…
+                </Typography>
+              )}
+            </Stack>
           )}
 
           {!loading && loadError && <Alert severity="error">{loadError}</Alert>}
