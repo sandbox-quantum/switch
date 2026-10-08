@@ -249,6 +249,32 @@ async function silentLogin(server: SwitchServer): Promise<string | null> {
   return (await getSessionCookie(server.id)) ?? minted;
 }
 
+/** Where to open an authenticated gateway WebSocket, and the headers to open it with. */
+export type GatewaySocketTarget = { url: string; headers: Record<string, string> };
+
+/**
+ * The URL and headers for an authenticated WebSocket to the gateway: the
+ * session cookie (renewed if it is near expiry) and Console's identity, as
+ * every gateway call sends them. Node's WebSocket takes request headers,
+ * unlike a browser's. Refuses a server that is known to be unreachable or
+ * stopped, as `gatewayRequest` does.
+ */
+export async function gatewaySocketTarget(
+  server: SwitchServer,
+  path: string
+): Promise<GatewaySocketTarget> {
+  const blocked = managedServerHostBlocked(server);
+  if (blocked) throw new HostUnreachableError(blocked);
+  const stopped = managedServerStoppedPhase(server);
+  if (stopped) throw new ManagedServerStoppedError(server, stopped);
+  const identity = await consoleIdentityHeaders(server);
+  const cookie = await resolveAuthCookie(server);
+  return {
+    url: gatewayUrl(server, path).replace(/^http/, 'ws'),
+    headers: { ...identity, Cookie: `switch_auth=${cookie}` },
+  };
+}
+
 /**
  * One authenticated call to the gateway, answered with whatever it returned:
  * a refusal is the caller's to read, and a streaming body is left open. Only
