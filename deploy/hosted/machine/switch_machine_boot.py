@@ -76,6 +76,7 @@ class Assignment:
 @dataclass(frozen=True)
 class MachineConfig:
     controller_user: str
+    node: str
     cli: str
     path: str
     agent_users: int
@@ -157,7 +158,7 @@ def load_machine_config(path: Path = MACHINE_CONFIG_PATH) -> MachineConfig:
     """What the image was baked with (`install.sh`)."""
     value = _strict(
         _load_json(path, "machine image configuration"),
-        {"version", "controllerUser", "cli", "path", "agentUsers"},
+        {"version", "controllerUser", "node", "cli", "path", "agentUsers"},
         "machine image configuration",
     )
     agent_users = value["agentUsers"]
@@ -168,11 +169,14 @@ def load_machine_config(path: Path = MACHINE_CONFIG_PATH) -> MachineConfig:
         or not 1 <= agent_users <= 99
         or not isinstance(value["cli"], str)
         or not value["cli"].startswith("/")
+        or not isinstance(value["node"], str)
+        or not value["node"].startswith("/")
         or not isinstance(value["path"], str)
     ):
         raise BootError("The machine image configuration is not one this image reads.")
     return MachineConfig(
         controller_user=_identifier(value["controllerUser"], "controller user"),
+        node=value["node"],
         cli=value["cli"],
         path=value["path"],
         agent_users=agent_users,
@@ -383,12 +387,18 @@ def reconcile_marker(data: Path, assignment: Assignment, machine_id: str) -> Non
 def enrolled(commands: Commands, config: MachineConfig, data_dir: Path) -> bool:
     """Whether the data directory holds an enrollment that was not revoked."""
     status = commands.result(
-        _as_controller(config, [config.cli, "status", "--data-dir", str(data_dir)]),
+        _as_controller(config, [*_cli(config), "status", "--data-dir", str(data_dir)]),
         env=_environment(config),
     )
     if status.returncode != 0:
         return False
     return "Revoked at:" not in status.stdout
+
+
+def _cli(config: MachineConfig) -> list[str]:
+    """The controller's CLI, run on the image's Node.js by its path rather
+    than through `#!/usr/bin/env node` and whatever PATH there is."""
+    return [config.node, config.cli]
 
 
 def _environment(config: MachineConfig) -> dict[str, str]:
@@ -425,7 +435,7 @@ def start_controller(
             _as_controller(
                 config,
                 [
-                    config.cli,
+                    *_cli(config),
                     "enroll",
                     "--server",
                     bundle.api_endpoint,
@@ -449,7 +459,7 @@ def start_controller(
         )
     commands.run(
         [
-            config.cli,
+            *_cli(config),
             "install-service",
             "--separate-users",
             "--user",

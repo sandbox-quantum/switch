@@ -69,7 +69,7 @@ directory. Then, as root:
   group `switch-agents-2000` (gid 2001) and one user per agent,
   `sa2000-01`… (uid 2101…).
 - Installs the boot service, and orders the controller's service after it.
-- Writes `/etc/switch-hosted/machine.json` with the controller user, the CLI,
+- Writes `/etc/switch-hosted/machine.json` with the controller user, Node.js, the CLI,
   the `PATH` the controller and its agents run with, and the number of agent
   users.
 
