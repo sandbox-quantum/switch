@@ -13,6 +13,8 @@ function bridge(id: string, displayName: string): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    receivesWebhooks: false,
+    webhookUrl: null,
   };
 }
 

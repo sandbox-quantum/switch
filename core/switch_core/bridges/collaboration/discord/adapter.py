@@ -50,6 +50,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     ChannelType,
     DirectoryUser,
+    FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -502,6 +503,17 @@ class DiscordAdapter(PlatformAdapter):
     Switch room is created by the bridge core on the first bridged message
     rather than eagerly for the whole guild.
     """
+
+    display_name: ClassVar[str] = "Discord"
+    docs_slug: ClassVar[str | None] = "discord"
+
+    @classmethod
+    def classify_failure(cls, exc: BaseException) -> FailureReason | None:
+        if isinstance(exc, discord.LoginFailure):
+            return "auth_failed"
+        if isinstance(exc, discord.DiscordException):
+            return "platform_error"
+        return None
 
     # Discord linkifies only http(s), so the `switchdash://` deeplink needs the
     # https redirect (`GATEWAY_PUBLIC_URL`) to be clickable here.

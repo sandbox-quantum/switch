@@ -15,6 +15,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from switch_core import messaging_platforms
+
 # The wire prefix. One Amplitude project holds several products, so every event
 # is namespaced by the one that sent it — the Console sends `switch_console.*`
 # against the same relay.
@@ -81,14 +83,47 @@ class TelemetryCatalogueError(Exception):
 
 # ── Shared value sets ────────────────────────────────────────────────────────
 
-# The five collaboration platforms, plus the absence of one. `none` rather than
-# omitting the property: see the module docstring on exact property sets.
-# `unknown` is a third, distinct case — not "no bridge" but "there is one and
-# we could not resolve it" (e.g. the lookup itself failed) — so a transient
-# error is never misreported as an internal-only room.
-BRIDGE_PLATFORM = one_of(
-    "slack", "mattermost", "discord", "teams", "telegram", "none", "unknown"
-)
+
+@dataclass(frozen=True)
+class _RegisteredPlatform(PropertyType):
+    """A messaging platform this build registered, or one of `extra`.
+
+    Closed like `one_of`, but the set is read when an event is checked rather
+    than written here: it is exactly the adapters registered with the
+    collaboration lifecycle, so adding a platform adds its value without an
+    edit to this file. Still no free text — a platform key is code, shaped by
+    `messaging_platforms.PLATFORM_KEY_PATTERN`, and a value nobody registered
+    is refused like any other undeclared value.
+    """
+
+    extra: frozenset[str]
+
+    @property
+    def values(self) -> frozenset[str]:
+        return self.extra | frozenset(messaging_platforms.keys())
+
+    def check(self, value: object) -> str | None:
+        allowed = self.values
+        if not isinstance(value, str):
+            return f"expected one of {sorted(allowed)}, got {type(value).__name__}"
+        if value not in allowed:
+            return f"expected one of {sorted(allowed)}, got {value!r}"
+        return None
+
+
+# Every registered collaboration platform, plus the absence of one. `none`
+# rather than omitting the property: see the module docstring on exact property
+# sets. `unknown` is a third, distinct case — not "no bridge" but "there is one
+# and we could not resolve it" (the lookup itself failed, or its platform is no
+# longer registered) — so a transient error is never misreported as an
+# internal-only room.
+BRIDGE_PLATFORM = _RegisteredPlatform(frozenset({"none", "unknown"}))
+
+
+def connector_count_property(platform: str) -> str:
+    """The `usage_snapshot` property counting one platform's connections."""
+    return f"connector_{platform}_count"
+
 
 CHANNEL_TYPE = one_of("channel_public", "channel_private", "direct", "none")
 
@@ -179,11 +214,8 @@ _SNAPSHOT_COUNTS = (
     # "sessions started today" — nothing durable records one, so it could only
     # be an in-process tally a restart resets. `session_started` covers it.
     "session_live_count",
-    "connector_slack_count",
-    "connector_mattermost_count",
-    "connector_discord_count",
-    "connector_teams_count",
-    "connector_telegram_count",
+    # Plus one `connector_<platform>_count` per registered platform; see
+    # `event_spec`.
     "connector_configured_count",
     "message_count_1d",
     "message_from_human_1d",
@@ -463,6 +495,25 @@ def wire_name(event: str) -> str:
     return f"{EVENT_NAME_PREFIX}.{event}"
 
 
+def event_spec(event: str) -> Mapping[str, PropertyType] | None:
+    """What `event` declares, with the per-platform counts filled in.
+
+    `usage_snapshot` counts connections per platform, one property each, and
+    the platforms are the ones this build registered — so those keys are added
+    here, when the event is checked, rather than listed in `CATALOGUE`.
+    """
+    spec = CATALOGUE.get(event)
+    if spec is None or event != "usage_snapshot":
+        return spec
+    return {
+        **spec,
+        **{
+            connector_count_property(platform): NUMBER
+            for platform in messaging_platforms.keys()
+        },
+    }
+
+
 def validate(event: str, properties: Mapping[str, PropertyValue]) -> None:
     """Raise unless `properties` is exactly what `event` declares.
 
@@ -472,7 +523,7 @@ def validate(event: str, properties: Mapping[str, PropertyValue]) -> None:
     property is checked too — not for privacy but for the charts, since an
     event whose keys vary between emissions cannot be grouped on them.
     """
-    spec = CATALOGUE.get(event)
+    spec = event_spec(event)
     if spec is None:
         raise TelemetryCatalogueError(
             f"{event!r} is not a telemetry event. Add it to CATALOGUE in "

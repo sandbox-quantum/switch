@@ -17,7 +17,13 @@ import httpx
 import pytest
 
 from switch_core.observability.otlp import OtlpClient
-from switch_core.telemetry.catalogue import BOOLEAN, CATALOGUE, NUMBER, PropertyType
+from switch_core.telemetry.catalogue import (
+    BOOLEAN,
+    CATALOGUE,
+    NUMBER,
+    PropertyType,
+    event_spec,
+)
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import OtlpRelaySink, TelemetryRecord
 
@@ -78,7 +84,7 @@ async def _attributes_on_the_wire(
         telemetry_environment="prod",
         telemetry_internal=False,
     )
-    service.emit(event, **{key: value(kind) for key, kind in CATALOGUE[event].items()})
+    service.emit(event, **{key: value(kind) for key, kind in event_spec(event).items()})
     await service.aclose()
 
     body: dict[str, Any] = {}

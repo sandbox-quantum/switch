@@ -4,9 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { SWITCH_DOCS_MESSAGING_APPS_URL } from '@shared/urls';
 import { hasBridgeIcon } from './bridge-icon';
-import { bridgePlatformLabel, bridgeSetupDocsUrl } from './bridge-platform';
+import {
+  bridgePlatformLabel,
+  bridgeSetupDocsUrl,
+  learnBridgePlatforms,
+  learnedBridgeIconSvg,
+} from './bridge-platform';
 
-/** Every bridge type switch-core registers today (`main.py` register_adapter). */
+/** The bridge types this build bundles names and icons for, for servers too
+ * old to describe their own platforms. */
 const BRIDGE_TYPES = ['slack', 'mattermost', 'discord', 'teams', 'telegram'];
 
 const BRIDGE_ICON_DIR = join(
@@ -90,5 +96,38 @@ describe('bridge brand icons', () => {
     for (const type of bundled) {
       expect(bridgePlatformLabel(type)).not.toBe(type);
     }
+  });
+});
+
+describe('platforms a server describes', () => {
+  const dummy = {
+    key: 'dummychat',
+    displayName: 'Dummy Chat',
+    docsSlug: 'dummy-chat',
+    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>',
+    receivesWebhooks: true,
+    fields: [],
+    channelCreationSupported: false,
+    directorySearchSupported: false,
+  };
+
+  it('names, links and draws a platform this build has never heard of', () => {
+    learnBridgePlatforms([dummy]);
+    expect(bridgePlatformLabel('dummychat')).toBe('Dummy Chat');
+    expect(bridgeSetupDocsUrl('dummychat')).toBe(`${SWITCH_DOCS_MESSAGING_APPS_URL}/dummy-chat`);
+    expect(learnedBridgeIconSvg('dummychat')).toBe(dummy.iconSvg);
+    expect(hasBridgeIcon('dummychat')).toBe(true);
+  });
+
+  it('prefers what the server says over what this build bundles', () => {
+    learnBridgePlatforms([{ ...dummy, key: 'teams', displayName: 'Teams (renamed)' }]);
+    expect(bridgePlatformLabel('teams')).toBe('Teams (renamed)');
+    learnBridgePlatforms([{ ...dummy, key: 'teams', displayName: 'Microsoft Teams' }]);
+  });
+
+  it('keeps what it learned when an older server describes nothing', () => {
+    learnBridgePlatforms([dummy]);
+    learnBridgePlatforms([{ ...dummy, displayName: null, docsSlug: null, iconSvg: null }]);
+    expect(bridgePlatformLabel('dummychat')).toBe('Dummy Chat');
   });
 });

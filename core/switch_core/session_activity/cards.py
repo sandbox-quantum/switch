@@ -8,11 +8,12 @@ while open and 2 once settled.
 
 from __future__ import annotations
 
-from typing import Literal, get_args
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core import messaging_platforms
 from switch_core.bridges.collaboration.adapter import RequestCard
 from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.db.models import (
@@ -35,10 +36,8 @@ from switch_core.sessions.contract import (
     QuestionsResult,
     RequestSettled,
     SnapshotRequest,
-    Surface,
 )
 
-_SURFACES: frozenset[str] = frozenset(get_args(Surface))
 _STATES: dict[str, Literal["open", "resolved", "closed"]] = {
     "open": "open",
     "answered": "resolved",
@@ -172,7 +171,7 @@ async def answerer_of(
             .limit(1)
         )
     ).first()
-    if found is None or found.type not in _SURFACES:
+    if found is None or messaging_platforms.lookup(found.type) is None:
         return (
             DecidedBy(
                 actor_id=answered_by, surface="switch-web", command_id=row.request_id

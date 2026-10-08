@@ -530,6 +530,12 @@ class BridgeDetail(BaseModel):
     # nobody has used yet — a question worth not asking rather than asking
     # badly.
     directory_search_supported: bool = True
+    # Whether this connection receives its platform's events on an address of
+    # its own, and that address — the one the operator gives the platform. The
+    # address is None where the deployment has not set `MESSAGING_PUBLIC_URL`,
+    # which is then what stands between this connection and its events.
+    receives_webhooks: bool = False
+    webhook_url: str | None = None
 
 
 class BridgeUpdateRequest(BaseModel):
@@ -550,6 +556,19 @@ class BridgeUpdateRequest(BaseModel):
 
 class BridgeTypeInfo(BaseModel):
     key: str
+    # How a person names the platform ("Microsoft Teams"). Clients label the
+    # platform with this rather than keeping a list of names of their own.
+    display_name: str
+    # The platform's page under the messaging-apps docs, or None where there
+    # is none yet.
+    docs_slug: str | None
+    # The platform's logo as SVG markup, or None where the adapter ships none.
+    # Draw it as an image (a data: URL), never inline it into a page.
+    icon_svg: str | None
+    # Whether connections of this type receive their events over HTTP on an
+    # address of their own (`/messaging/bridges/<id>/events`), which the operator has to
+    # give the platform.
+    receives_webhooks: bool
     config_schema: dict[str, Any]
     # Whether this platform can create channels at all. Read from the adapter
     # class, so it is answerable before any connection of this type exists —

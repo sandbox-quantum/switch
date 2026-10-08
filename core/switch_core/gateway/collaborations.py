@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core import messaging_platforms
 from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
 from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
@@ -149,6 +150,8 @@ async def _detail(
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
         ),
+        receives_webhooks=collab_lifecycle.receives_webhooks(bridge.type),
+        webhook_url=collab_lifecycle.webhook_url(bridge.id, bridge.type),
     )
 
 
@@ -159,15 +162,25 @@ async def list_bridge_types(
     ],
     _user: Annotated[User, Depends(get_current_user)],
 ) -> list[BridgeTypeInfo]:
-    return [
-        BridgeTypeInfo(
-            key=t,
-            config_schema=collab_lifecycle.get_config_schema(t),
-            channel_creation_supported=collab_lifecycle.supports_channel_creation(t),
-            directory_search_supported=collab_lifecycle.supports_directory_search(t),
+    types: list[BridgeTypeInfo] = []
+    for t in collab_lifecycle.get_registered_types():
+        platform = messaging_platforms.lookup(t)
+        adapter_cls = collab_lifecycle.adapter_class(t)
+        if platform is None or adapter_cls is None:
+            raise RuntimeError(f"Bridge type {t!r} is registered but not described.")
+        types.append(
+            BridgeTypeInfo(
+                key=t,
+                display_name=platform.display_name,
+                docs_slug=platform.docs_slug,
+                icon_svg=platform.icon_svg,
+                receives_webhooks=adapter_cls.receives_webhooks,
+                config_schema=collab_lifecycle.get_config_schema(t),
+                channel_creation_supported=adapter_cls.supports_channel_creation,
+                directory_search_supported=adapter_cls.supports_directory_search,
+            )
         )
-        for t in collab_lifecycle.get_registered_types()
-    ]
+    return types
 
 
 @router.post("")

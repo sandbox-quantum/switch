@@ -202,6 +202,15 @@ class BridgeInstallLink(BaseModel):
     url: str
 
 
+#: Why a bridge failed, in the closed set telemetry reports it as. Never the
+#: exception's message, which routinely carries a workspace name or a token
+#: fragment. `PlatformAdapter.classify_failure` answers with one of these for
+#: its own SDK's exceptions; the lifecycle classifies everything else.
+FailureReason = Literal[
+    "auth_failed", "network", "platform_error", "config_invalid", "unknown"
+]
+
+
 class BridgeConnectionConfig(BaseModel):
     pass
 

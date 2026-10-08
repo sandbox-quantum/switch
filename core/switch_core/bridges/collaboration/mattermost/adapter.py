@@ -61,6 +61,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     ChannelType,
     DirectoryUser,
+    FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -300,6 +301,35 @@ def _ephemeral(text: str) -> dict[str, Any]:
 
 
 class MattermostAdapter(PlatformAdapter):
+    display_name: ClassVar[str] = "Mattermost"
+    docs_slug: ClassVar[str | None] = "mattermost"
+
+    @classmethod
+    def classify_failure(cls, exc: BaseException) -> FailureReason | None:
+        """`mattermostdriver` raises its named exceptions only for the status
+        codes it maps; anything else — including a bare connection failure —
+        surfaces as the underlying `requests` exception, since that is the
+        client it wraps. Its named exceptions are `HTTPError`s, so the 401 and
+        403 it maps are checked before the `HTTPError` that covers the rest.
+        """
+        if isinstance(exc, NoAccessTokenProvided | NotEnoughPermissions):
+            return "auth_failed"
+        if isinstance(
+            exc,
+            sync_requests.exceptions.ConnectionError | sync_requests.exceptions.Timeout,
+        ):
+            return "network"
+        # `InvalidJSONError` is a `ValueError`, which the shared classifier
+        # reads as a config somebody typed wrong. A Mattermost server answering
+        # with a proxy's error page is the platform misbehaving.
+        if isinstance(
+            exc,
+            sync_requests.exceptions.HTTPError
+            | sync_requests.exceptions.InvalidJSONError,
+        ):
+            return "platform_error"
+        return None
+
     draws_session_activity: ClassVar[bool] = True
 
     #: A problem somebody has to act on still gets its own reply, so it

@@ -573,6 +573,9 @@ class TeamsAdapter(PlatformAdapter):
     Microsoft Graph change-notification subscriptions.
     """
 
+    display_name: ClassVar[str] = "Microsoft Teams"
+    docs_slug: ClassVar[str | None] = "microsoft-teams"
+
     # Teams keeps only http(s) anchors: a link on any other scheme is stripped
     # whole, label and all, so a `switchdash://` deeplink left the literal
     # brackets around it and rendered as "()". It needs the https redirect,

@@ -12,6 +12,7 @@ import { useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import {
@@ -83,7 +84,7 @@ const ViewGroupingToggle = observer(function ViewGroupingToggle() {
 /** Human label for a messaging-app filter value. */
 function bridgeLabel(value: string): string {
   if (value === UNBRIDGED_FILTER_VALUE) return 'No messaging app';
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  return bridgePlatformLabel(value);
 }
 
 /**

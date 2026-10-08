@@ -85,6 +85,13 @@ with `just test -k test_name`.
 Before opening a pull request, run `just check`, `just typecheck` and
 `just test`.
 
+## Adding a messaging platform
+
+A new messaging platform is one adapter folder, one registration line and a
+docs page. [docs/contributing/add-a-messaging-platform.md](docs/contributing/add-a-messaging-platform.md)
+walks through it: the adapter interface, connection config, capability flags,
+the webhook option and what tests to write.
+
 ## Contributor License Agreement (required)
 
 Every contributor must agree to a Contributor License Agreement before their

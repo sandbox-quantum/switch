@@ -27,7 +27,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlencode
 
 import httpx
@@ -95,6 +95,8 @@ class _SocketOnlyAdapter(PlatformAdapter):
     from the base — the refusal — which is the behaviour one test below is
     about.
     """
+
+    display_name: ClassVar[str] = "Stub"
 
     def __init__(self) -> None: ...
 
