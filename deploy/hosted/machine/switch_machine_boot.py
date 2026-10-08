@@ -489,6 +489,9 @@ def start_controller(
             str(DATA_MOUNT / AGENTS_DIR_NAME),
             "--agent-users",
             str(config.agent_users),
+            # The controller's unit is ordered after this service: a restart
+            # waited for here would wait for this very boot to finish.
+            "--no-block",
         ],
         env=_environment(config),
     )
