@@ -325,10 +325,9 @@ class AgentSessionActivityPublisher:
             clock = self._adapter.redraws_for_elapsed_time
             for keys in (self._live_turns, self._open_cards):
                 for key, agent_id in list(keys.items()):
-                    moved = self._online_seen.get(agent_id) != self._agent_online(
-                        agent_id
-                    )
-                    if moved or (clock and keys is self._live_turns):
+                    online = self._agent_online(agent_id)
+                    moved = self._online_seen.get(agent_id) != online
+                    if moved or (clock and online and keys is self._live_turns):
                         self._enqueue(key)
 
     async def _handle(self, key: _Key) -> None:
