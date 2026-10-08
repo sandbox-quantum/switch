@@ -6,8 +6,14 @@ import type {
   RequestType,
   UserInputQuestion,
 } from '../events';
+import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
-import type { AcpPermissionRequest, AcpPromptCapabilities, AcpToolCall } from './protocol';
+import type {
+  AcpInitializeResult,
+  AcpPermissionRequest,
+  AcpPromptCapabilities,
+  AcpToolCall,
+} from './protocol';
 
 /** The process an ACP provider runs as. */
 export interface AcpLaunch {
@@ -88,6 +94,15 @@ export interface AcpProviderHooks {
   capabilities: ProviderCapabilities;
   /** The command, arguments and environment to run the agent with. May prepare the host first. */
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
+  /** The command a person runs on the execution machine to sign the CLI in. */
+  loginCommand: string;
+  /**
+   * Whether the CLI is signed in, answered without signing it in: a check
+   * must never be what changes its answer. `handshake` runs the agent and
+   * returns its `initialize` answer. Without this hook the check runs the
+   * handshake and reports the sign-in as unknown.
+   */
+  checkSignIn?(input: AcpSignInInput): Promise<ProviderReadiness>;
   /**
    * `authenticate` method sent after `initialize` on every session start,
    * which may open a browser. Omit for an agent that needs no sign-in call.
@@ -120,6 +135,10 @@ export interface AcpProviderHooks {
   ): Promise<unknown> | undefined;
   /** Register vendor-specific requests and notifications for a session. */
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
+}
+
+export interface AcpSignInInput extends SignInCheckInput {
+  handshake(): Promise<AcpInitializeResult>;
 }
 
 export interface AcpAdapterOptions {

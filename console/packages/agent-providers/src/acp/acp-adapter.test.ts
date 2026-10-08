@@ -46,6 +46,7 @@ const dummy: AcpProviderHooks = {
     userInput: false,
   },
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['--acp'], env }),
+  loginCommand: 'dummy-acp login',
 };
 
 beforeEach(() => {

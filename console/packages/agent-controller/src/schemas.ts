@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PROVIDERS } from './providers';
 
 /**
  * The wire messages between this controller and Management, as v1 uses them.
@@ -13,11 +14,12 @@ import { z } from 'zod';
 
 export const PROTOCOL_VERSION = 2;
 
-export const PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const;
-export type Provider = (typeof PROVIDERS)[number];
+export { PROVIDERS };
+/** A provider id this controller has both a plugin and a runtime for. */
+export type Provider = string;
 
 export function isProvider(value: string): value is Provider {
-  return (PROVIDERS as readonly string[]).includes(value);
+  return PROVIDERS.includes(value);
 }
 
 /** The contract's reason codes, plus the ones v1 adds. */
@@ -183,7 +185,7 @@ export type ProcessState = (typeof PROCESS_STATES)[number];
 const reasonCode = z.enum(REASON_CODES);
 
 export const providerStatusSchema = z.object({
-  provider: z.enum(PROVIDERS),
+  provider: z.string().refine(isProvider, { message: 'Not a provider this controller runs.' }),
   installed: z.boolean(),
   version: z.string().nullable(),
   auth: z.enum(['ok', 'expired', 'missing', 'unknown']),

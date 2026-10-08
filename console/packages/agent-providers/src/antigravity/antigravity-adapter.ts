@@ -1,6 +1,7 @@
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
-import { antigravityLaunch } from './runtime';
+import { readiness } from '../readiness';
+import { ANTIGRAVITY_SIGN_IN, antigravityLaunch } from './runtime';
 
 /** Antigravity's `antigravity-acp`, whose questions arrive as permission requests. */
 export const antigravityAcp: AcpProviderHooks = {
@@ -15,6 +16,21 @@ export const antigravityAcp: AcpProviderHooks = {
     userInput: true,
   },
   launch: antigravityLaunch,
+  loginCommand: 'antigravity-acp --login',
+  // `authMethods` is the agent's own answer: the sign-ins it still wants.
+  // Calling `authenticate` here would not test the sign-in but perform it,
+  // opening a browser.
+  checkSignIn: async ({ handshake }) => {
+    try {
+      return (await handshake()).authMethods?.length
+        ? readiness('unauthenticated', ANTIGRAVITY_SIGN_IN)
+        : readiness('authenticated', 'Signed in to Antigravity ACP.');
+    } catch (error) {
+      if (/sign in|auth required|unauthenticated/i.test(String(error)))
+        return readiness('unauthenticated', ANTIGRAVITY_SIGN_IN);
+      throw error;
+    }
+  },
   // Opens a browser when the profile holds no usable token, which is why
   // only a session start sends it and the sign-in check never does.
   authMethodId: 'oauth-personal',

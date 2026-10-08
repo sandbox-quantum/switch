@@ -46,6 +46,7 @@ export type {
   AcpProviderHooks,
   AcpSelectedAnswer,
   AcpSessionContext,
+  AcpSignInInput,
 } from './acp/hooks';
 export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
 export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
@@ -115,8 +116,16 @@ export { prepareCodexSessionHome } from './codex/home';
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 
-export { providerReadinessSchema } from './host/provider-readiness';
-export type { ProviderReadiness } from './host/provider-readiness';
+export { providerReadinessSchema } from './readiness';
+export type { ProviderReadiness, SignInCheckInput } from './readiness';
+export {
+  acpProviderRuntime,
+  isProviderRuntime,
+  PROVIDER_RUNTIMES,
+  providerRuntime,
+  providerRuntimeIds,
+} from './providers/registry';
+export type { ProviderRuntime, ProviderRuntimeOptions } from './providers/registry';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
 export {
   CloudRelayClient,

@@ -1,7 +1,32 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks, AcpSessionContext } from '../acp/hooks';
 import type { ItemType } from '../events';
+import { commandOutput, readiness, signInWith, type ProviderReadiness } from '../readiness';
+
+const CURSOR_LOGIN = 'agent login';
+const SIGNED_OUT = /not logged in|login required|authentication required/i;
+
+/** Reads `agent about`, which names the signed-in account. */
+export function parseCursorAbout(output: string): ProviderReadiness {
+  if (
+    /not logged in|not authenticated|login required|authentication required|not signed in/i.test(
+      output
+    )
+  )
+    return readiness('unauthenticated', signInWith(CURSOR_LOGIN));
+  const email = output.match(/User Email(?:[ \t]*:[ \t]*|[ \t]+)(.+)/i)?.[1]?.trim();
+  if (!email)
+    return readiness(
+      'unknown',
+      'Could not verify authentication. Check provider setup and try again.'
+    );
+  return SIGNED_OUT.test(email)
+    ? readiness('unauthenticated', signInWith(CURSOR_LOGIN))
+    : readiness('authenticated', 'Signed in.');
+}
 
 interface CursorQuestion {
   title?: string;
@@ -82,6 +107,23 @@ export const cursorAcp: AcpProviderHooks = {
     userInput: false,
   },
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['acp'], env }),
+  loginCommand: CURSOR_LOGIN,
+  checkSignIn: async ({ binaryPath, cwd, env }) => {
+    let output: string;
+    try {
+      output = (
+        await promisify(execFile)(binaryPath, ['about'], {
+          cwd,
+          env,
+          timeout: 15000,
+          maxBuffer: 1024 * 1024,
+        })
+      ).stdout;
+    } catch (error) {
+      output = commandOutput(error);
+    }
+    return parseCursorAbout(output);
+  },
   authMethodId: 'cursor_login',
   promptCapabilities: { image: true },
   // Cursor's own modes are workflows (agent, plan, ask), not permission

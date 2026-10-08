@@ -6,11 +6,7 @@ import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { AgentLaunchDefinition, ProviderAdapter, ProviderSessionStartInput } from '../adapter';
-import { createAntigravityAdapter } from '../antigravity/antigravity-adapter';
-import { createClaudeAdapter } from '../claude/claude-adapter';
-import { createCodexAdapter } from '../codex/codex-adapter';
-import { createCursorAdapter } from '../cursor/cursor-adapter';
-import { createOpencodeAdapter } from '../opencode/opencode-adapter';
+import { isProviderRuntime, providerRuntime, providerRuntimeIds } from '../providers/registry';
 import { HostedSession } from './session-host';
 
 const id = z.string().min(1).max(200);
@@ -42,7 +38,9 @@ export const agentLaunchDefinitionSchema = z.strictObject({
 }) satisfies z.ZodType<AgentLaunchDefinition>;
 
 export const startSchema = z.strictObject({
-  provider: z.enum(['claude', 'codex', 'opencode', 'antigravity', 'cursor']),
+  provider: z.string().refine(isProviderRuntime, {
+    message: `Unsupported execution provider. This host runs ${providerRuntimeIds().join(', ')}.`,
+  }),
   input: z.strictObject({
     sessionId: id,
     cwd: z.string().min(1),
@@ -75,23 +73,7 @@ export function adapterFor(
   binaryPath: string | undefined,
   skill: string
 ): ProviderAdapter {
-  switch (provider) {
-    case 'claude':
-      return createClaudeAdapter({ claudeExecutablePath: binaryPath });
-    case 'codex':
-      return createCodexAdapter({ binaryPath });
-    case 'opencode':
-      return createOpencodeAdapter({
-        binaryPath,
-        skills: skill ? [{ name: 'switch', content: skill }] : [],
-      });
-    case 'antigravity':
-      return createAntigravityAdapter({ binaryPath });
-    case 'cursor':
-      return createCursorAdapter({ binaryPath });
-    default:
-      throw new Error(`Unsupported execution provider: ${provider}`);
-  }
+  return providerRuntime(provider).createAdapter({ binaryPath, logger: undefined, skill });
 }
 
 async function body(request: IncomingMessage): Promise<unknown> {

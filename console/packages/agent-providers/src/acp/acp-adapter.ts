@@ -18,6 +18,7 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
+import { readiness, type ProviderReadiness, type SignInCheckInput } from '../readiness';
 import {
   JsonRpcError,
   noopLogger,
@@ -54,6 +55,33 @@ export async function acpInitialize(client: StdioJsonRpcClient): Promise<AcpInit
     clientInfo: ACP_CLIENT_INFO,
     clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
   });
+}
+
+/** A provider's sign-in check, run the way its hooks say, always tidying up the process. */
+export async function checkAcpSignIn(
+  hooks: AcpProviderHooks,
+  input: SignInCheckInput
+): Promise<ProviderReadiness> {
+  let client: StdioJsonRpcClient | undefined;
+  const handshake = async () => {
+    client = new StdioJsonRpcClient({
+      ...(await hooks.launch(input)),
+      cwd: input.cwd,
+      logger: noopLogger,
+      onExit: () => {},
+    });
+    return await acpInitialize(client);
+  };
+  try {
+    if (hooks.checkSignIn) return await hooks.checkSignIn({ ...input, handshake });
+    await handshake();
+    return readiness(
+      'unknown',
+      `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the execution machine with ${hooks.loginCommand}.`
+    );
+  } finally {
+    await client?.dispose();
+  }
 }
 
 interface PendingDecision {
