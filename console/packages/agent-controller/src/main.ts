@@ -21,6 +21,7 @@ import {
   workspaceSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage } from './log';
+import { loginShellPath } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { definitionProblem } from './reconcile';
 import {
@@ -157,6 +158,16 @@ async function runCommand(args: string[]): Promise<number> {
     level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
     write: (line) => process.stderr.write(line),
   });
+  if (process.platform !== 'win32') {
+    const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
+    const path = loginShellPath(shell, process.env.PATH ?? '');
+    if (path) process.env.PATH = path;
+    else
+      log.warn(
+        "Could not read the login shell's PATH; provider CLIs, git and gh are looked for on this process's own",
+        { shell, path: process.env.PATH }
+      );
+  }
   const credential = values['credential-stdin']
     ? await readCredential(process.stdin, CREDENTIAL_STDIN_TIMEOUT_MS)
     : null;
