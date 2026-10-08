@@ -134,6 +134,16 @@ The plugin is what Console shows and how it finds the CLI. Copy
 - `icon.ts` holds an SVG. Give it an `alt`, and set `invertInDark` if it is a
   dark single-colour mark.
 
+The plugin declares no advanced-configuration fields. Those are defined only in
+core's provider table (step 3), and Console builds every agent's form from what
+the agent's Switch server serves. A plugin only applies values: if the provider
+takes settings, its plugin lists the keys it applies and the shape of each
+(`mcp.launchProfileSettings()`, or `repoAgents.advancedSettings()` for a
+provider that runs named definitions) and turns them into launch inputs. Leave
+both out for a provider with no settings. A field the server defines that the
+plugin doesn't apply is shown as one this Console can't apply, and the agent
+controller refuses a definition that sets it.
+
 Add it to the list in `plugin-registry.ts`. The list order is the order the UI
 shows.
 
@@ -144,7 +154,10 @@ with the id and a display label. Leave everything else at its default unless the
 server really needs it:
 
 - **Advanced settings:** none by default. Empty is valid, and Console then
-  offers no advanced form.
+  offers no advanced form. When the provider does take settings, this is the
+  only place their fields (label, type, help, choices) are defined: add them to
+  `core/switch_core/providers/advanced_fields.py`, and have the plugin apply
+  each by its key (step 2).
 - **Known-agent profile:** the generic managed-agent profile, keyed by the id.
 
 The server validates agent definitions, the gateway's provider list and
