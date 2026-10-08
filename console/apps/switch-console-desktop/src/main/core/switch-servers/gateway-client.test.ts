@@ -2158,24 +2158,31 @@ describe('agent management calls', () => {
     ).rejects.toThrow(/HTTPS/);
 
     fetchMock.mockImplementation(async () =>
-      respond(200, {
-        operations: [
-          {
-            id: 'op-1',
-            state: 'failed',
-            result: {
-              outcome: 'failed',
-              error: { code: 'provider_login_expired', message: 'No.' },
-            },
+      respond(200, [
+        {
+          id: 'op-1',
+          state: 'failed',
+          result: {
+            outcome: 'failed',
+            error: { code: 'provider_login_expired', message: 'No.' },
           },
-        ],
-      })
+        },
+        { id: 'op-2', state: 'succeeded', result: { outcome: 'succeeded' } },
+      ])
     );
     expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-1')).toEqual({
       state: 'failed',
       error: { code: 'provider_login_expired', message: 'No.' },
     });
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-2')).toEqual({
+      state: 'succeeded',
+      error: null,
+    });
     expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-9')).toBeNull();
+    fetchMock.mockImplementation(async () => respond(200, { operations: [] }));
+    await expect(fetchMachineOperation(SERVER, 'controller-1', 'op-1')).rejects.toThrow(
+      /not a list/
+    );
   });
 
   it("reads each machine's providers from its last status report, and invents none", async () => {

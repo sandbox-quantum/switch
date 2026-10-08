@@ -598,6 +598,8 @@ export const NewAgentForm = observer(function NewAgentForm({
           dir: trimmedRemoteDir || null,
           model: managedSettingsRef.current.model,
           advancedConfig: managedSettingsRef.current.advancedConfig,
+          // A Switch cloud machine runs every agent as a user of its own.
+          isolation: serverMachine.cloud ? 'isolated' : 'shared',
         });
         if (created.kind !== 'created') {
           reportProvisionError(created);
