@@ -95,8 +95,13 @@ export const ChatPanel = observer(function ChatPanel({
     // oxlint-disable-next-line react/exhaustive-deps -- re-run as messages arrive and epochs change
   }, [activities, messageCount, activities.map((each) => each.session?.epoch).join()]);
 
-  // Reasoning lives only on a local or SSH host and is read while a turn runs.
+  // Reasoning lives only on a local or SSH host and is read while a turn runs,
+  // and whenever the joined turns change: a chat opened while idle has none
+  // until the session's snapshot arrives, and its past turns are read then.
   const working = activities.some((activity) => activity.working);
+  const turnIdsKey = activities
+    .map((activity) => [...activity.turns().values()].map((turn) => turn.turnId).join(','))
+    .join('|');
   useEffect(() => {
     const read = () => {
       for (const activity of activities) {
@@ -108,7 +113,7 @@ export const ChatPanel = observer(function ChatPanel({
     if (!working) return;
     const timer = setInterval(read, REASONING_MS);
     return () => clearInterval(timer);
-  }, [activities, working, messageCount]);
+  }, [activities, working, messageCount, turnIdsKey]);
 
   const selectedActivity = useMemo(
     () =>
