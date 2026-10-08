@@ -75,6 +75,12 @@ module structure and the key request flows.
 setting up bring-your-own OIDC sign-in for the gateway, including the WorkOS
 setup path.
 
+## Adding an agent CLI
+
+Supporting a new agent CLI in Switch is a plugin entry, a hooks file on the
+generic ACP adapter, and one line in the server's provider table. Follow
+[Add an agent provider](console/docs/add-an-agent-provider.md).
+
 ## Testing
 
 Tests live in `core/tests/switch_core/` and mirror the module structure. The

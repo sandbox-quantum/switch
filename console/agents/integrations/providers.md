@@ -7,10 +7,16 @@ Local and SSH locations use the same persistent SDK host.
 ## Source of truth
 
 - `packages/agent-providers/src/` owns native SDK/protocol execution.
-- `packages/plugins/src/agents/impl/<id>/` owns CLI detection, installation,
-  native skills, MCP configuration and launch profiles.
-- `src/shared/core/providers/agent-provider-registry.ts` owns supported IDs and
-  display metadata. Unsupported stored IDs must fail explicitly.
+  `src/providers/registry.ts` (`PROVIDER_RUNTIMES`) is the list of providers the
+  execution host runs, with each one's adapter, sign-in check, login command and
+  env passthrough. ACP CLIs run on the generic adapter in `src/acp/`, with a
+  hooks file each.
+- `packages/plugins/src/agents/impl/<id>/` owns display metadata, CLI detection,
+  installation, native skills, MCP configuration and launch profiles; the
+  registration list is `plugin-registry.ts`.
+- `src/shared/core/providers/agent-provider-registry.ts` is the catalogue built
+  from both at startup. Unsupported stored IDs must fail explicitly.
+- Adding a provider: [Add an agent provider](../../docs/add-an-agent-provider.md).
 - `src/main/core/sdk-host/` handles deployment and the desktop host client.
 - `packages/agent-providers/src/host/` owns persistent execution and recovery.
 
@@ -23,8 +29,10 @@ reported explicitly rather than replaced with synthetic prompts.
 
 ## Changing providers
 
-Keep the adapter, plugin metadata, desktop registry, and host environment in
-sync. The environment allowlist is `packages/agent-providers/src/host/agent-env.ts`, shared by Console and the headless agents controller.
+The plugin and runtime registrations must name the same providers; Console and
+the agents controller refuse to start otherwise. The shared environment
+allowlist is `packages/agent-providers/src/host/agent-env.ts`, plus each
+runtime's `inheritEnv`, used by Console and the headless agents controller.
 Keep MCP helpers shared when retained providers import them. Model catalogues
 come from the provider on the execution host. Test both local and SSH setup;
 credentials and native configuration belong to that host.

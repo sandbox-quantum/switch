@@ -45,9 +45,15 @@ Aliases are resolved at build time by electron-vite. No runtime monkey-patching 
 
 When adding a provider:
 
-1. add the plugin under `packages/plugins/src/agents/impl/<id>/index.ts`
-2. add the id to `AGENT_PROVIDER_IDS` and a display entry to `AGENT_PROVIDERS` in
-   `src/shared/core/providers/agent-provider-registry.ts`
-3. add any required env passthrough in `packages/agent-providers/src/host/agent-env.ts`
-4. update renderer surfaces that assume provider metadata
-5. add tests for non-standard spawn or detection behavior
+Follow [Add an agent provider](../../docs/add-an-agent-provider.md). In short:
+
+1. add the plugin under `packages/plugins/src/agents/impl/<id>/` and register it in
+   `packages/plugins/src/agents/plugin-registry.ts`
+2. add the runtime to `PROVIDER_RUNTIMES` in `packages/agent-providers/src/providers/registry.ts`
+   (for an ACP CLI, `acpProviderRuntime(<hooks>)`), including any env passthrough in its
+   `inheritEnv`
+3. add the provider to core's provider table
+4. add the conformance suite and tests for non-standard spawn or detection behavior
+
+`src/shared/core/providers/agent-provider-registry.ts` is a catalogue built at startup from
+the plugins and runtimes; do not add ids or per-provider data to it.
