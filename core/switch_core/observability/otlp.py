@@ -144,6 +144,10 @@ class OtlpResource:
         if self.environment:
             # Datadog maps this onto `env`.
             values["deployment.environment"] = self.environment
+            # The same value under the key the Flint relay keeps. The relay
+            # drops `deployment.environment` and sets `env` to its own, so
+            # behind it this is the only tag that tells environments apart.
+            values["flint_env"] = self.environment
         # The names Datadog reads for deployment tracking and for linking a
         # stack trace to its source.
         if self.commit_sha:

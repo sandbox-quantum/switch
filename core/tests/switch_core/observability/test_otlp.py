@@ -72,6 +72,11 @@ def test_resource_carries_the_deployment_id_the_relay_guards_on():
     assert attributes["deployment.environment"] == "pilot"
 
 
+def test_resource_repeats_the_environment_under_the_key_the_relay_keeps():
+    attributes = RESOURCE.attributes()
+    assert attributes["flint_env"] == attributes["deployment.environment"] == "pilot"
+
+
 def test_unknown_version_is_omitted_rather_than_placeheld():
     resource = OtlpResource(
         service_name="switch-core",
@@ -85,6 +90,7 @@ def test_unknown_version_is_omitted_rather_than_placeheld():
 
     assert "service.version" not in attributes
     assert "deployment.environment" not in attributes
+    assert "flint_env" not in attributes
     assert "git.commit.sha" not in attributes
     assert "git.repository_url" not in attributes
 

@@ -488,9 +488,20 @@ RUNTIME_EVENT_LOOP_LAG = _spec(
     "switch.runtime.event_loop_lag",
     "gauge",
     "ms",
-    "How far past its deadline a fixed-interval task woke. The server is "
-    "single-threaded, so this is the one number that says whether anything is "
-    "being starved.",
+    "The longest the event loop was blocked since the last reading, measured "
+    "by a probe that wakes every 100 ms. The server is single-threaded, so "
+    "this is the one number that says whether anything is being starved.",
+)
+# Every stall the probe sees, not only the worst per interval: how often the
+# loop blocks and for how long. Below the threshold is ordinary scheduling
+# jitter and would only drown the stalls that matter.
+RUNTIME_EVENT_LOOP_STALLS = _spec(
+    "switch.runtime.event_loop_stalls",
+    "histogram",
+    "ms",
+    "Event-loop stalls of 50 ms or more, by how long the loop was blocked. "
+    "The count says how often, the buckets say how bad.",
+    bounds=(50.0, 100.0, 200.0, 300.0, 500.0, 750.0, 1000.0, 2000.0, 5000.0),
 )
 # One per process start, so a restart lines up against everything else on a
 # dashboard. The version is already on every series' resource.
@@ -575,6 +586,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         RUNTIME_CPU_SECONDS,
         RUNTIME_OPEN_FDS,
         RUNTIME_EVENT_LOOP_LAG,
+        RUNTIME_EVENT_LOOP_STALLS,
         RUNTIME_STARTS,
         RUNTIME_GC_COLLECTIONS,
         RUNTIME_GC_PAUSE,

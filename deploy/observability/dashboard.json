@@ -460,12 +460,17 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Event-loop lag (ms)",
-        "show_legend": false,
+        "title": "Event-loop lag (ms) and stalls of 50 ms or more",
+        "show_legend": true,
         "requests": [
           {
             "q": "max:switch.runtime.event_loop_lag{$env,$service}",
             "display_type": "bars"
+          },
+          {
+            "q": "count:switch.runtime.event_loop_stalls{$env,$service}.as_count()",
+            "display_type": "line",
+            "on_right_yaxis": true
           }
         ]
       },
