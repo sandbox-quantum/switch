@@ -160,7 +160,7 @@ async function runCommand(args: string[]): Promise<number> {
   });
   if (process.platform !== 'win32') {
     const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
-    const path = loginShellPath(shell, process.env.PATH ?? '');
+    const path = await loginShellPath(shell, process.env.PATH ?? '');
     if (path) process.env.PATH = path;
     else
       log.warn(

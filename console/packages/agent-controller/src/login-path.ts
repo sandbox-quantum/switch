@@ -1,39 +1,73 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { delimiter } from 'node:path';
 
 const MARKER = '__SWITCH_LOGIN_PATH__';
 
 /**
- * The user's login-shell PATH, with any entry only `current` has after it.
+ * `current` with the user's login-shell PATH entries it lacks added after it.
  *
  * A controller started by launchd (a LaunchAgent) gets `/usr/bin:/bin:/usr/sbin:/sbin`
  * and nothing more, so the provider CLIs, git and gh it looks for, and those
  * its sessions inherit, would be the ones that PATH finds rather than the ones
- * the user's own shell does. Console resolves its own PATH the same way before
- * it starts the embedded controller. Null when the shell cannot say, for the
- * caller to report.
+ * the user's own shell does. What the controller was given comes first, so a
+ * PATH set on purpose (a virtualenv, nvm, direnv) still wins. Null when the
+ * shell cannot say within `timeoutMs`, for the caller to report.
+ *
+ * The shell is interactive, as Console's own lookup runs it, so its profile
+ * may hang (an ssh-add prompt, a network call) and ignore SIGTERM: it runs in
+ * a process group of its own, which is killed outright at the timeout, and
+ * nothing it left running is waited for.
  */
 export function loginShellPath(
   shell: string,
   current: string,
-  run: typeof spawnSync = spawnSync
-): string | null {
-  const result = run(shell, ['-ilc', `printf '\\n${MARKER}%s\\n' "$PATH"`], {
-    encoding: 'utf8',
-    timeout: 5_000,
-    maxBuffer: 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    // Keep shell frameworks from updating themselves on a background start.
-    env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' },
+  timeoutMs = 5_000
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    let output = '';
+    let settled = false;
+    const finish = (path: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout.destroy();
+      resolve(path);
+    };
+    const child = spawn(shell, ['-ilc', `printf '\\n${MARKER}%s\\n' "$PATH"`], {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      // Keep shell frameworks from updating themselves on a background start.
+      env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' },
+    });
+    const timer = setTimeout(() => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // Already gone.
+      }
+      finish(null);
+    }, timeoutMs);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const line = output.split('\n').find((candidate) => candidate.startsWith(MARKER));
+      // The PATH is all that is wanted: once it is out, what else the
+      // profile does is not waited for.
+      if (line !== undefined && output.includes('\n', output.indexOf(MARKER)))
+        finish(merged(line.slice(MARKER.length).trim(), current));
+    });
+    child.once('error', () => finish(null));
+    child.once('exit', () => {
+      const line = output.split('\n').find((candidate) => candidate.startsWith(MARKER));
+      finish(line ? merged(line.slice(MARKER.length).trim(), current) : null);
+    });
+    child.unref();
   });
-  if (result.error || result.status !== 0) return null;
-  const line = String(result.stdout)
-    .split('\n')
-    .find((candidate) => candidate.startsWith(MARKER));
-  const shellPath = line?.slice(MARKER.length).trim();
+}
+
+function merged(shellPath: string, current: string): string | null {
   if (!shellPath) return null;
-  const shellEntries = shellPath.split(delimiter).filter(Boolean);
-  const seen = new Set(shellEntries);
-  const extra = current.split(delimiter).filter((entry) => entry && !seen.has(entry));
-  return [...shellEntries, ...extra].join(delimiter);
+  const currentEntries = current.split(delimiter).filter(Boolean);
+  const seen = new Set(currentEntries);
+  const extra = shellPath.split(delimiter).filter((entry) => entry && !seen.has(entry));
+  return [...currentEntries, ...extra].join(delimiter);
 }
