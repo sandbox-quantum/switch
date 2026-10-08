@@ -20,6 +20,7 @@ const RELAY = {
   endpoint: 'http://127.0.0.1:43210',
   token: 'swlr_relay-token-placeholder',
   hub: 'ws://127.0.0.1:43210/hub',
+  providerLogin: null,
 };
 const LAUNCH = {
   isolation: 'shared' as const,
@@ -222,7 +223,7 @@ describe('SystemdRuntime', () => {
       runtime.launch('agent-1', template('agent-1', cwd, '/home/me/.local/bin/claude'), LAUNCH)
     ).rejects.toMatchObject({ reason: 'provider_not_installed' });
     expect(
-      await runtime.probe('claude', '/home/me/.local/bin/claude', config.dataDir)
+      await runtime.probe('claude', '/home/me/.local/bin/claude', config.dataDir, null)
     ).toMatchObject({ status: 'unconfigured' });
   });
 

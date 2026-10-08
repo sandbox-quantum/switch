@@ -210,13 +210,23 @@ POST /v1/management/controllers/{id}/connector-token
   → 403 not_assigned | 404 connector_not_connected
 
 GET /v1/management/controllers/{id}/provider-credentials/{provider}
-  → 200 { revision: string, sealed: { alg: "X25519-XChaCha20Poly1305", key_id: string, ciphertext: base64 } }
+  → 200 { provider: string, revision: int, sealed: SealedLogin }   // Cache-Control: no-store
   → 404 provider_login_missing
+
+type SealedLogin = {
+  alg: "X25519-HKDF-SHA256-A256GCM",
+  key_id: string,          // first 16 hex digits of SHA-256(controller public key)
+  ephemeral_key: base64,   // 32 bytes
+  nonce: base64,           // 12 bytes
+  ciphertext: base64,      // AES-256-GCM, tag appended
+}
 ```
 
-- The Console seals a provider login to the controller's `public_key`, and the server stores only the ciphertext.
-- On Switch EC2, the blob is sealed with a KMS key that only that VM's role can decrypt.
-- The controller **prefers a local login** (`auth_source: "local"`) and fetches a sealed one only when none exists.
+- **The key.** The controller makes an X25519 keypair at enrollment and sends `public_key`. A controller enrolled before then registers it once with `PATCH /v1/management/controllers/{id}` `{ public_key }`. A different key afterwards is refused (409): the machine is enrolled again. A controller that keeps no secrets across starts (its credential handed over by a parent) registers none, and uses only the machine's own logins.
+- **Sealing.** The owner's client (Console) seals `{ kind: "api-key" | "setup-token" | "auth-json", credential }` to that key: an ephemeral X25519 key, `HKDF-SHA256(shared, salt = ephemeral public ‖ controller public, info = "switch provider login v1")`, and AES-256-GCM with `aad = "switch-provider-login-v1\n<controller id>\n<provider>"`. The server checks the envelope's shape and that `key_id` names the machine's current key, stores only the ciphertext, and can never open it. The same construction is in `core/switch_core/management/sealed_logins.py` (checks) and `@switch-console/agent-providers` `sealed-login.ts` (seal and open).
+- **On demand.** The owner gives a machine a login with `PUT /gateway/management/controllers/{id}/provider-logins/{provider}` `{ sealed }`, which answers `{ login: { provider, revision, key_id, updated_at }, operation }`. The operation is `provider.login` `{ provider, method: "sealed", revision }`: the controller fetches the login, opens it, checks the provider signs in with it, and reports `succeeded` with its provider status, or `failed` with `provider_login_missing`, `provider_login_expired` or `internal`. `GET …/provider-logins` lists what was given (never the ciphertext). `DELETE …/provider-logins/{provider}` takes it back and queues `provider.recheck`. Revoking the machine deletes its logins.
+- The controller **prefers a local login** (`auth_source: "local"`). It uses a sealed one (`auth_source: "sealed"`) only for a provider it has no local login for, and only once the provider signs in with it. An agent using one gets it with its relay credentials, and is restarted when the login changes or is withdrawn.
+- On Switch EC2, the same sealed logins apply: no KMS is involved.
 - When a CLI refreshes and rotates a login on the machine, the controller doesn't upload it back.
 
 ---

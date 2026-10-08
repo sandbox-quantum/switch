@@ -1,4 +1,8 @@
 {
   "name": "build-box",
-  "description": "The build box in the office"
+  "description": "The build box in the office",
+  "public_key": {
+    "alg": "X25519",
+    "key": "bWFjaGluZS1wdWJsaWMta2V5LTMyLWJ5dGVzLi4uLi4="
+  }
 }

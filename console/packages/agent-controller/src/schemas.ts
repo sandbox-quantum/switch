@@ -1,3 +1,4 @@
+import { sealedLoginSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
 
 /**
@@ -97,6 +98,8 @@ export const enrollRequestSchema = z.object({
     platform: platformSchema,
     version: z.string().min(1),
   }),
+  /** The key the provider logins its owner gives this machine are sealed to. */
+  public_key: z.object({ alg: z.literal('X25519'), key: z.string().min(1) }).optional(),
 });
 export type EnrollRequest = z.infer<typeof enrollRequestSchema>;
 
@@ -114,6 +117,8 @@ export const credentialRotateResponseSchema = z.object({ credential: id });
 export const controllerInfoRequestSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   description: z.string().max(500).nullable().optional(),
+  /** Registered once, by a controller enrolled before it made a key. */
+  public_key: z.object({ alg: z.literal('X25519'), key: z.string().min(1) }).optional(),
 });
 export type ControllerInfoChange = z.infer<typeof controllerInfoRequestSchema>;
 
@@ -124,6 +129,14 @@ export const controllerInfoResponseSchema = z.object({
   description: z.string().nullable(),
 });
 export type ControllerInfo = z.infer<typeof controllerInfoResponseSchema>;
+
+/** `GET .../provider-credentials/{provider}`: the login given to this machine, sealed to its key. */
+export const sealedLoginResponseSchema = z.object({
+  provider: z.string(),
+  revision: z.number().int().positive(),
+  sealed: sealedLoginSchema,
+});
+export type SealedLoginResponse = z.infer<typeof sealedLoginResponseSchema>;
 
 // §2 Assignment (v1 definition)
 

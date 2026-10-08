@@ -125,6 +125,7 @@ describe('shownDirectory', () => {
   const MACHINE: OwnedMachine = {
     ...AGENT.machine!,
     providers: [],
+    acceptsLogins: false,
     local: null,
     workspacesDir: '/srv/workspaces/',
   };

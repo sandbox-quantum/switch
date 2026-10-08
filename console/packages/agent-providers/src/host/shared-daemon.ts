@@ -7,6 +7,7 @@ import { AttachmentTransfers } from './attachment-transfers';
 import { type ControlContext, ensureSessions, serveControl } from './control';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { dirMode } from './host-permissions';
+import { materializeHostedProvider } from './hosted-provider';
 import { hostedWorker } from './hosted-watcher';
 import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
@@ -15,7 +16,7 @@ import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
-import { readSharedCredentials, sharedConfigSchema } from './shared-config';
+import { readProviderLogin, readSharedCredentials, sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
 import { superviseSharedHost } from './supervisor';
 import { recordWatcherHealth } from './watcher-health-file';
@@ -136,6 +137,17 @@ async function main(): Promise<void> {
       watcher: control,
       transfers,
     };
+    // A login Switch gave the machine for this agent's provider: its files
+    // are written here, as this agent's own; its environment is already in
+    // the configuration the controller wrote.
+    const login = await readProviderLogin(config);
+    if (login?.status === 'connected')
+      await materializeHostedProvider(
+        resolve(root),
+        {},
+        login,
+        config.execution?.binaryPath ?? config.start.provider
+      );
     const hosted = await hostedWorker(config, resolve(root), context);
     // An agents controller running this agent host in a process of its own
     // names its hub: the agent's events come from there, not from Switch.

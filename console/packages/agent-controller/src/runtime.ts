@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -8,7 +8,9 @@ import { promisify } from 'node:util';
 import {
   clearTakenOver,
   ensureSharedProcess,
+  hostedCredentialSchema,
   inProcessSupervision,
+  materializeHostedProvider,
   type OpenAgentStream,
   type ProviderReadiness,
   providerReadinessSchema,
@@ -33,6 +35,7 @@ import { ConfigurationError, ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
 import type { Isolation, Provider } from './schemas';
+import type { GivenLogin } from './sealed-logins';
 
 const execute = promisify(execFile);
 
@@ -80,7 +83,13 @@ export type LaunchOptions = {
  * What an agent host reads to reach Switch: the controller's relay, a token
  * for it, and the hub an agent host in a process of its own hears its events on.
  */
-export type RelayCredentials = { endpoint: string; token: string; hub: string };
+export type RelayCredentials = {
+  endpoint: string;
+  token: string;
+  hub: string;
+  /** A login Switch gave the machine for the agent's provider, which it has none of its own for. */
+  providerLogin: GivenLogin | null;
+};
 
 /** Runs agent hosts one way: in this controller's process, or each in a process of its own. */
 export interface AgentRunner {
@@ -109,7 +118,34 @@ export interface AgentRuntime extends AgentRunner {
    * missing; any other must already exist.
    */
   workingDirectory(agentId: string, name: string, directory: string | null): Promise<string>;
-  probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness>;
+  /**
+   * Whether the provider signs in as an agent would run it: with the
+   * machine's own login, or with `login`, one Switch gave the machine.
+   */
+  probe(
+    provider: Provider,
+    binaryPath: string,
+    cwd: string,
+    login: GivenLogin | null
+  ): Promise<ProviderReadiness>;
+  /** The agent host's state root as the agent host sees it: where a given login's files go. */
+  agentStateRoot(agentId: string): string;
+}
+
+/**
+ * The environment to probe `login` with: its files written under `dir`, made
+ * afresh, and the variables pointing at them or holding its token.
+ */
+export async function loginProbeEnvironment(
+  dir: string,
+  login: GivenLogin,
+  binaryPath: string
+): Promise<Record<string, string>> {
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const env: Record<string, string> = {};
+  await materializeHostedProvider(dir, env, login, binaryPath);
+  return env;
 }
 
 /** How long an agent host asked to stop is given; each session host is allowed 20 s of it. */
@@ -144,20 +180,25 @@ export function relayCredentialsBody(agentId: string, credentials: RelayCredenti
       SWITCH_AGENT_ID: agentId,
       SWITCH_AGENT_HUB: credentials.hub,
     },
+    providerLogin: credentials.providerLogin,
   });
 }
 
 /** A credentials file's relay, token and hub; null when it is not one, or is another agent's. */
 export function parseRelayCredentials(text: string, agentId: string): RelayCredentials | null {
   try {
-    const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
+    const parsed = JSON.parse(text) as { env?: Record<string, unknown>; providerLogin?: unknown };
+    const env = parsed.env ?? {};
     const endpoint = env.SWITCH_API_ENDPOINT;
     const token = env.SWITCH_API_TOKEN;
     // Written before the hub: an empty one, which no relay names, so the file is written again.
     const hub = typeof env.SWITCH_AGENT_HUB === 'string' ? env.SWITCH_AGENT_HUB : '';
     if (env.SWITCH_AGENT_ID !== agentId) return null;
+    const login = hostedCredentialSchema.nullable().safeParse(parsed.providerLogin ?? null);
+    // A login it cannot read is none: the file is written again with the one wanted.
+    const providerLogin = login.success && login.data?.status === 'connected' ? login.data : null;
     return typeof endpoint === 'string' && typeof token === 'string'
-      ? { endpoint, token, hub }
+      ? { endpoint, token, hub, providerLogin }
       : null;
   } catch {
     return null;
@@ -565,8 +606,27 @@ export class InProcessRuntime implements AgentRuntime {
     }
   }
 
-  probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
-    return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, process.env);
+  async probe(
+    provider: Provider,
+    binaryPath: string,
+    cwd: string,
+    login: GivenLogin | null
+  ): Promise<ProviderReadiness> {
+    const given = login
+      ? await loginProbeEnvironment(
+          join(this.deps.layout.root, 'login-check', provider),
+          login,
+          binaryPath
+        )
+      : {};
+    return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, {
+      ...process.env,
+      ...given,
+    });
+  }
+
+  agentStateRoot(agentId: string): string {
+    return this.deps.layout.watcherRoot(agentId);
   }
 
   private async writeFlags(root: string, flags: WatchFlags): Promise<void> {

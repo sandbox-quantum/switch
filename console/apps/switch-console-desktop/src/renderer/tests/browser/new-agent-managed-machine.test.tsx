@@ -15,6 +15,8 @@ const defaultWorkspace = vi.hoisted(() => vi.fn());
 const hostEnable = vi.hoisted(() => vi.fn());
 const modelCatalogue = vi.hoisted(() => vi.fn());
 const advancedConfigSchema = vi.hoisted(() => vi.fn());
+const giveMachineLogin = vi.hoisted(() => vi.fn());
+const machineLoginOutcome = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -30,7 +32,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     embeddedController: { enable: embeddedEnable, defaultWorkspace },
     hostControllers: { enable: hostEnable },
     agents: { modelCatalogue },
-    managedAgents: { advancedConfigSchema },
+    managedAgents: { advancedConfigSchema, giveMachineLogin, machineLoginOutcome },
   },
 }));
 
@@ -294,6 +296,7 @@ describe('the directory a new managed agent runs in', () => {
 });
 
 const BOX: OwnedMachine = {
+  acceptsLogins: false,
   id: 'controller-7',
   name: 'build-box',
   kind: 'daemon',
@@ -320,6 +323,7 @@ describe('the providers a server machine offers', () => {
     const onChange = vi.fn();
     const el = await render(
       <MachineProviderPicker
+        serverId="server-1"
         machine={BOX}
         value="claude"
         onChange={onChange}
@@ -341,6 +345,7 @@ describe('the providers a server machine offers', () => {
     const onChange = vi.fn();
     await render(
       <MachineProviderPicker
+        serverId="server-1"
         machine={BOX}
         value={null}
         onChange={onChange}
@@ -354,6 +359,7 @@ describe('the providers a server machine offers', () => {
     const onChange = vi.fn();
     const el = await render(
       <MachineProviderPicker
+        serverId="server-1"
         machine={{ ...BOX, providers: [] }}
         value={null}
         onChange={onChange}
@@ -363,5 +369,56 @@ describe('the providers a server machine offers', () => {
     expect(el.textContent).toMatch(/build-box has not reported its providers yet/);
     expect([...el.querySelectorAll('button')].every((button) => button.disabled)).toBe(true);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('gives the machine a login for a provider installed there but not signed in', async () => {
+    giveMachineLogin.mockReset().mockResolvedValue({ operationId: 'op-1' });
+    machineLoginOutcome.mockReset().mockResolvedValue({ state: 'succeeded' });
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={{ ...BOX, acceptsLogins: true }}
+        value="claude"
+        onChange={vi.fn()}
+        defaultAgent="claude"
+      />
+    );
+    expect(el.textContent).toMatch(/Give build-box a login for/);
+    const offered = [...el.querySelectorAll('button')].filter((button) =>
+      ['Codex', 'Cursor', 'OpenCode'].includes(button.textContent ?? '')
+    );
+    // Not OpenCode: it is not installed there, and no login would change that.
+    expect(offered.map((button) => button.textContent)).toEqual(['Codex', 'Cursor']);
+    await act(async () => offered[0]!.click());
+    const input = el.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setValue.call(input, 'sk-proj-placeholder');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const giveButton = [...el.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Give login'
+    )!;
+    await act(async () => giveButton.click());
+    await vi.waitFor(() => expect(el.textContent).toMatch(/Codex signs in on build-box/));
+    expect(giveMachineLogin).toHaveBeenCalledWith({
+      serverId: 'server-1',
+      machineId: 'controller-7',
+      provider: 'codex',
+      login: { source: 'typed', kind: 'api-key', credential: 'sk-proj-placeholder' },
+    });
+  });
+
+  it('offers no login to a machine that cannot take one', async () => {
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={BOX}
+        value="claude"
+        onChange={vi.fn()}
+        defaultAgent="claude"
+      />
+    );
+    expect(el.textContent).not.toMatch(/Give build-box a login/);
   });
 });

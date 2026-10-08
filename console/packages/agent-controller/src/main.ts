@@ -3,6 +3,7 @@ import { realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { generateSealingKeyPair } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -53,6 +54,7 @@ import {
   isSecretStoreKind,
   MemorySecretStore,
   runCommand as runSecretCommand,
+  SEALING_KEY,
   SECRET_STORE_KINDS,
   secretStoreFor,
 } from './secrets';
@@ -219,8 +221,12 @@ async function enrollCommand(args: string[]): Promise<number> {
       throw new ConfigurationError(
         `${dataDir} already belongs to controller ${existing.controllerId} on ${existing.server}. Use another --data-dir, or remove that directory to enroll this machine afresh.`
       );
+    // Provider logins given to this machine are sealed to this key; only the
+    // machine holds the private half.
+    const keys = generateSealingKeyPair();
     const enrolled = await enroll(fetch, server, {
       proof: { kind: 'enrollment_code', code: values.code },
+      public_key: { alg: 'X25519', key: keys.publicKey },
       controller: {
         kind: 'daemon',
         name,
@@ -230,6 +236,7 @@ async function enrollCommand(args: string[]): Promise<number> {
       },
     });
     await secrets.set(CONTROLLER_CREDENTIAL, enrolled.credential);
+    await secrets.set(SEALING_KEY, JSON.stringify(keys));
     store.saveSecretStoreKind(secretStore);
     store.saveIdentity({
       controllerId: enrolled.controller_id,
@@ -727,7 +734,7 @@ async function doctorCommand(args: string[]): Promise<number> {
       locate: (provider) => locator.locate(provider),
       probe: (bundle, provider, binary) =>
         separateRuntime
-          ? separateRuntime.probe(provider, binary, dataDir)
+          ? separateRuntime.probe(provider, binary, dataDir, null)
           : probeProvider(bundle, provider, binary, dataDir, process.env),
       service: () =>
         separateUsers

@@ -1,3 +1,4 @@
+import type { SealedLogin } from '@switch-console/agent-providers';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
@@ -2867,6 +2868,11 @@ export type ManagementController = {
    * last reported; null before it has, or when it or the server predates it.
    */
   workspacesDir: string | null;
+  /**
+   * The key provider logins given to this machine are sealed to; null when
+   * its controller has none (it keeps no key, or predates sealed logins).
+   */
+  sealingKey: { key: string; keyId: string } | null;
 };
 
 /** A provider as a controller reports it: installed, and whether its login works. */
@@ -2925,6 +2931,7 @@ type ManagementControllerJson = {
   revoked_at: string | null;
   status?: unknown;
   workspaces_dir?: string | null;
+  public_key?: { alg: string; key: string; key_id: string } | null;
 };
 
 type ManagedAgentJson = {
@@ -3004,7 +3011,76 @@ export async function fetchManagementControllers(
     revokedAt: json.revoked_at,
     providers: providerReports(json.status),
     workspacesDir: json.workspaces_dir ?? null,
+    sealingKey:
+      json.public_key?.alg === 'X25519'
+        ? { key: json.public_key.key, keyId: json.public_key.key_id }
+        : null,
   }));
+}
+
+/**
+ * Gives a machine a provider login sealed to its key
+ * (`PUT /controllers/{id}/provider-logins/{provider}`): the server keeps only
+ * the ciphertext. Answers the `provider.login` operation whose result says
+ * whether the provider signs in with it on the machine.
+ */
+export async function giveMachineLogin(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string,
+  sealed: SealedLogin
+): Promise<{ operationId: string; revision: number }> {
+  // The login is sealed, but the key it was sealed to came from this server:
+  // over plain HTTP anyone in between could have handed over their own.
+  const gateway = new URL(server.gatewayUrl);
+  if (
+    gateway.protocol !== 'https:' &&
+    !['localhost', '127.0.0.1', '[::1]'].includes(gateway.hostname)
+  )
+    throw new Error('Giving a machine a provider login requires HTTPS.');
+  const res = await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
+    { method: 'PUT', authenticated: true, body: { sealed } }
+  );
+  const body = (await res.json()) as { login: { revision: number }; operation: { id: string } };
+  return { operationId: body.operation.id, revision: body.login.revision };
+}
+
+/** Takes back the provider login given to a machine. */
+export async function withdrawMachineLogin(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string
+): Promise<void> {
+  await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
+    { method: 'DELETE', authenticated: true }
+  );
+}
+
+/** One of a machine's operations as its owner sees it, by id; null when the server lists none by it. */
+export async function fetchMachineOperation(
+  server: SwitchServer,
+  controllerId: string,
+  operationId: string
+): Promise<{ state: string; error: { code: string; message: string } | null } | null> {
+  const res = await managementFetch(
+    server,
+    `/operations?controller_id=${encodeURIComponent(controllerId)}`,
+    { authenticated: true }
+  );
+  const listed = (await res.json()) as {
+    operations?: {
+      id: string;
+      state: string;
+      result?: { outcome?: string; error?: { code: string; message: string } } | null;
+    }[];
+  };
+  const found = listed.operations?.find((operation) => operation.id === operationId);
+  if (!found) return null;
+  return { state: found.state, error: found.result?.error ?? null };
 }
 
 const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [

@@ -2,11 +2,12 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { sealProviderLogin } from '@switch-console/agent-providers';
 import { afterAll, describe, expect, it } from 'vitest';
 import { type ControllerExit, runController } from './controller';
 import { silentLogger } from './log';
 import type { AgentAssignment, StatusReport } from './schemas';
-import { CONTROLLER_CREDENTIAL, MemorySecretStore } from './secrets';
+import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import {
   agentRoot,
   loadSeparateUsersConfig,
@@ -16,7 +17,6 @@ import {
 import { ControllerStore } from './store';
 import { SystemdRuntime, systemctl } from './systemd-runtime';
 import { FakeCore } from './testing/fake-core';
-import { FakeLocator } from './testing/fake-runtime';
 
 /**
  * Runs real agents as users of their own, under systemd, against a fake Core.
@@ -25,9 +25,15 @@ import { FakeLocator } from './testing/fake-runtime';
  * stopped, and runs as that controller's user with the agents' group:
  *
  *   sudo setpriv --reuid=$USER --regid=$(id -g) --groups=$(id -g),<agents gid> --reset-env \
- *     env SWITCH_SEPARATE_USERS_E2E=<data dir> PATH=$PATH HOME=$HOME pnpm exec vitest run systemd-runtime.e2e
+ *     env SWITCH_SEPARATE_USERS_E2E=<data dir> SWITCH_SEPARATE_USERS_E2E_CLAUDE=<fake claude> \
+ *     PATH=$PATH HOME=$HOME pnpm exec vitest run systemd-runtime.e2e
+ *
+ * The fake `claude`, outside any home directory, answers `auth status` with
+ * `{"loggedIn": true}` only when `CLAUDE_CODE_OAUTH_TOKEN` is set: the machine
+ * has no Claude login of its own, and one given to it signs in.
  */
 const dataDir = process.env.SWITCH_SEPARATE_USERS_E2E;
+const fakeClaude = process.env.SWITCH_SEPARATE_USERS_E2E_CLAUDE ?? '/usr/bin/claude';
 
 function agent(agentId: string, name: string): AgentAssignment {
   return {
@@ -104,11 +110,14 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
       revision: 1,
       agents: [agent('e2e-agent-1', 'first'), agent('e2e-agent-2', 'second')],
     });
+    // A store that outlives the process, as a machine's own does: it keeps the sealing key.
+    const secrets = new FileSecretStore(join(dataDir!, 'secrets'));
+    await secrets.set(CONTROLLER_CREDENTIAL, core.credential);
     stop = new AbortController();
     running = runController(
       {
         store,
-        secrets: new MemorySecretStore({ [CONTROLLER_CREDENTIAL]: core.credential }, 'test'),
+        secrets,
         runtime: () =>
           new SystemdRuntime({
             config,
@@ -118,7 +127,10 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
             log: silentLogger,
             now: Date.now,
           }),
-        locator: new FakeLocator(),
+        locator: {
+          locate: async (provider) =>
+            provider === 'claude' ? { path: fakeClaude, version: '2.0.0' } : null,
+        },
         fetch,
         openWebSocket: core.openWebSocket,
         log: silentLogger,
@@ -156,6 +168,47 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
     expect(readFileSync(join(root, '.switch-agent-id'), 'utf8').trim()).toBe('e2e-agent-1');
     const environment = readFileSync(join(dataDir!, 'units', `0${first}`, 'environment'), 'utf8');
     expect(environment).toContain('ANTHROPIC_API_KEY="sk-e2e-not-real-\'quoted\'"');
+
+    // The machine has no Claude login of its own; its owner gives it one.
+    await waitFor(() => core.publicKey !== null, 'the machine registering its key');
+    core.sealedLogins.set('claude', {
+      revision: 1,
+      sealed: sealProviderLogin({
+        publicKey: core.publicKey!,
+        controllerId: core.controllerId,
+        provider: 'claude',
+        login: { kind: 'setup-token', credential: 'sk-ant-oat-e2e-given' },
+      }),
+    });
+    core.addOperation({
+      id: 'op-give',
+      kind: 'provider.login',
+      agent_id: null,
+      params: { provider: 'claude', method: 'sealed', revision: 1 },
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    core.push('operation.pending', {
+      operation_id: 'op-give',
+      kind: 'provider.login',
+      agent_id: null,
+    });
+    await waitFor(() => core.results.has('op-give'), 'the given login taken up');
+    expect(core.results.get('op-give')).toMatchObject({ outcome: 'succeeded' });
+    const configPath = join(root, 'watcher', 'config.json');
+    await waitFor(
+      () =>
+        JSON.parse(readFileSync(configPath, 'utf8')).start.input.env.CLAUDE_CODE_OAUTH_TOKEN ===
+        'sk-ant-oat-e2e-given',
+      'the agent configured with the given login'
+    );
+    const relay = JSON.parse(
+      readFileSync(join(dataDir!, 'units', `0${first}`, 'relay.json'), 'utf8')
+    );
+    expect(relay.providerLogin).toMatchObject({ provider: 'claude', revision: '1' });
+    await waitFor(
+      () => latestProcess(core, 'e2e-agent-1', core.statusReports.length - 1) === 'running',
+      'the agent running again on the given login'
+    );
 
     core.setAssignment({ revision: 2, agents: [agent('e2e-agent-1', 'first')] });
     core.push('assignment.changed', { revision: 2 });

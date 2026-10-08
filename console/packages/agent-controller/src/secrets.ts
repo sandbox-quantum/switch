@@ -5,6 +5,11 @@ import { join } from 'node:path';
 
 /** The one secret v1 keeps: the long-lived controller credential (`swcc_…`). */
 export const CONTROLLER_CREDENTIAL = 'controller-credential';
+/**
+ * The keypair the provider logins given to this machine are sealed to
+ * (`SealingKeyPair` as JSON); kept only by a store that outlives the process.
+ */
+export const SEALING_KEY = 'sealing-key';
 
 /**
  * Where the controller keeps secrets: a file backend for a controller run on
@@ -15,6 +20,8 @@ export const CONTROLLER_CREDENTIAL = 'controller-credential';
 export interface SecretStore {
   /** Names the backend in logs and `status`. */
   readonly description: string;
+  /** What is set outlives this process. */
+  readonly persistent: boolean;
   /** Logged once when the controller starts, for a backend with a caveat worth stating. */
   startupWarning(): string | null;
   get(name: string): Promise<string | null>;
@@ -30,6 +37,7 @@ const NAME = /^[a-z0-9-]+$/;
  * controller user's files can read them.
  */
 export class FileSecretStore implements SecretStore {
+  readonly persistent = true;
   readonly description: string;
 
   constructor(private readonly dir: string) {
@@ -94,6 +102,7 @@ export class FileSecretStore implements SecretStore {
  * the parent is told of a revocation by the exit code.
  */
 export class MemorySecretStore implements SecretStore {
+  readonly persistent = false;
   readonly description: string;
   private readonly values: Map<string, string>;
 
@@ -185,6 +194,7 @@ function account(dataDir: string, name: string): string {
  * could read it.
  */
 export class KeychainSecretStore implements SecretStore {
+  readonly persistent = true;
   readonly description = 'the macOS login keychain';
 
   constructor(
@@ -237,6 +247,7 @@ export class KeychainSecretStore implements SecretStore {
  * why it is chosen only when asked for.
  */
 export class SecretServiceStore implements SecretStore {
+  readonly persistent = true;
   readonly description = 'the desktop keyring (Secret Service)';
 
   constructor(

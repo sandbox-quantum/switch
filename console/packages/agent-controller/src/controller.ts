@@ -21,9 +21,11 @@ import type { AgentRuntime } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
+  isProvider,
   type StatusReport,
   statusReportSchema,
 } from './schemas';
+import { type GivenLogin, registerSealingKey, SealedLogins, sealingKeys } from './sealed-logins';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import {
   type ProviderLocator,
@@ -113,28 +115,48 @@ export type ControllerExit =
  * which a running agent host only reads when it starts, so it is restarted:
  * that is also what moves an agent host from before the hub onto it.
  */
+function sameLogin(a: GivenLogin | null, b: GivenLogin | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.provider === b.provider &&
+    a.revision === b.revision &&
+    a.kind === b.kind &&
+    a.credential === b.credential
+  );
+}
+
 export async function ensureRelayCredentials(
   agentId: string,
+  providerLogin: GivenLogin | null,
   deps: { runtime: AgentRuntime; relay: LocalRelay; log: Logger }
 ): Promise<boolean> {
   const current = await deps.runtime.readCredentials(agentId);
   const endpoint = deps.relay.endpoint;
   const hub = deps.relay.hubUrl;
-  if (
-    current &&
+  const relayCurrent =
+    current !== null &&
     current.endpoint === endpoint &&
     current.hub === hub &&
-    current.token.startsWith(RELAY_TOKEN_PREFIX)
-  ) {
+    current.token.startsWith(RELAY_TOKEN_PREFIX);
+  const loginCurrent = sameLogin(current?.providerLogin ?? null, providerLogin);
+  if (current && relayCurrent && loginCurrent) {
     if (!deps.relay.isRegistered(agentId, current.token))
       deps.relay.register(agentId, current.token);
     return false;
   }
-  const token = deps.relay.mint(agentId);
-  await deps.runtime.writeCredentials(agentId, { endpoint, token, hub });
+  const token = current && relayCurrent ? current.token : deps.relay.mint(agentId);
+  if (current && relayCurrent && !deps.relay.isRegistered(agentId, token))
+    deps.relay.register(agentId, token);
+  await deps.runtime.writeCredentials(agentId, { endpoint, token, hub, providerLogin });
   deps.log.info('Wrote the agent’s relay credentials', {
     agentId,
-    why: current ? 'they named another endpoint, hub or a Switch key' : 'it had none',
+    why: !current
+      ? 'it had none'
+      : !relayCurrent
+        ? 'they named another endpoint, hub or a Switch key'
+        : providerLogin
+          ? `the ${providerLogin.provider} login given to this machine changed`
+          : 'the login given to this machine is no longer used',
   });
   return true;
 }
@@ -332,9 +354,22 @@ export async function runController(
     });
   };
 
+  const keys = await sealingKeys(deps.secrets);
+  const sealed = keys
+    ? new SealedLogins({ client, keys, controllerId: identity.controllerId })
+    : null;
+  if (!keys)
+    log.info(
+      'This controller keeps no key across starts (its credential is handed over), so provider logins given to the machine are not used; its own are.'
+    );
+  else
+    void registerSealingKey(client, keys, log).then((registered) => {
+      if (!registered) providers.disableGiven();
+    });
   const providers = new ProviderStatuses({
     locator: deps.locator,
     runtime,
+    sealed,
     probeCwd: deps.dataDir,
     now: deps.now,
     log,
@@ -353,7 +388,13 @@ export async function runController(
   const reconcileDeps: ReconcileDeps = {
     store,
     runtime,
-    ensureCredentials: (agentId) => ensureRelayCredentials(agentId, { runtime, relay, log }),
+    ensureCredentials: async (agentId, provider) =>
+      ensureRelayCredentials(
+        agentId,
+        isProvider(provider) ? await providers.givenLogin(provider) : null,
+        { runtime, relay, log }
+      ),
+    givenLogin: (provider) => providers.givenLogin(provider),
     forgetAgent: (agentId) => {
       relay.unregister(agentId);
       hub.forget(agentId);
@@ -418,7 +459,15 @@ export async function runController(
           recheckProvider: async (provider) => {
             const status = await providers.check(provider);
             await reporter?.sendNow();
+            // Agents move onto a login given since, or off one withdrawn.
+            void reconcileLocally();
             return status;
+          },
+          takeUpLogin: async (provider) => {
+            const status = await providers.check(provider);
+            await reporter?.sendNow();
+            void reconcileLocally();
+            return { status, problem: providers.loginProblem(provider) };
           },
           log,
         });

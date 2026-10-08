@@ -97,6 +97,8 @@ const {
   revokeManagementController,
   updateManagementController,
   fetchManagementControllers,
+  giveMachineLogin,
+  fetchMachineOperation,
   fetchAgentManagementAccess,
   updateCanManageAgents,
   updateManagedAgent,
@@ -2064,6 +2066,84 @@ describe('agent management calls', () => {
     expect(url).toBe('https://switch.example.com/gateway/management/controllers/controller-1');
     expect(init.method).toBe('PATCH');
     expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
+  });
+
+  it('reads the key a machine takes logins sealed to, and gives it one', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'controller-1',
+          name: 'box',
+          description: null,
+          kind: 'daemon',
+          state: 'online',
+          last_seen_at: null,
+          revoked_at: null,
+          public_key: { alg: 'X25519', key: 'a2V5', key_id: '0123456789abcdef' },
+        },
+        {
+          id: 'controller-2',
+          name: 'old',
+          description: null,
+          kind: 'daemon',
+          state: 'online',
+          last_seen_at: null,
+          revoked_at: null,
+        },
+      ])
+    );
+    const [keyed, keyless] = await fetchManagementControllers(SERVER);
+    expect(keyed?.sealingKey).toEqual({ key: 'a2V5', keyId: '0123456789abcdef' });
+    expect(keyless?.sealingKey).toBeNull();
+
+    const sealed = {
+      alg: 'X25519-HKDF-SHA256-A256GCM' as const,
+      key_id: '0123456789abcdef',
+      ephemeral_key: 'ZQ==',
+      nonce: 'bg==',
+      ciphertext: 'Yw==',
+    };
+    fetchMock.mockImplementation(async () =>
+      respond(200, { login: { provider: 'claude', revision: 2 }, operation: { id: 'op-1' } })
+    );
+    expect(await giveMachineLogin(SERVER, 'controller-1', 'claude', sealed)).toEqual({
+      operationId: 'op-1',
+      revision: 2,
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe(
+      'https://switch.example.com/gateway/management/controllers/controller-1/provider-logins/claude'
+    );
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ sealed });
+    await expect(
+      giveMachineLogin(
+        { ...(SERVER as object), gatewayUrl: 'http://switch.example.com' } as never,
+        'c',
+        'claude',
+        sealed
+      )
+    ).rejects.toThrow(/HTTPS/);
+
+    fetchMock.mockImplementation(async () =>
+      respond(200, {
+        operations: [
+          {
+            id: 'op-1',
+            state: 'failed',
+            result: {
+              outcome: 'failed',
+              error: { code: 'provider_login_expired', message: 'No.' },
+            },
+          },
+        ],
+      })
+    );
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-1')).toEqual({
+      state: 'failed',
+      error: { code: 'provider_login_expired', message: 'No.' },
+    });
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-9')).toBeNull();
   });
 
   it("reads each machine's providers from its last status report, and invents none", async () => {

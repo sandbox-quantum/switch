@@ -3348,6 +3348,47 @@ class AgentControllerOperation(TenantScoped, Base):
     )
 
 
+class SealedProviderLogin(TenantScoped, Base):
+    """A provider login for one controller, sealed to that controller's own
+    public key (`AgentController.public_key`) by the owner's client before it
+    reached Switch.
+
+    Switch keeps and relays the ciphertext and can never open it: only the
+    controller holding the private key can. One per controller and provider;
+    `revision` grows with each new one, so the controller can tell a changed
+    login from the one it already applied. Removed with its controller, and
+    when the controller is revoked.
+    """
+
+    __tablename__ = "sealed_provider_logins"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_sealed_provider_logins_controller",
+            ondelete="CASCADE",
+        ),
+        Index("ix_sealed_provider_logins_tenant_id", "tenant_id"),
+    )
+
+    controller_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    # `{alg, key_id, ephemeral_key, nonce, ciphertext}`; see
+    # `management/sealed_logins.py`.
+    sealed: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    sealed_by: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # Same reasoning as the notify trigger above: `create_all` has to build the
 # row-level-security policies too, or the isolation test would pass against a
 # schema that has none. See `db/rls_ddl.py` for the DDL and why it takes this

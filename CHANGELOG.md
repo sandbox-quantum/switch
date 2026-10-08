@@ -45,6 +45,15 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Provider logins sealed to a machine.** A controller registers an X25519
+  public key (at enrollment, or once afterwards); its owner gives the machine a
+  provider login sealed to that key, which Switch stores and relays as
+  ciphertext it cannot open (`PUT/GET/DELETE
+  /gateway/management/controllers/{id}/provider-logins/{provider}`, and
+  `GET /v1/management/controllers/{id}/provider-credentials/{provider}` for the
+  controller). Giving one queues a `provider.login` operation the machine takes
+  it up with; revoking the machine deletes its logins. Migration
+  `d41c7a9e2b58` adds `sealed_provider_logins`.
 - **The Helm chart turns agent management on from its values.**
   `switchCore.agentManagement.enabled` and `secrets.controllerTokenSecret` (or
   `CONTROLLER_TOKEN_SECRET` in `secrets.existingSecret`) set
@@ -1380,6 +1389,14 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Added
+- **Give a machine a provider login.** In the New agent form, a machine with
+  a provider installed but not signed in offers to give it a login: a Claude
+  setup token or API key, a Codex or Cursor API key, or this computer's own
+  Codex, OpenCode or Antigravity sign-in. Console seals it to the machine's own
+  key before it leaves, so the server only relays it, and shows whether the
+  provider signs in with it on the machine.
 
 #### Fixed
 - **A machine whose controller Switch refuses for good says so instead of
@@ -3054,6 +3071,15 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Provider logins given to the machine, on demand.** The controller makes an
+  X25519 keypair at enrollment (or on its next run, for one enrolled before)
+  and registers the public half. When its owner gives the machine a login
+  sealed to it, a `provider.login` operation has the controller open it, check
+  the provider signs in with it, and report whether it does. The machine's own
+  login still comes first; agents of a provider it has none for get the given
+  one, run in a process of their own, and restart when it changes or is
+  withdrawn. Status reports `auth_source: "sealed"` for it.
+
 - **Each agent as a Linux user of its own.** On Linux with systemd and polkit,
   `sudo switch-agent-controller install-service --separate-users` sets up, once,
   a pool of agent users, a unit template that runs an agent as one of them, a

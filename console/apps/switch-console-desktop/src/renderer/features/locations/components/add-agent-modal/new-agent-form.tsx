@@ -914,6 +914,7 @@ export const NewAgentForm = observer(function NewAgentForm({
 
             {isMachineRun && serverMachine && (
               <MachineProviderPicker
+                serverId={selectedServerId!}
                 machine={serverMachine}
                 value={pickState.providerId}
                 onChange={pickState.setProviderId}
