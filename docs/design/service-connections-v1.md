@@ -389,7 +389,9 @@ through `runAgentHost`.
 - **Loopback endpoint for helpers** (`host/service-endpoint.ts`): a session
   whose agent has a GitHub grant gets a `127.0.0.1` endpoint with a
   per-session bearer, named in its environment as `SWITCH_SERVICE_ENDPOINT` and
-  `SWITCH_SERVICE_TOKEN`. `POST /services/{service}/token` with `{rejected}`
+  `SWITCH_SERVICE_BEARER` (no `KEY`, `SECRET` or `TOKEN` in the name, which
+  Codex's default environment policy strips from what its commands get).
+  `POST /services/{service}/token` with `{rejected}`
   answers `{token, expires_at}`; 404 for a service not granted when the session
   started; 403 with Core's message after a final refusal, which ends the
   service for the rest of that session; 503 with the reason otherwise. An ask

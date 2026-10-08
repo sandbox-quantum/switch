@@ -94,6 +94,46 @@ export function needsGitHubHelpers(services: SessionServices): boolean {
   );
 }
 
+/**
+ * What a session is told when this machine's git is too old for Switch's
+ * credential helper: `gh` still goes through the grant, plain git does not.
+ */
+export function oldGitNotice(gitVersion: string): string {
+  return (
+    `This machine's ${gitVersion} is older than 2.31, so it ignores the credential helper Switch sets up for this agent's GitHub grant: ` +
+    "git commands use this machine's own GitHub sign-in, if any, not the grant, while gh uses the grant. " +
+    'Say so before pushing, and suggest updating git.'
+  );
+}
+
+/**
+ * The `git --version` line when this session's git is older than 2.31, the
+ * first to read config from `GIT_CONFIG_COUNT`, which is how the session's
+ * credential helper is set; null for a newer git, or none.
+ */
+export async function gitTooOldForHelpers(
+  env: Readonly<Record<string, string>>
+): Promise<string | null> {
+  let output: string;
+  try {
+    ({ stdout: output } = await promisify(execFile)('git', ['--version'], {
+      env: { ...process.env, ...env },
+      timeout: 10_000,
+    }));
+  } catch {
+    return null;
+  }
+  return gitBelowHelperMinimum(output) ? output.trim() : null;
+}
+
+/** Whether a `git --version` line names a git older than 2.31. */
+export function gitBelowHelperMinimum(versionOutput: string): boolean {
+  const match = /git version (\d+)\.(\d+)/.exec(versionOutput);
+  if (!match) return false;
+  const [major, minor] = [Number(match[1]), Number(match[2])];
+  return major < 2 || (major === 2 && minor < 31);
+}
+
 /** What a session is told when its agent's grants could not be read as it started. */
 export function servicesUnavailableNotice(reason: string): string {
   return (
@@ -183,8 +223,17 @@ export async function prepareSharedConfig(
           isolate: process.env.SWITCH_HOSTED_BOOTSTRAP === '1',
         }),
         SWITCH_SERVICE_ENDPOINT: helpers.endpoint.url,
-        SWITCH_SERVICE_TOKEN: helpers.endpoint.token,
+        SWITCH_SERVICE_BEARER: helpers.endpoint.token,
       };
+      const oldGit = await gitTooOldForHelpers(input.env);
+      if (oldGit) {
+        console.warn(
+          `Session ${config.session.sessionId}: ${oldGit} on this machine is older than 2.31 and ignores Switch's credential helper, so git uses this machine's own GitHub sign-in, if any.`
+        );
+        input.systemContext = [input.systemContext, oldGitNotice(oldGit)]
+          .filter(Boolean)
+          .join('\n\n');
+      }
     }
   }
   input.mcpServers.switch = runtime;

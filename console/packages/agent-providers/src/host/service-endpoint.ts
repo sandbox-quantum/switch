@@ -10,7 +10,7 @@ const ASK_TIMEOUT_MS = 90_000;
 const MAX_BODY_BYTES = 32 * 1024;
 const PATH = /^\/services\/([a-z0-9][a-z0-9-]{0,62})\/token$/;
 
-/** The session's endpoint as its helpers find it, in `SWITCH_SERVICE_ENDPOINT` and `SWITCH_SERVICE_TOKEN`. */
+/** The session's endpoint as its helpers find it, in `SWITCH_SERVICE_ENDPOINT` and `SWITCH_SERVICE_BEARER`. */
 export type ServiceEndpointServer = { url: string; token: string; close: () => Promise<void> };
 
 /**

@@ -62,7 +62,7 @@ describe('Git credential requests', () => {
       await expect(
         sessionServiceToken('github', null, {
           SWITCH_SERVICE_ENDPOINT: endpoint,
-          SWITCH_SERVICE_TOKEN: 'bearer',
+          SWITCH_SERVICE_BEARER: 'bearer',
         })
       ).rejects.toThrow('must be on 127.0.0.1');
   });
@@ -124,7 +124,7 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
         isolate,
       }),
       SWITCH_SERVICE_ENDPOINT: endpoint.url,
-      SWITCH_SERVICE_TOKEN: endpoint.token,
+      SWITCH_SERVICE_BEARER: endpoint.token,
     };
     const git = (operation: string, input: string) =>
       new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {

@@ -77,7 +77,7 @@ export async function sessionServiceToken(
   env: NodeJS.ProcessEnv
 ): Promise<string> {
   const endpoint = env.SWITCH_SERVICE_ENDPOINT;
-  const bearer = env.SWITCH_SERVICE_TOKEN;
+  const bearer = env.SWITCH_SERVICE_BEARER;
   if (!endpoint || !bearer) throw new Error('This session has no Switch service endpoint.');
   let url: URL;
   try {
