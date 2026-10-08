@@ -368,6 +368,10 @@ describe('a session saved by an earlier hosted host', () => {
       join(oldWrapper, 'gh'),
       `#!/bin/sh\nexec '/usr/bin/node' '/opt/switch/agent-providers/hosted-bootstrap.mjs' --github-cli "$@"\n`
     );
+    await writeFile(
+      join(oldWrapper, 'switch-github-grants'),
+      `#!/bin/sh\nexec '/usr/bin/node' '/opt/switch/agent-providers/hosted-bootstrap.mjs' --list "$@"\n`
+    );
     return {
       oldWrapper,
       saved: {

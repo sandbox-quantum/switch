@@ -134,6 +134,11 @@ it('writes a codex sign-in, makes the empty workspace, sets up gh for GitHub and
   const wrapper = await readFile(join(agentRoot, 'bin', 'gh'), 'utf8');
   expect(wrapper).toContain('--github-cli');
   expect(wrapper).not.toContain('token');
+  const grants = join(agentRoot, 'bin', 'switch-github-grants');
+  expect(await readFile(grants, 'utf8')).toMatch(
+    /^#!\/bin\/sh\nexec '[^']+' '[^']+hosted-bootstrap\.mjs' --list "\$@"\n$/
+  );
+  expect(await modeOf(grants)).toBe(0o700);
 });
 
 it('removes a connection skill no longer granted and keeps skills it did not install', async () => {
@@ -214,6 +219,7 @@ it('hands sessions nothing, and writes no gh wrapper, without a GitHub grant', a
 
   expect(await hostedUnitGitHubEnvironment(agentRoot, config('claude'))).toEqual({});
   await expect(stat(join(agentRoot, 'bin', 'gh'))).rejects.toThrow();
+  await expect(stat(join(agentRoot, 'bin', 'switch-github-grants'))).rejects.toThrow();
 });
 
 it.each([

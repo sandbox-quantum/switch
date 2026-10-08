@@ -557,12 +557,11 @@ export async function runGitHubList(): Promise<void> {
     );
 }
 
-export async function prepareGitHubCli(root: string): Promise<string> {
-  const directory = join(root, 'bin');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const path = join(directory, 'gh');
+/** Writes `name` in `directory` as a script that runs the bootstrap with `mode`, or checks the one there. */
+async function writeWrapper(directory: string, name: string, mode: string): Promise<void> {
+  const path = join(directory, name);
   const entrypoint = fileURLToPath(new URL('./hosted-bootstrap.mjs', import.meta.url));
-  const source = `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} --github-cli "$@"\n`;
+  const source = `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} ${mode} "$@"\n`;
   try {
     const file = await open(path, 'wx', 0o700);
     try {
@@ -574,8 +573,20 @@ export async function prepareGitHubCli(root: string): Promise<string> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     if ((await readFile(path, 'utf8')) !== source)
-      throw new Error('Hosted GitHub CLI wrapper differs from the deployment.');
+      throw new Error(`Hosted GitHub wrapper ${name} differs from the deployment.`);
   }
+}
+
+/**
+ * The directory of the `gh` wrapper and of `switch-github-grants` (which
+ * prints the granted GitHub accounts, `--list`), put on a session's PATH only
+ * while GitHub is granted.
+ */
+export async function prepareGitHubCli(root: string): Promise<string> {
+  const directory = join(root, 'bin');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeWrapper(directory, 'gh', '--github-cli');
+  await writeWrapper(directory, 'switch-github-grants', '--list');
   return directory;
 }
 

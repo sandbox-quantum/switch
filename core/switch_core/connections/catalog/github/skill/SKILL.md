@@ -23,14 +23,9 @@ work on your own branches.
   granted, it uses that one. When several accounts are granted, pass
   `-R owner/repo` (or set `GH_REPO`, e.g. for `gh api`) outside a clone. The
   error tells you the granted accounts.
-- To see the granted accounts, and for each one "all repositories" or the
-  selected ones (or why it is unavailable):
-
-  ```sh
-  sh -c "$(git config --get credential.https://github.com.helper | sed 's/^!//; s/ --git-credential$/ --list/')"
-  ```
-
-  To list every repository of an account granted all repositories:
+- Run `switch-github-grants` to see the granted accounts, and for each one
+  "all repositories" or the selected ones (or why it is unavailable). To list
+  every repository of an account granted all repositories:
 
   ```sh
   GH_REPO=<account>/<any-repo> gh api /installation/repositories --paginate --jq '.repositories[].full_name'
