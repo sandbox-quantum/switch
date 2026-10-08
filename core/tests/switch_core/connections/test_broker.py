@@ -1095,6 +1095,19 @@ async def _pass_through(
 
 
 class TestPassThrough:
+    async def test_the_grant_names_the_vendors_mcp_servers_and_skill(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        assert grant["mcp_servers"] == [
+            {"name": "example", "url": "https://mcp.example.test/v1/mcp"}
+        ]
+        assert grant["skill"]["name"] == "example"
+
     async def test_hands_out_the_owners_token_unrevocable_with_its_own_expiry(
         self, session_factory, tmp_path
     ) -> None:

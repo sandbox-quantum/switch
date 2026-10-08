@@ -226,6 +226,7 @@ type ServiceGrant = {
   tools: string[]
   resources: ServiceResources
   skill: { name: string; content: string } | null   // the service's SKILL.md
+  mcp_servers: { name: string; url: string }[]       // the vendor's MCP servers a session calls; [] for GitHub. Additive
 }
 
 type ServiceResources =
@@ -236,7 +237,7 @@ type ServiceResources =
 - **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
 - **When grants are read.** The agent's host reads its grants when a session starts, and a change applies from the next session. No stream frame announces a change: a removed grant fails the next fetch, and a GitHub token already issued is revoked at once.
 - **`credential.revoked` is not used for grants.** It revokes the controller itself.
-- **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper.
+- **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper. A service with `mcp_servers` never reaches the CLI at all: the session's host serves each of them to the CLI on loopback, behind a key made for the run, asks for the token on each call and calls the vendor itself.
 
 ### Provider logins (Management)
 

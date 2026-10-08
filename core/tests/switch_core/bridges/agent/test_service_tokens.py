@@ -134,6 +134,8 @@ class TestIssuing:
         assert grant["resources"] == RESOURCES
         assert grant["skill"]["name"] == "github"
         assert "name: github" in grant["skill"]["content"]
+        # GitHub's tools are git and gh, not MCP servers a session calls.
+        assert grant["mcp_servers"] == []
 
 
 class TestRefusals:

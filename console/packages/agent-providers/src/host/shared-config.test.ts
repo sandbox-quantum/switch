@@ -87,7 +87,7 @@ it('gives the provider the host’s own MCP server and no Switch identity', asyn
       url: 'http://127.0.0.1:4321/mcp',
       headers: { Authorization: 'Bearer per-session' },
     };
-    const prepared = await prepareSharedConfig(root, config, runtime, NO_SERVICES, null);
+    const prepared = await prepareSharedConfig(root, config, runtime, NO_SERVICES, null, {});
     expect(prepared.input.mcpServers).toEqual({ switch: runtime });
     expect(prepared.input.env).toEqual({ CONFIGURED: 'yes' });
     // The host itself still reports to Switch as the agent.
@@ -156,7 +156,7 @@ it('gives Codex the Switch skill as instructions, like the other providers', asy
       url: 'http://127.0.0.1:4321/mcp',
       headers: { Authorization: 'Bearer per-session' },
     };
-    const prepared = await prepareSharedConfig(root, config, runtime, NO_SERVICES, null);
+    const prepared = await prepareSharedConfig(root, config, runtime, NO_SERVICES, null, {});
     expect(prepared.input.systemContext).toBe('Switch skill text');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -256,6 +256,7 @@ describe('the skills of the agent’s service grants', () => {
     tools: [],
     resources: {},
     skill: GITHUB_SKILL,
+    mcp_servers: [],
   };
   const runtime = {
     transport: 'http' as const,
@@ -327,7 +328,8 @@ describe('the skills of the agent’s service grants', () => {
         await configFor(root, 'claude'),
         runtime,
         { grants: [GITHUB_GRANT], unavailable: null },
-        null
+        null,
+        {}
       );
       expect(claude.input.systemContext).toBe('Switch skill text\n\n# GitHub\n\nUse gh.');
       const opencode = await prepareSharedConfig(
@@ -335,12 +337,40 @@ describe('the skills of the agent’s service grants', () => {
         await configFor(root, 'opencode'),
         runtime,
         { grants: [GITHUB_GRANT], unavailable: null },
-        null
+        null,
+        {}
       );
       expect(opencode.input.systemContext).toBe('Switch skill text');
       // Without a service endpoint nothing is set up for GitHub.
       expect(claude.input.env.SWITCH_SERVICE_ENDPOINT).toBeUndefined();
       expect(claude.input.env.GIT_CONFIG_PARAMETERS).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('give the CLI each granted vendor’s server under its own name, beside Switch’s', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    const vendor = {
+      transport: 'http' as const,
+      url: 'http://127.0.0.1:4322/mcp',
+      headers: { Authorization: 'Bearer per-session-vendor' },
+    };
+    try {
+      const prepared = await prepareSharedConfig(
+        root,
+        await configFor(root, 'claude'),
+        runtime,
+        NO_SERVICES,
+        null,
+        { example: vendor }
+      );
+      expect(prepared.input.mcpServers).toEqual({ example: vendor, switch: runtime });
+      await expect(
+        prepareSharedConfig(root, await configFor(root, 'claude'), runtime, NO_SERVICES, null, {
+          switch: vendor,
+        })
+      ).rejects.toThrow('which is taken');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -355,7 +385,8 @@ describe('the skills of the agent’s service grants', () => {
           await configFor(root, provider),
           runtime,
           { grants: [], unavailable: 'Switch refused (HTTP 503).' },
-          null
+          null,
+          {}
         );
         expect(prepared.input.systemContext).toBe(
           `Switch skill text\n\n${servicesUnavailableNotice('Switch refused (HTTP 503).')}`
@@ -381,7 +412,8 @@ describe('the skills of the agent’s service grants', () => {
           endpoint: { url: 'http://127.0.0.1:5555', token: 'per-session-bearer' },
           execPath: '/usr/bin/node',
           entrypoint: '/opt/switch/shared-host.mjs',
-        }
+        },
+        {}
       );
       // Git and gh ask the endpoint, which refuses, rather than this machine's sign-in.
       expect(prepared.input.env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
@@ -411,7 +443,8 @@ describe('the skills of the agent’s service grants', () => {
           endpoint: { url: 'http://127.0.0.1:5555', token: 'per-session-bearer' },
           execPath: '/usr/bin/node',
           entrypoint: '/opt/switch/shared-host.mjs',
-        }
+        },
+        {}
       );
       const env = prepared.input.env;
       expect(env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');

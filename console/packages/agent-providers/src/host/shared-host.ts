@@ -43,6 +43,12 @@ import {
   readToldInstructions,
   recordToldInstructions,
 } from './told-instructions';
+import {
+  CALL_TIMEOUT_MS,
+  LIST_TIMEOUT_MS,
+  startVendorServers,
+  type VendorServers,
+} from './vendor-mcp';
 
 /**
  * A session run on behalf of its agent.
@@ -920,8 +926,17 @@ export async function hostSessionProcess(input: {
   // A cloud deployment has no sign-in of the machine's to fall back to.
   const fallback = process.env.SWITCH_HOSTED_BOOTSTRAP !== '1';
   let endpoint: ServiceEndpointServer | null = null;
+  let vendors: VendorServers | null = null;
   try {
     const { grants, unavailable } = input.services;
+    vendors = await startVendorServers({
+      grants,
+      ask: parent.ask,
+      redactions,
+      listTimeoutMs: LIST_TIMEOUT_MS,
+      callTimeoutMs: CALL_TIMEOUT_MS,
+      fetch,
+    });
     if (unavailable !== null)
       serviceNotices.raise(
         serviceFallbackNotice('github', `its grants could not be read: ${unavailable}`, fallback)
@@ -947,7 +962,8 @@ export async function hostSessionProcess(input: {
       config,
       mcp.spec,
       input.services,
-      endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint }
+      endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
+      vendors.specs
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
     const authenticate = input.authenticate;
@@ -972,6 +988,7 @@ export async function hostSessionProcess(input: {
       input.signal
     );
   } finally {
+    await vendors?.close();
     await endpoint?.close();
     await mcp.close();
   }

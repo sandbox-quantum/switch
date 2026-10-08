@@ -927,6 +927,7 @@ class ServiceBroker:
         for grant in await self._store.list_grants(session, agent.id):
             entry = self._catalog.get(grant.service)
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
+            mcp = None if entry is None else entry.definition.mcp
             grants.append(
                 {
                     "service": grant.service,
@@ -938,6 +939,16 @@ class ServiceBroker:
                         None
                         if skill is None
                         else {"name": grant.service, "content": skill}
+                    ),
+                    # Where the session calls the service's tools: its host
+                    # serves each to the CLI on loopback and calls the vendor.
+                    "mcp_servers": (
+                        []
+                        if mcp is None
+                        else [
+                            {"name": server.name, "url": server.url}
+                            for server in mcp.servers
+                        ]
                     ),
                 }
             )
