@@ -3,12 +3,9 @@ import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { log } from '@main/lib/logger';
 import { reasoningListSchema, type ReasoningList } from '@shared/core/sessions/reasoning';
-import { isCloudAgent } from './cloud-control';
+import { isRelayedAgent } from './controller-control';
 import { localSessionLinks } from './local-host';
 import { sidecarControl } from './sidecar-control';
-
-/** A managed agent run by an agents controller; its sessions are relayed through Switch. */
-const CONTROLLER_AGENT_PREFIX = 'controller:';
 
 /**
  * The reasoning a session's host still holds for `turnIds` (every buffered
@@ -31,7 +28,7 @@ export async function listReasoning(
   sessionId: string,
   turnIds: string[] | null
 ): Promise<ReasoningList | null> {
-  if (isCloudAgent(agentId) || agentId.startsWith(CONTROLLER_AGENT_PREFIX)) return null;
+  if (isRelayedAgent(agentId)) return null;
   try {
     const agent = await getAgentById(agentId);
     if (!agent?.switchAgentId) return null;

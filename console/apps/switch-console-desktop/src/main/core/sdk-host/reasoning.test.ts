@@ -18,8 +18,9 @@ vi.mock('@main/core/agents/agent-location', () => ({
 }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 vi.mock('./local-host', () => ({ localSessionLinks: mocks.local }));
-vi.mock('./cloud-control', () => ({
-  isCloudAgent: (agentId: string) => agentId.startsWith('cloud:'),
+vi.mock('./controller-control', () => ({
+  isRelayedAgent: (agentId: string) =>
+    agentId.startsWith('cloud:') || agentId.startsWith('controller:'),
 }));
 vi.mock('./sidecar-control', () => ({ sidecarControl: mocks.sidecarControl }));
 
