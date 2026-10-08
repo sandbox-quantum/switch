@@ -52,3 +52,18 @@ it('reads a reasoning list and refuses anything else', () => {
   expect(reasoningListSchema.parse(list)).toEqual(list);
   expect(reasoningListSchema.safeParse({ state: 'connected' }).success).toBe(false);
 });
+
+it('reads tool details when a host sends them, and an older host’s answer without them', () => {
+  const tool = {
+    itemId: '["turn","t1"]',
+    type: 'tool_call',
+    toolName: 'Read',
+    input: { file_path: '/a.ts' },
+    output: '1\tconst a = 1;',
+    truncated: false,
+    exitCode: null,
+  };
+  const withTools = { epoch: 'e', turns: [], tools: [{ turnId: 'turn', tools: [tool] }] };
+  expect(reasoningListSchema.parse(withTools)).toEqual(withTools);
+  expect(reasoningListSchema.parse({ epoch: 'e', turns: [] }).tools).toBeUndefined();
+});

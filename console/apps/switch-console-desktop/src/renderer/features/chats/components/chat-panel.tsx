@@ -105,18 +105,30 @@ export const ChatPanel = observer(function ChatPanel({
   const turnIdsKey = activities
     .map((activity) => [...activity.turns().values()].map((turn) => turn.turnId).join(','))
     .join('|');
+  const activeTurnsKey = activities
+    .map((activity) =>
+      [...activity.turns().values()]
+        .filter((turn) => turn.status === 'running' || turn.status === 'queued')
+        .map((turn) => turn.turnId)
+        .join(',')
+    )
+    .join('|');
+  // The answer carries tool output too, so a tick reads only the turns still
+  // running; every turn is read again whenever the set of running turns changes.
   useEffect(() => {
-    const read = () => {
+    const read = (activeOnly: boolean) => {
       for (const activity of activities) {
-        const turnIds = [...activity.turns().values()].map((turn) => turn.turnId);
+        const turnIds = [...activity.turns().values()]
+          .filter((turn) => !activeOnly || turn.status === 'running' || turn.status === 'queued')
+          .map((turn) => turn.turnId);
         void activity.readReasoning(turnIds.slice(-20));
       }
     };
-    read();
+    read(false);
     if (!working) return;
-    const timer = setInterval(read, REASONING_MS);
+    const timer = setInterval(() => read(true), REASONING_MS);
     return () => clearInterval(timer);
-  }, [activities, working, messageCount, turnIdsKey]);
+  }, [activities, working, messageCount, turnIdsKey, activeTurnsKey]);
 
   // Room-only addresses no agent; the controls then act on the chat's own.
   const controlledAgentId =

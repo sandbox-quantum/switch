@@ -16,7 +16,28 @@ export type ReasoningTurn = {
   completedAt: string | null;
 };
 
-export type ReasoningList = { epoch: string; turns: ReasoningTurn[] };
+/**
+ * What one tool call was given and gave back, as the session host holds it
+ * beside the reasoning (and under the same rules: local and SSH hosts only,
+ * never part of the session's event stream). `itemId` is the session-v1 item
+ * the call was projected as. `input` is the call's arguments with long strings
+ * clipped, or clipped JSON text when the whole was too large; `output` keeps
+ * its head and tail. `truncated` says something was clipped.
+ */
+export type ToolDetail = {
+  itemId: string;
+  type: string;
+  toolName: string | null;
+  input: unknown;
+  output: string | null;
+  truncated: boolean;
+  exitCode: number | null;
+};
+
+export type ToolDetailTurn = { turnId: string; tools: ToolDetail[] };
+
+/** `tools` is absent from a host that predates tool details. */
+export type ReasoningList = { epoch: string; turns: ReasoningTurn[]; tools?: ToolDetailTurn[] };
 
 export const reasoningTurnSchema = z.object({
   turnId: z.string().min(1),
@@ -25,9 +46,22 @@ export const reasoningTurnSchema = z.object({
   completedAt: z.string().nullable(),
 });
 
+export const toolDetailSchema = z.object({
+  itemId: z.string().min(1),
+  type: z.string(),
+  toolName: z.string().nullable(),
+  input: z.unknown(),
+  output: z.string().nullable(),
+  truncated: z.boolean(),
+  exitCode: z.number().nullable(),
+});
+
 export const reasoningListSchema = z.object({
   epoch: z.string().min(1),
   turns: z.array(reasoningTurnSchema),
+  tools: z
+    .array(z.object({ turnId: z.string().min(1), tools: z.array(toolDetailSchema) }))
+    .optional(),
 });
 
 /**

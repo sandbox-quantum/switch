@@ -12,7 +12,7 @@ import {
 } from '@shared/core/chats/activity';
 import type { ChatMessage } from '@shared/core/chats/chats';
 import { roomCommandId } from '@shared/core/chats/room-command-id';
-import type { ReasoningList, ReasoningTurn } from '@shared/core/sessions/reasoning';
+import type { ReasoningList, ReasoningTurn, ToolDetail } from '@shared/core/sessions/reasoning';
 import { ActivityBindings, bindTurns, type TurnActivity } from '../activity-join';
 
 /**
@@ -58,6 +58,8 @@ export class AgentActivity {
   /** Room message id → the command id its turn runs under, for the session's agent. */
   commandIds = new Map<string, string>();
   reasoning = new Map<string, ReasoningTurn>();
+  /** Session-v1 tool item id → what the call was given and gave back; local and SSH hosts only. */
+  toolDetails = new Map<string, ToolDetail>();
   private readonly bindings = new ActivityBindings();
   private lastKnownKey: ChatActivityKey | null = null;
   private lastKnownCommandIds = new Map<string, string>();
@@ -183,7 +185,7 @@ export class AgentActivity {
     });
   }
 
-  /** Ask the host for the reasoning of these turns; local and SSH hosts only. */
+  /** Ask the host for the reasoning and tool details of these turns; local and SSH hosts only. */
   async readReasoning(turnIds: string[]): Promise<void> {
     const target = this.target;
     if (target?.kind !== 'session' || target.target === 'controller' || !turnIds.length) return;
@@ -191,6 +193,8 @@ export class AgentActivity {
     runInAction(() => {
       if (!list || list.epoch !== this.session?.epoch) return;
       for (const turn of list.turns) this.reasoning.set(turn.turnId, turn);
+      for (const turn of list.tools ?? [])
+        for (const tool of turn.tools) this.toolDetails.set(tool.itemId, tool);
     });
   }
 
@@ -208,6 +212,7 @@ export class AgentActivity {
         const view = client.getSnapshot();
         if (view.snapshot?.session.epoch !== this.view?.snapshot?.session.epoch) {
           this.reasoning = new Map();
+          this.toolDetails = new Map();
           this.commandIds = new Map();
         }
         this.view = view;
