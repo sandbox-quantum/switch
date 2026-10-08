@@ -3,6 +3,7 @@ import { AgentCrudEvents } from './app/agent-crud-events';
 import { AppMenuEvents } from './app/app-menu-events';
 import { Workspace } from './app/workspace';
 import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplink-listener';
+import { BridgePlatformsLoader } from './features/switch-servers/bridge-platforms-loader';
 import { TelemetryConsentGate } from './features/telemetry/TelemetryConsentGate';
 import { WorkspaceLayoutContextProvider } from './lib/layout/layout-provider';
 import { WorkspaceViewProvider } from './lib/layout/provider';
@@ -20,6 +21,7 @@ function AppContent() {
           <AppMenuEvents />
           <AgentCrudEvents />
           <SessionDeeplinkListener />
+          <BridgePlatformsLoader />
           <RightSidebarProvider>
             <ThemeProvider>
               <ModalRenderer />

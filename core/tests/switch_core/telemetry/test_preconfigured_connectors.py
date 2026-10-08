@@ -294,6 +294,6 @@ class TestRegisteringRecordsTheFlag:
         assert row.preconfigured is preconfigured
         [configured] = await _events(service, sink, "connector_configured")
         assert configured == {
-            "bridge_platform": "none",
+            "bridge_platform": "recording",
             "is_preconfigured": preconfigured,
         }

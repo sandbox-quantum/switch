@@ -414,6 +414,18 @@ export type BridgeConfigField = {
 export type RemoteBridgeType = {
   /** Platform key (`slack`, `mattermost`, …). */
   key: string;
+  /** How a person names the platform ("Microsoft Teams"), as its adapter
+   * declares it. Null from a server predating the field. */
+  displayName: string | null;
+  /** The platform's page under the messaging-apps docs, or null where the
+   * server has none (or predates the field). */
+  docsSlug: string | null;
+  /** The platform's logo as SVG markup, or null where the server ships none.
+   * It comes from the server, so it is drawn as an image, never inlined. */
+  iconSvg: string | null;
+  /** Whether connections of this type receive events on an address of their
+   * own, which the operator has to give the platform. */
+  receivesWebhooks: boolean;
   fields: BridgeConfigField[];
   /** Whether this platform can create channels at all — read from the
    * adapter class, so it is answerable before any connection of this type

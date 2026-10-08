@@ -345,11 +345,7 @@ never invisible.
 | `agent_opencode_count` | number | |
 | `agent_other_count` | number | including agents with no known runtime |
 | `session_live_count` | number | connections open at snapshot time |
-| `connector_slack_count` | number | **configured** bridges by platform |
-| `connector_mattermost_count` | number | |
-| `connector_discord_count` | number | |
-| `connector_teams_count` | number | |
-| `connector_telegram_count` | number | |
+| `connector_<platform>_count` | number | **configured** bridges by platform: one property per platform this build registers (`connector_slack_count`, `connector_teams_count`, …), so a new platform adds its own |
 | `connector_configured_count` | number | configured, whether or not connected |
 | `message_count_1d` | number | messages in 24h |
 | `message_from_human_1d` | number | of those, sent by humans |
@@ -478,7 +474,7 @@ when Switch is first told about the bridge.
 | Property | Type |
 |---|---|
 | `channel_type` | `channel_public` \| `channel_private` \| `direct` \| `none` |
-| `bridge_platform` | platform, or `none` for internal-only |
+| `bridge_platform` | platform, or `none` for internal-only, or `unknown` for a bridge whose platform is not registered in this build |
 | `agent_count` | number |
 | `human_count` | number |
 | `has_instructions` | boolean |

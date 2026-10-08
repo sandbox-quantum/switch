@@ -6,15 +6,9 @@ const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const revision = counter;
 const sequence = counter.min(1);
 const timestamp = z.iso.datetime({ offset: true });
-const surface = z.enum([
-  'console',
-  'switch-web',
-  'slack',
-  'mattermost',
-  'discord',
-  'teams',
-  'telegram',
-]);
+// Switch's own surfaces, or a messaging platform key — the pattern is
+// switch-core's `messaging_platforms.PLATFORM_KEY_PATTERN`.
+const surface = z.string().regex(/^(console|switch-web|[a-z][a-z0-9_]{1,31})$/);
 const origin = z.strictObject({
   surface,
   actorId: id,

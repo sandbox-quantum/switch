@@ -12,6 +12,7 @@ import aiohttp
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import messaging_platforms
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
@@ -20,6 +21,13 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
     BridgeStartRefused,
+    FailureReason,
+)
+from switch_core.bridges.collaboration.webhooks import (
+    BridgeWebhookTarget,
+    WebhookBridgeStopped,
+    WebhookBridgeUnknown,
+    webhook_url,
 )
 from switch_core.clients.actor import Actor
 from switch_core.clients.client_factory import ClientFactory
@@ -47,7 +55,7 @@ from switch_core.telemetry.deployment import (
     milestone_claimed,
     seconds_since_install,
 )
-from switch_core.telemetry.snapshot import PLATFORMS, normalise_platform
+from switch_core.telemetry.snapshot import normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
 from switch_core.trust.client import NullTrustClient, TrustClient
 
@@ -60,97 +68,13 @@ if TYPE_CHECKING:
     from switch_core.session_activity.listener import AgentSessionActivityListener
     from switch_core.session_activity.service import AgentSessionActivityService
 
-# Every platform SDK below is registered dynamically (`register_adapter`), so a
-# deployment that only wires up some of the five is plausible even though
-# every one is a hard dependency of switch-core today — hence guarded rather
-# than assumed. A dependency that is genuinely missing degrades classification
-# to `unknown` instead of taking the whole classifier down with an ImportError,
-# which would turn a bridge failure into a second, worse one.
-try:
-    from slack_sdk.errors import SlackApiError
-except ImportError:  # pragma: no cover - exercised only without slack-sdk installed
-    SlackApiError = None  # type: ignore[assignment, misc]
-
-try:
-    from discord.errors import DiscordException
-    from discord.errors import LoginFailure as DiscordLoginFailure
-except ImportError:  # pragma: no cover
-    DiscordException = None  # type: ignore[assignment, misc]
-    DiscordLoginFailure = None  # type: ignore[assignment, misc]
-
-try:
-    from telegram.error import BadRequest as TelegramBadRequest
-    from telegram.error import ChatMigrated as TelegramChatMigrated
-    from telegram.error import Forbidden as TelegramForbidden
-    from telegram.error import InvalidToken as TelegramInvalidToken
-    from telegram.error import NetworkError as TelegramNetworkError
-    from telegram.error import TelegramError
-except ImportError:  # pragma: no cover
-    TelegramBadRequest = None  # type: ignore[assignment, misc]
-    TelegramChatMigrated = None  # type: ignore[assignment, misc]
-    TelegramForbidden = None  # type: ignore[assignment, misc]
-    TelegramInvalidToken = None  # type: ignore[assignment, misc]
-    TelegramNetworkError = None  # type: ignore[assignment, misc]
-    TelegramError = None  # type: ignore[assignment, misc]
-
-try:
-    from mattermostdriver.exceptions import (
-        NoAccessTokenProvided as MattermostNoAccessTokenProvided,
-    )
-    from mattermostdriver.exceptions import (
-        NotEnoughPermissions as MattermostNotEnoughPermissions,
-    )
-
-    # `mattermostdriver` raises its named exceptions only for the status codes
-    # it maps; anything else (including a bare connection failure) surfaces as
-    # the underlying `requests` exception, since that is the client it wraps.
-    from requests.exceptions import ConnectionError as RequestsConnectionError
-    from requests.exceptions import HTTPError as RequestsHTTPError
-    from requests.exceptions import InvalidJSONError as RequestsInvalidJSON
-    from requests.exceptions import Timeout as RequestsTimeout
-except ImportError:  # pragma: no cover
-    MattermostNoAccessTokenProvided = None  # type: ignore[assignment, misc]
-    MattermostNotEnoughPermissions = None  # type: ignore[assignment, misc]
-    RequestsConnectionError = None  # type: ignore[assignment, misc]
-    RequestsHTTPError = None  # type: ignore[assignment, misc]
-    RequestsInvalidJSON = None  # type: ignore[assignment, misc]
-    RequestsTimeout = None  # type: ignore[assignment, misc]
-
 logger = logging.getLogger(__name__)
 
 
-# Slack error codes that mean the credentials themselves are rejected, as
-# opposed to Slack refusing a call for some other reason (rate limited, a
-# scope not granted, an internal error). `SlackApiError` carries no separate
-# type for this — the distinction lives entirely in `response["error"]`.
-_SLACK_AUTH_ERROR_CODES = frozenset(
-    {
-        "invalid_auth",
-        "not_authed",
-        "account_inactive",
-        "token_revoked",
-        "token_expired",
-    }
-)
-
-# Telegram's own hierarchy already encodes "the server understood the request
-# and refused it" for these three. `BadRequest` is a subclass of
-# `NetworkError`, so they are checked ahead of `_NETWORK_EXCEPTIONS` below —
-# the same ordering `telegram/adapter.py`'s `_as_rich_failure` uses, and for
-# the same reason: checking `NetworkError` first would report a definite
-# refusal as an unreachable network.
-_TELEGRAM_DEFINITE_REFUSALS = tuple(
-    exc_type
-    for exc_type in (TelegramBadRequest, TelegramForbidden, TelegramChatMigrated)
-    if exc_type is not None
-)
-
-# Reaching the platform failed outright, across every transport an adapter
-# uses: aiohttp (Slack's Socket Mode, Teams' inbound listener), httpx (Teams'
-# token exchange and Graph calls) and requests (Mattermost, via
-# `mattermostdriver`, which raises its own named exceptions only for the
-# status codes it maps and lets a connection failure surface as the
-# underlying `requests` exception unchanged).
+# Reaching the platform failed outright, in the transports Switch itself
+# depends on: aiohttp (Slack's Socket Mode, Teams' inbound listener) and httpx
+# (Teams' token exchange and Graph calls). A platform whose SDK has a transport
+# of its own names those exceptions in its adapter's `classify_failure`.
 #
 # Each library's own base class for "the transport failed", not the individual
 # leaves. A timeout is the case that makes this worth stating: `ConnectTimeout`
@@ -158,61 +82,20 @@ _TELEGRAM_DEFINITE_REFUSALS = tuple(
 # `ServerTimeoutError` is not a `ClientOSError` in aiohttp — so a list of
 # leaves classifies a refusal as `network` and the timeout beside it as
 # `unknown`, which are the two outcomes an operator most needs to tell apart.
-_NETWORK_EXCEPTIONS = tuple(
-    exc_type
-    for exc_type in (
-        TelegramNetworkError,
-        aiohttp.ClientConnectionError,
-        httpx.TransportError,
-        RequestsConnectionError,
-        RequestsTimeout,
-        # The two builtins, for a failure that reaches here without a library's
-        # name on it: `asyncio.wait_for` raises the first, and a raw socket
-        # connect the second.
-        TimeoutError,
-        ConnectionError,
-    )
-    if exc_type is not None
-)
-
-_MATTERMOST_AUTH_ERRORS = tuple(
-    exc_type
-    for exc_type in (MattermostNoAccessTokenProvided, MattermostNotEnoughPermissions)
-    if exc_type is not None
+_NETWORK_EXCEPTIONS = (
+    aiohttp.ClientConnectionError,
+    httpx.TransportError,
+    # The two builtins, for a failure that reaches here without a library's
+    # name on it: `asyncio.wait_for` raises the first, and a raw socket
+    # connect the second.
+    TimeoutError,
+    ConnectionError,
 )
 
 
-def _slack_failure_reason(exc: SlackApiError) -> str:
-    """`auth_failed` for a rejected token, `platform_error` for everything else
-    Slack refuses a call for (rate limits, a missing scope, an outage). Both
-    arrive as the same `SlackApiError`, so the code inside the response — not
-    the exception's type — is what tells them apart.
-
-    A revoked or rotated bot token is the most common bridge failure in the
-    field, and reporting it as `platform_error` would send an operator to
-    Slack's status page instead of their own token.
-    """
-    # `.response` is not always a mapping. On the async client slack_sdk
-    # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
-    # whenever the body it was handed is not the JSON the content type claimed
-    # — an empty 502, a proxy's error page. That object has no `.get`, and this
-    # is evaluated inside the argument list of the `emit_safely` that reports
-    # the failure, so an `AttributeError` here would replace the bridge's real
-    # exception with a meaningless one *and* suppress the event. Nor does a
-    # `.get` promise a mapping: `AsyncSlackResponse.get` itself raises when
-    # the body it holds is text, as a proxy's plain-text 5xx is.
-    response = getattr(exc, "response", None)
-    reader = getattr(response, "get", None)
-    try:
-        code = reader("error") if callable(reader) else None
-    except Exception:
-        code = None
-    if code in _SLACK_AUTH_ERROR_CODES:
-        return "auth_failed"
-    return "platform_error"
-
-
-def _failure_reason(exc: BaseException) -> str:
+def _failure_reason(
+    exc: BaseException, adapter_cls: type[PlatformAdapter] | None
+) -> FailureReason:
     """An enumerated reason for a bridge failure.
 
     Not the exception's message, which routinely carries a workspace name or a
@@ -220,6 +103,10 @@ def _failure_reason(exc: BaseException) -> str:
     outcomes into one exception class — by what the exception itself carries.
     Never by matching words in the class name: "SlackApiError" contains "api",
     which reads a revoked token as a platform fault.
+
+    The bridge's adapter is asked first, because what a platform SDK's
+    exceptions mean is that platform's knowledge. `adapter_cls` is None for a
+    bridge whose type is no longer registered; only the shared rules apply.
 
     `KeyError` and `sqlalchemy.exc.DBAPIError` are deliberately left
     unclassified and fall through to `unknown`. A `KeyError` here is adapter
@@ -230,42 +117,15 @@ def _failure_reason(exc: BaseException) -> str:
     if isinstance(exc, BridgeCredentialError):
         return "auth_failed"
 
-    if SlackApiError is not None and isinstance(exc, SlackApiError):
-        return _slack_failure_reason(exc)
-
-    if DiscordLoginFailure is not None and isinstance(exc, DiscordLoginFailure):
-        return "auth_failed"
-
-    if isinstance(exc, _MATTERMOST_AUTH_ERRORS):
-        return "auth_failed"
-
-    if TelegramInvalidToken is not None and isinstance(exc, TelegramInvalidToken):
-        return "auth_failed"
-
-    if isinstance(exc, _TELEGRAM_DEFINITE_REFUSALS):
-        return "platform_error"
+    if adapter_cls is not None:
+        claimed = adapter_cls.classify_failure(exc)
+        if claimed is not None:
+            return claimed
 
     if isinstance(exc, _NETWORK_EXCEPTIONS):
         return "network"
 
-    # These four are each a platform's own SDK saying it was reached and it
-    # refused, never Switch's own database, which speaks neither
-    # vendor's exception language, so the label stays accurate even though the
-    # check is broad.
     if isinstance(exc, BridgeOperationError):
-        return "platform_error"
-    if DiscordException is not None and isinstance(exc, DiscordException):
-        return "platform_error"
-    if RequestsHTTPError is not None and isinstance(exc, RequestsHTTPError):
-        return "platform_error"
-    if TelegramError is not None and isinstance(exc, TelegramError):
-        return "platform_error"
-
-    # Ahead of the `ValueError` below, which it is one of: `requests` folds a
-    # body it could not parse into `InvalidJSONError`, and a Mattermost server
-    # answering with a proxy error page is the platform misbehaving, not a
-    # connection config somebody typed wrong.
-    if RequestsInvalidJSON is not None and isinstance(exc, RequestsInvalidJSON):
         return "platform_error"
 
     if isinstance(exc, ValueError):
@@ -396,6 +256,9 @@ class CollaborationBridgeLifecycleService:
         # series survives its last bridge being stopped rather than ending —
         # see the note there on why an absent series is the worst answer.
         self._platforms_seen: set[str] = set()
+        # The adapter class of each running bridge, so a bridge that crashes
+        # after it started has its failure read by its own platform's rules.
+        self._running_adapter_classes: dict[str, type[PlatformAdapter]] = {}
         # The one listener every bridge that gets called back shares, and each
         # running bridge's place on it. Owned here rather than by an adapter
         # because the port is the process's, not a bridge's: two Mattermost
@@ -428,8 +291,68 @@ class CollaborationBridgeLifecycleService:
         adapter_cls: type[PlatformAdapter],
         config_cls: type[BridgeConnectionConfig],
     ) -> None:
+        """Make a messaging platform available, under `bridge_type` as its key.
+
+        The one line a new platform adds. What the adapter declares about
+        itself — its name, docs page, icon — is published to
+        `messaging_platforms` here, which is where telemetry, the gateway and
+        the session renderers read it from.
+        """
+        messaging_platforms.register(adapter_cls.describe(bridge_type))
         self._adapter_registry[bridge_type] = adapter_cls
         self._config_registry[bridge_type] = config_cls
+
+    async def webhook_target(self, bridge_id: str) -> BridgeWebhookTarget:
+        """The running bridge that receives webhooks at `bridge_id`'s address.
+
+        Here rather than in the webhook route because the bridge's tenant is
+        not known until it is looked up by id, which is the exempt read this
+        service already makes to start a bridge. The row is then re-read scoped
+        to that tenant, so a wrong answer is a miss rather than a cross-tenant
+        read.
+        """
+        tenant_id = await tenant_of_collaboration_bridge(
+            self._session_factory, bridge_id
+        )
+        if tenant_id is None:
+            raise WebhookBridgeUnknown(f"no bridge {bridge_id}")
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            bridge = await self._bridge_store.get(session, bridge_id)
+        if bridge is None:
+            raise WebhookBridgeUnknown(f"no bridge {bridge_id} in its tenant")
+        adapter_cls = self._adapter_registry.get(bridge.type)
+        if adapter_cls is None or not adapter_cls.receives_webhooks:
+            raise WebhookBridgeUnknown(
+                f"bridge {bridge_id} is on {bridge.type}, which takes no webhooks"
+            )
+        adapter = self.get_adapter(bridge_id)
+        if adapter is None:
+            raise WebhookBridgeStopped(
+                f"{bridge.type} bridge {bridge_id} is not running"
+            )
+        return BridgeWebhookTarget(
+            tenant_id=tenant_id,
+            bridge_id=bridge_id,
+            bridge_type=bridge.type,
+            adapter=adapter,
+        )
+
+    def receives_webhooks(self, bridge_type: str) -> bool:
+        """Whether this platform's connections receive events on an address of
+        their own. False for a type nobody registered."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        return adapter_cls is not None and adapter_cls.receives_webhooks
+
+    def webhook_url(self, bridge_id: str, bridge_type: str) -> str | None:
+        """The address to give the platform for this connection's events, or
+        None where it takes none or the public origin is not configured."""
+        if not self.receives_webhooks(bridge_type):
+            return None
+        return webhook_url(self._config.messaging_public_url, bridge_id)
+
+    def adapter_class(self, bridge_type: str) -> type[PlatformAdapter] | None:
+        """The adapter registered for `bridge_type`, or None."""
+        return self._adapter_registry.get(bridge_type)
 
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
@@ -903,6 +826,7 @@ class CollaborationBridgeLifecycleService:
         # `none` would be a claim — and the one this catalogue reserves for a
         # room with no bridge at all.
         platform = "unknown"
+        adapter_cls: type[PlatformAdapter] | None = None
         # Before the first statement that can fail, so a bridge that never gets
         # past reading its own row still reports how long that took.
         self._connect_started[bridge_id] = time.monotonic()
@@ -923,14 +847,7 @@ class CollaborationBridgeLifecycleService:
                 bridge = await self._bridge_store.get(session, bridge_id)
             if bridge is None:
                 raise ValueError(f"Bridge not found: {bridge_id}")
-            # A type the catalogue has no name for is still a bridge on some
-            # platform, so it is `unknown` here, not the `none` the normaliser
-            # gives it.
-            platform = (
-                normalise_platform(bridge.type)
-                if bridge.type in PLATFORMS
-                else "unknown"
-            )
+            platform = normalise_platform(bridge.type)
 
             adapter_cls = self._adapter_registry.get(bridge.type)
             config_cls = self._config_registry.get(bridge.type)
@@ -1066,6 +983,7 @@ class CollaborationBridgeLifecycleService:
             self._tasks[bridge_id] = task
             self._started.add(bridge_id)
             self._platforms_seen.add(normalise_platform(bridge.type))
+            self._running_adapter_classes[bridge_id] = adapter_cls
             if wanted is not None:
                 self._held_resources[bridge_id] = wanted
             if workspace is not None:
@@ -1079,7 +997,7 @@ class CollaborationBridgeLifecycleService:
             # anything it raised would escape the guard — replacing the
             # bridge's own exception with a meaningless one, and taking the
             # event this method exists to emit with it.
-            reason = _failure_reason(exc)
+            reason = _failure_reason(exc, adapter_cls)
             duration_ms = self._connect_duration_ms(bridge_id)
             emit_safely(
                 self._telemetry,
@@ -1201,7 +1119,9 @@ class CollaborationBridgeLifecycleService:
                 # outside `emit_safely`'s guard, and this one is on the path of
                 # a task nobody awaits, where anything it raised would surface
                 # only as "Task exception was never retrieved" at collection.
-                reason = _failure_reason(exc)
+                reason = _failure_reason(
+                    exc, self._running_adapter_classes.pop(bridge_id, None)
+                )
                 if connected:
                     emit_safely(
                         self._telemetry,
@@ -1366,6 +1286,7 @@ class CollaborationBridgeLifecycleService:
         self._bridges.pop(bridge_id, None)
         self._held_resources.pop(bridge_id, None)
         self._running_workspaces.pop(bridge_id, None)
+        self._running_adapter_classes.pop(bridge_id, None)
         self._started.discard(bridge_id)
         # A bridge cancelled before it connected never reaches an outcome, and
         # `_run_bridge`'s handler does not catch `CancelledError`, so its

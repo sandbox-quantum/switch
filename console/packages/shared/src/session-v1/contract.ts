@@ -1,13 +1,12 @@
 /** Session interaction wire contract, version 1. */
 export type Id = string;
-export type Surface =
-  | 'console'
-  | 'switch-web'
-  | 'slack'
-  | 'mattermost'
-  | 'discord'
-  | 'teams'
-  | 'telegram';
+/**
+ * Where something was done: Switch's own two surfaces, or a messaging platform
+ * by its key (`slack`, `teams`, `google_chat`, …). Any platform key is accepted
+ * rather than a fixed list, so a newly registered platform needs no contract
+ * change. The validator holds a key to the same pattern switch-core does.
+ */
+export type Surface = 'console' | 'switch-web' | (string & {});
 export type Provider = string;
 export type Origin = {
   surface: Surface;

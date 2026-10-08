@@ -165,6 +165,12 @@ class _CollabLifecycle:
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
 
+    def receives_webhooks(self, bridge_type: str) -> bool:
+        return False
+
+    def webhook_url(self, bridge_id: str, bridge_type: str) -> str | None:
+        return None
+
     async def check_edited_connection_config(self, **_: Any) -> None:
         self._calls.record("platform credential check")
 

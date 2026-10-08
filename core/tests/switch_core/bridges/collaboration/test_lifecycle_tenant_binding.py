@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -77,6 +77,8 @@ def _service(
 
 class _StubAdapter(PlatformAdapter):
     """Concrete only so `start` can build one; no platform call is made."""
+
+    display_name: ClassVar[str] = "Stub"
 
     def __init__(self, *, config: Any) -> None:
         self._config = config

@@ -57,11 +57,11 @@ from switch_core.sessions.contract import (
 from . import (
     CLOSED,
     NO_OPTIONS,
-    SURFACES,
     Drawn,
     Markup,
     RequestReference,
     example_value,
+    surface_label,
     turn_state,
     unanswerable,
 )
@@ -1019,7 +1019,7 @@ def _actor(
     it only exists when the answer was given on this very platform, so where
     there is none the Switch identity is the only true thing to say.
     """
-    where = SURFACES[decided_by.surface]
+    where = surface_label(decided_by.surface)
     if responder:
         return f"{responder} from {where}"
     return f"{_fit(decided_by.actor_id, _share(limit, 200, 8), escape=escape)} from {where}"

@@ -38,12 +38,39 @@ from telegram.error import (
     NetworkError,
 )
 
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
 from switch_core.bridges.collaboration.lifecycle_service import _failure_reason
+from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
 )
+from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
+from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
+from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 from switch_core.telemetry.catalogue import BRIDGE_FAILURE_REASON
+
+
+def _raised_by(exc: BaseException) -> type[PlatformAdapter]:
+    """The adapter of the platform whose SDK raises `exc`.
+
+    The lifecycle classifies a failure with the adapter of the bridge that
+    failed, so each case is classified the way it would be in production: a
+    Slack SDK error by the Slack adapter, a `requests` error by Mattermost's
+    (the only adapter on `requests`), and a transport or Switch-raised error by
+    the adapter that would see it — Teams, which adds no rules of its own.
+    """
+    module = type(exc).__module__
+    if module.startswith("slack_sdk"):
+        return SlackAdapter
+    if module.startswith("discord"):
+        return DiscordAdapter
+    if module.startswith(("mattermostdriver", "requests")):
+        return MattermostAdapter
+    if module.startswith("telegram"):
+        return TelegramAdapter
+    return TeamsAdapter
 
 
 def _slack_error(code: str) -> SlackApiError:
@@ -200,7 +227,7 @@ class TestFailureReasonClassification:
     def test_classification(
         self, description: str, exc: BaseException, expected: str
     ) -> None:
-        assert _failure_reason(exc) == expected, description
+        assert _failure_reason(exc, _raised_by(exc)) == expected, description
 
     def test_every_expected_value_is_one_the_catalogue_accepts(self) -> None:
         """`_failure_reason` and `bridge_connected.failure_reason` share one
@@ -219,12 +246,15 @@ class TestSlackAuthCodesAreExhaustiveOverNothingElse:
         "code", ["missing_scope", "channel_not_found", "internal_error", "fatal_error"]
     )
     def test_a_non_auth_code_is_platform_error(self, code: str) -> None:
-        assert _failure_reason(_slack_error(code)) == "platform_error"
+        assert _failure_reason(_slack_error(code), SlackAdapter) == "platform_error"
 
     def test_a_response_with_no_error_key_does_not_crash(self) -> None:
         """Defensive: a malformed or unexpected response body must degrade to
         the safe default rather than raising out of the classifier itself."""
-        assert _failure_reason(SlackApiError("boom", {"ok": False})) == "platform_error"
+        assert (
+            _failure_reason(SlackApiError("boom", {"ok": False}), SlackAdapter)
+            == "platform_error"
+        )
 
     def test_a_response_that_is_not_a_mapping_at_all_does_not_crash(self) -> None:
         """The case that actually bites.
@@ -248,7 +278,10 @@ class TestSlackAuthCodesAreExhaustiveOverNothingElse:
             status = 502
 
         assert (
-            _failure_reason(SlackApiError("boom", _NotAMapping()))  # type: ignore[arg-type]
+            _failure_reason(
+                SlackApiError("boom", _NotAMapping()),  # type: ignore[arg-type]
+                SlackAdapter,
+            )
             == "platform_error"
         )
 
@@ -266,10 +299,16 @@ class TestSlackAuthCodesAreExhaustiveOverNothingElse:
             status_code=502,
         )
 
-        assert _failure_reason(SlackApiError("boom", response)) == "platform_error"
+        assert (
+            _failure_reason(SlackApiError("boom", response), SlackAdapter)
+            == "platform_error"
+        )
 
     def test_a_response_of_none_does_not_crash(self) -> None:
-        assert _failure_reason(SlackApiError("boom", None)) == "platform_error"  # type: ignore[arg-type]
+        assert (
+            _failure_reason(SlackApiError("boom", None), SlackAdapter)
+            == "platform_error"
+        )  # type: ignore[arg-type]
 
 
 class TestTheTransportFailuresThatHaveNoLibraryName:
@@ -299,7 +338,7 @@ class TestTheTransportFailuresThatHaveNoLibraryName:
         ],
     )
     def test_it_reports_network(self, description: str, exc: Exception) -> None:
-        assert _failure_reason(exc) == "network", description
+        assert _failure_reason(exc, _raised_by(exc)) == "network", description
 
 
 class TestABodyThatIsNotJsonIsNotTheOperatorsConfig:
@@ -310,6 +349,25 @@ class TestABodyThatIsNotJsonIsNotTheOperatorsConfig:
 
     def test_an_unparseable_mattermost_body_is_the_platform(self) -> None:
         assert (
-            _failure_reason(RequestsJSONDecodeError("not json", "<html>", 0))
+            _failure_reason(
+                RequestsJSONDecodeError("not json", "<html>", 0), MattermostAdapter
+            )
             == "platform_error"
         )
+
+
+class TestTheAdapterOwnsItsPlatformsExceptions:
+    """The shared classifier knows no platform SDK: what one means is the
+    knowledge of the adapter that raises it."""
+
+    def test_a_platform_error_with_no_adapter_to_read_it_is_unknown(self) -> None:
+        assert _failure_reason(_slack_error("invalid_auth"), None) == "unknown"
+
+    def test_another_platforms_adapter_does_not_read_it(self) -> None:
+        assert _failure_reason(_slack_error("invalid_auth"), TeamsAdapter) == "unknown"
+
+    def test_the_shared_rules_still_apply_without_an_adapter(self) -> None:
+        assert _failure_reason(BridgeCredentialError("no"), None) == "auth_failed"
+        assert _failure_reason(httpx.ConnectError("no route"), None) == "network"
+        assert _failure_reason(BridgeOperationError("no"), None) == "platform_error"
+        assert _failure_reason(ValueError("bad"), None) == "config_invalid"

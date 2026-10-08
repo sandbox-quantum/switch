@@ -30,6 +30,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.telemetry.catalogue import event_spec
 from switch_core.telemetry.snapshot import (
     SPOKEN_EVENT_TYPES,
     UsageCounts,
@@ -1027,10 +1028,8 @@ class TestTheDerivedProperties:
             assert properties[f"connector_{platform}_count"] == 0
 
     def test_the_properties_match_the_catalogue_exactly(self) -> None:
-        from switch_core.telemetry.catalogue import CATALOGUE
-
         properties = UsageCounts().as_event_properties(session_live_count=3)
-        assert set(properties) == set(CATALOGUE["usage_snapshot"])
+        assert set(properties) == set(event_spec("usage_snapshot") or {})
 
 
 class TestNormalising:
@@ -1043,10 +1042,12 @@ class TestNormalising:
         assert normalise_channel_type(None) == "none"
         assert normalise_channel_type("something-new") == "none"
 
-    def test_an_unknown_platform_becomes_none(self) -> None:
+    def test_an_unregistered_platform_is_unknown_and_no_bridge_is_none(self) -> None:
+        """`none` is reserved for a room with no bridge; a bridge on a platform
+        this build has not registered is still a bridge."""
         assert normalise_platform("slack") == "slack"
         assert normalise_platform(None) == "none"
-        assert normalise_platform("irc") == "none"
+        assert normalise_platform("irc") == "unknown"
 
     def test_a_runtime_switch_does_not_know_becomes_other(self) -> None:
         assert normalise_known_agent_type({"known_agent_type": "codex"}) == "codex"

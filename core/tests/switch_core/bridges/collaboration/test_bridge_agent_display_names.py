@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import discord
 import pytest
@@ -109,6 +109,8 @@ def _bridge(*agents: SimpleNamespace) -> CollaborationCore:
 class _BareAdapter(PlatformAdapter):
     """Concrete only so it can be instantiated: the label plumbing under test
     lives on the base class and no platform method is called."""
+
+    display_name: ClassVar[str] = "Stub"
 
     async def start(self, *a: Any, **k: Any) -> Any: ...
     async def stop(self, *a: Any, **k: Any) -> Any: ...

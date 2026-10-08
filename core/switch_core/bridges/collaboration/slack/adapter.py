@@ -41,6 +41,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     ChannelType,
     DirectoryUser,
+    FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -332,7 +333,61 @@ class _ActivityStream:
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
+# Slack error codes that mean the credentials themselves are rejected, as
+# opposed to Slack refusing a call for some other reason (rate limited, a
+# scope not granted, an internal error). `SlackApiError` carries no separate
+# type for this — the distinction lives entirely in `response["error"]`.
+_SLACK_AUTH_ERROR_CODES = frozenset(
+    {
+        "invalid_auth",
+        "not_authed",
+        "account_inactive",
+        "token_revoked",
+        "token_expired",
+    }
+)
+
+
+def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
+    """`auth_failed` for a rejected token, `platform_error` for everything else
+    Slack refuses a call for (rate limits, a missing scope, an outage). Both
+    arrive as the same `SlackApiError`, so the code inside the response — not
+    the exception's type — is what tells them apart.
+
+    A revoked or rotated bot token is the most common bridge failure in the
+    field, and reporting it as `platform_error` would send an operator to
+    Slack's status page instead of their own token.
+    """
+    # `.response` is not always a mapping. On the async client slack_sdk
+    # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
+    # whenever the body it was handed is not the JSON the content type claimed
+    # — an empty 502, a proxy's error page. That object has no `.get`, and this
+    # is evaluated inside the argument list of the `emit_safely` that reports
+    # the failure, so an `AttributeError` here would replace the bridge's real
+    # exception with a meaningless one *and* suppress the event. Nor does a
+    # `.get` promise a mapping: `AsyncSlackResponse.get` itself raises when
+    # the body it holds is text, as a proxy's plain-text 5xx is.
+    response = getattr(exc, "response", None)
+    reader = getattr(response, "get", None)
+    try:
+        code = reader("error") if callable(reader) else None
+    except Exception:
+        code = None
+    if code in _SLACK_AUTH_ERROR_CODES:
+        return "auth_failed"
+    return "platform_error"
+
+
 class SlackAdapter(PlatformAdapter):
+    display_name: ClassVar[str] = "Slack"
+    docs_slug: ClassVar[str | None] = "slack"
+
+    @classmethod
+    def classify_failure(cls, exc: BaseException) -> FailureReason | None:
+        if isinstance(exc, SlackApiError):
+            return _slack_failure_reason(exc)
+        return None
+
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"

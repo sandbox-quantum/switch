@@ -2,6 +2,7 @@ import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { rpc } from '@renderer/lib/ipc';
@@ -210,7 +211,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
       {visible && active?.phase === 'ready' && active.embed.kind === 'external' ? (
         <RoomNotice
           icon={<MessagesSquare className="size-6" />}
-          title={`This room lives in ${capitalise(active.embed.platform)}`}
+          title={`This room lives in ${bridgePlatformLabel(active.embed.platform)}`}
           detail="Conversations on external platforms open in their own app, or in your browser when it is not installed."
           action={
             <Button
@@ -219,7 +220,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
               onClick={() => activeRoomId && openRoomChannel(activeRoomId)}
             >
               <ExternalLink className="size-3" />
-              Open in {capitalise(active.embed.platform)}
+              Open in {bridgePlatformLabel(active.embed.platform)}
             </Button>
           }
         />
@@ -249,7 +250,3 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     </div>
   );
 });
-
-function capitalise(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}

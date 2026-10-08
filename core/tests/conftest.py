@@ -22,6 +22,8 @@ from testcontainers.postgres import PostgresContainer
 # Importing the models module registers every table on Base.metadata so
 # create_all provisions the full schema (rooms, room_groups, FKs, …).
 import switch_core.db.models  # noqa: F401
+from switch_core import messaging_platforms
+from switch_core.bridges.collaboration.platforms import PLATFORMS
 from switch_core.db import encrypted_json
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
@@ -37,6 +39,22 @@ TEST_KEYRING = Keyring.parse(
     "test:" + "column-encryption-secret" * 2, legacy_secret=None
 )
 encrypted_json.configure(TEST_KEYRING)
+
+# Production publishes these when `main.run()` registers its adapters. Tests
+# that read telemetry or render cards without building a lifecycle need the
+# same platforms to exist.
+for _platform in PLATFORMS:
+    messaging_platforms.register(_platform.adapter.describe(_platform.key))
+
+
+@pytest.fixture(autouse=True)
+def _restore_messaging_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Undo whatever a test registers. Many register a stub adapter under a real
+    platform's key, which would otherwise rename that platform for every test
+    that runs after it."""
+    monkeypatch.setattr(
+        messaging_platforms, "_REGISTERED", dict(messaging_platforms._REGISTERED)
+    )
 
 
 async def _seed_tenant_zero(conn: AsyncConnection) -> None:

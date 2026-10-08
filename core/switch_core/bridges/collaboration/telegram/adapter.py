@@ -29,6 +29,8 @@ from telegram.error import (
     ChatMigrated,
     Conflict,
     Forbidden,
+    InvalidToken,
+    NetworkError,
     RetryAfter,
     TelegramError,
 )
@@ -54,6 +56,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
     ChannelType,
+    FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -466,6 +469,25 @@ class TelegramAdapter(PlatformAdapter):
     Switch room is provisioned when the bot is added to it or on its first
     bridged message.
     """
+
+    display_name: ClassVar[str] = "Telegram"
+    docs_slug: ClassVar[str | None] = "telegram"
+
+    @classmethod
+    def classify_failure(cls, exc: BaseException) -> FailureReason | None:
+        """`BadRequest` is a subclass of `NetworkError` in python-telegram-bot,
+        so the definite refusals are checked before the network failure that
+        would otherwise swallow them — the same ordering `_as_rich_failure`
+        uses, for the same reason."""
+        if isinstance(exc, InvalidToken):
+            return "auth_failed"
+        if isinstance(exc, BadRequest | Forbidden | ChatMigrated):
+            return "platform_error"
+        if isinstance(exc, NetworkError):
+            return "network"
+        if isinstance(exc, TelegramError):
+            return "platform_error"
+        return None
 
     supports_channel_creation: ClassVar[bool] = False
     supports_directory_search: ClassVar[bool] = False

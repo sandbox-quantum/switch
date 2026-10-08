@@ -128,6 +128,21 @@ WebhookEndpoint = Literal["events", "interactive", "commands"]
 
 
 @dataclass(frozen=True)
+class WebhookRequest:
+    """One request to a bridge's own webhook address, as the adapter sees it.
+
+    Everything a platform might prove itself with or carry its event in: some
+    sign the body and put the signature in a header, some verify an address
+    with a GET carrying a challenge in the query. Header names are lowercase.
+    """
+
+    method: str
+    headers: Mapping[str, str]
+    query: Mapping[str, str]
+    body: bytes
+
+
+@dataclass(frozen=True)
 class InboundWebhook:
     """One authenticated inbound event, in the shape a running adapter takes.
 
