@@ -17,6 +17,7 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats.service import ChatError, ChatService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.agent_store import AgentStore
@@ -36,6 +37,8 @@ from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.chats import chat_error_response
+from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connectors import router as connectors_router
@@ -96,6 +99,7 @@ def create_gateway_app(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
+    chat_service: ChatService,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -126,6 +130,7 @@ def create_gateway_app(
     )
 
     app = FastAPI(title="Switch Gateway API")
+    app.state.chat_service = chat_service
     app.state.hosted_controller_settings = (
         HostedControllerSettings.model_validate_json(
             Path(config.hosted_controller_config_path).read_text()
@@ -181,6 +186,7 @@ def create_gateway_app(
         register_oidc_client(config)
 
     app.add_exception_handler(SessionError, session_error_response)
+    app.add_exception_handler(ChatError, chat_error_response)
     app.include_router(
         agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
     )
@@ -188,6 +194,7 @@ def create_gateway_app(
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
+    app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
     app.include_router(agents_router, prefix="/agents", tags=["agents"])
     app.include_router(
