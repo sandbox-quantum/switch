@@ -29,6 +29,7 @@ from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     CollaborationBridge,
     ExternalUser,
+    MessagingInstall,
     User,
     require_tenant_id,
 )
@@ -146,6 +147,60 @@ def _places_app_in_teams(
 ) -> bool:
     adapter = collab_lifecycle.get_adapter(bridge_id)
     return adapter is not None and adapter.places_app_in_teams
+
+
+#: What each platform calls the place its app is installed into, and how it
+#: is named to a person.
+_INSTALL_PLACES: dict[str, tuple[str, str]] = {
+    "slack": ("Slack", "workspace"),
+    "discord": ("Discord", "server"),
+    "teams": ("Microsoft Teams", "organisation"),
+    "telegram": ("Telegram", "chat"),
+}
+
+
+def _installed_refusal(installs: list[MessagingInstall]) -> str:
+    """Why a bridge live installs still use cannot be deleted, and what to do.
+
+    Said in what disconnecting does on the platform, which differs for each:
+    only Slack has a token to revoke, Discord's bot stays in the server, and a
+    Telegram chat leaves its connection behind to be deleted here afterwards.
+    Keyed by the platform's name rather than asked of its installer, which is
+    gone on a deployment whose app credentials were removed — exactly when the
+    installs left behind still have to protect their bridges.
+    """
+    platform = installs[0].platform
+    label, noun = _INSTALL_PLACES.get(platform, (platform, "workspace"))
+    where = (
+        f"{label} {noun} {installs[0].external_workspace_id}"
+        if len(installs) == 1
+        else f"{len(installs)} {label} {noun}s"
+    )
+    them = "it" if len(installs) == 1 else "them"
+    if platform == "telegram":
+        return (
+            f"The Switch bot is still in {where} through this connection. "
+            f"Disconnect {them} under Installed apps first, then delete the "
+            "connection here."
+        )
+    if platform == "discord":
+        return (
+            f"This connection was created by adding the Switch bot to {where}. "
+            f"Disconnect {them} under Installed apps instead: that stops Switch "
+            "using the server and removes this connection. The bot stays in the "
+            "server until you remove it in Discord."
+        )
+    if platform == "slack":
+        effect = "revokes Switch's token at Slack and removes this connection"
+    elif platform == "teams":
+        effect = "takes the app out of every team and removes this connection"
+    else:
+        effect = "removes this connection"
+    return (
+        f"This connection was created by installing the Switch app into "
+        f"{where}. Disconnect {them} under Installed apps instead: that "
+        f"{effect}."
+    )
 
 
 def _channel_ids_refused(
@@ -904,25 +959,7 @@ async def delete_bridge(
     # gone and a live credential nobody has revoked.
     installs = await install_store.list_for_bridge(session, bridge_id=bridge_id)
     if installs:
-        install = installs[0]
-        where = (
-            f"{install.platform} workspace {install.external_workspace_id}"
-            if len(installs) == 1
-            else f"{len(installs)} {install.platform} workspaces"
-        )
-        them = "it" if len(installs) == 1 else "them"
-        # Worded for both kinds of install. Disconnecting an OAuth one removes
-        # this connection with it; a claimed chat leaves the connection behind,
-        # to be deleted here once no chat uses it.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"The Switch app is still installed in {where} through this "
-                f"connection, so it cannot be deleted here: that would leave the "
-                f"app behind in {them}. Disconnect {them} under Installed apps "
-                "first."
-            ),
-        )
+        raise HTTPException(status_code=409, detail=_installed_refusal(installs))
 
     rooms = await room_store.get_by_bridge(session, bridge_id)
     tenant_id = bridge.tenant_id
