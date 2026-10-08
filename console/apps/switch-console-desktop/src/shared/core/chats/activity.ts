@@ -56,7 +56,8 @@ export const ACTIVITY_UNAVAILABLE_TEXT: Record<ChatActivityUnavailableReason, st
   'not-placed': 'The agent has no session in this chat yet.',
   'watcher-unreachable': "The agent's room watcher cannot be reached.",
   'machine-asleep': 'The cloud machine is asleep. Sending a message wakes it.',
-  'controller-offline': "The agent's controller is offline.",
+  'controller-offline':
+    "The agent's controller is offline. Messages are kept and delivered when it reconnects.",
 };
 
 /**

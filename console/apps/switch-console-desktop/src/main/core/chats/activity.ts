@@ -97,10 +97,7 @@ export async function resolveChatActivity(
     const code = deps.relayCode(error);
     if (cloud && code !== null && ASLEEP.has(code))
       return unavailable('machine-asleep', undefined, key);
-    return unavailable(
-      'controller-offline',
-      `${ACTIVITY_UNAVAILABLE_TEXT['controller-offline']} ${error instanceof Error ? error.message : String(error)}`
-    );
+    return unavailable('controller-offline');
   }
   let sessionId = placedSession(health.placements, roomId);
   if (sessionId === null) {
