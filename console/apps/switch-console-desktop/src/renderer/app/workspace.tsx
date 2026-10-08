@@ -3,7 +3,6 @@ import { useEffect, type ReactNode } from 'react';
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
-import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-binder';
 import { AppKeyboardShortcuts } from '@renderer/lib/components/app-keyboard-shortcuts';
@@ -83,13 +82,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
     case 'onboarding':
       return <OnboardingFlow />;
     case 'workspace':
-      return (
-        <WorkspaceLayout
-          leftSidebar={<LeftSidebar />}
-          mainContent={mainContent}
-          persistentLayer={<RoomEmbedLayer />}
-        />
-      );
+      return <WorkspaceLayout leftSidebar={<LeftSidebar />} mainContent={mainContent} />;
   }
 });
 
