@@ -8,6 +8,7 @@ between that answer and the icon the agent's name generates.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +21,10 @@ from switch_core.bridges.collaboration.adapter import (
     PlatformAdapter,
 )
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
+from switch_core.bridges.collaboration.mattermost.adapter import (
+    MattermostAdapter,
+    MattermostConnectionConfig,
+)
 
 _CUSTOM = "https://cdn.example.com/9.x/bottts/png?seed=chosen"
 
@@ -144,3 +149,73 @@ class TestAdapterIconSelection:
         assert await adapter.agent_icon_url("worker") == _CUSTOM
         assert await adapter.agent_icon_url("plain") == generated_icon_url("plain")
         assert await adapter.agent_icon_url("alice") == initials_icon_url("alice")
+
+
+class TestThirdPartyAvatarsOff:
+    """With `THIRD_PARTY_AVATARS_ENABLED=false` no sender's name goes into a
+    URL that a platform, or Switch itself, fetches from an avatar service."""
+
+    @pytest.mark.parametrize(
+        "presentation",
+        [
+            AgentPresentation(display_name=None, icon_url=None),
+            AgentPresentation(display_name=None, icon_url=generated_icon_url("worker")),
+            AgentPresentation(display_name=None, icon_url=initials_icon_url("worker")),
+            None,
+        ],
+        ids=["agent-without-icon", "stored-generated", "stored-initials", "person"],
+    )
+    async def test_sends_no_icon_rather_than_a_generated_one(
+        self, presentation: AgentPresentation | None
+    ) -> None:
+        adapter = _Adapter()
+        adapter.set_third_party_avatars(False)
+
+        async def resolver(name: str) -> AgentPresentation | None:
+            return presentation
+
+        adapter.set_agent_presentation_resolver(resolver)
+        assert await adapter.agent_icon_url("worker") is None
+
+    async def test_sends_no_icon_without_a_resolver(self) -> None:
+        adapter = _Adapter()
+        adapter.set_third_party_avatars(False)
+        assert await adapter.agent_icon_url("worker") is None
+
+    async def test_an_agents_own_icon_still_goes_out(self) -> None:
+        adapter = _Adapter()
+        adapter.set_third_party_avatars(False)
+
+        async def resolver(name: str) -> AgentPresentation | None:
+            return AgentPresentation(display_name=None, icon_url=_CUSTOM)
+
+        adapter.set_agent_presentation_resolver(resolver)
+        assert await adapter.agent_icon_url("worker") == _CUSTOM
+
+    async def test_mattermost_fetches_nothing_for_an_agent_without_an_icon(
+        self,
+    ) -> None:
+        adapter = MattermostAdapter(
+            config=MattermostConnectionConfig(
+                url="http://mattermost.invalid",
+                admin_user="admin",
+                admin_password="pw",
+                team_name="team",
+            )
+        )
+        adapter.set_third_party_avatars(False)
+        adapter._admin_driver = object()  # type: ignore[assignment]
+        adapter._main_loop = asyncio.get_running_loop()
+        fetched: list[str] = []
+
+        async def fetch_icon(url: str) -> bytes | None:
+            fetched.append(url)
+            return None
+
+        async def resolver(name: str) -> AgentPresentation | None:
+            return AgentPresentation(display_name=None, icon_url=None)
+
+        adapter._fetch_icon = fetch_icon  # type: ignore[method-assign]
+        adapter.set_agent_presentation_resolver(resolver)
+        await adapter._set_bot_icon("bot-1", "worker")
+        assert fetched == []

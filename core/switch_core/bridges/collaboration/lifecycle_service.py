@@ -1091,6 +1091,7 @@ class CollaborationBridgeLifecycleService:
                 )
             )
             adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
+            adapter.set_third_party_avatars(self._config.third_party_avatars_enabled)
 
             callback_endpoint = self._callback_ingress.endpoint_for(
                 bridge.type, bridge_id

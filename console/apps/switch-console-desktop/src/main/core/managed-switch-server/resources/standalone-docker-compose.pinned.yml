@@ -302,6 +302,7 @@ services:
       # writes its own answer here for a server it runs.
       TELEMETRY_INTERNAL:
       TELEMETRY_SNAPSHOT_INTERVAL_HOURS:
+      THIRD_PARTY_AVATARS_ENABLED:
     depends_on:
       postgres:
         condition: service_healthy

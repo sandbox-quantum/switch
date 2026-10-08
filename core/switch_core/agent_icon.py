@@ -188,6 +188,15 @@ def initials_icon_url(name: str) -> str:
     return f"https://ui-avatars.com/api/?name={escaped}&background=random&size=128"
 
 
+_THIRD_PARTY_AVATAR_HOSTS = frozenset({"api.dicebear.com", "ui-avatars.com"})
+
+
+def is_third_party_avatar(url: str) -> bool:
+    """Whether `url` is drawn by one of the avatar services above, which
+    receive the seed or name in it."""
+    return (urlsplit(url).hostname or "").lower() in _THIRD_PARTY_AVATAR_HOSTS
+
+
 def generated_icon_choices(agent_name: str, page: int) -> list[str]:
     """One page of icons to choose from for an agent called `agent_name`.
 

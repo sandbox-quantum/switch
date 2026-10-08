@@ -66,13 +66,14 @@ def on_slack_background(icon_url: str) -> str:
 _reported_oversized: set[str] = set()
 
 
-def slack_icon_argument(icon_url: str, agent_name: str) -> str | None:
+def slack_icon_argument(icon_url: str | None, agent_name: str) -> str | None:
     """The `icon_url` to hand Slack for a post, or None to send none.
 
-    None when Slack would refuse the URL: the post then goes out under the
-    app's own icon rather than not at all. Reported once per URL.
+    None when there is no icon, or when Slack would refuse the URL: the post
+    then goes out under the app's own icon rather than not at all. An
+    oversized URL is reported once.
     """
-    if len(icon_url) <= SLACK_ICON_URL_MAX:
+    if icon_url is None or len(icon_url) <= SLACK_ICON_URL_MAX:
         return icon_url
     if icon_url in _reported_oversized:
         return None

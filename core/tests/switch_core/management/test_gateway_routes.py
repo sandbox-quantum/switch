@@ -341,6 +341,20 @@ class TestManagedAgents:
         assert painter.icon_url == "https://example.com/painter.png"
         assert prober is None
 
+    async def test_create_stores_no_generated_icon_when_third_party_avatars_are_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        harness = build_harness(session_factory, third_party_avatars=False)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            created = await create_managed_agent(
+                client, owner, name="scout", controller_id=None
+            )
+        assert created.status_code == 201, created.text
+        async with harness.session_factory() as session:
+            scout = await AgentStore().get(session, created.json()["agent_id"])
+        assert scout is not None and scout.icon_url is None
+
     async def test_a_name_clash_is_refused(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:

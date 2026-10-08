@@ -182,6 +182,7 @@ def build_harness(
     *,
     controller_auth_ttl_seconds: float = 5,
     server_url: str | None = SERVER_URL,
+    third_party_avatars: bool = True,
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -195,6 +196,7 @@ def build_harness(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
         server_url=server_url,
+        third_party_avatars=third_party_avatars,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,

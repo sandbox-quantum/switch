@@ -402,6 +402,8 @@ class SwitchConfig(BaseSettings):
     # separately by email domain whether or not this is set.
     telemetry_internal: bool = False
 
+    third_party_avatars_enabled: bool = True
+
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
