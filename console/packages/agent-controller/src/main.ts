@@ -68,6 +68,7 @@ import {
   type SeparateUsersConfig,
   separateUserNames,
   uninstallSeparateUsers,
+  unitAgentRoot,
 } from './separate-users';
 import {
   installService,
@@ -444,7 +445,11 @@ async function runCommand(args: string[]): Promise<number> {
         openWebSocket: nodeWebSocket,
         log,
         dataDir,
-        workspacesFor: serverWorkspacesDir,
+        // Each agent sees its own directory at the same path: an agent named
+        // no directory works in a folder of its own there.
+        workspacesFor: separateUsers
+          ? () => unitAgentRoot(separateUsers)
+          : serverWorkspacesDir,
         version: VERSION,
         now: Date.now,
         random: Math.random,
