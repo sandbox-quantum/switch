@@ -33,6 +33,12 @@ export class ServiceNotices {
   }
 }
 
+/** The notice for a repository the agent's grant does not reach, once a repository. */
+export function ungrantedRepositoryNotice(service: string, repository: string): string {
+  const name = service === 'github' ? 'GitHub' : service;
+  return `${repository} is not in this agent's ${name} grant, so git and gh use this machine's own ${name} sign-in for it, if it has one.`;
+}
+
 /** The notice for a service the session could not get through Switch. */
 export function serviceFallbackNotice(service: string, reason: string): string {
   const name = service === 'github' ? 'GitHub' : service;

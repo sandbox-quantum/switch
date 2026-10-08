@@ -19,6 +19,7 @@ import {
   type RoomAttachmentSource,
 } from './room-prompt';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
+import { githubRepositoryVisible } from './service-github';
 import { serviceFallbackNotice, ServiceNotices } from './service-notices';
 import {
   connectParent,
@@ -935,6 +936,7 @@ export async function hostSessionProcess(input: {
           ask: parent.ask,
           redactions,
           notices: serviceNotices,
+          repositoryVisible: githubRepositoryVisible,
         });
     }
     const prepared = await prepareSharedConfig(

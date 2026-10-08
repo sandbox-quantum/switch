@@ -419,8 +419,11 @@ describe('the skills of the agent’s service grants', () => {
       expect(env.GIT_CONFIG_COUNT).toBe('3');
       expect(env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
       expect(env.GIT_CONFIG_VALUE_1).toContain("'/opt/switch/shared-host.mjs' --git-credential");
-      expect(env.GIT_CONFIG_KEY_2).toBe('credential.https://github.com.helper');
-      expect(env.GIT_CONFIG_VALUE_2).toBe('machine-own');
+      expect(env.GIT_CONFIG_KEY_2).toBe('credential.https://github.com.useHttpPath');
+      expect(JSON.parse(env.SWITCH_GITHUB_FALLBACK ?? '{}')).toEqual({
+        helpers: ['machine-own'],
+        wrapper: join(root, 'bin'),
+      });
       expect(env.PATH?.split(':')[0]).toBe(join(root, 'bin'));
       expect(await readFile(join(root, 'bin', 'gh'), 'utf8')).toContain('--github-cli');
       // The helpers ask for GitHub's token; none is in the session's environment.

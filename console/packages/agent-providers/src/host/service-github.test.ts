@@ -7,8 +7,10 @@ import { Redactions } from './redaction';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
 import {
   githubSessionEnvironment,
+  ghRepository,
   machineGitHubHelpers,
   parseCredentialRequest,
+  repositoryOfPath,
   sessionServiceToken,
   writeGitHubWrapper,
 } from './service-github';
@@ -43,17 +45,28 @@ describe('Git credential requests', () => {
       entrypoint: '/opt/switch/shared-host.mjs',
       wrapperDirectory: '/state/bin',
       isolate: false,
-      machineHelpers: [],
+      machineHelpers: ['osxkeychain'],
     });
     expect(env).toEqual({
-      GIT_CONFIG_COUNT: '3',
+      GIT_CONFIG_COUNT: '4',
       GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
       GIT_CONFIG_VALUE_1: '',
       GIT_CONFIG_KEY_2: 'credential.https://github.com.helper',
       GIT_CONFIG_VALUE_2:
         "!ELECTRON_RUN_AS_NODE=1 '/usr/bin/node' '/opt/switch/shared-host.mjs' --git-credential",
+      GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+      GIT_CONFIG_VALUE_3: 'true',
+      SWITCH_GITHUB_FALLBACK: JSON.stringify({ helpers: ['osxkeychain'], wrapper: '/state/bin' }),
       PATH: '/state/bin:/usr/bin',
     });
+  });
+
+  it('reads the repository from a Git credential path', () => {
+    expect(repositoryOfPath('org/repo.git')).toBe('org/repo');
+    expect(repositoryOfPath('org/repo')).toBe('org/repo');
+    expect(repositoryOfPath('org/repo.git/info/lfs')).toBe('org/repo');
+    expect(repositoryOfPath(undefined)).toBeNull();
+    expect(repositoryOfPath('org')).toBeNull();
   });
 
   it('asks only a loopback endpoint', async () => {
@@ -63,7 +76,7 @@ describe('Git credential requests', () => {
       'http://127.0.0.1:5555/elsewhere',
     ])
       await expect(
-        sessionServiceToken('github', null, {
+        sessionServiceToken('github', null, null, {
           SWITCH_SERVICE_ENDPOINT: endpoint,
           SWITCH_SERVICE_BEARER: 'bearer',
         })
@@ -87,6 +100,7 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
       unavailable: null,
       redactions: new Redactions(),
       notices,
+      repositoryVisible: async (_token, repository) => repository === 'org/granted',
       ask: async (ask) => {
         asks.push(ask);
         if (refuse)
@@ -216,6 +230,47 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
     ]);
   });
 
+  it("uses the grant for a granted repository and the machine's sign-in, said, for another", async () => {
+    const s = await session(false);
+    const granted = await s.git(
+      'fill',
+      'protocol=https\nhost=github.com\npath=org/granted.git\n\n'
+    );
+    expect(granted.code, granted.stderr).toBe(0);
+    expect(granted.stdout).toContain('username=x-access-token\npassword=synthetic-first');
+    expect(s.asks.at(-1)).toEqual({ type: 'service-token', service: 'github', rejected: null });
+
+    const other = await s.git('fill', 'protocol=https\nhost=github.com\npath=org/other.git\n\n');
+    expect(other.code, other.stderr).toBe(0);
+    expect(other.stdout).toContain('username=user\npassword=user-password');
+    expect(other.stdout).not.toContain('synthetic');
+    expect(other.stderr).toContain("org/other is not in this agent's github grant.");
+    expect(s.shown).toEqual([
+      "org/other is not in this agent's GitHub grant, so git and gh use this machine's own GitHub sign-in for it, if it has one.",
+    ]);
+  });
+
+  it('reads the repository a gh command is for as gh does', async () => {
+    expect(await ghRepository(['pr', 'list', '-R', 'org/a'], {})).toBe('org/a');
+    expect(await ghRepository(['pr', 'list', '--repo=github.com/org/b'], {})).toBe('org/b');
+    expect(await ghRepository(['issue', 'list'], { GH_REPO: 'https://github.com/org/c.git' })).toBe(
+      'org/c'
+    );
+    expect(await ghRepository(['api', 'user'], { PATH: '/nowhere' })).toBeNull();
+  });
+
+  it("runs gh for a repository outside the grant with the machine's own login, said", async () => {
+    const s = await session(false);
+    const directory = await fakeGitHubCli(s.root, 'echo "token=${GH_TOKEN:-own-login}"');
+    const granted = await runWrapper(s, directory, ['pr', 'list', '-R', 'org/granted']);
+    expect(granted.stdout.trim()).toBe('token=synthetic-first');
+    const other = await runWrapper(s, directory, ['pr', 'list', '-R', 'org/other']);
+    expect(other.code, other.stderr).toBe(0);
+    expect(other.stdout.trim()).toBe('token=own-login');
+    expect(other.stderr).toContain("gh uses this machine's own GitHub sign-in instead");
+    expect(s.shown).toHaveLength(1);
+  });
+
   it("falls back with gh too: the real gh runs with the machine's own login", async () => {
     const s = await session(false, true);
     const directory = await fakeGitHubCli(s.root, 'echo "token=${GH_TOKEN:-own-login}"');
@@ -246,6 +301,8 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
   function runWrapper(s: Awaited<ReturnType<typeof session>>, directory: string, args: string[]) {
     return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
       const child = spawn(join(s.wrapperDirectory, 'gh'), args, {
+        // Outside any repository, unless the command names one.
+        cwd: s.root,
         env: { ...s.env, PATH: `${s.wrapperDirectory}:${directory}:/usr/bin:/bin` },
       });
       let stdout = '';

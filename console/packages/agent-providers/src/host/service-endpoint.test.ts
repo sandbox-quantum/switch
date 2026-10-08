@@ -22,11 +22,17 @@ async function endpoint(
   notices.attach(async (message) => {
     shown.push(message);
   });
+  const checked: string[] = [];
   const server = await startServiceEndpoint({
     services,
     unavailable,
     redactions,
     notices,
+    // The token reaches `org/granted`; GitHub cannot say for `org/unknown`.
+    repositoryVisible: async (_token, repository) => {
+      checked.push(repository);
+      return repository === 'org/unknown' ? null : repository === 'org/granted';
+    },
     ask: async (ask) => {
       asked.push(ask);
       const next = answers.shift();
@@ -41,7 +47,7 @@ async function endpoint(
       headers: { Authorization: `Bearer ${token}` },
       body: typeof body === 'string' ? body : JSON.stringify(body),
     });
-  return { server, asked, redactions, post, shown };
+  return { server, asked, redactions, post, shown, checked };
 }
 
 const HOUR_LATER = new Date(Date.now() + 3_600_000).toISOString();
@@ -88,6 +94,33 @@ describe('the session service endpoint', () => {
     expect(e.asked).toEqual([]);
     expect(e.shown).toHaveLength(1);
     expect(e.shown[0]).toContain("git and gh use this machine's own GitHub sign-in instead");
+  });
+
+  it('refuses a repository outside the grant, asking GitHub once, and says so once', async () => {
+    const token = { kind: 'token' as const, token: 'synthetic-one', expiresAt: HOUR_LATER };
+    const e = await endpoint([token, token, token]);
+
+    const outside = await e.post('github', { rejected: null, repository: 'org/other' });
+    expect(outside.status).toBe(403);
+    expect(((await outside.json()) as { error: string }).error).toBe(
+      "org/other is not in this agent's github grant."
+    );
+    expect((await e.post('github', { rejected: null, repository: 'Org/Other' })).status).toBe(403);
+    expect((await e.post('github', { rejected: null, repository: 'org/granted' })).status).toBe(
+      200
+    );
+
+    expect(e.checked).toEqual(['org/other', 'org/granted']);
+    expect(e.shown).toEqual([
+      "org/other is not in this agent's GitHub grant, so git and gh use this machine's own GitHub sign-in for it, if it has one.",
+    ]);
+  });
+
+  it('hands out the token when GitHub cannot say whether it reaches the repository', async () => {
+    const e = await endpoint([{ kind: 'token', token: 'synthetic-one', expiresAt: HOUR_LATER }]);
+    const response = await e.post('github', { rejected: null, repository: 'org/unknown' });
+    expect(response.status).toBe(200);
+    expect(e.shown).toEqual([]);
   });
 
   it('says nothing when it hands out a token', async () => {
@@ -140,6 +173,7 @@ describe('the session service endpoint', () => {
         services: ['github'],
         unavailable: null,
         notices: new ServiceNotices(),
+        repositoryVisible: async () => null,
         redactions: new Redactions(),
         ask: () => new Promise(() => {}),
       });

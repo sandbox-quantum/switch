@@ -3,7 +3,11 @@ import http from 'node:http';
 import { z } from 'zod';
 import type { Redactions } from './redaction';
 import { serviceTokenAnswerSchema } from './service-access';
-import { serviceFallbackNotice, type ServiceNotices } from './service-notices';
+import {
+  serviceFallbackNotice,
+  type ServiceNotices,
+  ungrantedRepositoryNotice,
+} from './service-notices';
 import type { HostAsk } from './session-channel';
 
 /** How long a helper waits for its token: Switch may be refreshing the owner's sign-in. */
@@ -26,6 +30,10 @@ export type ServiceEndpointServer = { url: string; token: string; close: () => P
  * With `unavailable`, why the grants could not be read as the session
  * started, every request is refused with that reason.
  *
+ * A request may name the repository it is for (`owner/name`); one the token
+ * does not reach (`repositoryVisible`, asked once a repository per session) is
+ * refused, as one outside the grant.
+ *
  * A refusal is not the end of it: the helper then answers nothing and Git (or
  * `gh`) uses the machine's own sign-in, if it has one. Every refusal is
  * raised in `notices`, so that is said in the session rather than silent.
@@ -36,15 +44,28 @@ export async function startServiceEndpoint(input: {
   ask: (ask: HostAsk) => Promise<unknown>;
   redactions: Redactions;
   notices: ServiceNotices;
+  repositoryVisible: (token: string, repository: string) => Promise<boolean | null>;
 }): Promise<ServiceEndpointServer> {
   const secret = randomBytes(32).toString('hex');
   const expected = Buffer.from(`Bearer ${secret}`);
   const ended = new Map<string, string>();
+  const visible = new Map<string, boolean>();
+
+  /** Whether the token reaches `repository`; when GitHub cannot say, it is taken to. */
+  const reaches = async (token: string, repository: string): Promise<boolean> => {
+    const key = repository.toLowerCase();
+    const known = visible.get(key);
+    if (known !== undefined) return known;
+    const checked = await input.repositoryVisible(token, repository);
+    if (checked !== null) visible.set(key, checked);
+    return checked ?? true;
+  };
 
   const token = async (
     service: string,
-    rejected: string | null
-  ): Promise<{ status: number; body: Record<string, unknown> }> => {
+    rejected: string | null,
+    repository: string | null
+  ): Promise<{ status: number; body: Record<string, unknown>; notice?: string }> => {
     if (input.unavailable !== null)
       return {
         status: 403,
@@ -85,6 +106,12 @@ export async function startServiceEndpoint(input: {
     const answer = serviceTokenAnswerSchema.parse(raw);
     if (answer.kind === 'token') {
       input.redactions.add(answer.token);
+      if (repository !== null && !(await reaches(answer.token, repository)))
+        return {
+          status: 403,
+          body: { error: `${repository} is not in this agent's ${service} grant.` },
+          notice: ungrantedRepositoryNotice(service, repository.toLowerCase()),
+        };
       return { status: 200, body: { token: answer.token, expires_at: answer.expiresAt } };
     }
     if (answer.final) {
@@ -134,17 +161,27 @@ export async function startServiceEndpoint(input: {
         reply(400, { error: 'invalid request' });
         return;
       }
-      const parsed = z.object({ rejected: z.string().nullable() }).safeParse(body);
+      const parsed = z
+        .object({
+          rejected: z.string().nullable(),
+          // `gh api` and the like name none; nor does the cloud's Git.
+          repository: z
+            .string()
+            .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+            .nullable()
+            .default(null),
+        })
+        .safeParse(body);
       if (!parsed.success) {
         reply(400, { error: 'invalid request' });
         return;
       }
       const service = match[1]!;
-      token(service, parsed.data.rejected).then(
-        ({ status, body }) => {
+      token(service, parsed.data.rejected, parsed.data.repository).then(
+        ({ status, body, notice }) => {
           // The helper falls back to the machine's own sign-in; say so.
           if (status !== 200)
-            input.notices.raise(serviceFallbackNotice(service, String(body.error)));
+            input.notices.raise(notice ?? serviceFallbackNotice(service, String(body.error)));
           reply(status, body);
         },
         (error: unknown) => {

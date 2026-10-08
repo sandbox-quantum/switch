@@ -430,20 +430,32 @@ through `runAgentHost`.
 - **Laptops and servers, agents with a GitHub grant:** the helper is set, for
   the session only, through `GIT_CONFIG_*` entries in its environment, for
   `https://github.com` alone: an empty helper entry first clears the helpers
-  met so far for that URL, then Switch's, then the machine's own helpers for
-  that URL again, in their order (`machineGitHubHelpers`). The user's other
-  credential helpers and Git config are untouched, and SSH remotes still use
-  the user's keys.
-- **Fail open, said:** when Switch gives no token, for any reason (Switch
-  unreachable, the grant removed or narrowed, GitHub disconnected or
-  re-linked), the helper answers nothing and Git asks the machine's own
-  helpers next; the `gh` wrapper runs the real `gh` without a token, so it
-  uses its own login. Never silently: the helper or wrapper says so on
-  stderr, the session host logs it, and the session shows a
-  `SERVICE_FALLBACK` warning (once per reason) in Console's transcript and
-  the activity on the bridges. The GitHub skill tells the agent to tell the
-  user that such a command acted as the owner, outside the grant. The cloud
-  has no machine sign-in to fall back to, so there it fails with the reason.
+  met so far for that URL, then Switch's, with `useHttpPath` so it is told the
+  repository. The machine's own helpers for that URL (`machineGitHubHelpers`,
+  in Git's order) go to the helper in `SWITCH_GITHUB_FALLBACK` rather than
+  after it in Git's config, where they would be asked with the path, which a
+  keychain does not store its sign-in under. The user's other credential
+  helpers and Git config are untouched, and SSH remotes still use the user's
+  keys.
+- **Fail open, said:** when Switch gives no token for a request, the helper
+  asks the machine's own helpers itself (without the path, and with the
+  wrapper off `PATH`, so `!gh auth git-credential` reaches the real `gh`) and
+  passes their `store` and `erase` on; the `gh` wrapper runs the real `gh`
+  without a token, so it uses its own login. That covers every reason: Switch
+  unreachable, the grants unreadable, the grant removed or narrowed, GitHub
+  disconnected or re-linked, and a repository the grant does not reach. The
+  endpoint tells the last from the token itself: GitHub answers 404 for a
+  repository outside it, asked once a repository per session; when GitHub
+  cannot say, the token is handed out. `gh` takes the repository as it does
+  (`-R`, `GH_REPO`, the folder's `origin`); a command naming none has the
+  token. Never silently: the helper or wrapper says so on stderr, the session
+  host logs it, and the session shows a `SERVICE_FALLBACK` warning (once per
+  reason or repository) in Console's transcript and the activity on the
+  bridges. The GitHub skill tells the agent to tell the user that such a
+  command acted as the owner, outside the grant. A push to a repository the
+  grant reaches only for reading is not caught: Git does not tell a helper
+  whether it fetches or pushes. The cloud has no machine sign-in to fall
+  back to, so there it fails with the reason.
 - **Agents without a GitHub grant:** nothing is installed, so the agent keeps
   the user's own Git and `gh` logins, as today.
 - **Grants that could not be read** as the session started: the helpers are
