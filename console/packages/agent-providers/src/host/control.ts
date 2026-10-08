@@ -66,6 +66,20 @@ export const controlMessageSchema = z.union([
   /** Console's "Reconnect to room": move a room's messages to this session. */
   z.object({ place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }) }),
   z.object({ forget: z.string().min(1) }),
+  /**
+   * A session's buffered reasoning, from its host. It rides on a `health`
+   * message because a sidecar that predates it closes the connection on any
+   * message it cannot parse, while it reads this one as `health` — dropping
+   * the key it does not know — and answers with its health, which the asker
+   * reads as no reasoning. Must stay ahead of the plain `health` below.
+   */
+  z.object({
+    health: z.literal(true),
+    reasoning: z.object({
+      sessionId: z.string().min(1),
+      turnIds: z.array(z.string().min(1)).nullable(),
+    }),
+  }),
   /** The room watcher's connection state and placements, as it holds them now. */
   z.object({ health: z.literal(true) }),
   /** Start or stop pushing `{health}` to this connection whenever the watcher's changes. */
@@ -137,6 +151,8 @@ export async function handleControlMessage(
   const { links, watcher } = context;
   if ('request' in message) {
     const sessionRoot = sharedSessionRoot(message.sessionId);
+    if (message.request.type === 'reasoning')
+      return links.reasoning(sessionRoot, message.request.turnIds);
     if (message.request.type === 'command') {
       const sent = sentAttachmentsSchema.safeParse(message.request.command);
       if (sent.success)
@@ -175,6 +191,11 @@ export async function handleControlMessage(
   }
   if ('place' in message) return watcher.place(message.place.sessionId, message.place.roomId);
   if ('forget' in message) return watcher.forget(message.forget);
+  if ('reasoning' in message)
+    return links.reasoning(
+      sharedSessionRoot(message.reasoning.sessionId),
+      message.reasoning.turnIds
+    );
   if ('health' in message) return watcher.health();
   if ('watchHealth' in message) {
     if (message.watchHealth)
@@ -498,6 +519,14 @@ export class ControlClient {
 
   request(sessionId: string, request: SessionRequest): Promise<unknown> {
     return this.call({ sessionId, request });
+  }
+
+  /**
+   * A session's buffered reasoning, or what an older sidecar answers instead
+   * (its health): parse the answer, and read anything else as no reasoning.
+   */
+  reasoning(sessionId: string, turnIds: string[] | null): Promise<unknown> {
+    return this.call({ health: true, reasoning: { sessionId, turnIds } });
   }
 
   ensure(input: {

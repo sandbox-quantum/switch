@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { AttachmentTransfers, ControlError } from './attachment-transfers';
 import {
   CONTROL_FILE,
@@ -485,4 +486,61 @@ it('drops a connection that sends a line longer than its limit', async () => {
   stream.push('x'.repeat(CONTROL_LINE_LIMIT_BYTES / 2 + 1));
   expect((await closed).message).toMatch(/longer than/);
   await expect(console.ready).rejects.toThrow(/longer than/);
+});
+
+it('answers a reasoning ask from the session host, and from no host with none', async () => {
+  const { base, links, stop, serving, client, watcher } = await started();
+  const sessionRoot = join(base, 'session');
+  const list = { epoch: 'epoch', turns: [] };
+  const child = host();
+  const asked: unknown[] = [];
+  child.send = (message, callback) => {
+    callback(null);
+    const { id, request } = message as { id: number; request: unknown };
+    asked.push(request);
+    setImmediate(() => child.emit('message', { kind: 'reply', id, ok: true, value: list }));
+    return true;
+  };
+  links.attach(sessionRoot, child as unknown as ChildProcess);
+  child.emit('message', { kind: 'ready' });
+
+  const console = client();
+  await console.ready;
+  expect(await console.reasoning('session', ['turn'])).toEqual(list);
+  expect(asked).toEqual([{ type: 'reasoning', turnIds: ['turn'] }]);
+  expect(await console.reasoning('elsewhere', null)).toBeNull();
+  expect(await console.request('session', { type: 'reasoning', turnIds: null })).toEqual(list);
+  // A plain health ask is still a health ask.
+  expect(await console.health()).toEqual(watcher.health());
+
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('reads as a health ask to a sidecar that predates reasoning, so its connection stays up', async () => {
+  const stream = new PassThrough();
+  const toSidecar: string[] = [];
+  const duplex = Object.assign(stream, {
+    write: (line: string) => {
+      toSidecar.push(line);
+      const message = JSON.parse(line) as Record<string, unknown>;
+      // What an older sidecar parses the line as: its plain health message.
+      const old = z.object({ id: z.number().int(), health: z.literal(true) }).safeParse(message);
+      if ('token' in message) setImmediate(() => stream.emit('data', '{"authenticated":true}\n'));
+      else if (old.success)
+        setImmediate(() =>
+          stream.emit(
+            'data',
+            `${JSON.stringify({ id: old.data.id, ok: true, value: { state: 'connected' } })}\n`
+          )
+        );
+      return true;
+    },
+  });
+  const console = new ControlClient(duplex, 'token');
+  await console.ready;
+  expect(await console.reasoning('session', null)).toEqual({ state: 'connected' });
+  expect(console.isClosed).toBe(false);
+  expect(toSidecar).toHaveLength(2);
 });

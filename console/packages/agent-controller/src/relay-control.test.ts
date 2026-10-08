@@ -137,6 +137,16 @@ describe('relaying to an agent whose host runs in this process', () => {
     expect(received).toEqual([]);
   });
 
+  it('never relays reasoning, which stays on the machine that ran it', async () => {
+    const { hub, received } = fakeHub();
+    const control = relayControl({ hub });
+    const asked = { health: true, reasoning: { sessionId: 's1', turnIds: null } };
+    expect(failed(await relay(control, asked))).toBe('refused_message');
+    const request = { sessionId: 's1', request: { type: 'reasoning', turnIds: null } };
+    expect(failed(await relay(control, request))).toBe('refused_message');
+    expect(received).toEqual([]);
+  });
+
   it('passes on an ensure with nothing of the caller’s config but the session id', async () => {
     const { hub, received } = fakeHub(() => ({ created: true }));
     const control = relayControl({ hub });
