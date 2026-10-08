@@ -4,8 +4,6 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   executionEnvironment,
-  gitBelowHelperMinimum,
-  gitTooOldForHelpers,
   prepareSharedConfig,
   sessionServiceGrants,
   servicesUnavailableNotice,
@@ -342,7 +340,7 @@ describe('the skills of the agent’s service grants', () => {
       expect(opencode.input.systemContext).toBe('Switch skill text');
       // Without a service endpoint nothing is set up for GitHub.
       expect(claude.input.env.SWITCH_SERVICE_ENDPOINT).toBeUndefined();
-      expect(claude.input.env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(claude.input.env.GIT_CONFIG_PARAMETERS).toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -387,7 +385,9 @@ describe('the skills of the agent’s service grants', () => {
       );
       // Git and gh ask the endpoint, which refuses, rather than this machine's sign-in.
       expect(prepared.input.env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
-      expect(prepared.input.env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
+      expect(prepared.input.env.GIT_CONFIG_PARAMETERS).toContain(
+        'credential.https://github.com.helper=!'
+      );
       expect(await readFile(join(root, 'bin', 'gh'), 'utf8')).toContain('--github-cli');
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -416,10 +416,12 @@ describe('the skills of the agent’s service grants', () => {
       const env = prepared.input.env;
       expect(env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
       expect(env.SWITCH_SERVICE_BEARER).toBe('per-session-bearer');
-      expect(env.GIT_CONFIG_COUNT).toBe('3');
-      expect(env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
-      expect(env.GIT_CONFIG_VALUE_1).toContain("'/opt/switch/shared-host.mjs' --git-credential");
-      expect(env.GIT_CONFIG_KEY_2).toBe('credential.https://github.com.useHttpPath');
+      expect(env.GIT_CONFIG_PARAMETERS).toContain(
+        "/opt/switch/shared-host.mjs'\\'' --git-credential"
+      );
+      expect(env.GIT_CONFIG_PARAMETERS).toContain(
+        "'credential.https://github.com.useHttpPath=true'"
+      );
       expect(JSON.parse(env.SWITCH_GITHUB_FALLBACK ?? '{}')).toEqual({
         helpers: ['machine-own'],
         wrapper: join(root, 'bin'),
@@ -468,29 +470,6 @@ describe('the skills of the agent’s service grants', () => {
     } finally {
       warn.mockRestore();
       await rm(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("this machine's git and the session's credential helper", () => {
-  it('tells a git older than 2.31 from a newer one', () => {
-    expect(gitBelowHelperMinimum('git version 2.30.9\n')).toBe(true);
-    expect(gitBelowHelperMinimum('git version 1.8.3.1')).toBe(true);
-    expect(gitBelowHelperMinimum('git version 2.31.0')).toBe(false);
-    expect(gitBelowHelperMinimum('git version 2.45.2 (Apple Git-154)')).toBe(false);
-    expect(gitBelowHelperMinimum('not git')).toBe(false);
-  });
-
-  it.skipIf(process.platform === 'win32')('asks the git the session will run', async () => {
-    const bin = await mkdtemp(join(tmpdir(), 'old-git-'));
-    try {
-      await writeFile(join(bin, 'git'), '#!/bin/sh\necho "git version 2.30.1"\n', {
-        mode: 0o755,
-      });
-      expect(await gitTooOldForHelpers({ PATH: bin })).toBe('git version 2.30.1');
-      expect(await gitTooOldForHelpers({ PATH: join(bin, 'nowhere') })).toBeNull();
-    } finally {
-      await rm(bin, { recursive: true, force: true });
     }
   });
 });

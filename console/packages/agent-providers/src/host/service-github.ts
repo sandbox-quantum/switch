@@ -515,7 +515,12 @@ function helperForGitHub(key: string): boolean {
  * What a session's environment gains for GitHub: the credential helper for
  * `https://github.com`, the wrapper's directory first on PATH, and, in the
  * cloud (`isolate`), every other credential helper and prompt turned off.
- * Entries go after any `GIT_CONFIG_*` the environment already has.
+ *
+ * The settings go in `GIT_CONFIG_PARAMETERS`, as `git -c` passes them, after
+ * any the environment already has, in the `'key=value'` form every Git since
+ * 1.7.2 reads. Not `GIT_CONFIG_KEY_*`: an agent CLI that strips variables
+ * named like secrets (Codex's environment policy, `*KEY*`) would leave Git a
+ * count with no keys, and every git command failing.
  *
  * Elsewhere Git tells Switch's helper the repository (`useHttpPath`), and the
  * helper asks `machineHelpers`, the helpers the machine already had for
@@ -547,15 +552,10 @@ export function githubSessionEnvironment(input: {
         ['credential.https://github.com.helper', helper],
         ['credential.https://github.com.useHttpPath', 'true'],
       ];
-  const start = Number.parseInt(input.env.GIT_CONFIG_COUNT ?? '0', 10);
-  const first = Number.isInteger(start) && start > 0 ? start : 0;
-  const config: Record<string, string> = { GIT_CONFIG_COUNT: String(first + entries.length) };
-  entries.forEach(([key, value], index) => {
-    config[`GIT_CONFIG_KEY_${first + index}`] = key;
-    config[`GIT_CONFIG_VALUE_${first + index}`] = value;
-  });
+  const parameters = entries.map(([key, value]) => shellQuote(`${key}=${value}`)).join(' ');
+  const existing = input.env.GIT_CONFIG_PARAMETERS;
   return {
-    ...config,
+    GIT_CONFIG_PARAMETERS: existing ? `${existing} ${parameters}` : parameters,
     ...(input.isolate
       ? { GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' }
       : {

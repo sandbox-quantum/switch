@@ -38,9 +38,9 @@ describe('Git credential requests', () => {
     expect(parseCredentialRequest('no equals sign\n')).toBe(null);
   });
 
-  it('adds its entries after the Git configuration the environment already has', () => {
+  it("adds its settings after the environment's own, where no secret filter strips them", () => {
     const env = githubSessionEnvironment({
-      env: { GIT_CONFIG_COUNT: '1', PATH: '/usr/bin' },
+      env: { GIT_CONFIG_PARAMETERS: "'user.name=Ada'", PATH: '/usr/bin' },
       execPath: '/usr/bin/node',
       entrypoint: '/opt/switch/shared-host.mjs',
       wrapperDirectory: '/state/bin',
@@ -48,17 +48,17 @@ describe('Git credential requests', () => {
       machineHelpers: ['osxkeychain'],
     });
     expect(env).toEqual({
-      GIT_CONFIG_COUNT: '4',
-      GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
-      GIT_CONFIG_VALUE_1: '',
-      GIT_CONFIG_KEY_2: 'credential.https://github.com.helper',
-      GIT_CONFIG_VALUE_2:
-        "!ELECTRON_RUN_AS_NODE=1 '/usr/bin/node' '/opt/switch/shared-host.mjs' --git-credential",
-      GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
-      GIT_CONFIG_VALUE_3: 'true',
+      GIT_CONFIG_PARAMETERS: [
+        "'user.name=Ada'",
+        "'credential.https://github.com.helper='",
+        `'credential.https://github.com.helper=!ELECTRON_RUN_AS_NODE=1 '\\''/usr/bin/node'\\'' '\\''/opt/switch/shared-host.mjs'\\'' --git-credential'`,
+        "'credential.https://github.com.useHttpPath=true'",
+      ].join(' '),
       SWITCH_GITHUB_FALLBACK: JSON.stringify({ helpers: ['osxkeychain'], wrapper: '/state/bin' }),
       PATH: '/state/bin:/usr/bin',
     });
+    // Nothing a `*KEY*`, `*SECRET*` or `*TOKEN*` filter would take.
+    expect(Object.keys(env).filter((name) => /KEY|SECRET|TOKEN/i.test(name))).toEqual([]);
   });
 
   it('reads the repository from a Git credential path', () => {
@@ -248,6 +248,26 @@ describe.skipIf(process.platform === 'win32')('a session with a GitHub grant', (
     expect(s.shown).toEqual([
       "org/other is not in this agent's GitHub grant, so git and gh use this machine's own GitHub sign-in for it, if it has one.",
     ]);
+  });
+
+  it('keeps working where the CLI strips variables named like secrets, as Codex can', async () => {
+    const s = await session(false);
+    const stripped = Object.fromEntries(
+      Object.entries(s.env).filter(([name]) => !/KEY|SECRET|TOKEN/i.test(name))
+    );
+    const filled = await new Promise<{ code: number; stdout: string; stderr: string }>(
+      (resolve) => {
+        const child = execFile(
+          'git',
+          ['credential', 'fill'],
+          { env: stripped },
+          (error, stdout, stderr) => resolve({ code: error ? 1 : 0, stdout, stderr })
+        );
+        child.stdin!.end('protocol=https\nhost=github.com\npath=org/granted.git\n\n');
+      }
+    );
+    expect(filled.code, filled.stderr).toBe(0);
+    expect(filled.stdout).toContain('password=synthetic-first');
   });
 
   it('reads the repository a gh command is for as gh does', async () => {
