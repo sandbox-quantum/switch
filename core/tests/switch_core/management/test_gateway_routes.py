@@ -7,12 +7,16 @@ existing agent, partial updates, unmanaging, and revocation.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_icon import generated_icon_url
-from switch_core.connections.broker import Principal
+from switch_core.connections.broker import Principal, ServiceError
+from switch_core.db.models import AgentController
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.management.gateway_routes import router as gateway_router
@@ -769,7 +773,7 @@ class TestRevocation:
         assert refused.status_code == 401
         assert refused.json()["error"]["code"] == "controller_revoked"
 
-    @pytest.mark.parametrize("change", ["revoke", "move"])
+    @pytest.mark.parametrize("change", ["revoke", "move", "unmanage"])
     async def test_a_controller_change_revokes_its_service_tokens(
         self, harness: Harness, change: str
     ) -> None:
@@ -797,14 +801,56 @@ class TestRevocation:
                     f"/gateway/management/controllers/{controller.controller_id}",
                     cookies=cookies_for(owner),
                 )
-            else:
+            elif change == "move":
                 response = await client.patch(
                     f"/gateway/management/agents/{agent_id}",
                     json={"controller_id": None},
                     cookies=cookies_for(owner),
                 )
+            else:
+                response = await client.delete(
+                    f"/gateway/management/agents/{agent_id}",
+                    cookies=cookies_for(owner),
+                )
         assert response.status_code == 200, response.text
         assert harness.vendor.revoked == [token.token]
+
+    async def test_a_controller_revoked_while_a_token_is_issued_takes_it_back(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+        async with harness.session_factory() as session:
+            await connect_github(session, owner.id, TEST_KEYRING)
+            await grant_repository(session, agent_id, owner.id)
+            await session.commit()
+
+        async def revoke() -> None:
+            async with harness.session_factory() as session:
+                await session.execute(
+                    update(AgentController)
+                    .where(AgentController.id == controller.controller_id)
+                    .values(revoked_at=datetime.now(UTC))
+                )
+                await session.commit()
+
+        harness.vendor.during_issue = revoke
+        async with harness.session_factory() as session:
+            with pytest.raises(ServiceError) as refused:
+                await harness.broker.issue(
+                    session,
+                    agent_id,
+                    Principal.controller(controller.controller_id, owner.id),
+                    "github",
+                )
+        assert refused.value.code == "forbidden"
+        assert harness.vendor.revoked == [harness.vendor.issued[0][1]]
 
     async def test_a_change_that_keeps_the_controller_keeps_its_tokens(
         self, harness: Harness

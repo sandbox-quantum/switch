@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import select, text
+from sqlalchemy import exists, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
@@ -51,6 +51,8 @@ from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
+    AgentController,
+    AgentDefinition,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
@@ -357,6 +359,28 @@ class ServiceBroker:
                 retryable=False,
             )
         _require_owners_controller(principal, owner_id)
+        if principal.kind == "controller" and not await session.scalar(
+            select(
+                exists().where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.id == principal.controller_id,
+                    AgentController.revoked_at.is_(None),
+                )
+                & exists().where(
+                    AgentDefinition.tenant_id == tenant_id,
+                    AgentDefinition.agent_id == agent_id,
+                    AgentDefinition.controller_id == principal.controller_id,
+                )
+            )
+        ):
+            # Checked again as the token is recorded, so a revocation or a
+            # move that lands while it is issued takes it back.
+            raise ServiceError(
+                403,
+                FORBIDDEN,
+                "This controller is revoked, or no longer hosts the agent.",
+                retryable=False,
+            )
 
         connection = await self._store.get_connection(session, owner_id, service)
         if connection is None:

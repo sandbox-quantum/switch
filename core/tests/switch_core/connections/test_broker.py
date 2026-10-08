@@ -34,6 +34,8 @@ from switch_core.connections.maintenance import maintain_once
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
+    AgentController,
+    AgentDefinition,
     HostedLaunch,
     HostedMachine,
     ServiceConnection,
@@ -158,6 +160,30 @@ async def _world(
         return World(owner, agent, grant)
 
 
+async def _hosted_by(
+    session_factory: async_sessionmaker[AsyncSession], world: World, controller_id: str
+) -> None:
+    """A live controller of the owner's, which the agent's definition places it on."""
+    async with session_factory() as session:
+        session.add(
+            AgentController(
+                id=controller_id, owner_id=world.owner.id, name="laptop", kind="console"
+            )
+        )
+        await session.flush()
+        session.add(
+            AgentDefinition(
+                agent_id=world.agent.id,
+                owner_id=world.owner.id,
+                controller_id=controller_id,
+                revision=1,
+                desired_state="running",
+                definition={},
+            )
+        )
+        await session.commit()
+
+
 async def _issue(
     broker: ServiceBroker,
     session_factory: async_sessionmaker[AsyncSession],
@@ -206,6 +232,7 @@ class TestIssue:
         self, broker, session_factory, vendor, registry
     ) -> None:
         world = await _world(session_factory)
+        await _hosted_by(session_factory, world, "controller-1")
         principal = Principal.controller("controller-1", world.owner.id)
         token = await _issue(broker, session_factory, world.agent.id, principal)
 
