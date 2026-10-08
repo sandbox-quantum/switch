@@ -1251,11 +1251,43 @@ describe('sign-up support', () => {
       agents: [],
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(machine));
-    await expect(ensureCloudMachine(SERVER)).resolves.toEqual(machine);
+    // A server from before machines could run the controller: a worker machine.
+    await expect(ensureCloudMachine(SERVER)).resolves.toEqual({
+      ...machine,
+      runtime: 'worker',
+      controller_id: null,
+    });
     const [url, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/hosted-machines/ensure');
     expect(options.method).toBe('POST');
     expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
+  });
+
+  it('reads a machine that runs the agents controller, and the controller it enrolled as', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        machine_id: 'm-1',
+        state: 'ready',
+        desired_state: 'running',
+        stop_reason: null,
+        sleeping: false,
+        revision: 2,
+        instance_type: 'c7i.large',
+        error: null,
+        error_code: null,
+        retain_until: null,
+        heartbeat_at: null,
+        disk: null,
+        memory: null,
+        agents: ['agent-1'],
+        runtime: 'controller',
+        controller_id: 'controller-7',
+      })
+    );
+    await expect(ensureCloudMachine(SERVER)).resolves.toMatchObject({
+      runtime: 'controller',
+      controller_id: 'controller-7',
+    });
   });
 
   it('raises the server’s explanation when no machine can be had', async () => {
@@ -2126,24 +2158,31 @@ describe('agent management calls', () => {
     ).rejects.toThrow(/HTTPS/);
 
     fetchMock.mockImplementation(async () =>
-      respond(200, {
-        operations: [
-          {
-            id: 'op-1',
-            state: 'failed',
-            result: {
-              outcome: 'failed',
-              error: { code: 'provider_login_expired', message: 'No.' },
-            },
+      respond(200, [
+        {
+          id: 'op-1',
+          state: 'failed',
+          result: {
+            outcome: 'failed',
+            error: { code: 'provider_login_expired', message: 'No.' },
           },
-        ],
-      })
+        },
+        { id: 'op-2', state: 'succeeded', result: { outcome: 'succeeded' } },
+      ])
     );
     expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-1')).toEqual({
       state: 'failed',
       error: { code: 'provider_login_expired', message: 'No.' },
     });
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-2')).toEqual({
+      state: 'succeeded',
+      error: null,
+    });
     expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-9')).toBeNull();
+    fetchMock.mockImplementation(async () => respond(200, { operations: [] }));
+    await expect(fetchMachineOperation(SERVER, 'controller-1', 'op-1')).rejects.toThrow(
+      /not a list/
+    );
   });
 
   it("reads each machine's providers from its last status report, and invents none", async () => {

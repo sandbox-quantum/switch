@@ -3071,14 +3071,16 @@ export async function fetchMachineOperation(
     `/operations?controller_id=${encodeURIComponent(controllerId)}`,
     { authenticated: true }
   );
-  const listed = (await res.json()) as {
-    operations?: {
+  const listed = (await res.json()) as unknown;
+  if (!Array.isArray(listed))
+    throw new Error("The server's list of the machine's operations is not a list.");
+  const found = (
+    listed as {
       id: string;
       state: string;
       result?: { outcome?: string; error?: { code: string; message: string } } | null;
-    }[];
-  };
-  const found = listed.operations?.find((operation) => operation.id === operationId);
+    }[]
+  ).find((operation) => operation.id === operationId);
   if (!found) return null;
   return { state: found.state, error: found.result?.error ?? null };
 }
@@ -3322,7 +3324,7 @@ export async function createManagedAgent(
     icon_url: string | null;
     controller_id: string;
     desired_state: 'running' | 'stopped';
-    definition: ManagedAgentDefinitionBody;
+    definition: ManagedAgentDefinitionBody & { isolation: 'shared' | 'isolated' };
   }
 ): Promise<string> {
   const res = await managementFetch(server, '/agents', {

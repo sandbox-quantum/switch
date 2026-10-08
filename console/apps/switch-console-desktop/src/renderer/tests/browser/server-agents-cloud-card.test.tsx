@@ -110,6 +110,8 @@ function sleepingMachine(): CloudMachine {
     disk: { total_bytes: 214748364800, available_bytes: 204010946560 },
     memory: { total_bytes: 17179869184, available_bytes: 12884901888 },
     agents: ['00000000-0000-4000-8000-000000000001'],
+    runtime: 'worker',
+    controller_id: null,
   };
 }
 

@@ -86,6 +86,8 @@ export type OwnedMachine = ManagedMachine & {
   providers: MachineProvider[];
   /** It can be given a provider login sealed to its key: its controller registered one. */
   acceptsLogins: boolean;
+  /** The owner's Switch cloud machine, offered as "Switch cloud" rather than by name. */
+  cloud: boolean;
   /**
    * Where the machine makes agents' workspaces (an agent's is `<workspacesDir>/<name>`);
    * null before it has said.
