@@ -1141,11 +1141,15 @@ export interface PersonClaimant {
   name: string;
 }
 
+/** `identity`: someone on a connected app, `id` is their platform identity.
+ * `former`: someone on an app since disconnected, `id` is the sender id their
+ * messages carry, and `bridge_name` is null. */
 export interface Person {
-  external_user_id: string;
+  id: string;
+  kind: "identity" | "former";
   username: string;
   platform: string;
-  bridge_name: string;
+  bridge_name: string | null;
   message_count: number;
   claimed_by: PersonClaimant[];
 }
@@ -1173,12 +1177,10 @@ export async function fetchErasures(tenantId: string): Promise<Erasure[]> {
   return jsonRequest<Erasure[]>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "GET");
 }
 
-export async function eraseIdentities(
-  tenantId: string,
-  externalUserIds: string[],
-): Promise<Erasure> {
+export async function erasePeople(tenantId: string, people: Person[]): Promise<Erasure> {
   return jsonRequest<Erasure>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "POST", {
-    external_user_ids: externalUserIds,
+    external_user_ids: people.filter((p) => p.kind === "identity").map((p) => p.id),
+    former_sender_ids: people.filter((p) => p.kind === "former").map((p) => p.id),
   });
 }
 

@@ -13,6 +13,8 @@ class DeletedMessages:
     event_ids: list[str]
     #: The files the deleted messages carried. Others may still quote them.
     uris: set[str]
+    #: The rooms they were deleted from.
+    room_ids: set[str]
 
 
 class MessageStore:
@@ -211,7 +213,7 @@ class MessageStore:
             )
         ).all()
         if not rows:
-            return DeletedMessages(event_ids=[], uris=set())
+            return DeletedMessages(event_ids=[], uris=set(), room_ids=set())
         message_ids = [r.id for r in rows]
         uris = set(
             (
@@ -234,7 +236,9 @@ class MessageStore:
                 )
         await session.execute(delete(Message).where(Message.id.in_(message_ids)))
         return DeletedMessages(
-            event_ids=[row.transport_event_id for row in rows], uris=uris
+            event_ids=[row.transport_event_id for row in rows],
+            uris=uris,
+            room_ids=set(floors),
         )
 
     async def get_by_transport_event_id(

@@ -6,7 +6,8 @@ import { describeErasure } from "./PeopleSection";
 
 function person(id: string, username: string, claimants: string[], messages = 0): Person {
   return {
-    external_user_id: id,
+    id,
+    kind: "identity",
     username,
     platform: "slack",
     bridge_name: `Bridge ${id}`,
@@ -79,7 +80,7 @@ describe("EraseDialog", () => {
 
     await waitFor(() => expect(onQueued).toHaveBeenCalled());
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a"] });
+    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a"], former_sender_ids: [] });
   });
 
   it("keeps what was ticked and typed when the people list refreshes", async () => {
@@ -96,6 +97,39 @@ describe("EraseDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Erase" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a", "b"] });
+    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a", "b"], former_sender_ids: [] });
+  });
+
+  it("erases a former participant by the sender id their messages carry", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const former: Person = {
+      id: "@switch-slack-x-dee:example.org",
+      kind: "former",
+      username: "dee",
+      platform: "slack",
+      bridge_name: null,
+      message_count: 4,
+      claimed_by: [],
+    };
+    render(
+      <EraseDialog
+        tenantId="t1"
+        person={former}
+        people={[former, ana]}
+        onClose={() => {}}
+        onQueued={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/the disconnected app/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Type dee to confirm"), { target: { value: "dee" } });
+    fireEvent.click(screen.getByRole("button", { name: "Erase" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      external_user_ids: [],
+      former_sender_ids: ["@switch-slack-x-dee:example.org"],
+    });
   });
 });

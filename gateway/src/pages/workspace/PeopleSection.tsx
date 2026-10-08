@@ -15,8 +15,6 @@ import { formatDate, titleCase } from "../../theme/hootFormat";
 import EraseDialog from "./EraseDialog";
 import { useLoad } from "./useLoad";
 
-type PersonRow = Person & { id: string };
-
 const POLL_MS = 3000;
 
 export function describeErasure(erasure: Erasure): string {
@@ -67,7 +65,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
     wasActive.current = active;
   }, [active, refetchPeople]);
 
-  const rows = useMemo<PersonRow[]>(() => {
+  const rows = useMemo<Person[]>(() => {
     const needle = search.trim().toLowerCase();
     return (people.data ?? [])
       .filter(
@@ -75,11 +73,10 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
           !needle ||
           p.username.toLowerCase().includes(needle) ||
           p.claimed_by.some((c) => c.name.toLowerCase().includes(needle)),
-      )
-      .map((p) => ({ ...p, id: p.external_user_id }));
+      );
   }, [people.data, search]);
 
-  const columns = useMemo<GridColDef<PersonRow>[]>(
+  const columns = useMemo<GridColDef<Person>[]>(
     () => [
       { field: "username", headerName: "Name", flex: 1, minWidth: 160 },
       {
@@ -87,7 +84,8 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
         headerName: "Seen on",
         flex: 1,
         minWidth: 160,
-        valueGetter: (_value, row) => `${row.bridge_name} (${titleCase(row.platform)})`,
+        valueGetter: (_value, row) =>
+          `${row.bridge_name ?? "Disconnected app"} (${titleCase(row.platform)})`,
       },
       { field: "message_count", headerName: "Messages", width: 110, type: "number" },
       {
@@ -121,7 +119,8 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
     <Stack spacing={1.5}>
       <Typography variant="h6">People</Typography>
       <Typography variant="body2" sx={{ color: "text.secondary" }}>
-        Everyone seen in this workspace&apos;s rooms through a connected chat app. Erasing
+        Everyone seen in this workspace&apos;s rooms through a chat app, including apps since
+        disconnected. Erasing
         someone permanently deletes every message they sent and their files, for example to
         answer a GDPR erasure request. Only owners can see this list.
       </Typography>

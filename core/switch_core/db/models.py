@@ -3111,7 +3111,9 @@ class PersonErasure(TenantScoped, Base):
     """A workspace owner's request to erase one person from the workspace.
 
     `external_user_ids` names the platform identities to erase: one row of
-    `external_users` per platform the person was seen on. Erasing them deletes
+    `external_users` per platform the person was seen on. `former_sender_ids`
+    names people from a chat app that has since been disconnected, by the
+    transport id their messages still carry. Erasing them deletes
     every message they sent, the files those carried, their identity records
     and the client standing in for each, and their name on approval answers
     (`retention/erasure.py`). Queued here and worked by a background loop, so
@@ -3132,6 +3134,11 @@ class PersonErasure(TenantScoped, Base):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     external_user_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    # Former participants: people seen on a chat app since disconnected, whose
+    # identity rows went with it. Named by the transport id on their messages.
+    former_sender_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     state: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
     requested_by_user_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True

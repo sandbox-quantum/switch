@@ -2601,8 +2601,57 @@ class TestErasureRoutes:
                 )
             ).all()
         assert actions == [
-            ("person_erasure.requested", {"external_user_ids": [person_id]})
+            (
+                "person_erasure.requested",
+                {"external_user_ids": [person_id], "former_participants": 0},
+            )
         ]
+
+    async def test_a_former_participant_is_listed_and_erased(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        token = await self._member(session_factory, "erase-former", "owner")
+        sender_id = f"@switch-slack-{uuid.uuid4()}-dee:test"
+        async with tenant_session(session_factory, TENANT_A) as session:
+            room = Room(
+                transport_room_id=f"!r-{uuid.uuid4().hex[:8]}:test",
+                name="r",
+                description="r",
+            )
+            session.add(room)
+            await session.flush()
+            await MessageStore().create(
+                session,
+                Message(
+                    room_id=room.id,
+                    transport_event_id="$dee",
+                    sender_id=sender_id,
+                    sender_name="dee",
+                    event_type="m.room.message",
+                    msgtype="m.text",
+                    body="hi",
+                    content={"msgtype": "m.text", "body": "hi"},
+                ),
+                [],
+            )
+            await session.commit()
+
+        async with _client(_app(session_factory), token) as client:
+            people = await client.get(f"/tenants/{TENANT_A}/people")
+            empty = await client.post(f"/tenants/{TENANT_A}/erasures", json={})
+            queued = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"former_sender_ids": [sender_id]},
+            )
+
+        assert [
+            (p["id"], p["kind"], p["username"], p["bridge_name"], p["message_count"])
+            for p in people.json()
+        ] == [(sender_id, "former", "dee", None, 1)]
+        assert empty.status_code == 422
+        assert queued.status_code == 202
+        assert queued.json()["identities"] == 1
 
     async def test_an_admin_cannot_erase_or_list_people(
         self, session_factory: async_sessionmaker[AsyncSession]

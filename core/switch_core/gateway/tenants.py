@@ -942,7 +942,7 @@ def _erasure_detail(erasure: PersonErasure) -> ErasureDetail:
     return ErasureDetail(
         id=erasure.id,
         state=erasure.state,  # type: ignore[arg-type]
-        identities=len(erasure.external_user_ids),
+        identities=len(erasure.external_user_ids) + len(erasure.former_sender_ids),
         identities_erased=erasure.identities_erased,
         messages_deleted=erasure.messages_deleted,
         files_deleted=erasure.files_deleted,
@@ -961,14 +961,16 @@ async def list_people(
     _user: Annotated[User, Depends(require_tenant_admin)],
     is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
 ) -> list[PersonDetail]:
-    """Every chat-platform identity seen in the bound tenant's rooms, with how
-    many messages each sent and which members claim it. `owner` only: this is
-    the list a person is erased from."""
+    """Everyone seen in the bound tenant's rooms through a chat app, with how
+    many messages each sent and which members claim them, including former
+    participants from apps since disconnected. `owner` only: this is the list
+    a person is erased from."""
     _require_bound_tenant(tenant_id)
     _require_owner(is_owner, "erase people")
-    return [
+    people = [
         PersonDetail(
-            external_user_id=person.external_user_id,
+            id=person.external_user_id,
+            kind="identity",
             username=person.username,
             platform=person.platform,
             bridge_name=person.bridge_name,
@@ -980,6 +982,19 @@ async def list_people(
         )
         for person in await erasure_store.list_people(session)
     ]
+    people += [
+        PersonDetail(
+            id=former.sender_id,
+            kind="former",
+            username=", ".join(former.names) or former.sender_id,
+            platform=former.platform,
+            bridge_name=None,
+            message_count=former.message_count,
+            claimed_by=[],
+        )
+        for former in await erasure_store.list_former_participants(session)
+    ]
+    return sorted(people, key=lambda p: (p.username.lower(), p.id))
 
 
 @router.get("/tenants/{tenant_id}/erasures")
@@ -1017,9 +1032,13 @@ async def create_erasure(
     _require_bound_tenant(tenant_id)
     _require_owner(is_owner, "erase people")
     ids = list(dict.fromkeys(body.external_user_ids))
+    former_ids = list(dict.fromkeys(body.former_sender_ids))
     try:
         erasure = await erasure_store.queue(
-            session, external_user_ids=ids, requested_by_user_id=user.id
+            session,
+            external_user_ids=ids,
+            former_sender_ids=former_ids,
+            requested_by_user_id=user.id,
         )
     except UnknownIdentity as exc:
         raise HTTPException(
@@ -1036,7 +1055,7 @@ async def create_erasure(
         action=AuditAction.PERSON_ERASURE_REQUESTED,
         target_type="person_erasure",
         target_id=erasure.id,
-        details={"external_user_ids": ids},
+        details={"external_user_ids": ids, "former_participants": len(former_ids)},
     )
     await session.commit()
     return _erasure_detail(erasure)

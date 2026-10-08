@@ -1,7 +1,10 @@
 """Erasing a person from a workspace.
 
 A workspace owner queues a request naming one or more platform identities
-(`ErasureStore.queue`). `erasure_loop` works the queue: for each identity it
+(`ErasureStore.queue`), and any former participants: people from a chat app
+since disconnected, whose identity rows went with it. For those only their
+messages, files, approval answers and direct-room names are left to erase
+(`_erase_former`). `erasure_loop` works the queue: for each identity it
 
 1. deletes every message the identity sent, in every room, archived ones
    included, in batches with their attachments, bridge post mappings and the
@@ -34,7 +37,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import PersonErasure, require_tenant_id
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.erasure_store import ErasureStore, Person
+from switch_core.db.stores.erasure_store import (
+    ErasureStore,
+    FormerParticipant,
+    Person,
+)
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -95,6 +102,13 @@ class ErasureService:
                 )
             for person in people:
                 await self._erase(tenant_id, erasure.id, person)
+            if erasure.former_sender_ids:
+                async with tenant_session(self._sessions, tenant_id) as db:
+                    former = await self._erasures.former_with_ids(
+                        db, erasure.former_sender_ids
+                    )
+                for participant in former:
+                    await self._erase_former(tenant_id, erasure.id, participant)
         except Exception as exc:
             logger.exception("Erasure %s in tenant %s failed", erasure.id, tenant_id)
             error = f"{type(exc).__name__}: {exc}"
@@ -128,9 +142,12 @@ class ErasureService:
 
     async def _erase(self, tenant_id: str, erasure_id: str, person: Person) -> None:
         uris: set[str] = set()
+        room_ids: set[str] = set()
         while True:
             async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                count = await self._delete_batch(db, erasure_id, person, uris)
+                count = await self._delete_batch(
+                    db, erasure_id, person.transport_user_id, uris, room_ids
+                )
             if count < MESSAGE_BATCH:
                 break
 
@@ -146,7 +163,10 @@ class ErasureService:
             await self._erasures.delete_identity(db, person.external_user_id)
             await self._clients.delete_record(db, person.client_id)
             while (
-                await self._delete_batch(db, erasure_id, person, uris) == MESSAGE_BATCH
+                await self._delete_batch(
+                    db, erasure_id, person.transport_user_id, uris, room_ids
+                )
+                == MESSAGE_BATCH
             ):
                 pass
             await self._erasures.add_progress(
@@ -183,11 +203,53 @@ class ErasureService:
                 exc_info=True,
             )
 
+    async def _erase_former(
+        self, tenant_id: str, erasure_id: str, participant: FormerParticipant
+    ) -> None:
+        """Erase someone whose chat app was disconnected. Their identity, client
+        and memberships went with the app; what is left is their messages,
+        their name on approval answers, and their name on direct rooms."""
+        uris: set[str] = set()
+        room_ids: set[str] = set()
+        while True:
+            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+                count = await self._delete_batch(
+                    db, erasure_id, participant.sender_id, uris, room_ids
+                )
+            if count < MESSAGE_BATCH:
+                break
+        async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+            await self._erasures.scrub_approval_answers(db, participant.sender_id)
+            await self._erasures.scrub_former_direct_rooms(
+                db, room_ids, participant.names
+            )
+            await self._erasures.add_progress(
+                db, erasure_id, messages=0, files=0, identities=1
+            )
+        try:
+            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+                files = await self._erasures.delete_unreferenced_media(db, uris)
+                await self._erasures.add_progress(
+                    db, erasure_id, messages=0, files=files, identities=0
+                )
+        except Exception:
+            logger.warning(
+                "Erasure %s: could not delete a former participant's files; the "
+                "hourly sweep deletes them a day later",
+                erasure_id,
+                exc_info=True,
+            )
+
     async def _delete_batch(
-        self, db: AsyncSession, erasure_id: str, person: Person, uris: set[str]
+        self,
+        db: AsyncSession,
+        erasure_id: str,
+        transport_user_id: str,
+        uris: set[str],
+        room_ids: set[str],
     ) -> int:
         deleted = await self._messages.delete_sent_by(
-            db, transport_user_id=person.transport_user_id, limit=MESSAGE_BATCH
+            db, transport_user_id=transport_user_id, limit=MESSAGE_BATCH
         )
         await self._retention.delete_bridge_mappings(db, deleted.event_ids)
         await self._erasures.delete_hosted_copies(db, deleted.event_ids)
@@ -195,6 +257,7 @@ class ErasureService:
             db, erasure_id, messages=len(deleted.event_ids), files=0, identities=0
         )
         uris |= deleted.uris
+        room_ids |= deleted.room_ids
         return len(deleted.event_ids)
 
 

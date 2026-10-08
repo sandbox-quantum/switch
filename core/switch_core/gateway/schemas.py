@@ -1498,18 +1498,32 @@ class ClaimantDetail(BaseModel):
 
 
 class PersonDetail(BaseModel):
-    """One chat-platform identity seen in the workspace's rooms."""
+    """Someone seen in the workspace's rooms through a chat app.
 
-    external_user_id: str
+    `kind` is `identity` for a person on a connected app, where `id` is their
+    platform identity, or `former` for a person on an app since disconnected,
+    where `id` is the transport id their messages carry and `bridge_name` is
+    null. Erase by passing `id` in the matching list of the request.
+    """
+
+    id: str
+    kind: Literal["identity", "former"]
     username: str
     platform: str
-    bridge_name: str
+    bridge_name: str | None
     message_count: int
     claimed_by: list[ClaimantDetail]
 
 
 class ErasureCreateRequest(BaseModel):
-    external_user_ids: list[str] = Field(min_length=1, max_length=50)
+    external_user_ids: list[str] = Field(default_factory=list, max_length=50)
+    former_sender_ids: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _names_someone(self) -> ErasureCreateRequest:
+        if not self.external_user_ids and not self.former_sender_ids:
+            raise ValueError("name at least one person to erase")
+        return self
 
 
 class ErasureDetail(BaseModel):
