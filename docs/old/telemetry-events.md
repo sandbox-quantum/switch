@@ -268,7 +268,7 @@ reasons. Each is now answered rather than ignored:
 every event from a deployment belongs to one subject — the deployment — and
 Amplitude's own "active users" counts deployments. How many *people* are active
 comes only from the snapshot, which counts distinct people locally and reports
-the total: `chat_identity_in_room_count` (in a room at all),
+the total: `chat_identity_in_room_count` (seen in a room at all),
 `chat_identity_posted_*` (said anything) and `chat_identity_active_*` (said
 something in a room with an agent), with `user_active_*` counting the same
 last tier as Switch accounts. The message events say how much those people
@@ -348,7 +348,7 @@ never invisible.
 | `chat_identity_active_7d` | number | same over 7 days |
 | `chat_identity_posted_1d` | number | distinct chat identities that said anything in any room in 24h, agent or no agent |
 | `chat_identity_posted_7d` | number | same over 7 days |
-| `chat_identity_in_room_count` | number | distinct chat identities that are a member of at least one unarchived room, of any origin |
+| `chat_identity_in_room_count` | number | distinct chat identities Switch has seen in a room: a member of at least one unarchived room of any origin, or anyone who said anything in the last 7 days. Not a channel's whole audience — see "Tiers of activity" |
 | `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
 | `room_agent_created_count` | number | unarchived rooms an agent created for itself |
 | `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |
@@ -402,17 +402,26 @@ The automatic notice Switch posts under an agent's name when it cannot take a
 request is excluded as well — the agent did not say it.
 
 **Tiers of activity.** `chat_identity_in_room_count`,
-`chat_identity_posted_7d` and `chat_identity_active_7d` nest: everyone in a
-room, those who said anything, and those who said something in a room with an
-agent. The gaps are the audiences worth naming —
-`chat_identity_in_room_count - chat_identity_posted_7d` is people in Switch who
-only read, and `chat_identity_posted_7d - chat_identity_active_7d` is people
+`chat_identity_posted_7d` and `chat_identity_active_7d` nest: everyone Switch
+has seen in a room, those who said anything, and those who said something in a
+room with an agent. The nesting holds by construction — anyone who posted in
+the last 7 days counts as seen, even if they have since left the room or it
+was archived. `chat_identity_posted_7d - chat_identity_active_7d` is people
 talking only to each other. All three count chat identities, so someone on both
 Slack and Teams counts twice; only the top tier is also counted as accounts
 (`user_active_*`). "In a room with an agent" stands in for "talked to an
 agent": whether a message addressed one is decided per agent as it is
 delivered, and is not stored where a count can read it.
 `agent_message_received` is the per-message measure of that.
+
+**What "seen in a room" cannot see.** Switch records a person in a room only
+when they post, are added by name, or join the channel after Switch adopted
+it. Nothing lists the members a channel already had, so someone who has only
+ever read an adopted channel is in no count here, and
+`chat_identity_in_room_count - chat_identity_posted_7d` is **not** the passive
+audience: it is the people Switch happens to know about who stayed quiet,
+usually a small fraction of the real one. Counting readers would take a
+member sync on each platform, which no bridge does today.
 
 **Turns rather than senders.** A turn is one message classified by who sent the
 message *before* it in the same room. That is the only way to tell an agent
@@ -657,7 +666,10 @@ rather than something the product wants to know.
 All three come from `telemetry/messages.py`, reported off the sender's path as
 described [above](#message-events-and-what-they-cannot-tell-you). A post with
 several files is one message. Room facts are cached for five minutes, so a
-member count can be that far behind.
+member count can be that far behind. After a lookup fails, lookups pause for
+five seconds and the events in that window report what they could not look up
+as `unknown`, so a database incident shows in the charts as a burst of
+`unknown` rather than as missing messages.
 
 **`room_message_sent`** — everything a participant chose to say in a room: the
 population the tenant is metered for, reported by the transport after the
@@ -675,15 +687,20 @@ replies, offline and refusal notices, a template's kickoff — is not in it.
 | `in_thread` | boolean |
 
 The average of `room_user_count` over these events is the room size a typical
-message is said to — weighted by messages, not by rooms. The snapshot's
-`room_users_mean` is the per-room figure.
+message is said to — weighted by messages, not by rooms. **Filter out
+`bridge_platform = unknown` before averaging**: those are rooms that could not
+be read, and their `-1` would pull the mean down. Every property is required on
+every event and the catalogue has no empty value, so `-1` is the marker. The
+snapshot's `room_users_mean` is the per-room figure.
 
 **`agent_message_received`** — a message an agent was asked to act on:
 addressed to it (by name, alias, role, or a direct room) *and* let through its
-addressing policy and budget. Reported by the agent's consumer, where that is
-decided, so a message naming two agents is two of these and one
-`room_message_sent`. Switch's own auto-replies are excluded; a request Switch
-carries on a person's behalf is included, as `platform`.
+addressing policy and budget, whether or not the agent was there to take it.
+Reported by the agent's consumer, where that is decided, so a message naming
+two agents is two of these and one `room_message_sent`. Switch's own
+auto-replies are excluded; a request Switch carries on a person's behalf is
+included, as `platform`. `agent_live` splits being asked from being there:
+filter on it to count only the requests an agent could act on as they arrived.
 
 | Property | Type |
 |---|---|
@@ -692,6 +709,7 @@ carries on a person's behalf is included, as `platform`.
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
 | `has_attachment` | boolean |
+| `agent_live` | boolean — the agent had a live session for the room when the message arrived. False when it was offline, still starting, or its cloud worker was stopped; always false for a `session_passive` agent, which reads its messages later rather than live |
 
 **`agent_message_sent`** — a message an agent posted: its replies, status
 updates, anything it chose to say. Every one is also a `room_message_sent` with
@@ -700,10 +718,10 @@ separates an agent answering people from agents talking among themselves.
 
 | Property | Type |
 |---|---|
-| `known_agent_type` | the sending agent's runtime |
+| `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
-| `room_user_count` | number |
+| `room_user_count` | number, `-1` if the room could not be read |
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
 

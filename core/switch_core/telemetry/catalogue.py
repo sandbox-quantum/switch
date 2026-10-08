@@ -105,6 +105,13 @@ AGENT_TYPE = one_of(
 # agent registered without declaring one at all.
 KNOWN_AGENT_TYPE = one_of("claude-code", "codex", "opencode", "other", "none")
 
+# The runtime as `agent_message_sent` reports it. That event looks the sending
+# agent up after the fact, so it has a third answer: `unknown`, for a lookup
+# that failed or found no agent.
+LOOKED_UP_AGENT_TYPE = one_of(
+    "claude-code", "codex", "opencode", "other", "none", "unknown"
+)
+
 ACTOR_KIND = one_of("user", "agent", "system")
 
 # Who said a message. `platform` is Switch itself speaking — a template's
@@ -206,9 +213,11 @@ _SNAPSHOT_COUNTS = (
     # The tiers of activity, as chat identities. `chat_identity_active_*`
     # above is the most active (spoke in a room with an agent in it);
     # `chat_identity_posted_*` is anyone who said anything in any room;
-    # `chat_identity_in_room_count` is everyone in a live room at all, so the
-    # gap between it and `chat_identity_posted_7d` is the passive audience —
-    # people reading and not speaking.
+    # `chat_identity_in_room_count` is everyone Switch has seen in a room: a
+    # member of a live room, or anyone who posted in the last seven days. Not
+    # the channels' full audience — Switch records a person only once they
+    # post, are added by name, or join after the channel was adopted, so a
+    # member who has only ever read is not in it.
     "chat_identity_posted_1d",
     "chat_identity_posted_7d",
     "chat_identity_in_room_count",
@@ -385,7 +394,9 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # Everything a participant chose to say in a room — the population the
     # tenant is metered for. Notices Switch posts on someone's behalf are not
     # in it. The room sizes are its members right now, so averaging them over
-    # these events gives the room size a typical message is said to.
+    # these events gives the room size a typical message is said to — once
+    # `bridge_platform = unknown` is filtered out, since a room that could not
+    # be read reports its sizes as -1.
     "room_message_sent": {
         "sender_kind": SENDER_KIND,
         "bridge_platform": BRIDGE_PLATFORM,
@@ -396,21 +407,26 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "in_thread": BOOLEAN,
     },
     # A message an agent was asked to act on: addressed to it and let through
-    # its addressing policy and budget. One per agent addressed, so a message
-    # naming two agents is two of these and one `room_message_sent`.
+    # its addressing policy and budget, whether or not the agent was there to
+    # take it. One per agent addressed, so a message naming two agents is two
+    # of these and one `room_message_sent`. `agent_live` is whether the agent
+    # had a live session for the room when it arrived: false for one that was
+    # offline, still starting, or stopped, and always for a session_passive
+    # agent, which reads its messages later rather than live.
     "agent_message_received": {
         "sender_kind": SENDER_KIND,
         "known_agent_type": KNOWN_AGENT_TYPE,
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
         "has_attachment": BOOLEAN,
+        "agent_live": BOOLEAN,
     },
     # A message an agent posted: its replies, and anything else it chose to
     # say. Also a `room_message_sent` with `sender_kind = agent`; a separate
     # event so it can carry the runtime. `room_user_count` separates an agent
     # answering people from agents talking among themselves.
     "agent_message_sent": {
-        "known_agent_type": KNOWN_AGENT_TYPE,
+        "known_agent_type": LOOKED_UP_AGENT_TYPE,
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
         "room_user_count": NUMBER,

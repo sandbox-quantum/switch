@@ -31,6 +31,7 @@ from sqlalchemy import (
     exists,
     func,
     select,
+    union,
     union_all,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -132,7 +133,8 @@ class UsageCounts:
     chat_identity_active_1d: int = 0
     chat_identity_active_7d: int = 0
     # The other tiers, as chat identities like `chat_identity_active_*`:
-    # anyone who said anything in any room, and anyone in a live room at all.
+    # anyone who said anything in any room, and anyone Switch has seen in a
+    # room — see `_humans_in_rooms` for what that can and cannot see.
     chat_identity_posted_1d: int = 0
     chat_identity_posted_7d: int = 0
     chat_identity_in_room_count: int = 0
@@ -412,14 +414,23 @@ def _posting_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]
     )
 
 
-def _humans_in_rooms(tenant_id: str) -> Select[tuple[str]]:
-    """Distinct human clients who are a member of at least one live room.
+def _humans_in_rooms(tenant_id: str, since: datetime) -> CompoundSelect:
+    """Distinct human clients Switch has seen in a room: a member of a live
+    room now, or anyone who posted in any room since `since`.
 
-    Rooms of every origin, like the activity counts: a person in an adopted
-    channel is in Switch whether or not anybody created that room here.
+    The posters are folded in so the tiers nest: someone who posted this week
+    and then left, or whose room was archived, is no longer a member of a live
+    room but is still in `_posting_humans`. Rooms of every origin, like the
+    activity counts: a person in an adopted channel is in Switch whether or
+    not anybody created that room here.
+
+    Not a channel's whole audience. A person gets a membership row only when
+    they post, are added by name, or join after the channel was adopted;
+    nothing records the members a channel already had, so someone who has
+    only ever read is not here.
     """
-    return (
-        select(distinct(ClientRoom.client_id))
+    members = (
+        select(ClientRoom.client_id)
         .join(Client, Client.id == ClientRoom.client_id)
         .join(Room, Room.id == ClientRoom.room_id)
         .where(
@@ -430,9 +441,10 @@ def _humans_in_rooms(tenant_id: str) -> Select[tuple[str]]:
             Room.archived_at.is_(None),
         )
     )
+    return union(members, _posting_humans(tenant_id, since))
 
 
-async def _count(session: AsyncSession, query: Select[Any]) -> int:
+async def _count(session: AsyncSession, query: Select[Any] | CompoundSelect) -> int:
     result = await session.execute(select(func.count()).select_from(query.subquery()))
     return int(result.scalar_one())
 
@@ -483,7 +495,7 @@ async def collect_tenant_counts(
         session, _posting_humans(tenant_id, week_ago)
     )
     counts.chat_identity_in_room_count += await _count(
-        session, _humans_in_rooms(tenant_id)
+        session, _humans_in_rooms(tenant_id, week_ago)
     )
     counts.room_active_1d += await _count(
         session, _human_interaction(tenant_id, day_ago)

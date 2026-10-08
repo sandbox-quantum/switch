@@ -36,7 +36,7 @@ class _RecordingSink:
     def __init__(self) -> None:
         self.sent: list[TelemetryRecord] = []
 
-    async def send(self, record: TelemetryRecord) -> None:
+    def send(self, record: TelemetryRecord) -> None:
         self.sent.append(record)
 
     async def aclose(self) -> None:

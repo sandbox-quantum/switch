@@ -1,8 +1,8 @@
 """The one call every site uses to report an event.
 
 `emit` is fire-and-forget and synchronous to call: creating a room must not
-wait on a relay. It validates against the catalogue first, then hands the send
-to a background task.
+wait on a relay. It validates against the catalogue first, then hands the
+record to the sink, which only buffers it.
 
 The asymmetry is deliberate. **A bad event raises** — it is a programming error
 and silence would defeat the catalogue. **A failed send does not** — it is
@@ -71,7 +71,6 @@ class TelemetryService:
             self._resource["service.version"] = version
         if environment:
             self._resource["deployment.environment"] = environment
-        self._tasks: set[asyncio.Task[None]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -127,40 +126,27 @@ class TelemetryService:
 
     def _dispatch(self, record: TelemetryRecord) -> None:
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             # A management command or a sync helper; not its job to have one.
             logger.debug(
                 "Telemetry event %s not sent: no running event loop.", record.name
             )
             return
-
-        task = loop.create_task(self._send(record))
-        # Held for the lifetime of the send. An un-referenced task can be
-        # garbage-collected mid-flight, which drops the event silently and is
-        # exactly the kind of bug telemetry code is bad at revealing.
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def _send(self, record: TelemetryRecord) -> None:
         try:
-            await self._sink.send(record)
-        except asyncio.CancelledError:
-            raise
+            self._sink.send(record)
         except Exception:
-            # A bug in the sink, not a bad relay — but this is a bare task, so
-            # letting it out only surfaces at some later collection.
+            # A bug in the sink, not a bad relay. `emit` raises only for a
+            # malformed event, so this must not reach the caller either.
             logger.exception("Telemetry sink failed on event %s", record.name)
 
     async def aclose(self) -> None:
-        """Let in-flight sends finish, then close the sink.
+        """Close the sink, which posts what it still holds.
 
         Shutdown is the one time waiting is right: the events worth losing
         least are the ones emitted just before the process goes away, and the
-        sink's own timeout already bounds how long this can take.
+        caller's timeout bounds how long this can take.
         """
-        if self._tasks:
-            await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
         await self._sink.aclose()
 
 

@@ -8,8 +8,11 @@ there would be a wrong chart with no error anywhere.
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -33,7 +36,7 @@ class _RecordingSink:
     def __init__(self) -> None:
         self.sent: list[TelemetryRecord] = []
 
-    async def send(self, record: TelemetryRecord) -> None:
+    def send(self, record: TelemetryRecord) -> None:
         self.sent.append(record)
 
     async def aclose(self) -> None:
@@ -279,6 +282,24 @@ class TestAgentMessageSent:
             "in_thread": False,
         }
 
+    async def test_an_agent_that_cannot_be_found_has_an_unknown_runtime(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Not `none`, which is a real answer — an agent that declares no
+        runtime. A lookup problem must not read as a population of those."""
+        world = await _world(session_factory)
+        async with session_factory() as session:
+            unregistered = await _client(session, "agent")
+            await session.commit()
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.observe(_said(world, unregistered.id, "agent"))
+
+        reported = await _reported(messages, service, sink)
+        assert reported[1][1]["known_agent_type"] == "unknown"
+
 
 class TestAgentMessageReceived:
     async def test_a_person_asking_an_agent_is_reported(
@@ -295,6 +316,7 @@ class TestAgentMessageReceived:
             sender_transport_user_id=world.humans[0].transport_user_id,
             from_platform=False,
             agent_metadata={"known_agent_type": "claude-code"},
+            agent_live=True,
             has_attachment=False,
         )
 
@@ -307,6 +329,7 @@ class TestAgentMessageReceived:
                     "bridge_platform": "slack",
                     "channel_type": "channel_private",
                     "has_attachment": False,
+                    "agent_live": True,
                 },
             )
         ]
@@ -333,6 +356,7 @@ class TestAgentMessageReceived:
                 sender_transport_user_id=sender,
                 from_platform=from_platform,
                 agent_metadata=None,
+                agent_live=False,
                 has_attachment=False,
             )
 
@@ -343,6 +367,85 @@ class TestAgentMessageReceived:
             "unknown",
         ]
         assert {p["known_agent_type"] for _, p in reported} == {"none"}
+
+
+class TestFailingLookups:
+    async def test_a_failed_lookup_pauses_the_rest_and_warns_once(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """During a database incident the worker must not retry the struggling
+        database, and log a traceback, once per message."""
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+        attempts = 0
+
+        async def _broken(tenant_id: str, room_id: str) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise ConnectionError("database unreachable")
+
+        messages._load_room_facts = _broken  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                messages.observe(_said(world, world.humans[0].id, "human"))
+            reported = await _reported(messages, service, sink)
+
+        assert attempts == 1
+        assert [p["bridge_platform"] for _, p in reported] == ["unknown"] * 3
+        assert (
+            len([r for r in caplog.records if "could not look up" in r.getMessage()])
+            == 1
+        )
+
+
+class TestShutdown:
+    async def test_closing_stays_inside_the_callers_timeout(self) -> None:
+        """The worker is cancelled mid-lookup and its cleanup outlasts the
+        shutdown budget. The caller's timeout must still fire: swallowing its
+        cancellation would let shutdown run past the forced-exit grace."""
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        looking_up = asyncio.Event()
+
+        async def _slow_to_cancel(tenant_id: str, room_id: str) -> None:
+            looking_up.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(1.0)
+                raise
+
+        messages._load_room_facts = _slow_to_cancel  # type: ignore[method-assign]
+        messages.observe(
+            ParticipantMessage(
+                tenant_id=TENANT_ZERO,
+                room_id="room",
+                sender_client_id="someone",
+                sender_role="human",
+                has_attachment=False,
+                in_thread=False,
+            )
+        )
+        await looking_up.wait()
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.7):
+                await messages.aclose()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.9
+        assert messages._worker is not None
+        await asyncio.wait({messages._worker})
 
 
 class TestOff:
@@ -361,6 +464,7 @@ class TestOff:
             sender_transport_user_id=world.humans[0].transport_user_id,
             from_platform=False,
             agent_metadata=None,
+            agent_live=False,
             has_attachment=False,
         )
 

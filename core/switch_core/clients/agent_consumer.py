@@ -593,6 +593,7 @@ class AgentConsumer(Consumer[AgentActor]):
         # that took a slot per question would multiply a single message into
         # dozens of concurrent checkouts.
         is_addressed = False
+        agent_live = False
         refusal: str | None = None
         unavailable: str | None = None
         if self._addressed_without_lookup(event, meta) is not False:
@@ -603,14 +604,14 @@ class AgentConsumer(Consumer[AgentActor]):
                     gate = await self._gate_addressed(session, agent, event, meta)
                     is_addressed = gate.addressed
                     refusal = gate.refusal
-                    if (
-                        is_addressed
-                        and not self._triggered_by_auto_reply(event)
-                        and not await self._is_available(session, agent, meta.room_id)
-                    ):
-                        unavailable = await self._reply_when_unavailable_here(
-                            session, agent, meta, self._sender_handle(event)
+                    if is_addressed and not self._triggered_by_auto_reply(event):
+                        agent_live = await self._is_available(
+                            session, agent, meta.room_id
                         )
+                        if not agent_live:
+                            unavailable = await self._reply_when_unavailable_here(
+                                session, agent, meta, self._sender_handle(event)
+                            )
 
         text = event.body
 
@@ -684,8 +685,10 @@ class AgentConsumer(Consumer[AgentActor]):
                 ):
                     self._unreachable_notice_revisions[meta.room_id] = launch.revision
                     unavailable = NOTICE_MESSAGES["unreachable"]
-        if is_addressed and (hosted is None or hosted.refusal is None):
-            self._report_addressed(meta, event, has_attachment=False)
+        if is_addressed:
+            self._report_addressed(
+                meta, event, agent_live=agent_live, has_attachment=False
+            )
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
@@ -889,10 +892,13 @@ class AgentConsumer(Consumer[AgentActor]):
     ) -> None:
         reply_thread_root = thread_id if thread_id is not None else event.event_id
         gated: Agent | None = None
+        agent_live = False
         if is_addressed:
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
                 gate = await self._gate_addressed(session, agent, event, meta)
+                if gate.addressed and not self._triggered_by_auto_reply(event):
+                    agent_live = await self._is_available(session, agent, meta.room_id)
             if gate.addressed:
                 gated = agent
             is_addressed = gate.addressed
@@ -937,8 +943,10 @@ class AgentConsumer(Consumer[AgentActor]):
                 await self._post_auto_reply(
                     room.room_id, event, hosted.refusal, reply_thread_root
                 )
-        if is_addressed and (hosted is None or hosted.refusal is None):
-            self._report_addressed(meta, event, has_attachment=True)
+        if is_addressed:
+            self._report_addressed(
+                meta, event, agent_live=agent_live, has_attachment=True
+            )
         if hosted is not None and not hosted.deliver:
             return
 
@@ -1714,26 +1722,43 @@ class AgentConsumer(Consumer[AgentActor]):
         return bool(event.content.get(AUTO_REPLY_FLAG))
 
     def _report_addressed(
-        self, meta: RoomMeta, event: InboundMessage, *, has_attachment: bool
+        self,
+        meta: RoomMeta,
+        event: InboundMessage,
+        *,
+        agent_live: bool,
+        has_attachment: bool,
     ) -> None:
         """Count a message this agent was asked to act on.
 
-        Called once a hosted agent's mailbox has taken it: one it refused (a
-        stopped or broken worker) never reaches the agent, while one it holds
-        for a waking worker does. Not an auto-reply: Switch's notice that
-        another agent is offline or refused is not someone asking this one for
-        something.
+        Every message let through the addressing policy and budget, whether or
+        not the agent was there to take it: `agent_live` says which, so an
+        offline or stopped agent is still asked and the charts can tell the
+        two apart. Not an auto-reply: Switch's notice that another agent is
+        offline or refused is not someone asking this one for something.
+
+        Guarded like the transport's observer call: this runs on the delivery
+        path, ahead of the enqueue, and a telemetry bug must not cost the
+        agent the message.
         """
         if self._triggered_by_auto_reply(event):
             return
-        self._message_telemetry.agent_addressed(
-            tenant_id=self.tenant_id,
-            room_id=meta.room_id,
-            sender_transport_user_id=event.sender,
-            from_platform=PLATFORM_MARKER in event.content,
-            agent_metadata=self.agent.metadata_,
-            has_attachment=has_attachment,
-        )
+        try:
+            self._message_telemetry.agent_addressed(
+                tenant_id=self.tenant_id,
+                room_id=meta.room_id,
+                sender_transport_user_id=event.sender,
+                from_platform=PLATFORM_MARKER in event.content,
+                agent_metadata=self.agent.metadata_,
+                agent_live=agent_live,
+                has_attachment=has_attachment,
+            )
+        except Exception:
+            logger.exception(
+                "Could not report a message addressed to agent %s; it is still "
+                "delivered.",
+                self.agent.name,
+            )
 
     async def _post_auto_reply(
         self,

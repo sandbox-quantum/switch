@@ -899,8 +899,9 @@ async def test_media_to_an_errored_running_machine_is_refused_not_queued(
     assert await rows(app) == {}
     assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
     assert client.enqueued == []
-    # Refused before it reached the agent, so not a message the agent received.
-    assert client.reported == []
+    # Still a message the agent was asked, by someone it could not answer.
+    [report] = client.reported
+    assert report["agent_live"] is False
 
 
 async def test_task_delegate_to_an_errored_running_machine_is_refused(mailbox_app):
@@ -943,13 +944,14 @@ async def test_mention_to_an_errored_running_machine_is_answered_once(mailbox_ap
     assert await rows(app) == {}
     assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
     assert client.enqueued == []
-    assert client.reported == []
+    [report] = client.reported
+    assert report["agent_live"] is False
 
 
 async def test_a_mention_the_mailbox_takes_is_a_message_the_agent_received(
     mailbox_app,
 ):
-    """Held for the worker rather than refused, so it does reach the agent."""
+    """Held for the worker rather than refused: asked, while not yet live."""
     app = mailbox_app
     client = await agent_client(app)
     message = InboundMessage(
@@ -964,7 +966,8 @@ async def test_a_mention_the_mailbox_takes_is_a_message_the_agent_received(
     await AgentConsumer.on_message(
         client, RoomRef(room_id="!room:example.com"), message
     )  # type: ignore[arg-type]
-    assert len(client.reported) == 1
+    [report] = client.reported
+    assert report["agent_live"] is False
 
 
 @pytest.mark.parametrize(

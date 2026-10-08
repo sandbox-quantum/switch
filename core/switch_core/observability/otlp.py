@@ -100,6 +100,20 @@ class OtlpSendError(RuntimeError):
     """A payload did not reach the collector."""
 
 
+class OtlpPartialRejection(OtlpSendError):
+    """The collector took the payload but refused `rejected` of its records.
+
+    A subclass, so a caller that only cares whether everything arrived can
+    keep catching :class:`OtlpSendError`; one that batches can tell how much
+    of the batch was lost.
+    """
+
+    def __init__(self, url: str, rejected: int, reason: str) -> None:
+        super().__init__(f"POST {url} rejected {rejected} record(s): {reason}")
+        self.rejected = rejected
+        self.reason = reason
+
+
 def _otlp_value(value: AttributeValue) -> dict[str, Any]:
     # `bool` first: it subclasses `int`, and as 1/0 a yes/no becomes something
     # a receiver will average.
@@ -414,7 +428,6 @@ def _raise_on_partial_rejection(url: str, response: httpx.Response) -> None:
     if not rejected or int(rejected) == 0:
         return
 
-    raise OtlpSendError(
-        f"POST {url} rejected {rejected} record(s): "
-        f"{partial.get('errorMessage') or 'no reason given'}"
+    raise OtlpPartialRejection(
+        url, int(rejected), partial.get("errorMessage") or "no reason given"
     )

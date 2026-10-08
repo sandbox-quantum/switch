@@ -719,9 +719,69 @@ class TestMembership:
 
 
 class TestActivityTiers:
-    """Three nested populations of chat identities: in a room at all, said
-    anything, and said something in a room with an agent. The gaps between
-    them are the passive and the agent-shy audiences."""
+    """Three nested populations of chat identities: seen in a room at all,
+    said anything, and said something in a room with an agent."""
+
+    async def test_a_poster_whose_room_was_archived_is_still_seen(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The tiers must nest, so nobody counts as having posted this week
+        without also counting as seen in a room."""
+        async with session_factory() as session:
+            room = await _room(session, archived=True)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _join(session, agent, room)
+            await _join(session, human, room)
+            await _say(session, room, human, seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_active_7d == 1
+        assert counts.chat_identity_posted_7d == 1
+        assert counts.chat_identity_in_room_count == 1
+
+    async def test_a_poster_who_left_the_room_is_still_seen(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            await _say(session, room, await _client(session, "user"), seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_posted_7d == 1
+        assert counts.chat_identity_in_room_count == 1
+
+    async def test_a_member_who_posted_is_one_person_not_two(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            human = await _client(session, "user")
+            await _join(session, human, room)
+            await _say(session, room, human, seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 1
+
+    async def test_someone_who_left_and_went_quiet_is_no_longer_seen(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            await _say(
+                session,
+                room,
+                await _client(session, "user"),
+                seq=1,
+                when=NOW - timedelta(days=8),
+            )
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 0
 
     async def test_talking_only_to_people_is_posting_but_not_active(
         self, session_factory: async_sessionmaker[AsyncSession]

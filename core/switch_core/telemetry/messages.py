@@ -2,7 +2,7 @@
 
 Everything else in the catalogue fires a handful of times a day. These fire
 once per message, so they are the only events where reporting could slow the
-thing being reported on. Two rules keep it off that path:
+thing being reported on. Three rules keep it off that path:
 
 - **The sender never waits.** The transport and the agent consumer hand over a
   small record and return. One worker task looks up what the event needs — the
@@ -10,6 +10,11 @@ thing being reported on. Two rules keep it off that path:
 - **Lookups are cached.** A busy room says a lot and changes membership
   rarely, so a room is read at most once per `_CACHE_TTL_SECONDS` rather than
   once per message. The member counts can therefore be that far behind.
+- **A failing database is left alone.** After a lookup fails, lookups stop for
+  `_LOOKUP_BACKOFF_SECONDS` and events report what they could not look up as
+  `unknown`, and the failure is logged at most once a minute — rather than
+  the worker retrying a struggling database, and logging a traceback, once per
+  message.
 
 The queue is bounded: a worker that falls behind drops events with a warning
 rather than growing a backlog inside the process it is measuring.
@@ -18,7 +23,6 @@ rather than growing a backlog inside the process it is measuring.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import contextvars
 import logging
 import time
@@ -38,6 +42,7 @@ from switch_core.telemetry.snapshot import (
     normalise_known_agent_type,
     normalise_platform,
 )
+from switch_core.telemetry.throttle import WarningThrottle
 from switch_core.transport.observer import ParticipantMessage
 
 logger = logging.getLogger(__name__)
@@ -45,7 +50,8 @@ logger = logging.getLogger(__name__)
 _QUEUE_SIZE = 10_000
 _CACHE_TTL_SECONDS = 300.0
 _CACHE_MAX_ENTRIES = 10_000
-_DROP_WARNING_INTERVAL_SECONDS = 60.0
+_WARNING_INTERVAL_SECONDS = 60.0
+_LOOKUP_BACKOFF_SECONDS = 5.0
 # Inside `main._TELEMETRY_DRAIN_SECONDS`, which also has to cover the sink's
 # final flush.
 _DRAIN_SECONDS = 0.5
@@ -67,6 +73,10 @@ _CLIENT_TYPE_KIND = {
     "bridge": "platform",
 }
 
+# An agent whose runtime could not be looked up. Not `none`, which is a real
+# answer: an agent that declares no runtime.
+_UNKNOWN_RUNTIME = "unknown"
+
 
 @dataclass(frozen=True)
 class _RoomFacts:
@@ -78,7 +88,9 @@ class _RoomFacts:
 
 # A room whose lookup failed. Reported rather than dropped, so a lookup
 # problem shows as `unknown` in the charts instead of as fewer messages; -1
-# rather than 0 so it cannot be read as an empty room.
+# rather than 0 so it cannot be read as an empty room. The catalogue has no
+# empty value, so an average of the counts has to filter on
+# `bridge_platform != unknown` — the docs say so.
 _UNKNOWN_ROOM = _RoomFacts(
     bridge_platform="unknown", channel_type="unknown", user_count=-1, agent_count=-1
 )
@@ -90,7 +102,8 @@ class _AgentAddressed:
     room_id: str
     sender_transport_user_id: str
     from_platform: bool
-    known_agent_type: str
+    agent_metadata: dict | None
+    agent_live: bool
     has_attachment: bool
 
 
@@ -151,8 +164,10 @@ class MessageTelemetry:
         self._agent_runtimes: _TtlCache[tuple[str, str], str] = _TtlCache(
             _CACHE_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
-        self._dropped = 0
-        self._last_drop_warning = 0.0
+        self._drops = WarningThrottle(_WARNING_INTERVAL_SECONDS)
+        self._lookup_failures = WarningThrottle(_WARNING_INTERVAL_SECONDS)
+        self._lookup_misses = WarningThrottle(_WARNING_INTERVAL_SECONDS)
+        self._lookups_resume_at: float | None = None
 
     # ── Called on the sender's path ──────────────────────────────────────────
 
@@ -168,16 +183,20 @@ class MessageTelemetry:
         sender_transport_user_id: str,
         from_platform: bool,
         agent_metadata: dict | None,
+        agent_live: bool,
         has_attachment: bool,
     ) -> None:
-        """A message was addressed to an agent and let through to it."""
+        """A message was addressed to an agent and let through its addressing
+        policy and budget. `agent_live` is whether the agent had a live session
+        for the room when it arrived."""
         self._enqueue(
             _AgentAddressed(
                 tenant_id=tenant_id,
                 room_id=room_id,
                 sender_transport_user_id=sender_transport_user_id,
                 from_platform=from_platform,
-                known_agent_type=normalise_known_agent_type(agent_metadata),
+                agent_metadata=agent_metadata,
+                agent_live=agent_live,
                 has_attachment=has_attachment,
             )
         )
@@ -188,7 +207,8 @@ class MessageTelemetry:
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:
-            self._note_drop()
+            if (dropped := self._drops.note()) is not None:
+                self._warn_dropped(dropped)
             return
         if self._worker is None or self._worker.done():
             # A fresh context: started from whichever sender enqueued first, it
@@ -198,19 +218,14 @@ class MessageTelemetry:
                 self._run(), context=contextvars.Context()
             )
 
-    def _note_drop(self) -> None:
-        self._dropped += 1
-        now = time.monotonic()
-        if now - self._last_drop_warning < _DROP_WARNING_INTERVAL_SECONDS:
-            return
+    @staticmethod
+    def _warn_dropped(dropped: int) -> None:
         logger.warning(
             "Message telemetry is behind: %d event(s) dropped because %d were "
             "already queued. Message counts in analytics will read low.",
-            self._dropped,
+            dropped,
             _QUEUE_SIZE,
         )
-        self._dropped = 0
-        self._last_drop_warning = now
 
     # ── The worker ───────────────────────────────────────────────────────────
 
@@ -267,52 +282,85 @@ class MessageTelemetry:
         self._telemetry.emit(
             "agent_message_received",
             sender_kind=sender_kind,
-            known_agent_type=item.known_agent_type,
+            known_agent_type=normalise_known_agent_type(item.agent_metadata),
             bridge_platform=room.bridge_platform,
             channel_type=room.channel_type,
             has_attachment=item.has_attachment,
+            agent_live=item.agent_live,
         )
 
     async def aclose(self) -> None:
         """Report what is already queued, briefly, then stop."""
         self._closed = True
-        if self._worker is None:
-            return
-        try:
-            async with asyncio.timeout(_DRAIN_SECONDS):
-                await self._queue.join()
-        except TimeoutError:
-            logger.warning(
-                "%d message event(s) still queued at shutdown were dropped.",
-                self._queue.qsize(),
-            )
-        finally:
-            self._worker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._worker
+        if self._worker is not None:
+            try:
+                async with asyncio.timeout(_DRAIN_SECONDS):
+                    await self._queue.join()
+            except TimeoutError:
+                logger.warning(
+                    "%d message event(s) still queued at shutdown were dropped.",
+                    self._queue.qsize(),
+                )
+            finally:
+                self._worker.cancel()
+            # `wait` rather than awaiting the task: it does not raise the
+            # worker's own cancellation, so nothing here has to suppress one,
+            # and a cancellation aimed at this caller — the shutdown timeout —
+            # still reaches it. Outside the `finally`, so a cancellation that
+            # lands during the drain is not followed by an unbounded wait.
+            await asyncio.wait({self._worker})
+        if dropped := self._drops.take_pending():
+            self._warn_dropped(dropped)
 
     # ── Lookups ──────────────────────────────────────────────────────────────
+
+    def _lookups_suspended(self) -> bool:
+        return (
+            self._lookups_resume_at is not None
+            and time.monotonic() < self._lookups_resume_at
+        )
+
+    def _lookup_failed(self, what: str) -> None:
+        """Back off after a failed lookup, and say so at most once a minute.
+
+        Called from inside the `except` block, so the warning carries the
+        traceback of the failure that triggered it.
+        """
+        self._lookups_resume_at = time.monotonic() + _LOOKUP_BACKOFF_SECONDS
+        if (failures := self._lookup_failures.note()) is not None:
+            logger.warning(
+                "Message telemetry could not look up %s, so events report it as "
+                "unknown and lookups pause for %.0fs; %d lookup(s) failed since "
+                "the last warning.",
+                what,
+                _LOOKUP_BACKOFF_SECONDS,
+                failures,
+                exc_info=True,
+            )
+
+    def _lookup_missed(self, what: str) -> None:
+        if (misses := self._lookup_misses.note()) is not None:
+            logger.warning(
+                "Message telemetry found no %s, so events report it as unknown; "
+                "%d lookup(s) found nothing since the last warning.",
+                what,
+                misses,
+            )
 
     async def _room_facts(self, tenant_id: str, room_id: str) -> _RoomFacts:
         key = (tenant_id, room_id)
         cached = self._rooms.get(key)
         if cached is not None:
             return cached
+        if self._lookups_suspended():
+            return _UNKNOWN_ROOM
         try:
             facts = await self._load_room_facts(tenant_id, room_id)
         except Exception:
-            logger.warning(
-                "Could not look up room %s for message telemetry; reporting it "
-                "as unknown.",
-                room_id,
-                exc_info=True,
-            )
+            self._lookup_failed(f"room {room_id}")
             return _UNKNOWN_ROOM
         if facts is None:
-            logger.warning(
-                "Room %s was not found for message telemetry; reporting it as unknown.",
-                room_id,
-            )
+            self._lookup_missed(f"room {room_id}")
             return _UNKNOWN_ROOM
         self._rooms.put(key, facts)
         return facts
@@ -360,6 +408,8 @@ class MessageTelemetry:
         cached = self._sender_kinds.get(key)
         if cached is not None:
             return cached
+        if self._lookups_suspended():
+            return "unknown"
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 client_type = (
@@ -371,11 +421,7 @@ class MessageTelemetry:
                     )
                 ).scalar_one_or_none()
         except Exception:
-            logger.warning(
-                "Could not look up a message sender for telemetry; reporting "
-                "it as unknown.",
-                exc_info=True,
-            )
+            self._lookup_failed("a message sender")
             return "unknown"
         if client_type is None:
             return "unknown"
@@ -388,6 +434,8 @@ class MessageTelemetry:
         cached = self._agent_runtimes.get(key)
         if cached is not None:
             return cached
+        if self._lookups_suspended():
+            return _UNKNOWN_RUNTIME
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 result = await session.execute(
@@ -397,13 +445,11 @@ class MessageTelemetry:
                 )
                 row = result.one_or_none()
         except Exception:
-            logger.warning(
-                "Could not look up an agent's runtime for telemetry; reporting "
-                "it as none.",
-                exc_info=True,
-            )
-            return "none"
-        runtime = normalise_known_agent_type(row[0] if row is not None else None)
-        if row is not None:
-            self._agent_runtimes.put(key, runtime)
+            self._lookup_failed("an agent's runtime")
+            return _UNKNOWN_RUNTIME
+        if row is None:
+            self._lookup_missed(f"agent for client {client_id}")
+            return _UNKNOWN_RUNTIME
+        runtime = normalise_known_agent_type(row[0])
+        self._agent_runtimes.put(key, runtime)
         return runtime

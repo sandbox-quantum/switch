@@ -92,6 +92,9 @@ def _fake_client() -> SimpleNamespace:
     ) -> _GateOutcome:
         return _GateOutcome(addressed=True, refusal=None)
 
+    async def _is_available(_session: Any, _agent: Any, _room_id: str) -> bool:
+        return True
+
     ns = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="agent-a", metadata_=None),
         tenant_id="tenant-1",
@@ -105,6 +108,7 @@ def _fake_client() -> SimpleNamespace:
         _addressed=_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
+        _is_available=_is_available,
         queue=queue,
         _note_hosted_addressed=AsyncMock(return_value=None),
     )
@@ -476,6 +480,7 @@ async def test_a_grouped_post_addressed_to_the_agent_is_reported_once() -> None:
             "sender_transport_user_id": "@alice:s",
             "from_platform": False,
             "agent_metadata": None,
+            "agent_live": True,
             "has_attachment": True,
         }
     ]
