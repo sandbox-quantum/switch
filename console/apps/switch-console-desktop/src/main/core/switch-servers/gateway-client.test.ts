@@ -59,14 +59,20 @@ const {
   disconnectClaude,
   acceptInvitation,
   acceptPendingInvitation,
+  addBridgeTeam,
   beginMessagingAppInstall,
+  deleteMessagingAppInstall,
   fetchInstallablePlatforms,
   fetchPendingInvitations,
   fetchJoinableWorkspaces,
+  fetchBridgeTeams,
+  fetchMessagingAppInstalls,
+  fetchTeamsPackage,
   joinWorkspaceByDomain,
   fetchJoinDomains,
   addJoinDomain,
   removeJoinDomain,
+  removeBridgeTeam,
   createInvitation,
   fetchInvitations,
   fetchInviteEmailEnabled,
@@ -464,6 +470,8 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        attention: null,
+        teamPlacementSupported: false,
       },
       {
         id: 'b2',
@@ -478,8 +486,32 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        attention: null,
+        teamPlacementSupported: false,
       },
     ]);
+  });
+
+  it('carries an attention note and the distributed-Teams flag when the server reports them', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'teams',
+          display_name: 'Contoso Teams',
+          status: 'active',
+          attention: 'The organisation’s admin withdrew approval for this app.',
+          team_placement_supported: true,
+        },
+      ]) as never
+    );
+
+    const [bridge] = await fetchBridges(SERVER);
+
+    expect(bridge).toMatchObject({
+      attention: 'The organisation’s admin withdrew approval for this app.',
+      teamPlacementSupported: true,
+    });
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
@@ -921,6 +953,28 @@ describe('updateBridge', () => {
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
     expect(JSON.parse(init.body)).toEqual({});
   });
+
+  it('sends connection_config only when given, for choosing a distributed Teams default team', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        bridge_id: 'b1',
+        bridge_type: 'teams',
+        display_name: 'Contoso Teams',
+        status: 'active',
+      }) as never
+    );
+
+    await updateBridge(SERVER, 'b1', {
+      channelCreationEnabled: true,
+      connectionConfig: { team_id: 'team-1' },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(init.body)).toEqual({
+      channel_creation_enabled: true,
+      connection_config: { team_id: 'team-1' },
+    });
+  });
 });
 
 describe('deleteBridge', () => {
@@ -1211,6 +1265,302 @@ describe('sign-up support', () => {
     await expect(ensureCloudMachine(SERVER)).rejects.toThrow(
       new Error('Cloud machines are not offered here.')
     );
+  });
+});
+
+describe('distributed Teams team placement', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists the teams, the chosen default, and the catalogue state', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        teams: [
+          { team_id: 't1', name: 'Engineering', has_switch: true, is_default: true },
+          { team_id: 't2', name: 'Sales', has_switch: false, is_default: false },
+        ],
+        default_team_id: 't1',
+        in_catalog: true,
+        catalog_problem: null,
+      }) as never
+    );
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
+      kind: 'listed',
+      teams: [
+        { teamId: 't1', name: 'Engineering', hasSwitch: true, isDefault: true },
+        { teamId: 't2', name: 'Sales', hasSwitch: false, isDefault: false },
+      ],
+      defaultTeamId: 't1',
+      inCatalog: true,
+      catalogProblem: null,
+    });
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/collaborations/b1/teams'
+    );
+  });
+
+  it('reports a bridge this never applies to, rather than throwing', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
+      kind: 'not-distributed-teams',
+    });
+  });
+
+  it('reports a stopped bridge with the detail naming it', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(503, '{"detail":"The bridge is not running"}') as never
+    );
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
+      kind: 'not-running',
+      message: 'The bridge is not running',
+    });
+  });
+
+  it("reports Microsoft Graph's own refusal in its words", async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(502, '{"detail":"Microsoft Graph refused the request"}') as never
+    );
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
+      kind: 'microsoft-refused',
+      message: 'Microsoft Graph refused the request',
+    });
+  });
+
+  it('reports a non-admin as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an expired session as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({ kind: 'unauthenticated' });
+  });
+
+  it('reports an unreachable gateway as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('adds Switch to a team', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}) as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({ kind: 'added' });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/teams/t2');
+    expect(init.method).toBe('POST');
+  });
+
+  it('reports a team outside the catalogued app as its own case, with the next step', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(
+        409,
+        '{"detail":"The app is not yet in this organisation\'s catalogue"}'
+      ) as never
+    );
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({
+      kind: 'not-in-catalog',
+      message: "The app is not yet in this organisation's catalogue",
+    });
+  });
+
+  it.each([
+    [503, 'The Teams connection is not running; try again in a moment.'],
+    [502, 'Microsoft refused: AADSTS7000112'],
+    [404, 'No connection on the distributed Teams app has that id.'],
+  ])(
+    'reports a %s adding a team as an error in the gateway’s words, not a catalogue problem',
+    async (status, detail) => {
+      fetchMock.mockResolvedValue(errorResponse(status, JSON.stringify({ detail })) as never);
+
+      await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({
+        kind: 'error',
+        message: detail,
+      });
+    }
+  );
+
+  it.each([
+    [503, 'The Teams connection is not running; try again in a moment.'],
+    [502, 'Microsoft refused: AADSTS7000112'],
+    [404, 'No connection on the distributed Teams app has that id.'],
+  ])('reports a %s removing a team as an error in the gateway’s words', async (status, detail) => {
+    fetchMock.mockResolvedValue(errorResponse(status, JSON.stringify({ detail })) as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({
+      kind: 'error',
+      message: detail,
+    });
+  });
+
+  it('reports a non-admin adding a team as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an expired session adding a team as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({ kind: 'unauthenticated' });
+  });
+
+  it('reports an unreachable gateway adding a team as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault adding a team rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('removes Switch from a team', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}) as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({ kind: 'removed' });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/teams/t1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('reports a non-admin removing a team as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an expired session removing a team as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({
+      kind: 'unauthenticated',
+    });
+  });
+
+  it('reports an unreachable gateway removing a team as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault removing a team rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('reads the install package as raw bytes', async () => {
+    const bytes = new TextEncoder().encode('zip-bytes').buffer;
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({}),
+      headers: { getSetCookie: () => [] },
+      text: async () => '',
+      arrayBuffer: async () => bytes,
+    } as unknown as Response);
+
+    await expect(fetchTeamsPackage(SERVER, 'b1')).resolves.toBe(bytes);
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/teams-package');
+  });
+
+  it('leaves a bridge this does not apply to as a throw — there is no result form for it', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchTeamsPackage(SERVER, 'b1')).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('messaging-app installs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists installs, active and ended alike', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        installs: [
+          {
+            id: 'install-1',
+            platform: 'teams',
+            external_workspace_id: 'tenant-1',
+            status: 'active',
+            scopes: 'Team.Create',
+            bridge_id: 'b1',
+            installed_at: '2026-01-01T00:00:00Z',
+            ended_at: null,
+          },
+        ],
+      }) as never
+    );
+
+    await expect(fetchMessagingAppInstalls(SERVER)).resolves.toEqual([
+      {
+        id: 'install-1',
+        platform: 'teams',
+        externalWorkspaceId: 'tenant-1',
+        status: 'active',
+        scopes: 'Team.Create',
+        bridgeId: 'b1',
+        installedAt: '2026-01-01T00:00:00Z',
+        endedAt: null,
+      },
+    ]);
+  });
+
+  it('reads a server without the route as having no installs to report', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchMessagingAppInstalls(SERVER)).resolves.toEqual([]);
+  });
+
+  it('raises on any other failure', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Forbidden"}') as never);
+
+    await expect(fetchMessagingAppInstalls(SERVER)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('ends an install by id', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}) as never);
+
+    await deleteMessagingAppInstall(SERVER, 'install-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/messaging-apps/installs/install-1');
+    expect(init.method).toBe('DELETE');
   });
 });
 

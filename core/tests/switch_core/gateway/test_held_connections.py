@@ -138,6 +138,11 @@ class _Adapter:
     async def install_note(self) -> str | None:
         return None
 
+    places_app_in_teams = False
+
+    async def attention(self) -> str | None:
+        return None
+
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
         self._calls.record("platform channel deeplink")
         return None
@@ -170,6 +175,14 @@ class _CollabLifecycle:
 
     async def check_start_guards(self, **_: Any) -> None:
         self._calls.record("start guards")
+
+    def editable_config_keys(
+        self, bridge_type: str, connection_config: dict[str, object]
+    ) -> frozenset[str] | None:
+        return None
+
+    async def check_config_edit(self, **_: Any) -> None:
+        self._calls.record("platform edit check")
 
     async def restart(self, bridge_id: str) -> None:
         self._calls.record("bridge restart")
@@ -553,6 +566,7 @@ class TestBridgeRoutes:
         assert [what for what, _ in calls.held] == [
             "platform credential check",
             "start guards",
+            "platform edit check",
             "bridge restart",
             "platform directory search",
             "platform directory search",

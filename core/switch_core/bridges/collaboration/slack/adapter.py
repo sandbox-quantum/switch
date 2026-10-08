@@ -63,7 +63,10 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
-from switch_core.bridges.collaboration.slack.avatar import on_slack_background
+from switch_core.bridges.collaboration.slack.avatar import (
+    on_slack_background,
+    slack_icon_argument,
+)
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
@@ -601,7 +604,7 @@ class SlackAdapter(PlatformAdapter):
                 channel=channel_id,
                 text=content,
                 username=agent.field_label,
-                icon_url=agent.icon_url,
+                icon_url=slack_icon_argument(agent.icon_url, sender_name),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -644,7 +647,7 @@ class SlackAdapter(PlatformAdapter):
             text=text,
             blocks=blocks,
             username=agent.field_label,
-            icon_url=agent.icon_url,
+            icon_url=slack_icon_argument(agent.icon_url, sender_name),
             thread_ts=thread_ts,
             unfurl_links=False,
             unfurl_media=False,
@@ -1235,7 +1238,9 @@ class SlackAdapter(PlatformAdapter):
                 recipient_team_id=self._team_id,
                 task_display_mode="plan",
                 username=agent_name,
-                icon_url=await self.agent_icon_url(agent_name),
+                icon_url=slack_icon_argument(
+                    await self.agent_icon_url(agent_name), agent_name
+                ),
             )
         except SlackApiError as error:
             logger.warning(
@@ -1615,11 +1620,11 @@ class SlackAdapter(PlatformAdapter):
                 text,
             )
 
-    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
+    def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
         # white. Adjusting here rather than at each call site keeps every place
         # that posts as an agent on the same background.
-        return on_slack_background(super().adapt_icon_url(raw, agent_name))
+        return on_slack_background(super().adapt_icon_url(icon_url))
 
     def slash_invite_hint(self) -> str:
         # Slack passes a slash command's whole tail through as free text, so the
@@ -1915,7 +1920,7 @@ class SlackAdapter(PlatformAdapter):
                     channel=channel_id,
                     text="_thinking..._",
                     username=agent.field_label,
-                    icon_url=agent.icon_url,
+                    icon_url=slack_icon_argument(agent.icon_url, sender_name),
                     thread_ts=thread_ts,
                 )
                 ts = result.get("ts")

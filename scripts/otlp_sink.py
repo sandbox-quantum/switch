@@ -106,9 +106,10 @@ def _summarise_logs(payload: dict[str, Any]) -> list[str]:
         for scope in resource.get("scopeLogs", []):
             records = scope.get("logRecords", [])
             # A product event is a log record carrying an event name, and it
-            # wants the opposite treatment from a log line: every property
-            # matters and there is one record per request, where a log batch
-            # is many records of which the first few are representative.
+            # wants the opposite treatment from a log line: every record and
+            # every property matters, even with many events batched into one
+            # request, where a log batch is many records of which the first
+            # few are representative.
             if records and "eventName" in records[0]:
                 lines.extend(_summarise_events(records))
                 continue
