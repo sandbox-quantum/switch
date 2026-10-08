@@ -34,4 +34,13 @@ COPY core/README.md ./
 
 RUN uv sync --frozen --no-dev
 
+# The commit and repository this image was built from, reported with every
+# metric and log so two builds of the same version can be told apart. Declared
+# last so a new commit does not invalidate the layers above. Left empty, the
+# server reports its commit as unknown.
+ARG SWITCH_GIT_COMMIT=""
+ARG SWITCH_GIT_REPOSITORY_URL=""
+ENV SWITCH_GIT_COMMIT=${SWITCH_GIT_COMMIT} \
+    SWITCH_GIT_REPOSITORY_URL=${SWITCH_GIT_REPOSITORY_URL}
+
 CMD ["python", "-m", "switch_core.main"]

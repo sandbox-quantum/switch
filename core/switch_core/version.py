@@ -17,6 +17,8 @@ the whole point of this work is that unknown must never render as fine.
 """
 
 import logging
+import os
+import re
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
@@ -53,6 +55,44 @@ def switch_core_version() -> str | None:
             DISTRIBUTION_NAME,
         )
         return None
+
+
+# Stamped into the image at build time (deploy/shared_resources/images/
+# Dockerfile.switch). The version names a release; the commit tells two builds
+# of the same version apart, which is every branch deployed to a test server.
+COMMIT_ENV = "SWITCH_GIT_COMMIT"
+REPOSITORY_URL_ENV = "SWITCH_GIT_REPOSITORY_URL"
+
+_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+
+
+@lru_cache(maxsize=1)
+def switch_core_commit() -> str | None:
+    """Return the commit this build came from, or None when unknown.
+
+    Unknown is ordinary: a checkout run with `uv run`, or an image built
+    without the build argument. A value that is not a commit hash is refused
+    with a warning rather than reported, since it would group the build with
+    nothing real.
+    """
+    value = os.environ.get(COMMIT_ENV, "").strip().lower()
+    if not value:
+        return None
+    if not _COMMIT.fullmatch(value):
+        logger.warning(
+            "%s is %r, which is not a commit hash, so switch-core reports its "
+            "commit as unknown.",
+            COMMIT_ENV,
+            value,
+        )
+        return None
+    return value
+
+
+@lru_cache(maxsize=1)
+def switch_core_repository_url() -> str | None:
+    """Return the repository the build came from, or None when unknown."""
+    return os.environ.get(REPOSITORY_URL_ENV, "").strip() or None
 
 
 def server_declaration(*contracts: str) -> dict[str, Any]:
