@@ -642,6 +642,38 @@ class TestBatching:
         ]
         assert len(late) == 1
 
+    async def test_events_dropped_during_the_final_flush_are_all_counted(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Senders keep running while shutdown waits on the last POST. The
+        warning is rate-limited, so the drops after its first line are tallied
+        when the flush ends rather than never."""
+        release = asyncio.Event()
+
+        async def _slow(request: httpx.Request) -> httpx.Response:
+            await release.wait()
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_slow))
+        sink = _relay_sink(http)
+        sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            closing = asyncio.create_task(sink.aclose())
+            await asyncio.sleep(0)
+            for _ in range(3):
+                sink.send(_a_record())
+            release.set()
+            await closing
+        await http.aclose()
+
+        late = [
+            r.getMessage()
+            for r in caplog.records
+            if "arrived after shutdown began" in r.getMessage()
+        ]
+        assert len(late) == 2
+        assert "2 more telemetry event(s)" in late[1]
+
     async def test_a_failed_batch_names_what_it_lost(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

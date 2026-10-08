@@ -1751,7 +1751,10 @@ class AgentConsumer(Consumer[AgentActor]):
         attached. Not an auto-reply: Switch's notice that another agent is
         offline or refused is not someone asking this one for something. Not
         a redelivery the mailbox already holds: that request was counted when
-        it first arrived.
+        it first arrived. Not the files of a multi-file post delivered without
+        its first part, which happens when a group times out incomplete and
+        the rest arrives later: the post is counted with its first part, as
+        the transport counts it, so it is one request however it is split.
 
         Guarded like the transport's observer call: this runs on the delivery
         path, ahead of the enqueue, and a telemetry bug must not cost the
@@ -1760,6 +1763,9 @@ class AgentConsumer(Consumer[AgentActor]):
         if self._triggered_by_auto_reply(event):
             return
         if hosted is not None and hosted.redelivered:
+            return
+        group = parse_attachment_group(event.content)
+        if group is not None and group[1] != 0:
             return
         try:
             self._message_telemetry.agent_addressed(

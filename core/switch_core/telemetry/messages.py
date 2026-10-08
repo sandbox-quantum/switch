@@ -337,6 +337,12 @@ class MessageTelemetry:
             await asyncio.wait({self._worker})
         if dropped := self._drops.take_pending():
             self._warn_dropped(dropped)
+        if late := self._late.take_pending():
+            logger.warning(
+                "%d more message event(s) arrived after message telemetry shut "
+                "down and were dropped.",
+                late,
+            )
         if failures := self._report_failures.take_pending():
             logger.error(
                 "%d more message event(s) could not be reported since the last "

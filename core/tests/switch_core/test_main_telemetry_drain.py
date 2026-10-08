@@ -6,6 +6,8 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from switch_core import main
 
 
@@ -52,3 +54,19 @@ async def test_the_whole_drain_stays_inside_its_budget() -> None:
     )
 
     assert time.monotonic() - started < main._TELEMETRY_DRAIN_SECONDS + 0.2
+
+
+async def test_a_step_that_fails_is_disclosed_and_the_sink_still_closes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _Broken:
+        async def aclose(self) -> None:
+            raise RuntimeError("bug in closing")
+
+    telemetry = _Step(hangs=False)
+
+    with caplog.at_level("WARNING"):
+        await main._drain_telemetry(telemetry, _Broken(), None)  # type: ignore[arg-type]
+
+    assert telemetry.closed
+    assert "Reporting queued message events at shutdown failed" in caplog.text

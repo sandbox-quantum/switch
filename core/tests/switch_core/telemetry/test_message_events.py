@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -24,7 +25,8 @@ from switch_core.db.models import (
     Room,
     User,
 )
-from switch_core.telemetry.messages import MessageTelemetry
+from switch_core.telemetry import messages as messages_module
+from switch_core.telemetry.messages import MessageTelemetry, _RoomFacts, _TtlCache
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 from switch_core.transport.observer import ParticipantMessage
@@ -164,6 +166,39 @@ def _said(world: _World, sender_client_id: str, role: str) -> ParticipantMessage
         has_attachment=False,
         in_thread=False,
     )
+
+
+def _said_in(
+    room_id: str, *, sender_role: str = "human", sender_client_id: str = "someone"
+) -> ParticipantMessage:
+    return ParticipantMessage(
+        tenant_id=TENANT_ZERO,
+        room_id=room_id,
+        sender_client_id=sender_client_id,
+        sender_role=sender_role,
+        has_attachment=False,
+        in_thread=False,
+    )
+
+
+async def _a_slack_room(tenant_id: str, room_id: str) -> _RoomFacts:
+    return _RoomFacts(
+        bridge_platform="slack",
+        channel_type="channel_public",
+        user_count=1,
+        agent_count=1,
+    )
+
+
+class _Unreachable:
+    """A session factory for a database that will not answer."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def __call__(self) -> object:
+        self.attempts += 1
+        raise ConnectionError("database unreachable")
 
 
 async def _reported(
@@ -403,6 +438,235 @@ class TestFailingLookups:
         )
 
 
+class TestCaching:
+    async def test_a_senders_kind_is_read_once_while_cached(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        def _ask() -> None:
+            messages.agent_addressed(
+                tenant_id=TENANT_ZERO,
+                room_id=world.room.id,
+                sender_transport_user_id=world.humans[0].transport_user_id,
+                from_platform=False,
+                agent_metadata=None,
+                agent_live=True,
+                has_attachment=False,
+            )
+
+        _ask()
+        await messages._queue.join()
+        async with session_factory() as session:
+            sender = await session.get(Client, world.humans[0].id)
+            assert sender is not None
+            sender.type = "agent"
+            await session.commit()
+        _ask()
+
+        reported = await _reported(messages, service, sink)
+        assert [p["sender_kind"] for _, p in reported] == ["user", "user"]
+
+    async def test_an_agents_runtime_is_read_once_while_cached(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.observe(_said(world, world.agent.client_id, "agent"))
+        await messages._queue.join()
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            agent.metadata_ = {"known_agent_type": "claude-code"}
+            await session.commit()
+        messages.observe(_said(world, world.agent.client_id, "agent"))
+
+        reported = await _reported(messages, service, sink)
+        assert [
+            p["known_agent_type"]
+            for name, p in reported
+            if name == "switch_core.agent_message_sent"
+        ] == ["codex", "codex"]
+
+
+class TestTtlCache:
+    def test_an_entry_expires_after_its_age(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = SimpleNamespace(now=100.0)
+        monkeypatch.setattr(
+            messages_module, "time", SimpleNamespace(monotonic=lambda: clock.now)
+        )
+        cache: _TtlCache[str, int] = _TtlCache(ttl_seconds=10, max_entries=5)
+        cache.put("a", 1)
+
+        clock.now += 9
+        assert cache.get("a") == 1
+        clock.now += 2
+        assert cache.get("a") is None
+
+    def test_the_least_recently_used_entry_goes_first(self) -> None:
+        cache: _TtlCache[str, int] = _TtlCache(ttl_seconds=60, max_entries=2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.get("a")
+        cache.put("c", 3)
+
+        assert cache.get("b") is None
+        assert cache.get("a") == 1
+        assert cache.get("c") == 3
+
+
+class TestBackpressure:
+    async def test_a_full_queue_drops_with_a_warning_and_a_final_count(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Bounded rather than growing inside the process it measures, and the
+        loss is said out loud — including drops after the last warning."""
+        monkeypatch.setattr(messages_module, "_QUEUE_SIZE", 1)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        messages._load_room_facts = _a_slack_room  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING"):
+            for _ in range(4):
+                messages.observe(_said_in("room"))
+            reported = await _reported(messages, service, sink)
+
+        behind = [
+            r.getMessage()
+            for r in caplog.records
+            if "Message telemetry is behind" in r.getMessage()
+        ]
+        assert len(reported) == 1
+        assert len(behind) == 2
+        assert "1 event(s) dropped" in behind[0]
+        assert "2 event(s) dropped" in behind[1]
+
+
+class TestFailingSenderAndRuntimeLookups:
+    async def test_a_sender_lookup_that_fails_reports_unknown_and_pauses(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        database = _Unreachable()
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=database,  # type: ignore[arg-type]
+        )
+        messages._load_room_facts = _a_slack_room  # type: ignore[method-assign]
+
+        for sender in ("@alice:test", "@bob:test"):
+            messages.agent_addressed(
+                tenant_id=TENANT_ZERO,
+                room_id="room",
+                sender_transport_user_id=sender,
+                from_platform=False,
+                agent_metadata=None,
+                agent_live=True,
+                has_attachment=False,
+            )
+        with caplog.at_level("WARNING"):
+            reported = await _reported(messages, service, sink)
+
+        assert [p["sender_kind"] for _, p in reported] == ["unknown", "unknown"]
+        assert database.attempts == 1
+        assert "could not look up a message sender" in caplog.text
+
+    async def test_a_runtime_lookup_that_fails_reports_unknown_and_pauses(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        database = _Unreachable()
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=database,  # type: ignore[arg-type]
+        )
+        messages._load_room_facts = _a_slack_room  # type: ignore[method-assign]
+
+        for _ in range(2):
+            messages.observe(
+                _said_in("room", sender_role="agent", sender_client_id="agent-client")
+            )
+        with caplog.at_level("WARNING"):
+            reported = await _reported(messages, service, sink)
+
+        assert [
+            p["known_agent_type"]
+            for name, p in reported
+            if name == "switch_core.agent_message_sent"
+        ] == ["unknown", "unknown"]
+        assert database.attempts == 1
+        assert "could not look up an agent's runtime" in caplog.text
+
+    async def test_failures_past_the_pause_still_warn_once_a_minute(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(messages_module, "_LOOKUP_BACKOFF_SECONDS", 0.0)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        attempts = 0
+
+        async def _broken(tenant_id: str, room_id: str) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise ConnectionError("database unreachable")
+
+        messages._load_room_facts = _broken  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                messages.observe(_said_in("room"))
+            await _reported(messages, service, sink)
+
+        assert attempts == 3
+        assert (
+            len([r for r in caplog.records if "could not look up" in r.getMessage()])
+            == 1
+        )
+
+    async def test_rooms_that_cannot_be_found_warn_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+
+        async def _gone(tenant_id: str, room_id: str) -> None:
+            return None
+
+        messages._load_room_facts = _gone  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING"):
+            messages.observe(_said_in("room-a"))
+            messages.observe(_said_in("room-b"))
+            reported = await _reported(messages, service, sink)
+
+        assert [p["bridge_platform"] for _, p in reported] == ["unknown", "unknown"]
+        assert (
+            len([r for r in caplog.records if "found no room" in r.getMessage()]) == 1
+        )
+
+
 class TestFailingReports:
     async def test_an_event_that_cannot_be_reported_logs_once_not_per_message(
         self,
@@ -494,6 +758,42 @@ class TestShutdown:
         ]
         assert len(late) == 1
 
+    async def test_events_dropped_during_the_drain_are_all_counted(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Senders keep running while shutdown drains the queue. The warning is
+        rate-limited, so the drops after its first line are tallied when the
+        drain ends rather than never."""
+        release = asyncio.Event()
+
+        async def _slow_room(tenant_id: str, room_id: str) -> _RoomFacts:
+            await release.wait()
+            return await _a_slack_room(tenant_id, room_id)
+
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        messages._load_room_facts = _slow_room  # type: ignore[method-assign]
+        messages.observe(_said_in("room"))
+        with caplog.at_level("WARNING"):
+            closing = asyncio.create_task(messages.aclose())
+            await asyncio.sleep(0)
+            for _ in range(3):
+                messages.observe(_said_in("room"))
+            release.set()
+            await closing
+
+        late = [
+            r.getMessage()
+            for r in caplog.records
+            if "after message telemetry shut down" in r.getMessage()
+        ]
+        assert len(late) == 2
+        assert "2 more message event(s)" in late[1]
+
     async def test_closing_stays_inside_the_callers_timeout(self) -> None:
         """The worker is cancelled mid-lookup and its cleanup outlasts the
         shutdown budget. The caller's timeout must still fire: swallowing its
@@ -539,6 +839,15 @@ class TestShutdown:
 
 
 class TestOff:
+    def test_enabled_follows_the_service(self) -> None:
+        """What a caller with telemetry-only work checks before doing it."""
+        for enabled in (True, False):
+            messages = MessageTelemetry(
+                telemetry=_service(_RecordingSink(), enabled=enabled),
+                session_factory=None,  # type: ignore[arg-type]
+            )
+            assert messages.enabled is enabled
+
     async def test_nothing_is_queued_or_looked_up_when_telemetry_is_off(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

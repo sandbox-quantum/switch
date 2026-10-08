@@ -675,6 +675,9 @@ as `unknown`, so a database incident shows in the charts as a burst of
 population the tenant is metered for, reported by the transport after the
 write commits. What Switch posts on a participant's behalf — greetings, command
 replies, offline and refusal notices, a template's kickoff — is not in it.
+Neither is a command a person types (`!reset`, a slash command): commands are
+not metered, although the snapshot's activity counts treat one as something
+the person said.
 
 | Property | Type |
 |---|---|
@@ -700,9 +703,11 @@ Reported by the agent's consumer, where that is decided, so a message naming
 two agents is two of these and one `room_message_sent`. Switch's own
 auto-replies are excluded; a request Switch carries on a person's behalf is
 included, as `platform`. A message a hosted agent's mailbox already holds — the
-same message seen again — is not counted twice. `agent_live` splits being asked
-from being there: filter on it to count only the requests an agent could act on
-as they arrived.
+same message seen again — is not counted twice, and nor is a multi-file post
+whose files arrive too far apart to be delivered together: it is counted with
+its first file. A typed command addressed to an agent is not counted.
+`agent_live` splits being asked from being there: filter on it to count only
+the requests an agent could act on as they arrived.
 
 | Property | Type |
 |---|---|
@@ -842,8 +847,10 @@ startup, because posting to `/v1/logs/v1/logs` would be a 404 the relay reports
 once per event into a log nobody is reading.
 
 Product events are batched: they arrive at the sink up to five seconds after
-they happen, several to a request, and whatever is buffered at shutdown is
-posted on the way out.
+they happen, several to a request. Whatever is buffered at shutdown is posted
+on the way out, inside a one-second budget shared with the message worker's
+drain; what cannot be posted in that time is lost, with a warning in the
+server log.
 
 The same sink serves the operational export, so one process shows both streams. Every event is printed as it arrives, decoded, with all of its
 properties. Create a room, register an

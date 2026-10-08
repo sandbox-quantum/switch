@@ -247,6 +247,12 @@ class OtlpRelaySink:
             await self._flusher
         if dropped := self._drops.take_pending():
             self._warn_dropped(dropped)
+        if late := self._late.take_pending():
+            logger.warning(
+                "%d more telemetry event(s) arrived after shutdown began and "
+                "were dropped.",
+                late,
+            )
 
 
 def _resource_from(record: TelemetryRecord) -> OtlpResource:
