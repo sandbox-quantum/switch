@@ -2930,12 +2930,24 @@ const advancedConfigSchemaResponse = z.object({
 /**
  * Each provider's advanced configuration fields, keyed by provider
  * (`GET /gateway/management/advanced-config`): what a managed agent's
- * `advanced_config` is checked against.
+ * `advanced_config` is checked against, and what every agent's advanced
+ * configuration form is built from. A server serves them whether or not it
+ * runs agent management, so one that answers 404 is older than the fields.
  */
 export async function fetchAdvancedConfigSchema(
   server: SwitchServer
 ): Promise<Record<string, AdvancedConfigField[]>> {
-  const res = await managementFetch(server, '/advanced-config', { authenticated: true });
+  let res: Response;
+  try {
+    res = await managementFetch(server, '/advanced-config', { authenticated: true });
+  } catch (error) {
+    if (error instanceof AgentManagementUnavailableError)
+      throw new Error(
+        `${server.name} does not serve the advanced configuration fields Console builds its form from. Update the server to set an agent's advanced configuration.`,
+        { cause: error }
+      );
+    throw error;
+  }
   const { providers } = advancedConfigSchemaResponse.parse(await res.json());
   return Object.fromEntries(
     Object.entries(providers).map(([provider, { fields }]) => [

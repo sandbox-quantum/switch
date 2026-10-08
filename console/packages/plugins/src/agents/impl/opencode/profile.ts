@@ -1,5 +1,6 @@
 import type {
-  RepoAgentField,
+  AdvancedSettingKind,
+  AdvancedSettings,
   SwitchLaunchProfile,
   SwitchLaunchSpecialization,
 } from '@switch-console/core/agents/plugins';
@@ -78,28 +79,26 @@ const ALLOW = 'allow';
 const DENY = 'deny';
 
 /**
- * How each per-agent setting is collected and where it goes in the config.
- *
- * One declaration serves the form and the writer, so a new setting is one entry
- * here rather than a field list and a writer that can disagree.
+ * Where each per-agent setting goes in the config, by the key it is stored and
+ * collected under. The fields a person fills them in with are the server's.
  *
  * `path` is a dotted path, absent for a setting handled specially
  * (`instructions`, which is a file rather than a value). `scope` says what it is
  * relative to: the agent's own object (`agent.build.…`) for most, or the config
- * root for the few OpenCode keys that have no per-agent form. Everything is
- * collected as a string or a number, and blank means the key is omitted so the
+ * root for the few OpenCode keys that have no per-agent form. Every value
+ * reaches the writer as a string, and blank means the key is omitted so the
  * user's own `opencode.json` decides — which is not the same as writing a
  * default-looking value over it.
  */
 type OpencodeSetting = {
-  field: RepoAgentField;
+  key: string;
   /**
-   * True for a setting that is a main attribute of the agent rather than an
-   * advanced one. It is still rendered into the profile — OpenCode only reads
-   * its own files — but it is collected once, provider-agnostically, so it is
-   * not offered again in this provider's advanced form.
+   * The shape of value the setting takes as an advanced setting, or null for a
+   * main attribute of the agent (its model, its instructions). Those are still
+   * rendered into the profile — OpenCode only reads its own files — but they
+   * are collected once, provider-agnostically, rather than as advanced settings.
    */
-  topLevel?: boolean;
+  advanced: AdvancedSettingKind | null;
   path?: string;
   scope?: 'agent' | 'config';
   toValue?: (raw: string) => unknown;
@@ -119,73 +118,14 @@ const numeric = (raw: string): unknown => {
 };
 
 const OPENCODE_SETTINGS: OpencodeSetting[] = [
+  { key: 'model', advanced: null, path: 'model' },
+  { key: 'variant', advanced: 'text', path: 'variant' },
+  { key: 'temperature', advanced: 'number', path: 'temperature', toValue: numeric },
+  { key: 'topP', advanced: 'number', path: 'top_p', toValue: numeric },
+  { key: 'maxSteps', advanced: 'number', path: 'maxSteps', toValue: numeric },
   {
-    field: {
-      key: 'model',
-      label: 'Model',
-      type: 'text',
-      placeholder: 'e.g. anthropic/claude-sonnet-4-5 — blank uses the OpenCode default',
-      help: 'Overrides the model for this agent only, as provider/model. Includes a local model: define the provider once in your OpenCode config and an agent can run against it.',
-      catalogue: { kind: 'model' },
-    },
-    path: 'model',
-  },
-  {
-    field: {
-      key: 'variant',
-      label: 'Reasoning variant',
-      type: 'text',
-      placeholder: 'e.g. high — blank uses the model default',
-      help: "OpenCode's reasoning-effort control. Which values a model takes is the model's own business, so the choices follow the model above; most local models have none.",
-      catalogue: { kind: 'model-variant', modelField: 'model' },
-    },
-    path: 'variant',
-  },
-  {
-    field: {
-      key: 'temperature',
-      label: 'Temperature',
-      type: 'number',
-      placeholder: 'e.g. 0.2',
-      help: 'How much randomness the model is allowed. Blank leaves it to the model.',
-    },
-    path: 'temperature',
-    toValue: numeric,
-  },
-  {
-    field: {
-      key: 'topP',
-      label: 'Top-p',
-      type: 'number',
-      placeholder: 'e.g. 0.9',
-      help: 'Nucleus-sampling cutoff. Blank leaves it to the model.',
-    },
-    path: 'top_p',
-    toValue: numeric,
-  },
-  {
-    field: {
-      key: 'maxSteps',
-      label: 'Step limit',
-      type: 'number',
-      placeholder: 'e.g. 40',
-      help: 'How many tool-calling steps the agent may take before it has to answer.',
-    },
-    path: 'maxSteps',
-    toValue: numeric,
-  },
-  {
-    field: {
-      key: 'webSearch',
-      label: 'Web search',
-      type: 'select',
-      options: [
-        { value: '', label: 'Default' },
-        { value: 'true', label: 'On' },
-        { value: 'false', label: 'Off' },
-      ],
-      help: 'Whether this agent may search the web.',
-    },
+    key: 'webSearch',
+    advanced: 'text',
     // Web search is not a setting in OpenCode, it is a tool the agent is allowed
     // or denied. Written as a permission rather than under `tools`, which
     // OpenCode normalises into exactly this.
@@ -193,35 +133,24 @@ const OPENCODE_SETTINGS: OpencodeSetting[] = [
     toValue: (raw) => (raw === 'true' ? ALLOW : DENY),
   },
   {
-    field: {
-      key: 'smallModel',
-      label: 'Utility model',
-      type: 'text',
-      placeholder: 'e.g. ollama/gemma4:latest — blank uses your OpenCode default',
-      help: 'The cheaper model OpenCode uses for background work like naming the conversation. Worth setting to match the model above when the point is to keep everything on one machine — otherwise that background work goes wherever your own config sends it.',
-      catalogue: { kind: 'model' },
-    },
+    key: 'smallModel',
+    advanced: 'text',
     path: 'small_model',
     // Top-level: OpenCode has no per-agent utility model, so this is the one
     // setting here that applies to the session rather than to the agent. The
     // config file is per-agent, so writing it at the root is still per-agent.
     scope: 'config',
   },
-  {
-    field: {
-      key: 'instructions',
-      label: 'Instructions',
-      type: 'textarea',
-      placeholder: "Extra guidance for this agent, e.g. 'You are a careful reviewer…'",
-      help: "Added to OpenCode's own instructions, the way an AGENTS.md is. Blank keeps OpenCode defaults.",
-    },
-    topLevel: true,
-  },
+  { key: 'instructions', advanced: null },
 ];
 
-/** The fields the "advanced configuration" form renders for an OpenCode agent. */
-export function opencodeLaunchProfileFields(): RepoAgentField[] {
-  return OPENCODE_SETTINGS.filter((setting) => !setting.topLevel).map((setting) => setting.field);
+/** The advanced settings an OpenCode profile carries, beside the model and instructions. */
+export function opencodeLaunchProfileSettings(): AdvancedSettings {
+  return Object.fromEntries(
+    OPENCODE_SETTINGS.flatMap((setting) =>
+      setting.advanced ? [[setting.key, setting.advanced]] : []
+    )
+  );
 }
 
 /** Set a dotted path within an object, creating the intermediate objects. */
@@ -267,7 +196,7 @@ export function buildOpencodeConfig(
   // containing a key it does not recognise, silently and whole.
   for (const setting of OPENCODE_SETTINGS) {
     if (!setting.path) continue;
-    const raw = values[setting.field.key];
+    const raw = values[setting.key];
     if (typeof raw !== 'string' || raw.trim() === '') continue;
 
     const value = setting.toValue ? setting.toValue(raw.trim()) : raw.trim();

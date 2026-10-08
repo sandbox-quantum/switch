@@ -986,6 +986,7 @@ export const NewAgentForm = observer(function NewAgentForm({
               <>
                 {(!isCloudRun || pickState.providerId === 'claude') && (
                   <AgentAdvancedConfig
+                    serverId={pickState.serverId}
                     cloud={isCloudRun}
                     providerId={pickState.providerId}
                     sshHost={isRemoteRun ? runHost : null}
@@ -996,6 +997,7 @@ export const NewAgentForm = observer(function NewAgentForm({
                 )}
                 {!isCloudRun && (
                   <LaunchProfileConfig
+                    serverId={pickState.serverId}
                     providerId={pickState.providerId}
                     sshHost={isRemoteRun ? runHost : null}
                     dir={dir}

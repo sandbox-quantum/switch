@@ -1,14 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
-import type {
-  RepoAgentField,
-  RepoAgentLaunchDefinition,
-} from '@switch-console/core/agents/plugins';
+import type { RepoAgentLaunchDefinition } from '@switch-console/core/agents/plugins';
 import {
   type AdvancedConfig,
   type AdvancedConfigValue,
-  advancedConfigFields,
   sessionLaunchConfig,
 } from '@switch-console/plugins/agents';
+import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -42,7 +39,7 @@ export function assertInstructionsFit(instructions: string): void {
 const TOP_LEVEL_KEYS = new Set(['model', 'instructions']);
 
 /** A specialisation value (always a string) as the value its field takes, or null when it is not one. */
-function fieldValue(field: RepoAgentField, text: string): AdvancedConfigValue | null {
+function fieldValue(field: AdvancedConfigField, text: string): AdvancedConfigValue | null {
   switch (field.type) {
     case 'list': {
       const items = text
@@ -69,14 +66,15 @@ function fieldValue(field: RepoAgentField, text: string): AdvancedConfigValue | 
 
 /**
  * The advanced configuration an agent's launch specialisation amounts to, for
- * the provider's fields, and what of it has no managed equivalent, said for a
- * person.
+ * the fields the server takes for its provider, and what of it has no managed
+ * equivalent, said for a person.
  */
 export function advancedConfigFromSpecialization(
   providerId: AgentProviderId,
+  advancedFields: AdvancedConfigField[],
   specialization: Record<string, string | undefined>
 ): { advancedConfig: AdvancedConfig; notCarried: string[] } {
-  const fields = new Map(advancedConfigFields(providerId).map((field) => [field.key, field]));
+  const fields = new Map(advancedFields.map((field) => [field.key, field]));
   const advancedConfig: AdvancedConfig = {};
   const unknown: string[] = [];
   const notCarried: string[] = [];
@@ -102,6 +100,8 @@ export function advancedConfigFromSpecialization(
 
 export type DefinitionSource = {
   providerId: AgentProviderId;
+  /** The advanced configuration fields the server takes for the provider. */
+  advancedFields: AdvancedConfigField[];
   /** The name the managed agent runs under. */
   name: string;
   /** The agent's launch specialisation (`agentLaunchConfig`), or undefined when it sets none. */
@@ -140,6 +140,7 @@ export function buildManagedDefinition(source: DefinitionSource): BuiltDefinitio
   const specialization = source.specialization ?? {};
   const { advancedConfig, notCarried } = advancedConfigFromSpecialization(
     source.providerId,
+    source.advancedFields,
     specialization
   );
   if (source.shellSetup)

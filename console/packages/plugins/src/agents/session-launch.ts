@@ -1,7 +1,8 @@
 import type {
+  AdvancedSettingKind,
+  AdvancedSettings,
   CLIAgentPluginProvider,
   RepoAgentAttributes,
-  RepoAgentField,
   RepoAgentLaunchDefinition,
   SwitchLaunchSpecialization,
 } from '@switch-console/core/agents/plugins';
@@ -22,9 +23,6 @@ export type AdvancedConfigValue = string | number | boolean | string[];
 /** An agent's advanced configuration, keyed by its provider's field keys; unset fields are absent. */
 export type AdvancedConfig = Record<string, AdvancedConfigValue>;
 
-/** Fields that are the agent's main attributes, collected outside its advanced configuration. */
-const MAIN_ATTRIBUTE_KEYS = new Set(['name', 'description', 'model', 'instructions']);
-
 function pluginFor(provider: string): CLIAgentPluginProvider {
   const plugin = pluginRegistry.get(provider);
   if (!plugin) throw new Error(`No plugin found for provider: ${provider}`);
@@ -32,51 +30,44 @@ function pluginFor(provider: string): CLIAgentPluginProvider {
 }
 
 /**
- * The advanced configuration fields a provider offers: the ones Console's
- * advanced configuration form renders for it, from whichever surface the
- * provider keeps them in, without the agent's main attributes. Empty for a
- * provider with none.
+ * The advanced settings a provider applies at launch, from whichever surface
+ * the provider keeps them in. Empty for a provider that applies none. The
+ * fields they are filled in with are the Switch server's.
  */
-export function advancedConfigFields(provider: string): RepoAgentField[] {
+export function advancedSettings(provider: string): AdvancedSettings {
   const behavior = pluginFor(provider).behavior;
-  const fields =
-    behavior.repoAgents?.attributeFields() ?? behavior.mcp?.launchProfileFields?.() ?? [];
-  return fields.filter((field) => !MAIN_ATTRIBUTE_KEYS.has(field.key));
+  return behavior.repoAgents?.advancedSettings() ?? behavior.mcp?.launchProfileSettings?.() ?? {};
 }
 
-function valueFits(field: RepoAgentField, value: AdvancedConfigValue): boolean {
-  switch (field.type) {
+function valueFits(kind: AdvancedSettingKind, value: AdvancedConfigValue): boolean {
+  switch (kind) {
     case 'list':
       return Array.isArray(value) && value.every((item) => typeof item === 'string');
     case 'number':
       return typeof value === 'number' && Number.isFinite(value);
     case 'boolean':
       return typeof value === 'boolean';
-    case 'select':
-      return (
-        typeof value === 'string' &&
-        value !== '' &&
-        (field.options ?? []).some((option) => option.value === value)
-      );
     case 'text':
-    case 'textarea':
       return typeof value === 'string';
   }
 }
 
 /**
- * What is wrong with an advanced configuration for a provider, naming the
- * field, or null when every field is one the provider offers and holds a value
- * of its type. A select's unset choice ("") is not a value: an unset field is
- * left out.
+ * What keeps an advanced configuration from being applied at launch, naming
+ * the field, or null when the provider applies every field it holds, each
+ * with a value of the shape it takes. A field the provider does not apply is
+ * refused rather than dropped: a newer server may define one this build
+ * cannot apply. Which values a field accepts is the server's to check, when
+ * the configuration is written.
  */
 export function advancedConfigProblem(provider: string, config: AdvancedConfig): string | null {
-  const fields = new Map(advancedConfigFields(provider).map((field) => [field.key, field]));
+  const settings = advancedSettings(provider);
   for (const [key, value] of Object.entries(config)) {
-    const field = fields.get(key);
-    if (!field) return `The advanced configuration field '${key}' is not one ${provider} offers.`;
-    if (!valueFits(field, value))
-      return `The advanced configuration field '${key}' does not hold a valid ${field.type} value.`;
+    const kind = settings[key];
+    if (!kind)
+      return `The advanced configuration field '${key}' is not one this build applies for ${provider}.`;
+    if (!valueFits(kind, value))
+      return `The advanced configuration field '${key}' does not hold a ${kind} value, the shape this build applies.`;
   }
   return null;
 }

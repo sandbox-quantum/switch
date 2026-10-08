@@ -33,8 +33,10 @@ export function watcherSessionId(agentId: string): string {
 
 /**
  * What keeps an agent's advanced configuration from being applied as defined,
- * naming the field, or null when nothing does. A field this build does not
- * know is refused rather than ignored: a newer server may send one an older
+ * naming the field, or null when nothing does. The server checked the values
+ * against its fields when the definition was written; what is left to refuse
+ * here is a field this build's plugin does not apply, or a value of a shape it
+ * cannot apply, rather than ignore it: a newer server may send one an older
  * controller cannot apply.
  */
 export function advancedConfigDefinitionProblem(

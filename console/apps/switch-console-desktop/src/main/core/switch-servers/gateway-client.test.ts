@@ -2038,4 +2038,13 @@ describe('agent management calls', () => {
     );
     await expect(fetchAdvancedConfigSchema(SERVER)).rejects.toThrow();
   });
+
+  it('says a server that does not serve the fields is older than them', async () => {
+    fetchMock.mockImplementation(async () => respond(404, { detail: 'Not Found' }));
+    const refusal = await fetchAdvancedConfigSchema(SERVER).catch((error: unknown) => error);
+    expect(refusal).not.toBeInstanceOf(AgentManagementUnavailableError);
+    expect((refusal as Error).message).toMatch(
+      /does not serve the advanced configuration fields.*Update the server/
+    );
+  });
 });

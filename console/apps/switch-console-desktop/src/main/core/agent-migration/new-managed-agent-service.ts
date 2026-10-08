@@ -1,4 +1,4 @@
-import { type AdvancedConfig, advancedConfigProblem } from '@switch-console/plugins/agents';
+import type { AdvancedConfig } from '@switch-console/plugins/agents';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
@@ -93,8 +93,6 @@ export class NewManagedAgentService {
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
     const workspaceId = await this.deps.workspaceFor(input.serverId);
 
-    const problem = advancedConfigProblem(input.providerId, input.advancedConfig);
-    if (problem) return { kind: 'error', message: problem };
     try {
       assertInstructionsFit(input.instructions);
     } catch (error) {

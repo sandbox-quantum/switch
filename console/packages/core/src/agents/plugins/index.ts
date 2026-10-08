@@ -97,6 +97,8 @@ export {
   SWITCH_TOOL_RULES,
 } from './capabilities/repo-agents';
 export type {
+  AdvancedSettingKind,
+  AdvancedSettings,
   IRepoAgentsBehavior,
   LocalRepoAgent,
   RepoAgentAttributes,

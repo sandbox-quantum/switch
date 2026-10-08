@@ -10,8 +10,9 @@ import { defineVersionedSchema } from '@shared/lib/versioned-schema/versioned-sc
  * Per-agent, provider-specific launch configuration: the values folded into the
  * agent's launch profile at spawn.
  *
- * The keys are whatever the provider declares in `mcp.launchProfileFields()`, so
- * this schema does not name them. Two providers do not agree on what a per-agent
+ * The keys are the model, the instructions and the advanced settings the
+ * provider declares in `mcp.launchProfileSettings()`, so this schema does not
+ * name them. Two providers do not agree on what a per-agent
  * setting even is — Codex has a reasoning-effort enum, a verbosity and a
  * reasoning summary; OpenCode has none of those, and instead has a model-specific
  * variant, a temperature, a top-p and a step cap. A fixed field list would be one
@@ -36,7 +37,7 @@ const agentProviderConfigV2 = z.object({
    * key it does not know is ignored either way.
    */
   providerId: z.string(),
-  /** Field key → value, as declared by that provider's `launchProfileFields()`. */
+  /** Setting key → value: the model, the instructions and that provider's `launchProfileSettings()`. */
   values: z.record(z.string(), z.string()),
 });
 

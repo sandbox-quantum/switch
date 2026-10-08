@@ -82,19 +82,7 @@ export const provider = registerPluginBehavior(plugin, {
   },
   mcp: {
     ...cursorMcpAdapter(),
-    launchProfileFields: () => [
-      {
-        key: 'model',
-        label: 'Model',
-        type: 'text',
-        help: 'Blank uses the Cursor default on the execution machine.',
-      },
-      {
-        key: 'instructions',
-        label: 'Instructions',
-        type: 'textarea',
-        help: 'Additional instructions for SDK sessions.',
-      },
-    ],
+    // Read at session start, and only the model and the instructions.
+    launchProfileSettings: () => ({}),
   },
 });

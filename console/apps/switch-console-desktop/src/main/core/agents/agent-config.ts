@@ -96,7 +96,7 @@ async function propagateToLaunch(agentId: string, config: AgentConfigFile): Prom
   if (!agent) throw new Error(`No agent with id ${agentId}`);
 
   const behavior = getPlugin(agent.providerId).behavior;
-  if (!behavior.repoAgents && behavior.mcp?.launchProfileFields) {
+  if (!behavior.repoAgents && behavior.mcp?.launchProfileSettings) {
     // Re-applies the controller itself when it has to.
     await setAgentProviderConfig({
       agentId,

@@ -174,7 +174,7 @@ describe('importAgentConfig', () => {
     expect(config).toMatchObject({ instructions: 'Mine.' });
   });
 
-  it('drops a hand-typed value this app would not offer', async () => {
+  it('drops a hand-typed count this app would not offer, and carries a choice as written', async () => {
     await write(
       DEF_PATH,
       `---\nname: ${NAME}\ndescription: Reviews diffs\neffort: High\nmaxTurns: 2.5\nmodel: opus\n---\n\nBe thorough.\n`
@@ -183,8 +183,7 @@ describe('importAgentConfig', () => {
     await importClaude();
 
     const config = await readAgentConfigFile(createPluginFs(dir), NAME);
-    expect(config?.settings).toMatchObject({ model: 'opus' });
-    expect(config?.settings).not.toHaveProperty('effort');
+    expect(config?.settings).toMatchObject({ model: 'opus', effort: 'High' });
     expect(config?.settings).not.toHaveProperty('maxTurns');
   });
 

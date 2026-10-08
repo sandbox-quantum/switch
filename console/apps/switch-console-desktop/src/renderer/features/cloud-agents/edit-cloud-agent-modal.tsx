@@ -237,6 +237,7 @@ function EditCloudAgentForm({
           </Field>
           {editsModel && (
             <AgentAdvancedConfig
+              serverId={serverId}
               providerId={launch.provider}
               cloud
               sshHost={null}

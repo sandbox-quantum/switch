@@ -195,7 +195,7 @@ describe('buildWatcherTemplate', () => {
 });
 
 describe('advancedConfigDefinitionProblem', () => {
-  it('accepts the advanced configuration a provider offers', () => {
+  it('accepts the advanced configuration a provider applies', () => {
     expect(
       advancedConfigDefinitionProblem('opencode', {
         ...definition,
@@ -217,6 +217,24 @@ describe('advancedConfigDefinitionProblem', () => {
         advanced_config: { effort: 'high' },
       })
     ).toMatch(/'effort'/);
+  });
+
+  it('accepts an empty configuration for a provider that applies no settings', () => {
+    expect(
+      advancedConfigDefinitionProblem('antigravity', { ...definition, advanced_config: {} })
+    ).toBeNull();
+    expect(
+      advancedConfigDefinitionProblem('cursor', { ...definition, advanced_config: {} })
+    ).toBeNull();
+  });
+
+  it('names a value of a shape this controller cannot apply', () => {
+    expect(
+      advancedConfigDefinitionProblem('opencode', {
+        ...definition,
+        advanced_config: { temperature: 'warm' },
+      })
+    ).toMatch(/'temperature'.*number/);
   });
 
   it('names a Claude Code setting its session cannot start with', () => {

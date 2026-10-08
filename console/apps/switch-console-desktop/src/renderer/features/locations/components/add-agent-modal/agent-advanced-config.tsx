@@ -1,13 +1,12 @@
 import type { RepoAgentAttributes, RepoAgentField } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import {
-  advancedFields,
   attributesFromForm,
   DefinitionFieldInput,
   formFromAttributes,
@@ -15,15 +14,18 @@ import {
   type FormValue,
 } from '../agent-definition-fields';
 import { fieldCatalogueState, type ModelCatalogueResult } from '../agent-model-catalogue';
+import { useLocalAdvancedFields } from '../use-local-advanced-fields';
 
 /**
- * Collapsed "Advanced configuration" section for the add-agent modal. Renders the
- * provider's definition attribute fields (model, effort, tools, system prompt, …)
- * beyond name/description, and reports the assembled attributes so the modal can
- * pass them to `addAgent`, which writes them into the agent's on-disk definition.
- * Collapsed by default so ordinary users are not overwhelmed (CHOO-1440).
+ * Collapsed "Advanced configuration" section for the add-agent modal, for a
+ * provider that keeps its per-agent settings in the agent definition it runs
+ * as (Claude Code). Renders the model and the server's advanced fields for the
+ * provider, and reports the assembled attributes so the modal can pass them to
+ * `addAgent`, which writes them into the agent's config file. Collapsed by
+ * default so ordinary users are not overwhelmed (CHOO-1440).
  */
 export function AgentAdvancedConfig({
+  serverId,
   providerId,
   cloud,
   sshHost,
@@ -31,6 +33,8 @@ export function AgentAdvancedConfig({
   initial,
   onChange,
 }: {
+  /** The Switch server the agent belongs to, whose fields the form shows; null when none is chosen. */
+  serverId: string | null;
   providerId: AgentProviderId | null;
   cloud: boolean;
   sshHost: string | null;
@@ -53,13 +57,8 @@ export function AgentAdvancedConfig({
           ? 'Model suggestions are unavailable before the cloud worker starts. You can enter a model alias or ID.'
           : 'No execution directory is configured yet. You can enter a model alias or ID.',
       };
-  const { data: allFields } = useQuery({
-    queryKey: ['agentDefinitionFields', providerId],
-    queryFn: () => (providerId ? rpc.agents.definitionFields({ providerId }) : Promise.resolve([])),
-    enabled: !!providerId,
-  });
-
-  const fields = useMemo(() => advancedFields(allFields ?? []), [allFields]);
+  const local = useLocalAdvancedFields(serverId, providerId);
+  const fields = local.surface === 'definition' ? local.fields : NO_FIELDS;
   const providerLabel = providerId ? (getProvider(providerId)?.name ?? providerId) : null;
 
   const [state, setState] = useState<FormState>({});
@@ -72,7 +71,7 @@ export function AgentAdvancedConfig({
     onChange(attributesFromForm(fields, form));
   }, [fields, initial, onChange]);
 
-  if (!providerId || fields.length === 0) return null;
+  if (!providerId || local.surface !== 'definition') return null;
 
   const setField = (key: string, value: FormValue) => {
     setState((prev) => {
@@ -83,20 +82,36 @@ export function AgentAdvancedConfig({
   };
 
   return (
-    <AdvancedConfigSection
-      providerLabel={providerLabel}
-      fields={fields}
-      form={state}
-      catalogue={executionCatalogue}
-      onFieldChange={setField}
-    />
+    <div className="flex flex-col gap-2">
+      {fields.length > 0 && (
+        <AdvancedConfigSection
+          providerLabel={providerLabel}
+          fields={fields}
+          form={state}
+          catalogue={executionCatalogue}
+          onFieldChange={setField}
+        />
+      )}
+      <AdvancedConfigProblem problem={local.problem} />
+    </div>
+  );
+}
+
+const NO_FIELDS: RepoAgentField[] = [];
+
+/** Why the advanced configuration is not all the server defines, when it is not. */
+export function AdvancedConfigProblem({ problem }: { problem: string | null }) {
+  if (!problem) return null;
+  return (
+    <p role="alert" className="text-xs text-foreground-destructive">
+      {problem}
+    </p>
   );
 }
 
 /**
- * The collapsed section itself, whatever supplies its fields: the provider's own
- * definition fields for an agent this Console runs, the server's schema for a
- * managed one.
+ * The collapsed section itself, for an agent this Console runs or a managed
+ * one: the model and the server's fields for the provider either way.
  */
 export function AdvancedConfigSection({
   providerLabel,

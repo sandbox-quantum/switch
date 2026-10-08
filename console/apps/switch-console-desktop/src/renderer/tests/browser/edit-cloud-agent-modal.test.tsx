@@ -19,14 +19,15 @@ const workspaces = vi.hoisted(() => ({
   updateAgentIcon: vi.fn(),
 }));
 const agents = vi.hoisted(() => ({
-  definitionFields: vi.fn(),
+  advancedSettings: vi.fn(),
   modelCatalogue: vi.fn(),
 }));
+const managedAgents = vi.hoisted(() => ({ advancedConfigSchema: vi.fn() }));
 const toast = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { switchServers, workspaces, agents },
+  rpc: { switchServers, workspaces, agents, managedAgents },
 }));
 // The server's workspace in scope: the agent and its name and icon live there.
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
@@ -63,8 +64,6 @@ vi.mock(
 
 import { EditCloudAgentModal } from '@renderer/features/cloud-agents/edit-cloud-agent-modal';
 
-const MODEL = { key: 'model', label: 'Model', type: 'string' as const };
-
 function launch(provider: CloudLaunch['provider']): CloudLaunch {
   return {
     request_id: '00000000-0000-4000-8000-000000000001',
@@ -94,6 +93,7 @@ beforeEach(() => {
     ...Object.values(switchServers),
     ...Object.values(workspaces),
     ...Object.values(agents),
+    ...Object.values(managedAgents),
     toast,
   ])
     fn.mockReset();
@@ -107,7 +107,8 @@ beforeEach(() => {
     instructions: 'Be brief.',
     definition_attributes: { model: 'opus' },
   });
-  agents.definitionFields.mockResolvedValue([MODEL]);
+  agents.advancedSettings.mockResolvedValue({ surface: 'definition', keys: [] });
+  managedAgents.advancedConfigSchema.mockResolvedValue({ claude: [], codex: [] });
   agents.modelCatalogue.mockResolvedValue({ kind: 'unavailable', reason: 'not asked' });
 });
 

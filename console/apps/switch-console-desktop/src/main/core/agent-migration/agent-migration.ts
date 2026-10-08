@@ -32,6 +32,7 @@ import { postRoomMessage } from '@main/core/switch-rooms/switch-room-client';
 import {
   AgentManagementUnavailableError,
   deleteManagedAgent,
+  fetchAdvancedConfigSchema,
   fetchAgentDetail,
   fetchManagedAgent,
   fetchManagementControllers,
@@ -47,6 +48,7 @@ import { withReachableWorkspaceSession } from '@main/core/workspaces/workspace-s
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
+import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 import {
   AgentMigrationService,
@@ -559,7 +561,25 @@ const credentials: MigrationCredentialsPort = {
   },
 };
 
+/** The advanced configuration fields the agent's server takes for its provider. */
+async function serverAdvancedFields(agent: MigrationAgent): Promise<AdvancedConfigField[]> {
+  if (!agent.workspaceId)
+    throw new Error(
+      `${agent.name} belongs to no Switch workspace, so its server's advanced configuration fields cannot be read.`
+    );
+  const schema = await withReachableWorkspaceSession(agent.workspaceId, (server) =>
+    fetchAdvancedConfigSchema(server)
+  );
+  const fields = schema[agent.providerId];
+  if (!fields)
+    throw new Error(
+      `The Switch server does not list the provider ${agent.providerId}, so it cannot run ${agent.name}.`
+    );
+  return fields;
+}
+
 async function buildDefinition(agent: MigrationAgent) {
+  const advancedFields = await serverAdvancedFields(agent);
   const row = await requireRow(agent.id);
   const location = await getAgentLocation(row);
   const transport = locationTransport(location);
@@ -578,6 +598,7 @@ async function buildDefinition(agent: MigrationAgent) {
   );
   return buildManagedDefinition({
     providerId: agent.providerId,
+    advancedFields,
     name: agent.name,
     specialization: launch.specialization,
     providerDefinition: launch.definition,
