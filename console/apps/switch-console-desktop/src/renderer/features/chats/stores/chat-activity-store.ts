@@ -215,7 +215,11 @@ export class AgentActivity {
 
 /** Activities by server, room and agent, shared by the views showing them. */
 export class AgentActivities {
-  private readonly entries = new Map<string, { activity: AgentActivity; users: number }>();
+  /** Observable so a view that only peeks (the chat's title bar) follows the one holding it. */
+  private readonly entries = observable.map<string, { activity: AgentActivity; users: number }>(
+    {},
+    { deep: false }
+  );
   private readonly watches = new Map<string, () => void>();
 
   constructor(private readonly api: ActivityApi) {}
@@ -248,12 +252,25 @@ export class AgentActivities {
         activity: new AgentActivity(serverId, tenantId, roomId, agentId, this.api),
         users: 0,
       };
-      this.entries.set(key, entry);
+      const created = entry;
+      runInAction(() => this.entries.set(key, created));
       this.syncWatches();
       void entry.activity.resolve();
     }
     entry.users += 1;
     return entry.activity;
+  }
+
+  /** An activity some view already holds, without holding it. */
+  peek(
+    serverId: string,
+    tenantId: string | null,
+    roomId: string,
+    agentId: string
+  ): AgentActivity | null {
+    return (
+      this.entries.get(JSON.stringify([serverId, tenantId, roomId, agentId]))?.activity ?? null
+    );
   }
 
   release(activity: AgentActivity): void {
@@ -268,7 +285,7 @@ export class AgentActivities {
     entry.users -= 1;
     if (entry.users > 0) return;
     entry.activity.dispose();
-    this.entries.delete(key);
+    runInAction(() => this.entries.delete(key));
     this.syncWatches();
   }
 
@@ -284,7 +301,7 @@ export class AgentActivities {
     for (const [key, { activity }] of this.entries)
       if (activity.serverId === serverId && (roomId === null || activity.roomId === roomId)) {
         activity.dispose();
-        this.entries.delete(key);
+        runInAction(() => this.entries.delete(key));
       }
     this.syncWatches();
   }
