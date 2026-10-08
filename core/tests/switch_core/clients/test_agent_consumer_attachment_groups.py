@@ -54,6 +54,14 @@ async def _session_factory():  # type: ignore[no-untyped-def]
     yield object()
 
 
+class _FakeMessageTelemetry:
+    def __init__(self) -> None:
+        self.addressed: list[dict[str, Any]] = []
+
+    def agent_addressed(self, **kwargs: Any) -> None:
+        self.addressed.append(kwargs)
+
+
 class _FakeQueue:
     def __init__(self) -> None:
         self.events: list[Any] = []
@@ -85,9 +93,12 @@ def _fake_client() -> SimpleNamespace:
         return _GateOutcome(addressed=True, refusal=None)
 
     ns = SimpleNamespace(
-        agent=SimpleNamespace(id="agent-1", name="agent-a"),
+        agent=SimpleNamespace(id="agent-1", name="agent-a", metadata_=None),
+        tenant_id="tenant-1",
         session_factory=_session_factory,
         _event_buffer=queue,
+        _message_telemetry=_FakeMessageTelemetry(),
+        _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
         _attachment_groups={},
         _attachment_group_timers={},
         _resolve_room_meta=_resolve_room_meta,
@@ -98,6 +109,7 @@ def _fake_client() -> SimpleNamespace:
         _note_hosted_addressed=AsyncMock(return_value=None),
     )
     ns._emit_media = AgentConsumer._emit_media.__get__(ns)
+    ns._report_addressed = AgentConsumer._report_addressed.__get__(ns)
     ns._schedule_attachment_group_flush = (
         AgentConsumer._schedule_attachment_group_flush.__get__(ns)
     )
@@ -440,3 +452,39 @@ class TestAddressingSurvivesCoalescing:
         )
 
         assert client.queue.events[0].payload.addressed is True
+
+
+async def test_a_grouped_post_addressed_to_the_agent_is_reported_once() -> None:
+    """Three files in one post are one message asked of the agent, not three:
+    the report follows the coalesced payload, not the parts."""
+    client = _fake_client()
+    for index in range(3):
+        await AgentConsumer.on_media(
+            client,
+            _room(),
+            _media_event(
+                body="@agent-a look at these" if index == 0 else f"f{index}.png",
+                event_id=f"$part-{index}",
+                group={"id": "grp-r", "index": index, "total": 3},
+            ),
+        )
+
+    assert client._message_telemetry.addressed == [
+        {
+            "tenant_id": "tenant-1",
+            "room_id": "room-1",
+            "sender_transport_user_id": "@alice:s",
+            "from_platform": False,
+            "agent_metadata": None,
+            "has_attachment": True,
+        }
+    ]
+
+
+async def test_media_that_does_not_address_the_agent_is_not_reported() -> None:
+    client = _fake_client()
+    await AgentConsumer.on_media(
+        client, _room(), _media_event(body="just a picture", event_id="$solo")
+    )
+
+    assert client._message_telemetry.addressed == []

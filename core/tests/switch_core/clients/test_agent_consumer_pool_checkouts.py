@@ -142,6 +142,9 @@ def _client(
         live_connection_ids=client._connections.live_connection_ids,
     )
     client._budget_guard = BudgetGuard(BudgetStore())
+    client._message_telemetry = SimpleNamespace(  # type: ignore[assignment]
+        agent_addressed=lambda **_k: None
+    )
     client._frontend_base_url = None
     client._room_meta = {
         TRANSPORT_ROOM_ID: RoomMeta(

@@ -225,7 +225,7 @@ server setting. The Console instead sends a bespoke `build` attribute
 server equivalent. The two are deliberately different fields rather than one
 field meaning different things on each side.
 
-## Three kinds of event
+## Four kinds of event
 
 **A daily snapshot**, one per deployment, carrying the counts that describe the
 installation. This answers "how much".
@@ -237,28 +237,42 @@ seconds elapsed since install. This answers "how fast to value".
 failure: which platforms are in use, how often a bridge drops, whether one
 connector fails repeatedly before it works.
 
+**Message events**, one per message, the only high-volume kind. These carry how
+much is said and between whom — people to agents, agents back, people among
+themselves — and the size of the room it was said in.
+
 The snapshot exists because of the identifier rule. Without room ids,
 per-occurrence events can tell you *how much* happened but never *across how
 many rooms* — counting distinct anything in Amplitude requires an identifier for
 the thing being counted. Counting locally and reporting the total sidesteps it.
 
-### Why there is no `message_sent` event
+### Message events, and what they cannot tell you
 
-Message volume is reported as a count in the daily snapshot, not as an event per
-message. Three reasons, in order of weight:
+An earlier version of this note argued against an event per message, for three
+reasons. Each is now answered rather than ignored:
 
-1. **Volume.** The relay path has no batching, no retry and no queue — one HTTP
-   request per event, fire-and-forget, because a desktop app emits a handful an
-   hour. A busy server emits thousands of messages an hour. Per-message events
-   would be a different class of load on a component not built for it.
-2. **It answers nothing extra.** Without a room id, a per-message event supports
-   the same charts the snapshot count does.
-3. **Content risk.** An event shaped around a message is the one most likely to
-   grow a property that reveals something about the message. Not having it
-   removes the temptation.
+1. **Volume.** The relay path used to post one request per event. The relay
+   sink now batches: events wait up to five seconds, or until two hundred are
+   queued, and go as one request. Its buffer is bounded, so a relay that is down
+   costs events, never memory.
+2. **The sender must not pay for it.** The transport and the agent consumer
+   hand a small record to a queue and return. One worker looks up the room and
+   the sender — cached, so a busy room is read once every five minutes rather
+   than once per message — and emits. That queue is bounded too, and drops with
+   a warning when it falls behind.
+3. **Content risk.** The events carry the same kind of property as every
+   other: closed sets, booleans and counts. There is no property a message body,
+   a name or an id could reach, and the catalogue test enforces it.
 
-If per-message granularity is ever genuinely needed, it should arrive with
-batching on the export path first.
+**They count messages, not people.** No user id is ever sent, so in Amplitude
+every event from a deployment belongs to one subject — the deployment — and
+Amplitude's own "active users" counts deployments. How many *people* are active
+comes only from the snapshot, which counts distinct people locally and reports
+the total: `chat_identity_in_room_count` (in a room at all),
+`chat_identity_posted_*` (said anything) and `chat_identity_active_*` (said
+something in a room with an agent), with `user_active_*` counting the same
+last tier as Switch accounts. The message events say how much those people
+said, and to whom.
 
 ## Definitions
 
@@ -332,6 +346,9 @@ never invisible.
 | `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
 | `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d` |
 | `chat_identity_active_7d` | number | same over 7 days |
+| `chat_identity_posted_1d` | number | distinct chat identities that said anything in any room in 24h, agent or no agent |
+| `chat_identity_posted_7d` | number | same over 7 days |
+| `chat_identity_in_room_count` | number | distinct chat identities that are a member of at least one unarchived room, of any origin |
 | `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
 | `room_agent_created_count` | number | unarchived rooms an agent created for itself |
 | `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |
@@ -383,6 +400,19 @@ above (`user_active_*`, `room_active_*`, `agent_active_7d`) read only what a
 participant *said*: chat messages, and commands a person typed on a platform.
 The automatic notice Switch posts under an agent's name when it cannot take a
 request is excluded as well — the agent did not say it.
+
+**Tiers of activity.** `chat_identity_in_room_count`,
+`chat_identity_posted_7d` and `chat_identity_active_7d` nest: everyone in a
+room, those who said anything, and those who said something in a room with an
+agent. The gaps are the audiences worth naming —
+`chat_identity_in_room_count - chat_identity_posted_7d` is people in Switch who
+only read, and `chat_identity_posted_7d - chat_identity_active_7d` is people
+talking only to each other. All three count chat identities, so someone on both
+Slack and Teams counts twice; only the top tier is also counted as accounts
+(`user_active_*`). "In a room with an agent" stands in for "talked to an
+agent": whether a message addressed one is decided per agent as it is
+delivered, and is not stored where a count can read it.
+`agent_message_received` is the per-message measure of that.
 
 **Turns rather than senders.** A turn is one message classified by who sent the
 message *before* it in the same room. That is the only way to tell an agent
@@ -622,6 +652,61 @@ migrations run in a different event loop from the server, so the answer would
 have to be carried across on a module global, and it is operational trivia
 rather than something the product wants to know.
 
+### Message events — one per message
+
+All three come from `telemetry/messages.py`, reported off the sender's path as
+described [above](#message-events-and-what-they-cannot-tell-you). A post with
+several files is one message. Room facts are cached for five minutes, so a
+member count can be that far behind.
+
+**`room_message_sent`** — everything a participant chose to say in a room: the
+population the tenant is metered for, reported by the transport after the
+write commits. What Switch posts on a participant's behalf — greetings, command
+replies, offline and refusal notices, a template's kickoff — is not in it.
+
+| Property | Type |
+|---|---|
+| `sender_kind` | `user` \| `agent` \| `platform` \| `unknown` |
+| `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
+| `channel_type` | channel type, or `unknown` if the room could not be read |
+| `room_user_count` | number — human members of the room, `-1` if it could not be read |
+| `room_agent_count` | number — agent members, `-1` if it could not be read |
+| `has_attachment` | boolean |
+| `in_thread` | boolean |
+
+The average of `room_user_count` over these events is the room size a typical
+message is said to — weighted by messages, not by rooms. The snapshot's
+`room_users_mean` is the per-room figure.
+
+**`agent_message_received`** — a message an agent was asked to act on:
+addressed to it (by name, alias, role, or a direct room) *and* let through its
+addressing policy and budget. Reported by the agent's consumer, where that is
+decided, so a message naming two agents is two of these and one
+`room_message_sent`. Switch's own auto-replies are excluded; a request Switch
+carries on a person's behalf is included, as `platform`.
+
+| Property | Type |
+|---|---|
+| `sender_kind` | `user` \| `agent` \| `platform` \| `unknown` |
+| `known_agent_type` | the receiving agent's runtime |
+| `bridge_platform` | platform |
+| `channel_type` | channel type |
+| `has_attachment` | boolean |
+
+**`agent_message_sent`** — a message an agent posted: its replies, status
+updates, anything it chose to say. Every one is also a `room_message_sent` with
+`sender_kind = agent`; this one carries the runtime as well. `room_user_count`
+separates an agent answering people from agents talking among themselves.
+
+| Property | Type |
+|---|---|
+| `known_agent_type` | the sending agent's runtime |
+| `bridge_platform` | platform |
+| `channel_type` | channel type |
+| `room_user_count` | number |
+| `has_attachment` | boolean |
+| `in_thread` | boolean |
+
 ### Closed value sets
 
 `bridge_platform`: `slack` | `mattermost` | `discord` | `teams` | `telegram` |
@@ -629,6 +714,13 @@ rather than something the product wants to know.
 "there is one and the lookup that would have named it failed" — the two are
 kept apart because collapsing them would misreport a Slack-bridged room as
 internal-only whenever that lookup has a transient error.
+
+`channel_type`: `channel_public` | `channel_private` | `direct` | `none` |
+`unknown`, with `unknown` meaning what it does for `bridge_platform`. Only the
+message events can carry it.
+
+`sender_kind`: `user` | `agent` | `platform` | `unknown`. `platform` is Switch
+itself speaking; `unknown` a sender whose client could not be looked up.
 
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
@@ -729,6 +821,10 @@ the operational export follows. A value carrying the signal path is refused at
 startup, because posting to `/v1/logs/v1/logs` would be a 404 the relay reports
 once per event into a log nobody is reading.
 
+Product events are batched: they arrive at the sink up to five seconds after
+they happen, several to a request, and whatever is buffered at shutdown is
+posted on the way out.
+
 The same sink serves the operational export, so one process shows both streams. Every event is printed as it arrives, decoded, with all of its
 properties. Create a room, register an
 agent, connect a bridge, send a message, and watch. The first snapshot lands
@@ -756,7 +852,7 @@ that tests the vendor's own filtering.
 
 ### Every event, and how to make it fire
 
-Twenty-two events. Work down the list against a local sink
+Work down the list against a local sink
 (`python scripts/otlp_sink.py`) and each one prints as it arrives with all of
 its properties.
 
@@ -822,6 +918,17 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `session_started` — `POST /agent-sessions/{id}/started` from a session host
   (`bridges/agent/api/activity_routes.py`), with a UUID id. A repeat for the
   same agent and session emits nothing, across restarts, for 7 days.
+
+**Messages** — `telemetry/messages.py`, fed by `transport/postgres.py` and
+`clients/agent_consumer.py`
+
+- `room_message_sent` — any person or agent posting in any room. A post with
+  three files is one event. A command reply or an offline notice is none.
+- `agent_message_sent` — an agent posting, through its MCP tool or the HTTP
+  API. Arrives beside a `room_message_sent` for the same message.
+- `agent_message_received` — tag an agent, or write in a direct room with one.
+  Tag two agents and there are two. Tag an agent whose policy refuses you and
+  there are none.
 
 **Connectors** — `bridges/collaboration/lifecycle_service.py`
 

@@ -169,6 +169,7 @@ from switch_core.session_activity.maintenance import (
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
+from switch_core.telemetry.messages import MessageTelemetry
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
@@ -293,7 +294,9 @@ _TELEMETRY_DRAIN_SECONDS = 1.0
 
 
 async def _drain_telemetry(
-    telemetry: TelemetryService, http_client: httpx.AsyncClient | None
+    telemetry: TelemetryService,
+    message_telemetry: MessageTelemetry,
+    http_client: httpx.AsyncClient | None,
 ) -> None:
     """Let in-flight product events finish, then close their client.
 
@@ -302,6 +305,8 @@ async def _drain_telemetry(
     """
     try:
         async with asyncio.timeout(_TELEMETRY_DRAIN_SECONDS):
+            # First, because what it still holds is emitted through the other.
+            await message_telemetry.aclose()
             await telemetry.aclose()
     except TimeoutError:
         logger.warning(
@@ -519,6 +524,9 @@ async def run(config: SwitchConfig) -> None:
     telemetry, installed_at, telemetry_http = await build_telemetry(
         config, session_factory, switch_core_version()
     )
+    message_telemetry = MessageTelemetry(
+        telemetry=telemetry, session_factory=session_factory
+    )
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
     trust_client, trust_http = build_trust_client(config)
@@ -594,6 +602,7 @@ async def run(config: SwitchConfig) -> None:
         invites=invites,
         ephemeral=ephemeral,
         room_cache=room_cache,
+        message_observer=message_telemetry,
     )
     client_factory.register(
         "agent",
@@ -611,6 +620,7 @@ async def run(config: SwitchConfig) -> None:
         hosted_launch_store=HostedLaunchStore(),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
+        message_telemetry=message_telemetry,
     )
     # Members that only write: a person on another platform, and a bridge's own
     # identity (its reader, the WorkspaceConsumer, is built by the bridge).
@@ -941,7 +951,7 @@ async def run(config: SwitchConfig) -> None:
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.
                 await protocol.sessions.aclose()
-                await _drain_telemetry(telemetry, telemetry_http)
+                await _drain_telemetry(telemetry, message_telemetry, telemetry_http)
                 if trust_http is not None:
                     await trust_http.aclose()
                 await observability.aclose()

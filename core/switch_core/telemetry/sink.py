@@ -9,8 +9,11 @@ lets a reporting problem reach the caller.
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -30,6 +33,8 @@ logger = logging.getLogger(__name__)
 # relay carries it as one, and a record with no severity is rendered by some
 # receivers as an error.
 _SEVERITY_INFO = 9
+
+_DROP_WARNING_INTERVAL_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,7 @@ class NullSink:
 
 
 class OtlpRelaySink:
-    """Posts one OTLP log record per event to the relay.
+    """Posts events to the relay as OTLP log records, a batch at a time.
 
     Log records, not metrics: the relay routes on them and the analytics
     exporter reads them as events. A metric would be dropped without complaint.
@@ -78,45 +83,149 @@ class OtlpRelaySink:
     and then discarded. That is the easiest way to believe this works when it
     does not.
 
-    No batching and no retry, matching the operational exporter.
+    **Batched**, because the message events fire once per message: a busy
+    server posting one request per event would be a load the relay was never
+    sized for, and would trip the rate limit it keys on the sender's address.
+    `send` only buffers; one task posts every `flush_interval_seconds`, or as
+    soon as `max_batch` records are waiting, and `aclose` posts what is left.
+
+    No retry, matching the operational exporter, and the buffer is bounded: a
+    relay that stops answering costs the events it misses, never memory.
     """
 
-    def __init__(self, *, client: OtlpClient) -> None:
+    def __init__(
+        self,
+        *,
+        client: OtlpClient,
+        flush_interval_seconds: float,
+        max_batch: int,
+        max_buffered: int,
+    ) -> None:
         self._client = client
+        self._flush_interval = flush_interval_seconds
+        self._max_batch = max_batch
+        self._max_buffered = max_buffered
+        self._buffer: list[TelemetryRecord] = []
+        self._wake = asyncio.Event()
+        self._flusher: asyncio.Task[None] | None = None
+        self._closing = False
+        self._dropped = 0
+        self._last_drop_warning = 0.0
 
     async def send(self, record: TelemetryRecord) -> None:
-        payload = build_logs_payload(
-            [
-                LogRecord(
-                    # Datadog renders this as the log message, and a blank one
-                    # makes the event unreadable there.
-                    body=record.name,
-                    severity_text="INFO",
-                    severity_number=_SEVERITY_INFO,
-                    time_nanos=record.timestamp_ns,
-                    attributes={"event.name": record.name, **record.properties},
-                )
-            ],
-            _resource_from(record),
-        )
-        _add_event_name(payload, record.name)
-        _add_relay_context(payload, record.resource)
-
-        try:
-            await self._client.post("logs", payload)
-        except OtlpSendError as exc:
-            # Switch has to keep working while analytics is down.
+        if self._closing:
+            # Shutdown has already taken the final batch; posting this one
+            # would race the client being closed.
             logger.warning(
-                "Telemetry event %s was not sent: %s. The event is dropped; "
-                "there is no retry.",
+                "Telemetry event %s arrived after shutdown began and was dropped.",
                 record.name,
-                exc,
             )
+            return
+        if len(self._buffer) >= self._max_buffered:
+            self._note_drop()
+            return
+        self._buffer.append(record)
+        if self._flusher is None or self._flusher.done():
+            # A fresh context, so its warnings do not carry the log fields of
+            # whichever request happened to emit first.
+            self._flusher = asyncio.get_running_loop().create_task(
+                self._run(), context=contextvars.Context()
+            )
+        if len(self._buffer) >= self._max_batch:
+            self._wake.set()
+
+    def _note_drop(self) -> None:
+        self._dropped += 1
+        now = time.monotonic()
+        if now - self._last_drop_warning < _DROP_WARNING_INTERVAL_SECONDS:
+            return
+        logger.warning(
+            "Telemetry buffer is full (%d events waiting on the relay): %d "
+            "event(s) dropped since the last warning.",
+            self._max_buffered,
+            self._dropped,
+        )
+        self._dropped = 0
+        self._last_drop_warning = now
+
+    async def _run(self) -> None:
+        while not self._closing:
+            try:
+                async with asyncio.timeout(self._flush_interval):
+                    await self._wake.wait()
+            except TimeoutError:
+                pass
+            self._wake.clear()
+            await self._flush_logging_bugs()
+        await self._flush_logging_bugs()
+
+    async def _flush_logging_bugs(self) -> None:
+        # A relay failure is already handled in `_post`; anything reaching
+        # here is a bug in building the batch, and must not end the task that
+        # every later event depends on.
+        try:
+            await self._flush()
+        except Exception:
+            logger.exception("Telemetry batch could not be built; it is dropped.")
+
+    async def _flush(self) -> None:
+        while self._buffer:
+            batch = self._buffer[: self._max_batch]
+            del self._buffer[: self._max_batch]
+            await self._post(batch)
+
+    async def _post(self, batch: Sequence[TelemetryRecord]) -> None:
+        # Every record a service emits carries the same resource, so this is
+        # one payload in practice; grouping keeps two services sharing a sink
+        # from being reported under each other's identity.
+        by_resource: dict[tuple[tuple[str, str], ...], list[TelemetryRecord]] = {}
+        for record in batch:
+            key = tuple(sorted(record.resource.items()))
+            by_resource.setdefault(key, []).append(record)
+
+        for records in by_resource.values():
+            payload = build_logs_payload(
+                [
+                    LogRecord(
+                        # Datadog renders this as the log message, and a blank
+                        # one makes the event unreadable there.
+                        body=record.name,
+                        severity_text="INFO",
+                        severity_number=_SEVERITY_INFO,
+                        time_nanos=record.timestamp_ns,
+                        attributes={"event.name": record.name, **record.properties},
+                    )
+                    for record in records
+                ],
+                _resource_from(records[0]),
+            )
+            _add_event_names(payload, [record.name for record in records])
+            _add_relay_context(payload, records[0].resource)
+
+            try:
+                await self._client.post("logs", payload)
+            except OtlpSendError as exc:
+                # Switch has to keep working while analytics is down.
+                logger.warning(
+                    "Telemetry batch of %d event(s) (%s) was not sent: %s. The "
+                    "batch is dropped; there is no retry.",
+                    len(records),
+                    ", ".join(sorted({record.name for record in records})),
+                    exc,
+                )
 
     async def aclose(self) -> None:
-        # `telemetry/setup.py` opens the client and `main._drain_telemetry`
-        # closes it, under a timeout shutdown depends on.
-        return None
+        """Post everything still buffered.
+
+        `telemetry/setup.py` opens the HTTP client and `main._drain_telemetry`
+        closes it, under a timeout shutdown depends on.
+        """
+        self._closing = True
+        self._wake.set()
+        if self._flusher is not None:
+            await self._flusher
+        else:
+            await self._flush()
 
 
 def _resource_from(record: TelemetryRecord) -> OtlpResource:
@@ -146,10 +255,15 @@ def _add_relay_context(payload: dict[str, Any], resource: Mapping[str, str]) -> 
         resource_log["resource"]["attributes"].extend(otlp_attributes(context))
 
 
-def _add_event_name(payload: dict[str, Any], name: str) -> None:
-    """Set the record's own `eventName` field, which `build_logs_payload` does
-    not: an operational log line has no event name."""
-    for resource_log in payload["resourceLogs"]:
-        for scope_log in resource_log["scopeLogs"]:
-            for record in scope_log["logRecords"]:
-                record["eventName"] = name
+def _add_event_names(payload: dict[str, Any], names: Sequence[str]) -> None:
+    """Set each record's own `eventName` field, which `build_logs_payload` does
+    not: an operational log line has no event name. `names` is in the order
+    the records were handed to the encoder, which keeps it."""
+    encoded = [
+        record
+        for resource_log in payload["resourceLogs"]
+        for scope_log in resource_log["scopeLogs"]
+        for record in scope_log["logRecords"]
+    ]
+    for record, name in zip(encoded, names, strict=True):
+        record["eventName"] = name

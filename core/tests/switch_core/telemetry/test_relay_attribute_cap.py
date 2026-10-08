@@ -89,9 +89,14 @@ async def _attributes_on_the_wire(
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
     [record] = capture.sent
-    await OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http)).send(
-        record
+    sink = OtlpRelaySink(
+        client=OtlpClient("https://relay.example", 5, {}, http),
+        flush_interval_seconds=60.0,
+        max_batch=200,
+        max_buffered=10_000,
     )
+    await sink.send(record)
+    await sink.aclose()
     await http.aclose()
     return body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
 

@@ -107,6 +107,8 @@ from switch_core.transport import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from switch_core.telemetry.messages import MessageTelemetry
+
 logger = logging.getLogger(__name__)
 
 # How long to hold an incomplete multi-attachment group before delivering the
@@ -390,6 +392,7 @@ class AgentConsumer(Consumer[AgentActor]):
         hosted_launch_store: HostedLaunchStore,
         connections: AgentConnectionRegistry,
         frontend_base_url: str | None,
+        message_telemetry: MessageTelemetry,
     ) -> None:
         super().__init__(actor=actor)
         self._event_buffer = event_buffer
@@ -405,6 +408,7 @@ class AgentConsumer(Consumer[AgentActor]):
         self._waking_notice_revisions: dict[str, int] = {}
         self._unreachable_notice_revisions: dict[str, int] = {}
         self._connections = connections
+        self._message_telemetry = message_telemetry
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )
@@ -680,6 +684,8 @@ class AgentConsumer(Consumer[AgentActor]):
                 ):
                     self._unreachable_notice_revisions[meta.room_id] = launch.revision
                     unavailable = NOTICE_MESSAGES["unreachable"]
+        if is_addressed and (hosted is None or hosted.refusal is None):
+            self._report_addressed(meta, event, has_attachment=False)
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
@@ -894,7 +900,6 @@ class AgentConsumer(Consumer[AgentActor]):
                 await self._post_auto_reply(
                     room.room_id, event, gate.refusal, reply_thread_root
                 )
-
         sender_kind: str | None = None
         on_behalf_of: str | None = None
         if PLATFORM_MARKER in event.content:
@@ -925,14 +930,17 @@ class AgentConsumer(Consumer[AgentActor]):
             ),
         )
 
+        hosted: HostedNote | None = None
         if gated is not None:
             hosted = await self._note_hosted_addressed(gated, agent_event)
             if hosted is not None and hosted.refusal is not None:
                 await self._post_auto_reply(
                     room.room_id, event, hosted.refusal, reply_thread_root
                 )
-            if hosted is not None and not hosted.deliver:
-                return
+        if is_addressed and (hosted is None or hosted.refusal is None):
+            self._report_addressed(meta, event, has_attachment=True)
+        if hosted is not None and not hosted.deliver:
+            return
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -1704,6 +1712,28 @@ class AgentConsumer(Consumer[AgentActor]):
     @staticmethod
     def _triggered_by_auto_reply(event: InboundMessage) -> bool:
         return bool(event.content.get(AUTO_REPLY_FLAG))
+
+    def _report_addressed(
+        self, meta: RoomMeta, event: InboundMessage, *, has_attachment: bool
+    ) -> None:
+        """Count a message this agent was asked to act on.
+
+        Called once a hosted agent's mailbox has taken it: one it refused (a
+        stopped or broken worker) never reaches the agent, while one it holds
+        for a waking worker does. Not an auto-reply: Switch's notice that
+        another agent is offline or refused is not someone asking this one for
+        something.
+        """
+        if self._triggered_by_auto_reply(event):
+            return
+        self._message_telemetry.agent_addressed(
+            tenant_id=self.tenant_id,
+            room_id=meta.room_id,
+            sender_transport_user_id=event.sender,
+            from_platform=PLATFORM_MARKER in event.content,
+            agent_metadata=self.agent.metadata_,
+            has_attachment=has_attachment,
+        )
 
     async def _post_auto_reply(
         self,

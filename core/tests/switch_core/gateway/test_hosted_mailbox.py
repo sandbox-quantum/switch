@@ -802,6 +802,7 @@ async def agent_client(app) -> SimpleNamespace:
     )
     posted: list[str] = []
     enqueued: list[AgentEvent] = []
+    reported: list[dict[str, Any]] = []
 
     async def send_message(_room_id: str, body: str, **_kwargs: Any) -> str:
         posted.append(body)
@@ -847,13 +848,18 @@ async def agent_client(app) -> SimpleNamespace:
         _waking_notice_revisions={},
         _unreachable_notice_revisions={},
         actor=SimpleNamespace(send_message=send_message),
+        _message_telemetry=SimpleNamespace(
+            agent_addressed=lambda **kwargs: reported.append(kwargs)
+        ),
         posted=posted,
         enqueued=enqueued,
+        reported=reported,
     )
     for name in (
         "_note_hosted_addressed",
         "_emit_media",
         "_post_auto_reply",
+        "_report_addressed",
         "_sender_handle",
     ):
         setattr(client, name, getattr(AgentConsumer, name).__get__(client))
@@ -893,6 +899,8 @@ async def test_media_to_an_errored_running_machine_is_refused_not_queued(
     assert await rows(app) == {}
     assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
     assert client.enqueued == []
+    # Refused before it reached the agent, so not a message the agent received.
+    assert client.reported == []
 
 
 async def test_task_delegate_to_an_errored_running_machine_is_refused(mailbox_app):
@@ -935,6 +943,28 @@ async def test_mention_to_an_errored_running_machine_is_answered_once(mailbox_ap
     assert await rows(app) == {}
     assert client.posted == [f"@someone {_HOSTED_MACHINE_ERROR_MESSAGE}"]
     assert client.enqueued == []
+    assert client.reported == []
+
+
+async def test_a_mention_the_mailbox_takes_is_a_message_the_agent_received(
+    mailbox_app,
+):
+    """Held for the worker rather than refused, so it does reach the agent."""
+    app = mailbox_app
+    client = await agent_client(app)
+    message = InboundMessage(
+        room_id="!room:example.com",
+        event_id="$m1",
+        sender="@someone:example.com",
+        timestamp=1700000000000,
+        content={"sender_name": "someone"},
+        body="@agent hello",
+        sender_name="someone",
+    )
+    await AgentConsumer.on_message(
+        client, RoomRef(room_id="!room:example.com"), message
+    )  # type: ignore[arg-type]
+    assert len(client.reported) == 1
 
 
 @pytest.mark.parametrize(

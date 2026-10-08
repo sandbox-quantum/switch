@@ -22,6 +22,14 @@ from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetrySink
 
 logger = logging.getLogger(__name__)
 
+# How the relay sink batches. Five seconds keeps an event's delay well inside
+# what analytics cares about; two hundred records is a request of a few tens of
+# kilobytes. The buffer holds roughly a minute of a very busy server, so a
+# relay that is down for longer loses events rather than growing memory.
+_FLUSH_INTERVAL_SECONDS = 5.0
+_MAX_BATCH = 200
+_MAX_BUFFERED = 10_000
+
 
 async def build_telemetry(
     config: SwitchConfig,
@@ -92,7 +100,10 @@ async def build_telemetry(
             timeout_seconds=config.telemetry_timeout_seconds,
             headers={},
             client=http_client,
-        )
+        ),
+        flush_interval_seconds=_FLUSH_INTERVAL_SECONDS,
+        max_batch=_MAX_BATCH,
+        max_buffered=_MAX_BUFFERED,
     )
     logger.info(
         "Product telemetry is ON: usage counts and timings are reported to "

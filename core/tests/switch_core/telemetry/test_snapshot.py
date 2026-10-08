@@ -718,6 +718,85 @@ class TestMembership:
         assert counts.room_users_max == 3
 
 
+class TestActivityTiers:
+    """Three nested populations of chat identities: in a room at all, said
+    anything, and said something in a room with an agent. The gaps between
+    them are the passive and the agent-shy audiences."""
+
+    async def test_talking_only_to_people_is_posting_but_not_active(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            speaker = await _client(session, "user")
+            listener = await _client(session, "user")
+            await _join(session, speaker, room)
+            await _join(session, listener, room)
+            await _say(session, room, speaker, seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 2
+        assert counts.chat_identity_posted_1d == 1
+        assert counts.chat_identity_active_1d == 0
+
+    async def test_a_person_in_two_rooms_is_one_person(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            human = await _client(session, "user")
+            for _ in range(2):
+                room = await _room(session)
+                await _join(session, human, room)
+                await _say(session, room, human, seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 1
+        assert counts.chat_identity_posted_1d == 1
+
+    async def test_only_people_in_live_rooms_count(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            live = await _room(session)
+            archived = await _room(session, archived=True)
+            await _join(session, await _client(session, "user"), live)
+            await _join(session, await _client(session, "user"), archived)
+            await _join(session, await _client(session, "agent"), live)
+            await _join(session, await _client(session, "bridge"), live)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 1
+
+    async def test_posting_is_windowed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            human = await _client(session, "user")
+            await _join(session, human, room)
+            await _say(session, room, human, seq=1, when=NOW - timedelta(days=3))
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_posted_1d == 0
+        assert counts.chat_identity_posted_7d == 1
+
+    async def test_arriving_in_a_room_is_not_posting(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            await _arrive(session, room, await _client(session, "user"), seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 1
+        assert counts.chat_identity_posted_7d == 0
+
+
 class TestNewlyActiveRooms:
     async def test_a_room_reports_when_a_person_first_speaks_in_it(
         self, session_factory: async_sessionmaker[AsyncSession]

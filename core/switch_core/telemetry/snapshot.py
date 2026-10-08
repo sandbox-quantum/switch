@@ -131,6 +131,11 @@ class UsageCounts:
     chat_identity_count: int = 0
     chat_identity_active_1d: int = 0
     chat_identity_active_7d: int = 0
+    # The other tiers, as chat identities like `chat_identity_active_*`:
+    # anyone who said anything in any room, and anyone in a live room at all.
+    chat_identity_posted_1d: int = 0
+    chat_identity_posted_7d: int = 0
+    chat_identity_in_room_count: int = 0
     room_count: int = 0
     room_agent_created_count: int = 0
     room_system_created_count: int = 0
@@ -180,6 +185,9 @@ class UsageCounts:
             "chat_identity_count": self.chat_identity_count,
             "chat_identity_active_1d": self.chat_identity_active_1d,
             "chat_identity_active_7d": self.chat_identity_active_7d,
+            "chat_identity_posted_1d": self.chat_identity_posted_1d,
+            "chat_identity_posted_7d": self.chat_identity_posted_7d,
+            "chat_identity_in_room_count": self.chat_identity_in_room_count,
             "room_count": self.room_count,
             "room_agent_created_count": self.room_agent_created_count,
             "room_system_created_count": self.room_system_created_count,
@@ -387,6 +395,43 @@ def _active_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]
     )
 
 
+def _posting_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]:
+    """Distinct human clients who said anything in any room since `since`.
+
+    `_active_humans` without the agent condition: someone talking only to
+    other people is not using an agent, but is not passive either.
+    """
+    return (
+        select(distinct(Message.sender_client_id))
+        .join(Client, Client.id == Message.sender_client_id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= since,
+            *_human_message_conditions(tenant_id),
+        )
+    )
+
+
+def _humans_in_rooms(tenant_id: str) -> Select[tuple[str]]:
+    """Distinct human clients who are a member of at least one live room.
+
+    Rooms of every origin, like the activity counts: a person in an adopted
+    channel is in Switch whether or not anybody created that room here.
+    """
+    return (
+        select(distinct(ClientRoom.client_id))
+        .join(Client, Client.id == ClientRoom.client_id)
+        .join(Room, Room.id == ClientRoom.room_id)
+        .where(
+            ClientRoom.tenant_id == tenant_id,
+            Client.tenant_id == tenant_id,
+            Client.type == HUMAN_CLIENT_TYPE,
+            Room.tenant_id == tenant_id,
+            Room.archived_at.is_(None),
+        )
+    )
+
+
 async def _count(session: AsyncSession, query: Select[Any]) -> int:
     result = await session.execute(select(func.count()).select_from(query.subquery()))
     return int(result.scalar_one())
@@ -430,6 +475,15 @@ async def collect_tenant_counts(
     )
     counts.chat_identity_active_7d += await _count(
         session, _active_humans(tenant_id, week_ago)
+    )
+    counts.chat_identity_posted_1d += await _count(
+        session, _posting_humans(tenant_id, day_ago)
+    )
+    counts.chat_identity_posted_7d += await _count(
+        session, _posting_humans(tenant_id, week_ago)
+    )
+    counts.chat_identity_in_room_count += await _count(
+        session, _humans_in_rooms(tenant_id)
     )
     counts.room_active_1d += await _count(
         session, _human_interaction(tenant_id, day_ago)

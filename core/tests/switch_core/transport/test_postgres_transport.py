@@ -53,6 +53,11 @@ from switch_core.transport import (
 )
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.observer import (
+    IgnoreParticipantMessages,
+    ParticipantMessage,
+    ParticipantMessageObserver,
+)
 from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from tests.conftest import RLSHarness
@@ -213,6 +218,7 @@ def _transport(
     ephemeral: EphemeralBus | None = None,
     invites: InviteBus | None = None,
     actor_role: str = "agent",
+    message_observer: ParticipantMessageObserver | None = None,
 ) -> PostgresTransport:
     """A transport for `client_id`, acting in `tenant_id`.
 
@@ -239,6 +245,7 @@ def _transport(
         invites=invites or InviteBus(),
         ephemeral=ephemeral or EphemeralBus(),
         room_cache=_room_cache(session_factory),
+        message_observer=message_observer or IgnoreParticipantMessages(),
     )
 
 
@@ -352,6 +359,159 @@ class TestMetering:
             await session.commit()
 
         assert await self._usage(session_factory) == [("messages", client_id, 1)]
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.seen: list[ParticipantMessage] = []
+
+    def observe(self, message: ParticipantMessage) -> None:
+        self.seen.append(message)
+
+
+class TestTheParticipantMessageObserver:
+    """The observer hears what the tenant is metered for — what a participant
+    chose to say — once per message, and only after it is committed."""
+
+    async def test_a_metered_message_is_observed_with_what_the_transport_knows(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        recorder = _Recorder()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            actor_role="human",
+            message_observer=recorder,
+        )
+
+        await transport.send_message(
+            transport_room_id, "hello", sender_name="a", metered=True
+        )
+
+        assert recorder.seen == [
+            ParticipantMessage(
+                tenant_id=TENANT_ZERO_ID,
+                room_id=room_id,
+                sender_client_id=client_id,
+                sender_role="human",
+                has_attachment=False,
+                in_thread=False,
+            )
+        ]
+
+    async def test_a_reply_in_a_thread_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        recorder = _Recorder()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            message_observer=recorder,
+        )
+
+        root = await transport.send_message(
+            transport_room_id, "root", sender_name="a", metered=True
+        )
+        await transport.send_message(
+            transport_room_id,
+            "reply",
+            sender_name="a",
+            metered=True,
+            thread_root_id=root.event_id,
+        )
+
+        assert [m.in_thread for m in recorder.seen] == [False, True]
+
+    async def test_what_switch_posts_on_someones_behalf_is_not_observed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        recorder = _Recorder()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            message_observer=recorder,
+        )
+
+        await transport.send_message(
+            transport_room_id, "unavailable", sender_name="a", metered=False
+        )
+        await transport.send_event(
+            transport_room_id, "com.switch.report.tool_call", {"tool": "Bash"}
+        )
+
+        assert recorder.seen == []
+
+    async def test_a_post_with_several_files_is_one_message(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        recorder = _Recorder()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            message_observer=recorder,
+        )
+
+        for index in range(3):
+            await transport.send_media(
+                transport_room_id,
+                f"blob://{index}",
+                f"file-{index}.txt",
+                "text/plain",
+                10,
+                sender_name="a",
+                msgtype="m.file",
+                metered=True,
+                group={"id": "g1", "index": index, "total": 3},
+            )
+
+        assert len(recorder.seen) == 1
+        assert recorder.seen[0].has_attachment is True
+
+    async def test_an_observer_that_raises_does_not_unsend_the_message(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The row is committed before the observer hears of it, so a failure
+        # there must not tell the sender its message was lost.
+        class _Broken:
+            def observe(self, message: ParticipantMessage) -> None:
+                raise RuntimeError("observer bug")
+
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            message_observer=_Broken(),
+        )
+
+        result = await transport.send_message(
+            transport_room_id, "still sent", sender_name="a", metered=True
+        )
+
+        assert result.event_id
+        async with session_factory() as session:
+            stored = await session.scalars(
+                select(Message).where(Message.room_id == room_id)
+            )
+            assert [m.body for m in stored] == ["still sent"]
 
 
 class TestSending:
@@ -630,6 +790,7 @@ class TestMedia:
                 invites=InviteBus(),
                 ephemeral=EphemeralBus(),
                 room_cache=_room_cache(session_factory),
+                message_observer=IgnoreParticipantMessages(),
             )
 
 
