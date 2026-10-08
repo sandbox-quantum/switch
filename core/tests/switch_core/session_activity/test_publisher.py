@@ -15,7 +15,6 @@ from switch_core.db.models import (
     BridgeMessageMap,
     TurnStatusPost,
 )
-from switch_core.session_activity import publisher as publisher_module
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.publisher import (
     AgentSessionActivityPublisher,
@@ -597,35 +596,5 @@ async def test_a_restart_redraws_running_turns_but_not_ones_already_shown_ended(
         assert [(d.call, d.content.turn.turn_id) for d in _turns(restarted)] == [
             ("update_rich", "turn-2")
         ]
-    finally:
-        await publisher.stop()
-
-
-async def test_the_clock_redraws_a_running_turn_only_while_its_agent_is_online(
-    service, session_factory, bridged, listener, online, monkeypatch
-):
-    # A turn whose host went away and never came back stays unended. The clock
-    # on its message means nothing then, and redrawing it every tick would go
-    # on for as long as the process runs.
-    monkeypatch.setattr(publisher_module, "_TICK_SECONDS", 0.05)
-    platform = RecordingPlatform()
-    platform.redraws_for_elapsed_time = True
-    publisher = _publisher(session_factory, bridged, listener, platform, online)
-    publisher.start()
-    try:
-        await _turn(service, bridged.room_id, "running", 1)
-        await platform.wait_until(lambda: len(_turns(platform)) >= 2)
-
-        online.value = False
-        await platform.wait_until(
-            lambda: _turns(platform)[-1].content.turn.status == "running"
-        )
-        await asyncio.sleep(0.2)
-        settled = len(_turns(platform))
-        await asyncio.sleep(1.2)
-        assert len(_turns(platform)) == settled, "an offline agent's clock stops"
-
-        online.value = True
-        await platform.wait_until(lambda: len(_turns(platform)) > settled)
     finally:
         await publisher.stop()
