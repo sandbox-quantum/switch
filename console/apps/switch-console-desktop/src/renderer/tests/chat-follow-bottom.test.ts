@@ -3,6 +3,7 @@ import {
   distanceFromBottom,
   FOLLOW_BOTTOM_THRESHOLD_PX,
   isAtBottom,
+  keepsFollowing,
 } from '@renderer/features/chats/ui/follow-bottom';
 
 describe('follow-bottom', () => {
@@ -37,5 +38,22 @@ describe('follow-bottom', () => {
 
   it('stops following when content grows under a reader who is not at the bottom', () => {
     expect(isAtBottom({ scrollTop: 600, scrollHeight: 1400, clientHeight: 400 }, 32)).toBe(false);
+  });
+
+  it('keeps following when its own stick is reported after more content landed', () => {
+    const late = { scrollTop: 2819, scrollHeight: 3601, clientHeight: 698 };
+    expect(keepsFollowing(late, 1151, true, 32)).toBe(true);
+  });
+
+  it('stops following only when the reader moves up', () => {
+    const above = { scrollTop: 500, scrollHeight: 1400, clientHeight: 400 };
+    expect(keepsFollowing(above, 900, true, 32)).toBe(false);
+    expect(keepsFollowing(above, 500, false, 32)).toBe(false);
+  });
+
+  it('resumes following at the end', () => {
+    expect(
+      keepsFollowing({ scrollTop: 1000, scrollHeight: 1400, clientHeight: 400 }, 0, false, 32)
+    ).toBe(true);
   });
 });

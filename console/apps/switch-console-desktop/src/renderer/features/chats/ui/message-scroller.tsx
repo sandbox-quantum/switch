@@ -2,7 +2,7 @@ import { ArrowDownIcon } from 'lucide-react';
 import * as React from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
-import { FOLLOW_BOTTOM_THRESHOLD_PX, isAtBottom } from './follow-bottom';
+import { FOLLOW_BOTTOM_THRESHOLD_PX, keepsFollowing } from './follow-bottom';
 
 type MessageScrollerContextValue = {
   viewportRef: React.RefObject<HTMLDivElement | null>;
@@ -88,18 +88,30 @@ function MessageScrollerViewport({ className, onScroll, ...props }: React.Compon
     [viewportRef, setViewport]
   );
 
+  const lastScrollTop = React.useRef(0);
+
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
-    const atEnd = isAtBottom(event.currentTarget, FOLLOW_BOTTOM_THRESHOLD_PX);
-    followingRef.current = atEnd;
-    setAtBottom(atEnd);
+    const viewport = event.currentTarget;
+    const following = keepsFollowing(
+      viewport,
+      lastScrollTop.current,
+      followingRef.current,
+      FOLLOW_BOTTOM_THRESHOLD_PX
+    );
+    lastScrollTop.current = viewport.scrollTop;
+    followingRef.current = following;
+    setAtBottom(following);
     onScroll?.(event);
   };
 
+  // No scroll anchoring: when content above the end grows, the browser would
+  // shift scrollTop to hold its anchor, and that scroll reads as the reader
+  // leaving the bottom, so following stops.
   return (
     <div
       data-slot="message-scroller-viewport"
       className={cn(
-        'size-full min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]',
+        'size-full min-h-0 min-w-0 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]',
         className
       )}
       {...props}
