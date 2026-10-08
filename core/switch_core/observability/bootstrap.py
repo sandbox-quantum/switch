@@ -60,6 +60,7 @@ from switch_core.observability.runtime import (
     log_unreadable_sources,
 )
 from switch_core.transport.room_cache import RoomCacheStats
+from switch_core.version import switch_core_commit, switch_core_repository_url
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,8 @@ def start_observability(
         service_version=version,
         environment=config.environment,
         deployment_id=str(config.deployment_id),
+        commit_sha=switch_core_commit(),
+        repository_url=switch_core_repository_url(),
     )
 
     if config.otlp_metrics_enabled:

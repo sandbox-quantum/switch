@@ -180,6 +180,10 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: ${{ needs.prep.outputs.push == 'true' }}
+          # Read by Dockerfile.switch only; the other images ignore them.
+          build-args: |
+            SWITCH_GIT_COMMIT=${{ github.sha }}
+            SWITCH_GIT_REPOSITORY_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prep.outputs.version }}
             ${{ needs.prep.outputs.latest == 'true' && format('{0}/{1}/{2}:latest', env.REGISTRY, env.IMAGE_NAMESPACE, matrix.image) || '' }}
