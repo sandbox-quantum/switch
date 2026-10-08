@@ -398,6 +398,32 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
         ("refresh: rotating", "refresh: none", "rotating or reusable"),
         ("max_lifetime: 3600", "max_lifetime: 60", "max_lifetime"),
         ("account_id: account.id", "account_id: account/id", "account_id"),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [core]\n    loopback_ports: [43123]\n",
+            "loopback_ports are for a loopback redirect",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_ports: [43123, 43123]\n",
+            "listed twice",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_ports: [80]\n",
+            "loopback_ports",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    prompt: always\n",
+            "prompt",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_discovered: true\n"
+            "    revocation_url: https://auth.example.test/revoke\n",
+            "revocation_discovered",
+        ),
     ],
 )
 def test_rejects_an_incomplete_or_inconsistent_oauth_mcp_entry(

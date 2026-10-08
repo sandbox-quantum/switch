@@ -42,7 +42,7 @@ from switch_core.connections.loader import (
     ConnectionDefinition,
     RedirectMode,
 )
-from switch_core.connections.oauth_clients import LOOPBACK_CALLBACK_PATH, core_callback
+from switch_core.connections.oauth_clients import core_callback, loopback_redirect
 
 FLOW_SECONDS = 600
 MAX_FLOWS = 256
@@ -78,10 +78,6 @@ class ServiceFlow:
     account: Identity | None = None
     signed_in: SignIn | None = None
     error: str | None = None
-
-
-def loopback_redirect(port: int) -> str:
-    return f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}"
 
 
 class ServiceFlows:
@@ -135,6 +131,14 @@ class ServiceFlows:
             raise FlowError(
                 f"{definition.name} can return a sign-in only to this server, "
                 "which has no public address (GATEWAY_PUBLIC_URL)."
+            )
+        assert definition.auth.oauth is not None
+        ports = definition.auth.oauth.loopback_ports
+        if mode == "loopback" and ports is not None and port not in ports:
+            raise FlowError(
+                f"{definition.name} takes a sign-in back only on port "
+                f"{', '.join(str(p) for p in ports)} of this computer. Close "
+                "whatever is using them, and connect again."
             )
         access = definition.access
         assert access is not None

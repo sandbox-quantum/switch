@@ -28,7 +28,7 @@ from switch_core.connections.adapters.oauth_mcp import (
     OAuthMcpAdapter,
     StaticClient,
 )
-from switch_core.connections.loader import Connection
+from switch_core.connections.loader import Connection, ConnectionDefinition
 from switch_core.connections.oauth_clients import (
     RegisteredClient,
     client_name,
@@ -88,6 +88,16 @@ class ClientRegistration:
     server_name: str
 
 
+def _every_scope(definition: ConnectionDefinition) -> list[str]:
+    """Every scope the entry's levels name, in order, each once."""
+    access = definition.access
+    assert access is not None
+    levels = [access.read, *([access.write] if access.write is not None else [])]
+    return list(
+        dict.fromkeys(scope for level in levels for scope in level.scopes or [])
+    )
+
+
 def build_adapters(
     catalog: dict[str, Connection],
     *,
@@ -116,7 +126,9 @@ def build_adapters(
             oauth = definition.auth.oauth
             assert oauth is not None
             if oauth.registration == "dynamic":
-                uris = redirect_uris(slug, oauth.redirect, registration.public_url)
+                uris = redirect_uris(
+                    slug, oauth.redirect, registration.public_url, oauth.loopback_ports
+                )
                 if not uris:
                     raise ServiceSetupError(
                         f"Connection {slug} signs in only through Core's callback, "
@@ -134,6 +146,7 @@ def build_adapters(
                             registration.public_url, registration.server_name
                         ),
                         redirect_uris=uris,
+                        scopes=_every_scope(definition),
                     ),
                     http,
                 )

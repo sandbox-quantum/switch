@@ -25,9 +25,8 @@ from switch_core.connections.flows import MAX_FLOWS, ServiceFlows
 from switch_core.connections.loader import CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import (
     LOOPBACK_CALLBACK_PATH,
-    LOOPBACK_REDIRECT_URI,
     RegisteredClient,
-    core_callback,
+    redirect_uris,
 )
 from switch_core.db.models import ServiceConnection, User
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
@@ -74,11 +73,17 @@ def _world(
     disabled: dict[str, str] | None = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
+    # The vendor matches a loopback redirect's port, as Atlassian does.
+    ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
     _write_example(
         root,
-        OAUTH_MCP_ENTRY.replace("redirect: [loopback, core]", f"redirect: {redirect}"),
+        OAUTH_MCP_ENTRY.replace(
+            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
+        ),
     )
     catalog = load_catalog(root)
+    oauth = catalog["example"].definition.auth.oauth
+    assert oauth is not None
     vendor = FakeOAuthServer()
     client = RegisteredClient(
         service="example",
@@ -87,7 +92,10 @@ def _world(
         keyring=TEST_KEYRING,
         http=vendor.client(),
         client_name="Switch (switch.example.com)",
-        redirect_uris=[LOOPBACK_REDIRECT_URI, core_callback(PUBLIC, "example")],
+        redirect_uris=redirect_uris(
+            "example", oauth.redirect, PUBLIC, oauth.loopback_ports
+        ),
+        scopes=["read:items", "write:items"],
     )
     broker = ServiceBroker(
         session_factory=session_factory,
@@ -120,10 +128,10 @@ class Console:
         self.state = secrets.token_urlsafe(32)
         self.secret = secrets.token_urlsafe(32)
 
-    async def start(self, service: str = "example") -> httpx.Response:
+    async def start(self, service: str = "example", port: int = PORT) -> httpx.Response:
         return await self.client.post(
             f"/gateway/service-connections/{service}/flows",
-            json={"port": PORT, "state": self.state, "completion_secret": self.secret},
+            json={"port": port, "state": self.state, "completion_secret": self.secret},
             cookies=cookies_for(self.user),
         )
 
@@ -358,6 +366,36 @@ class TestLoopback:
             assert confirmed.json()["consent"] == "read"
         connection = await _connection(session_factory, ada.id)
         assert connection is not None and connection.consent == "read"
+
+
+class TestLoopbackPorts:
+    async def test_signs_in_on_any_registered_port(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start(port=43124)
+            assert started.status_code == 200, started.text
+            back = urlsplit(world.vendor.authorize(started.json()["url"]))
+            assert f"{back.scheme}://{back.netloc}{back.path}" == (
+                f"http://127.0.0.1:43124{LOOPBACK_CALLBACK_PATH}"
+            )
+            code = parse_qs(back.query)["code"][0]
+            assert (await console.complete(code)).status_code == 204
+            assert (await console.confirm()).status_code == 200
+
+    async def test_refuses_a_port_the_vendor_would_not_take(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start(port=43999)
+        assert refused.status_code == 409
+        assert "port 43123, 43124" in refused.json()["detail"]
+        assert world.flows.flows == {}
 
 
 class TestCoreCallback:

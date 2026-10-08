@@ -1,9 +1,12 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelServiceConnection,
   completeServiceConnection,
   confirmServiceConnection,
+  getConnectionCatalog,
   startServiceConnection,
 } from './gateway-client';
 import {
@@ -18,11 +21,34 @@ vi.mock('./gateway-client', () => ({
   cancelServiceConnection: vi.fn(),
   completeServiceConnection: vi.fn(),
   confirmServiceConnection: vi.fn(),
+  getConnectionCatalog: vi.fn(),
   getServiceFlow: vi.fn(),
   startServiceConnection: vi.fn(),
 }));
 const server = { id: 'server', gatewayUrl: 'https://switch.example.test' } as SwitchServer;
 const flows: [string, string][] = [];
+/** The service as the server lists it: on any port, or only on `ports`. */
+function listed(ports: number[] | null): ConnectionCatalogEntry[] {
+  return [
+    {
+      slug: 'example',
+      name: 'Example',
+      category: 'Project management',
+      description: 'Example work items.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      status: 'not_connected',
+      unavailable_reason: null,
+      pass_through: true,
+      token_lifetime: 28_800,
+      loopback_ports: ports,
+    },
+  ];
+}
+beforeEach(() => {
+  vi.mocked(getConnectionCatalog).mockResolvedValue(listed(null));
+});
 afterEach(async () => {
   for (const [service, id] of flows.splice(0)) await cancelServiceBrowserFlow(server, service, id);
   vi.useRealTimers();
@@ -122,4 +148,36 @@ it('expires the local secret after ten minutes', async () => {
     'Sign-in was interrupted'
   );
   expect(confirmServiceConnection).not.toHaveBeenCalled();
+});
+
+/** Something else holding `port` on loopback, as another app might. */
+async function occupy(port: number): Promise<Server> {
+  const other = createServer();
+  await new Promise<void>((resolve) => other.listen(port, '127.0.0.1', resolve));
+  return other;
+}
+
+it('listens on the first free port of those the vendor takes a sign-in back on', async () => {
+  const busy = await occupy(43871);
+  try {
+    vi.mocked(getConnectionCatalog).mockResolvedValue(listed([43871, 43872]));
+    const { id, input, url } = await start();
+    expect(input.port).toBe(43872);
+    expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(200);
+  } finally {
+    await new Promise((resolve) => busy.close(resolve));
+  }
+});
+
+it('says which ports to free when every one is taken, and starts nothing', async () => {
+  const busy = await occupy(43873);
+  try {
+    vi.mocked(getConnectionCatalog).mockResolvedValue(listed([43873]));
+    await expect(startServiceBrowserFlow(server, 'example', vi.fn())).rejects.toThrow(
+      'Example takes a sign-in back only on port 43873 of this computer, and all are in use.'
+    );
+    expect(startServiceConnection).not.toHaveBeenCalled();
+  } finally {
+    await new Promise((resolve) => busy.close(resolve));
+  }
 });

@@ -118,6 +118,13 @@ async def list_service_connections(
                 "token_lifetime": (
                     None if definition.token is None else definition.token.max_lifetime
                 ),
+                # The ports Switch Console's listener may take a sign-in back
+                # on, for a vendor that matches them; null for any port.
+                "loopback_ports": (
+                    None
+                    if definition.auth.oauth is None
+                    else definition.auth.oauth.loopback_ports
+                ),
                 "status": "not_connected" if connection is None else connection.status,
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (

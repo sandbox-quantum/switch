@@ -2463,6 +2463,7 @@ export async function getConnectionCatalog(
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
+    loopback_ports: entry.loopback_ports,
   }));
 }
 
@@ -2480,6 +2481,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         unavailable_reason: null,
         pass_through: false,
         token_lifetime: null,
+        loopback_ports: null,
       }))
   );
 }

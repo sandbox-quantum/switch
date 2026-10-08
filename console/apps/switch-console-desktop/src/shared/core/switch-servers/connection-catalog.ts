@@ -19,6 +19,11 @@ export const connectionCatalogEntrySchema = z.object({
   pass_through: z.boolean(),
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
   token_lifetime: z.number().nullable(),
+  /**
+   * The only ports this Console's listener may take a sign-in back on, for a
+   * vendor that matches the port registered; null for any port.
+   */
+  loopback_ports: z.array(z.number().int()).nullable(),
 });
 export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntrySchema>;
 
@@ -32,6 +37,7 @@ export const connectionCatalogSchema = z.object({
         unavailable_reason: true,
         pass_through: true,
         token_lifetime: true,
+        loopback_ports: true,
       })
       .extend({ status: z.enum(['connected', 'not_connected', 'coming_soon']) })
   ),
@@ -53,6 +59,7 @@ export const serviceConnectionsSchema = z.object({
       // Absent from a Switch that predates them.
       pass_through: z.boolean().default(false),
       token_lifetime: z.number().nullable().default(null),
+      loopback_ports: z.array(z.number().int()).nullable().default(null),
       status: z.enum(['not_connected', 'active', 'needs_reauthorization', 'error']),
     })
   ),

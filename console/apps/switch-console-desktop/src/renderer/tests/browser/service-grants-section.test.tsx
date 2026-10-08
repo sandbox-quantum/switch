@@ -281,6 +281,7 @@ function onOff(
     unavailable_reason: null,
     pass_through: true,
     token_lifetime: 3600,
+    loopback_ports: null,
     ...overrides,
   };
 }

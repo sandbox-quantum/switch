@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { log } from '@main/lib/logger';
 import { SERVICE_CALLBACK_PATH } from '@shared/core/switch-servers/service-connection';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -7,6 +7,7 @@ import {
   cancelServiceConnection,
   completeServiceConnection,
   confirmServiceConnection,
+  getConnectionCatalog,
   getServiceFlow,
   startServiceConnection,
 } from './gateway-client';
@@ -75,10 +76,10 @@ export async function startServiceBrowserFlow(
         response.end('Sign-in was interrupted. Start it again from Switch Console.');
       });
   });
-  await new Promise<void>((resolve, reject) => {
-    listener.once('error', reject);
-    listener.listen(0, '127.0.0.1', resolve);
-  });
+  const catalogEntry = (await getConnectionCatalog(server)).find(
+    (candidate) => candidate.slug === service
+  );
+  await listenOn(listener, catalogEntry?.name ?? service, catalogEntry?.loopback_ports ?? null);
   const address = listener.address();
   if (!address || typeof address === 'string') {
     listener.close();
@@ -124,6 +125,30 @@ export async function startServiceBrowserFlow(
     }
     throw error;
   }
+}
+
+/**
+ * Listen on loopback: on any port, or on the first free one of `ports`, for a
+ * vendor that takes a sign-in back only on the ports Switch registered.
+ */
+async function listenOn(listener: Server, name: string, ports: number[] | null) {
+  for (const port of ports ?? [0]) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        listener.once('error', reject);
+        listener.listen(port, '127.0.0.1', () => {
+          listener.off('error', reject);
+          resolve();
+        });
+      });
+      return;
+    } catch (error) {
+      if (ports === null || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+    }
+  }
+  throw new Error(
+    `${name} takes a sign-in back only on port ${(ports ?? []).join(', ')} of this computer, and all are in use. Close whatever is using them, and connect again.`
+  );
 }
 
 function activeFlow(server: SwitchServer, service: string, id: string) {

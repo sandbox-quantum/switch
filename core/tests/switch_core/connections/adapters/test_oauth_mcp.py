@@ -336,6 +336,76 @@ class TestDisconnect:
             await adapter.revoke_connection(secret)
         assert vendor.revoked == []
 
+    async def test_revokes_at_the_advertised_endpoint_where_the_catalog_says_to(
+        self, vendor
+    ) -> None:
+        vendor.metadata["revocation_endpoint"] = f"{ISSUER}/revoke"
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n    revocation_discovered: true\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        await adapter.revoke_connection(secret)
+        [revoked] = vendor.revoked
+        assert revoked["token"] == secret.values["refresh_token"]
+        assert secret.values["refresh_token"] not in vendor.live_refresh
+
+    async def test_says_so_where_the_advertised_endpoint_is_missing(
+        self, vendor
+    ) -> None:
+        del vendor.metadata["revocation_endpoint"]
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n    revocation_discovered: true\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="no way to revoke"):
+            await adapter.revoke_connection(secret)
+
+
+class TestWhereTheMetadataIs:
+    async def test_follows_the_metadata_the_servers_401_names(self, vendor) -> None:
+        vendor.resource_metadata_path = "/resource-metadata/v1"
+        adapter, _ = _adapter(vendor)
+        endpoints = await adapter.endpoints()
+        assert endpoints.token == f"{ISSUER}/token"
+        assert "https://mcp.example.test/resource-metadata/v1" in vendor.paths
+        # Never the host's root metadata, which describes another server.
+        assert (
+            "https://mcp.example.test/.well-known/oauth-protected-resource"
+            not in vendor.paths
+        )
+
+    async def test_falls_back_to_the_well_known_address(self, vendor) -> None:
+        vendor.advertise = False
+        adapter, _ = _adapter(vendor)
+        endpoints = await adapter.endpoints()
+        assert endpoints.token == f"{ISSUER}/token"
+        assert (
+            "https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"
+            in vendor.paths
+        )
+
+    async def test_asks_for_consent_where_the_catalog_says_to(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n    prompt: consent\n",
+            ),
+        )
+        await _sign_in(adapter, vendor)
+        assert vendor.authorizations[-1]["prompt"] == "consent"
+        plain, _ = _adapter(vendor)
+        await _sign_in(plain, vendor)
+        assert "prompt" not in vendor.authorizations[-1]
+
 
 class TestThroughTheBroker:
     async def test_agents_renewing_at_once_refresh_a_rotating_sign_in_once(

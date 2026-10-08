@@ -147,19 +147,33 @@ def _json(
     return httpx.Response(status, json=body, headers=headers)
 
 
+class UnregisteredRedirect(AssertionError):
+    """The vendor's authorization page refusing a redirect it does not know."""
+
+
 class FakeOAuthServer:
     """An OAuth vendor with an MCP server, over `httpx.MockTransport`.
 
     Codes are checked against their PKCE challenge, redirect URI and client;
     rotating refresh tokens are spent on use, as the vendor's would be.
     `fail` answers a path with a fixed status and body, before anything else.
+
+    The MCP server's metadata is where `resource_metadata_path` says, which
+    its 401 names (`advertise`). A registered client signs in only on a
+    redirect it registered, port included, and a public client is given a
+    secret it never needs, as some vendors do.
     """
 
     def __init__(self, *, rotating: bool = True, lifetime: int = 3600) -> None:
         self.rotating = rotating
         self.lifetime = lifetime
+        self.resource_metadata_path = "/.well-known/oauth-protected-resource/v1/mcp"
+        self.advertise = True
         # Clients by id, with their secret (None: a public client).
         self.clients: dict[str, str | None] = {STATIC_CLIENT_ID: STATIC_CLIENT_SECRET}
+        # A registered client's redirects; the static client's are not checked.
+        self.registered_redirects: dict[str, list[str]] = {}
+        self.authorizations: list[dict[str, str]] = []
         self.registrations: list[dict[str, Any]] = []
         self.codes: dict[str, _Code] = {}
         self.live_access: dict[str, list[str]] = {}
@@ -194,6 +208,10 @@ class FakeOAuthServer:
         assert query["response_type"] == "code"
         assert query["code_challenge_method"] == "S256"
         assert query["client_id"] in self.clients
+        self.authorizations.append(query)
+        registered = self.registered_redirects.get(query["client_id"])
+        if registered is not None and query["redirect_uri"] not in registered:
+            raise UnregisteredRedirect(query["redirect_uri"])
         code = secrets.token_urlsafe(16)
         self.codes[code] = _Code(
             client_id=query["client_id"],
@@ -227,11 +245,17 @@ class FakeOAuthServer:
         if where in self.fail:
             status, body = self.fail[where]
             return _json(status, body)
-        if (
-            where
-            == "https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"
-        ):
+        if where == f"https://mcp.example.test{self.resource_metadata_path}":
             return _json(200, {"resource": MCP_URL, "authorization_servers": [ISSUER]})
+        if where == "https://mcp.example.test/.well-known/oauth-protected-resource":
+            # Another, older server's on the same host.
+            return _json(
+                200,
+                {
+                    "resource": "https://mcp.example.test/v0",
+                    "authorization_servers": ["https://legacy.example.test"],
+                },
+            )
         if where == f"{ISSUER}/.well-known/oauth-authorization-server":
             return _json(200, self.metadata)
         if where == f"{ISSUER}/token" and request.method == "POST":
@@ -299,20 +323,22 @@ class FakeOAuthServer:
         self.registrations.append(body)
         client_id = f"registered-{len(self.registrations)}"
         public = body.get("token_endpoint_auth_method") == "none"
-        secret = None if public else f"SYNTHETIC-REGISTERED-{secrets.token_hex(4)}"
-        self.clients[client_id] = secret
-        answer = {**body, "client_id": client_id}
-        if secret is not None:
-            answer["client_secret"] = secret
-        return _json(201, answer)
+        secret = f"SYNTHETIC-REGISTERED-{secrets.token_hex(4)}"
+        self.clients[client_id] = None if public else secret
+        self.registered_redirects[client_id] = list(body.get("redirect_uris", []))
+        # Issued even to a public client, which never needs it.
+        return _json(201, {**body, "client_id": client_id, "client_secret": secret})
 
     def _mcp(self, request: httpx.Request) -> httpx.Response:
         if self._bearer(request) is None:
+            named = f"https://mcp.example.test{self.resource_metadata_path}"
             return _json(
                 401,
                 {"error": "invalid_token"},
                 {
-                    "WWW-Authenticate": 'Bearer resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"'
+                    "WWW-Authenticate": f'Bearer resource_metadata="{named}"'
+                    if self.advertise
+                    else "Bearer"
                 },
             )
         message = json.loads(request.content)

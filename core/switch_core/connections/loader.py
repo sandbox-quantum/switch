@@ -20,7 +20,7 @@ entries may leave all of those out.
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -64,17 +64,29 @@ class OAuthClient(BaseModel):
     Console's listener on 127.0.0.1), in the order offered. Without
     `authorization_url` and `token_url`, both are discovered from the MCP
     server's metadata. `revocation_url` is where a disconnect revokes the
-    sign-in, where the vendor has one. `setup_note` tells people what a server
-    without the client's settings lacks.
+    sign-in, where the vendor has one; `revocation_discovered` revokes at the
+    authorization server's advertised revocation endpoint instead.
+    `setup_note` tells people what a server without the client's settings
+    lacks.
+
+    `loopback_ports`: the only ports Switch Console's listener may use, for a
+    vendor that matches a loopback redirect exactly, port included; without
+    them any port is used. `prompt` is sent with every authorization, for a
+    vendor that needs it (`consent`, to consent to a narrower set of scopes).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     registration: Literal["dynamic", "static"]
     client_settings: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,62}$")
     redirect: list[RedirectMode] = Field(min_length=1)
+    loopback_ports: list[Annotated[int, Field(ge=1024, le=65535)]] | None = Field(
+        default=None, min_length=1, max_length=10
+    )
+    prompt: Literal["consent", "login", "select_account"] | None = None
     authorization_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    revocation_discovered: bool = False
     setup_note: str | None = Field(
         default=None, min_length=1, max_length=200, pattern=r"^[^\n]+$"
     )
@@ -96,6 +108,18 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "a dynamically registered client discovers its endpoints from the "
                 "MCP server"
+            )
+        if self.loopback_ports is not None:
+            if "loopback" not in self.redirect:
+                raise ValueError("loopback_ports are for a loopback redirect")
+            if len(set(self.loopback_ports)) != len(self.loopback_ports):
+                raise ValueError("a loopback port is listed twice")
+        if self.revocation_discovered and (
+            self.revocation_url is not None or self.authorization_url is not None
+        ):
+            raise ValueError(
+                "revocation_discovered takes the revocation endpoint from the "
+                "discovered metadata, so neither it nor the others are named"
             )
         return self
 

@@ -47,14 +47,26 @@ def core_callback(public_url: str, service: str) -> str:
     )
 
 
+def loopback_redirect(port: int) -> str:
+    return f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}"
+
+
 def redirect_uris(
-    service: str, modes: list[RedirectMode], public_url: str | None
+    service: str,
+    modes: list[RedirectMode],
+    public_url: str | None,
+    loopback_ports: list[int] | None,
 ) -> list[str]:
-    """Every redirect a registration lists, for the modes this server can use."""
+    """Every redirect a registration lists, for the modes this server can use:
+    one per loopback port where the vendor matches the port too, or one with
+    no port, which RFC 8252 lets a native client use on any."""
     uris = []
     for mode in modes:
         if mode == "loopback":
-            uris.append(LOOPBACK_REDIRECT_URI)
+            if loopback_ports is None:
+                uris.append(LOOPBACK_REDIRECT_URI)
+            else:
+                uris.extend(loopback_redirect(port) for port in loopback_ports)
         elif public_url is not None:
             uris.append(core_callback(public_url, service))
     return uris
@@ -71,7 +83,11 @@ class RegisteredClient:
 
     Registration takes a lock held in the database, so two connects at once,
     on any replica, register one client. A vendor that moves its registration
-    endpoint gets a new registration rather than an unknown client.
+    endpoint, or a catalog that changes the redirects or scopes registered,
+    gets a new registration rather than a client that no longer fits.
+
+    The client asks for no secret: PKCE protects its sign-ins. A vendor that
+    issues one anyway, for a client registered without one, has it ignored.
     """
 
     def __init__(
@@ -84,6 +100,7 @@ class RegisteredClient:
         http: httpx.AsyncClient,
         client_name: str,
         redirect_uris: list[str],
+        scopes: list[str],
     ) -> None:
         if not redirect_uris:
             raise ValueError(f"{service} has no redirect this server can register.")
@@ -93,7 +110,8 @@ class RegisteredClient:
         self._keyring = keyring
         self._http = http
         self._client_name = client_name
-        self._redirect_uris = redirect_uris
+        # What the registration asks for, kept beside the vendor's answer.
+        self._request = {"redirect_uris": redirect_uris, "scope": " ".join(scopes)}
         self._known: tuple[str, OAuthClientCredentials] | None = None
         self._lock = asyncio.Lock()
 
@@ -117,14 +135,24 @@ class RegisteredClient:
                 row = await session.get(
                     ServiceOAuthClient, self._service, populate_existing=True
                 )
-                if row is not None and row.registration_endpoint == endpoint:
-                    client = _credentials(
-                        json.loads(self._keyring.decrypt(row.encrypted_secret))
-                    )
+                stored = (
+                    None
+                    if row is None
+                    else json.loads(self._keyring.decrypt(row.encrypted_secret))
+                )
+                if (
+                    row is not None
+                    and row.registration_endpoint == endpoint
+                    and isinstance(stored, dict)
+                    and stored.get("request") == self._request
+                ):
+                    client = _credentials(stored["answer"])
                 else:
                     answer = await self._register(endpoint)
                     client = _credentials(answer)
-                    encrypted = self._keyring.encrypt(json.dumps(answer))
+                    encrypted = self._keyring.encrypt(
+                        json.dumps({"request": self._request, "answer": answer})
+                    )
                     if row is None:
                         session.add(
                             ServiceOAuthClient(
@@ -148,7 +176,7 @@ class RegisteredClient:
                 endpoint,
                 json={
                     "client_name": self._client_name,
-                    "redirect_uris": self._redirect_uris,
+                    **self._request,
                     "grant_types": ["authorization_code", "refresh_token"],
                     "response_types": ["code"],
                     "token_endpoint_auth_method": "none",
@@ -182,9 +210,13 @@ class RegisteredClient:
 
 def _credentials(answer: dict[str, Any]) -> OAuthClientCredentials:
     client_id = answer.get("client_id")
-    secret = answer.get("client_secret")
     if not isinstance(client_id, str) or not client_id:
         raise ServiceAdapterError("The vendor's registration named no client.")
+    # Asked for as a public client; a secret is used only where the vendor
+    # says it registered the client to authenticate with one.
+    method = answer.get("token_endpoint_auth_method", "none")
+    secret = answer.get("client_secret")
     return OAuthClientCredentials(
-        client_id, secret if isinstance(secret, str) and secret else None
+        client_id,
+        secret if method != "none" and isinstance(secret, str) and secret else None,
     )

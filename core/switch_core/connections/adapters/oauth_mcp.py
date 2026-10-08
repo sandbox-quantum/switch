@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -53,6 +54,8 @@ class AuthorizationEndpoints:
     token: str
     # Where a client registers itself (RFC 7591), where the vendor offers it.
     registration: str | None
+    # Where a sign-in is revoked (RFC 7009), as the metadata advertises it.
+    revocation: str | None
     # The MCP server the endpoints were discovered from, named as the
     # `resource` of every authorization and token request (RFC 8707). None
     # where the catalog names the endpoints.
@@ -198,14 +201,21 @@ class OAuthMcpAdapter:
                 authorization=self._oauth.authorization_url,
                 token=self._oauth.token_url,
                 registration=None,
+                revocation=None,
                 resource=None,
             )
             return self._endpoints
         server = urlsplit(self._mcp_url)
         origin = f"{server.scheme}://{server.netloc}"
         path = server.path.rstrip("/")
+        # The server's own answer names its metadata; the well-known addresses
+        # are the fallback, and on a host serving several MCP servers the
+        # root one may describe another.
+        named = await self._resource_metadata_url()
         resource = await self._metadata(
-            [
+            [named]
+            if named is not None
+            else [
                 *(
                     [f"{origin}/.well-known/oauth-protected-resource{path}"]
                     if path
@@ -243,6 +253,7 @@ class OAuthMcpAdapter:
                 "S256, so Switch cannot sign in to it safely."
             )
         registration = metadata.get("registration_endpoint")
+        revocation = metadata.get("revocation_endpoint")
         self._endpoints = AuthorizationEndpoints(
             authorization=_https(
                 metadata.get("authorization_endpoint"), "authorization endpoint"
@@ -253,9 +264,41 @@ class OAuthMcpAdapter:
                 if registration is None
                 else _https(registration, "registration endpoint")
             ),
+            revocation=(
+                None
+                if revocation is None
+                else _https(revocation, "revocation endpoint")
+            ),
             resource=self._mcp_url,
         )
         return self._endpoints
+
+    async def _resource_metadata_url(self) -> str | None:
+        """Where the MCP server says its metadata is: the `resource_metadata`
+        of the 401 it answers a request without a token with (RFC 9728 §5)."""
+        response = await self._send(
+            self._http.build_request(
+                "POST",
+                self._mcp_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "switch", "version": "1.0.0"},
+                    },
+                },
+                headers={"Accept": "application/json, text/event-stream"},
+            )
+        )
+        if response.status_code != 401:
+            return None
+        match = re.search(
+            r'resource_metadata="([^"]+)"', response.headers.get("www-authenticate", "")
+        )
+        return None if match is None else _https(match.group(1), "resource metadata")
 
     async def _token_request(self, form: dict[str, str]) -> dict[str, Any]:
         endpoints = await self.endpoints()
@@ -345,6 +388,8 @@ class OAuthMcpAdapter:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if self._oauth.prompt is not None:
+            query["prompt"] = self._oauth.prompt
         if endpoints.resource is not None:
             query["resource"] = endpoints.resource
         separator = "&" if urlsplit(endpoints.authorization).query else "?"
@@ -439,7 +484,12 @@ class OAuthMcpAdapter:
         )
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None:
-        url = self._oauth.revocation_url
+        endpoints = await self.endpoints()
+        url = (
+            endpoints.revocation
+            if self._oauth.revocation_discovered
+            else self._oauth.revocation_url
+        )
         if url is None:
             raise ServiceAdapterError(
                 f"{self._name} gives Switch no way to revoke a sign-in."
@@ -452,7 +502,7 @@ class OAuthMcpAdapter:
         )
         if token is None:
             return
-        client = await self._client.credentials(await self.endpoints())
+        client = await self._client.credentials(endpoints)
         data = {"token": token, "token_type_hint": hint, "client_id": client.client_id}
         if client.client_secret is not None:
             data["client_secret"] = client.client_secret

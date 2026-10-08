@@ -1182,6 +1182,7 @@ describe('GitHub connection transport', () => {
         // A server that predates them says neither.
         pass_through: false,
         token_lifetime: null,
+        loopback_ports: null,
       },
       expect.objectContaining({ slug: 'jira', status: 'coming_soon', unavailable_reason: null }),
       expect.objectContaining({
@@ -1214,6 +1215,7 @@ describe('GitHub connection transport', () => {
         unavailable_reason: null,
         pass_through: false,
         token_lifetime: null,
+        loopback_ports: null,
       },
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
