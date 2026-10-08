@@ -101,8 +101,10 @@ REVOCATION_BATCH = 8
 # How long one revocation call keeps taking batches before it leaves the rest
 # to the next: a bulk change (a stop, a disconnect, a member removed) queues
 # more than one batch, and a token left for the five-minute tick may outlive
-# its own hour before it is reached.
-REVOCATION_BUDGET_SECONDS = 20.0
+# its own hour before it is reached. Short of a request's own timeout
+# (Console waits 30 s), with a batch's vendor calls (8 s) on top, so a slow
+# disconnect or stop does not read as failed when it worked.
+REVOCATION_BUDGET_SECONDS = 10.0
 REVOCATION_CLAIM = timedelta(seconds=90)
 VENDOR_CALL_SECONDS = 8
 ACCESS_WARNING = "Some access already given out may remain for up to 1 hour."
