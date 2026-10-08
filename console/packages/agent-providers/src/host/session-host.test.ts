@@ -1265,3 +1265,33 @@ it('times reasoning only from a real start: Codex has one, Claude does not', asy
   expect(untimed?.startedAt).toBeNull();
   expect(untimed?.completedAt).toEqual(expect.any(String));
 });
+
+it('keeps tool input and output off the event stream, the journal and the snapshot', async () => {
+  const { host, emit, root } = await start('claude');
+  const published: unknown[] = [];
+  host.onPublished((event) => published.push(event.body));
+  await host.command(message('turn'));
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  const input = { file_path: '/repo/PRIVATE-INPUT.ts' };
+  const tool = { id: 't1', type: 'tool_call', title: 'Read', toolName: 'Read', payload: input };
+  emit({ type: 'item.started', turnId: 'turn', item: { ...tool, status: 'in_progress' } });
+  emit({
+    type: 'item.completed',
+    turnId: 'turn',
+    item: { ...tool, status: 'completed', text: 'PRIVATE OUTPUT' },
+  });
+  emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await host.barrier();
+  const journal = await readFile(join(root, 'events.jsonl'), 'utf8');
+  for (const text of [journal, JSON.stringify(published), JSON.stringify(host.snapshot())]) {
+    expect(text).not.toContain('PRIVATE-INPUT');
+    expect(text).not.toContain('PRIVATE OUTPUT');
+  }
+  expect(host.reasoning(['turn']).tools).toEqual([
+    {
+      turnId: 'turn',
+      tools: [expect.objectContaining({ input, output: 'PRIVATE OUTPUT', toolName: 'Read' })],
+    },
+  ]);
+});

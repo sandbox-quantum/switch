@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ProviderRuntimeEvent } from '../events';
+import { hostToolTurnSchema } from './tool-detail-buffer';
 
 /**
  * The model's reasoning for recent turns, held in memory by the session host
@@ -36,6 +37,12 @@ export type HostReasoningTurn = z.infer<typeof hostReasoningTurnSchema>;
 export const hostReasoningListSchema = z.object({
   epoch: z.string().min(1),
   turns: z.array(hostReasoningTurnSchema),
+  /**
+   * What the turns' tool calls were given and gave back, from the
+   * `ToolDetailBuffer`. Rides on the reasoning answer so it reaches Console by
+   * the same local-or-SSH path; a host that predates it leaves it out.
+   */
+  tools: z.array(hostToolTurnSchema).optional(),
 });
 export type HostReasoningList = z.infer<typeof hostReasoningListSchema>;
 

@@ -27,6 +27,7 @@ import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
+import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -93,6 +94,8 @@ export class HostedSession {
   private readonly listeners = new Set<(event: ServerEvent) => void>();
   /** Recent reasoning, in memory only: never published, journaled or replayed. */
   private readonly reasoningBuffer = new ReasoningBuffer();
+  /** Recent tool input and output, in memory only, under the same rules as reasoning. */
+  private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
@@ -166,6 +169,7 @@ export class HostedSession {
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
       this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
+      this.toolDetails.ingest(event, this.config.session.epoch);
       // Process cleanup leaves this conversation available for recovery.
       // An explicit session.stop is handled before shutdown and remains terminal.
       if (
@@ -473,9 +477,16 @@ export class HostedSession {
   snapshot(): Snapshot {
     return this.replica.snapshot();
   }
-  /** The reasoning still held for `turnIds` (all buffered turns when null), for this epoch. */
+  /**
+   * The reasoning and tool details still held for `turnIds` (all buffered
+   * turns when null), for this epoch.
+   */
   reasoning(turnIds: string[] | null): HostReasoningList {
-    return this.reasoningBuffer.list(this.config.session.epoch, turnIds);
+    const epoch = this.config.session.epoch;
+    return {
+      ...this.reasoningBuffer.list(epoch, turnIds),
+      tools: this.toolDetails.list(epoch, turnIds),
+    };
   }
   replay(after: number): { events: ServerEvent[]; throughSequence: number } {
     return {
