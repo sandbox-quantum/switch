@@ -745,7 +745,8 @@ shared by several machines is refused with the candidates; pass the id.
 `actual.process`; while `actual` is still null, `pending` or `starting`,
 check again every 2 seconds, for at most a minute, before telling anyone the
 agent is ready. An agent created without an `icon_url` gets the icon its name
-generates.
+generates, unless the server has third-party avatars turned off: it then gets
+no icon, and each platform shows its default.
 
 ## Room roles (assumable)
 

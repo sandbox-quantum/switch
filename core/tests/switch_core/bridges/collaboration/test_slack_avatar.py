@@ -104,6 +104,7 @@ def test_the_slack_adapter_applies_it_to_a_resolved_icon() -> None:
             workspace_id="T123",
         )
     )
+    adapter.set_third_party_avatars(True)
 
     async def resolver(name: str) -> AgentPresentation | None:
         return AgentPresentation(display_name=None, icon_url=DICEBEAR)

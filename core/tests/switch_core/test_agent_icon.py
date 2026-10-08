@@ -14,6 +14,7 @@ from switch_core.agent_icon import (
     generated_icon_choices,
     generated_icon_url,
     initials_icon_url,
+    is_third_party_avatar,
     normalise_icon_url,
     upgrade_legacy_icon_url,
     validate_icon_url,
@@ -246,3 +247,46 @@ def test_generated_choices_lead_with_the_name_and_stay_put() -> None:
     second = generated_icon_choices("pm-agent", 1)
     assert len(second) == GENERATED_ICON_CHOICES
     assert not set(first) & set(second)
+
+
+def test_both_builders_are_recognised_as_third_party() -> None:
+    # The check and the builders share their hosts, so moving a builder to
+    # another host cannot leave the check behind.
+    assert is_third_party_avatar(generated_icon_url("pm-agent"))
+    assert is_third_party_avatar(initials_icon_url("Jane Q. Doe"))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.dicebear.com/9.x/bottts/png?seed=x&size=256",
+        "https://API.DiceBear.com/10.x/gaze/png?seed=x",
+        # A trailing dot names the same host.
+        "https://api.dicebear.com./10.x/gaze/png?seed=x",
+        "https://ui-avatars.com./api/?name=x",
+        # Any host under either service, not only the one a builder uses.
+        "https://avatars.dicebear.com/api/bottts/x.png",
+        "https://dicebear.com/x.png",
+        "https://www.ui-avatars.com/api/?name=x",
+        "https://api.dicebear.com:443/10.x/gaze/png?seed=x",
+    ],
+)
+def test_recognises_every_spelling_of_the_avatar_services(url: str) -> None:
+    assert is_third_party_avatar(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://cdn.example.com/9.x/bottts/png?seed=x&size=256",
+        # Lookalikes are someone else's host.
+        "https://api.dicebear.com.example/10.x/gaze/png?seed=x",
+        "https://notdicebear.com/x.png",
+        "https://ui-avatars.com.evil.test/api/?name=x",
+        "https://example.com/?u=https://api.dicebear.com/x",
+        "not a url",
+        "https://[::1/x.png",
+    ],
+)
+def test_leaves_every_other_host_alone(url: str) -> None:
+    assert not is_third_party_avatar(url)

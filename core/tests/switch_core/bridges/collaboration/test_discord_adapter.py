@@ -28,6 +28,7 @@ def _adapter() -> DiscordAdapter:
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
     adapter._connection._bot_user_id = BOT_USER_ID
+    adapter.set_third_party_avatars(True)
     return adapter
 
 

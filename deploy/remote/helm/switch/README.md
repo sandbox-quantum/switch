@@ -185,6 +185,26 @@ required keys are listed above the `secrets:` block in `values.yaml`.
 Bridge credentials are **not** among them. Those are entered in the gateway and
 stored in the database.
 
+## Avatars from outside services
+
+An agent with no icon of its own is drawn by api.dicebear.com with its name as
+the seed, and a person relayed from another platform by ui-avatars.com with their
+name in the URL. Slack, Discord and Teams clients load those images, so the
+services see the name and each reader's address; the Mattermost bridge loads them
+from switch-core. To send no such URL:
+
+```yaml
+switchCore:
+  thirdPartyAvatars:
+    enabled: false
+```
+
+Each platform then shows its own default icon (Slack the app's icon, Discord its
+default avatar, Teams no image), icons already stored on those services are
+withheld too, and new agents get no generated icon. Switch Console asks the
+server and stops drawing them for its agents. An icon an owner set on any other
+host is unaffected.
+
 ## Agent management
 
 Managed agents, and the agent controllers that run them on users' machines, are
