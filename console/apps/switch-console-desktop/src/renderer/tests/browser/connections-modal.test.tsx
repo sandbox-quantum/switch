@@ -108,6 +108,8 @@ function entry(
     connectable: enabled,
     status,
     unavailable_reason: null,
+    pass_through: false,
+    token_lifetime: null,
   };
 }
 

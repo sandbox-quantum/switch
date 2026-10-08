@@ -1179,6 +1179,63 @@ class TestPassThrough:
         assert pt.vendor.revoked == []
         assert await _issuances(session_factory) == []
 
+    async def test_a_grant_is_on_at_the_connections_level_with_no_choice(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        async with session_factory() as session:
+            planner = await add_agent(
+                session, name="writer", owner_id=pt.world.owner.id
+            )
+            await session.commit()
+            grant, warning = await pt.broker.set_grant(
+                session,
+                agent=planner,
+                actor_id=pt.world.owner.id,
+                service="example",
+                access=None,
+                tool_mode=None,
+                tools=None,
+                resources={},
+            )
+        assert (grant.access, grant.resources, warning) == ("write", {}, None)
+
+        async with session_factory() as session:
+            for access, tools in (("read", None), (None, ["search_items"])):
+                with pytest.raises(ServiceError) as caught:
+                    await pt.broker.set_grant(
+                        session,
+                        agent=planner,
+                        actor_id=pt.world.owner.id,
+                        service="example",
+                        access=access,  # type: ignore[arg-type]
+                        tool_mode=None,
+                        tools=tools,
+                        resources={},
+                    )
+                assert caught.value.status_code == 422
+                assert "on or off" in caught.value.message
+
+    async def test_a_connection_made_read_only_narrows_every_grant_at_once(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        async with session_factory() as session:
+            decided = await pt.broker.decide(
+                session, pt.world.agent.id, Principal.agent_key(), "example"
+            )
+            assert decided.access == "write"
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == pt.world.owner.id)
+                .values(consent="read")
+            )
+            await session.commit()
+            decided = await pt.broker.decide(
+                session, pt.world.agent.id, Principal.agent_key(), "example"
+            )
+        assert (decided.access, decided.reach) == ("read", {"scopes": ["read:items"]})
+
     async def test_removing_the_grant_or_the_sweep_never_revokes_the_owners_token(
         self, session_factory, tmp_path
     ) -> None:

@@ -191,6 +191,16 @@ class ServiceToken:
     resources: dict[str, Any]
 
 
+def _passes_through(entry: Connection) -> bool:
+    """Whether `entry` hands its agents the owner's own token."""
+    token = entry.definition.token
+    return token is not None and token.kind == "pass_through"
+
+
+def _consent(connection: ServiceConnection) -> AccessLevel:
+    return "write" if connection.consent == "write" else "read"
+
+
 def _expiry(secret: ConnectionSecret) -> datetime:
     return datetime.fromtimestamp(secret.expires_at, UTC)
 
@@ -488,7 +498,15 @@ class ServiceBroker:
                 "again.",
                 retryable=False,
             )
-        access: AccessLevel = "write" if grant.access == "write" else "read"
+        access: AccessLevel = (
+            # The owner's own token reaches what the connection does, so the
+            # grant's level is the connection's, as it is now.
+            _consent(connection)
+            if _passes_through(entry)
+            else "write"
+            if grant.access == "write"
+            else "read"
+        )
         if access == "write" and connection.consent != "write":
             raise ServiceError(
                 403,
@@ -1009,10 +1027,12 @@ class ServiceBroker:
     ) -> tuple[ServiceGrant, str | None]:
         """Create or replace the agent's grant on its owner's own connection.
 
-        A new grant with no `access` reads, with the level's tools. Commits
-        `session`. Replacing a grant with one that reaches less, or on a
-        different account, revokes what was issued under the old one, and the
-        warning says when some of it could not be revoked yet.
+        A new grant with no `access` reads, with the level's tools. A
+        pass-through service's grant is on or off: it names no level or tools,
+        and takes the connection's. Commits `session`. Replacing a grant with
+        one that reaches less, or on a different account, revokes what was
+        issued under the old one, and the warning says when some of it could
+        not be revoked yet.
         """
         if agent.owner_id != actor_id:
             raise ServiceError(404, NOT_FOUND, "Agent not found.", retryable=False)
@@ -1041,6 +1061,16 @@ class ServiceBroker:
                 f"Reconnect {name} under Settings, Connections first.",
                 retryable=False,
             )
+        if _passes_through(entry):
+            if access is not None or tool_mode is not None or tools is not None:
+                raise ServiceError(
+                    422,
+                    VALIDATION_ERROR,
+                    f"A {name} grant is on or off: the agent reaches what your "
+                    f"{name} connection does. Leave out access and tools.",
+                    retryable=False,
+                )
+            access = _consent(connection)
         level_name: AccessLevel = access or "read"
         if level_name == "write" and connection.consent != "write":
             raise ServiceError(

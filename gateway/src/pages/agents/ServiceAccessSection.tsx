@@ -11,6 +11,7 @@ import {
   Radio,
   RadioGroup,
   Stack,
+  Switch,
   TextField,
   Typography,
 } from "@mui/material";
@@ -19,11 +20,13 @@ import {
   type AgentDetail,
   ApiError,
   fetchGitHubConnection,
+  fetchServiceConnections,
   fetchServiceGrants,
   type GitHubConnection,
   type GitHubInstallation,
   OWNER_ONLY_POLICY,
   removeServiceGrant,
+  type ServiceConnection,
   type ServiceGrant,
   type ServiceGrants,
   setServiceGrant,
@@ -59,10 +62,12 @@ function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): 
 }
 
 /**
- * What an agent may use of its owner's service connections (GitHub, for now),
- * shown to the owner alone, who is the only one who can see or change it.
- * Says plainly who else can reach the agent, and so its grants, and what a
- * GitHub grant does and does not change on the machine it runs on.
+ * What an agent may use of its owner's service connections, shown to the
+ * owner alone, who is the only one who can see or change it. GitHub's grant
+ * names repositories, from its picker; a service whose agents use the owner's
+ * own token is on or off, and says why when it cannot be turned on. Says
+ * plainly who else can reach the agent, and so its grants, and what a GitHub
+ * grant does and does not change on the machine it runs on.
  */
 export default function ServiceAccessSection({
   agent,
@@ -75,6 +80,8 @@ export default function ServiceAccessSection({
   const [hidden, setHidden] = useState(false);
   const [github, setGitHub] = useState<GitHubConnection | null>(null);
   const [githubError, setGitHubError] = useState<string | null>(null);
+  const [services, setServices] = useState<ServiceConnection[]>([]);
+  const [servicesError, setServicesError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -90,10 +97,19 @@ export default function ServiceAccessSection({
     }
   }, [agent.id]);
 
+  const loadServices = useCallback(async () => {
+    try {
+      setServices(await fetchServiceConnections());
+    } catch (err) {
+      setServicesError(errorText(err));
+    }
+  }, []);
+
   useEffect(() => {
     void load();
+    void loadServices();
     fetchGitHubConnection().then(setGitHub, (err: unknown) => setGitHubError(errorText(err)));
-  }, [load]);
+  }, [load, loadServices]);
 
   if (hidden) return null;
 
@@ -113,6 +129,9 @@ export default function ServiceAccessSection({
   };
 
   const githubGrant = grants?.grants.find((g) => g.service === "github") ?? null;
+  // Services whose agents use the owner's own token: on or off, nothing to choose.
+  const onOff = services.filter((service) => service.enabled && service.pass_through);
+  const onOffSlugs = new Set(onOff.map((service) => service.slug));
 
   return (
     <>
@@ -181,7 +200,7 @@ export default function ServiceAccessSection({
           </Alert>
         ))}
 
-        {grants?.grants.map((grant) => (
+        {grants?.grants.filter((grant) => !onOffSlugs.has(grant.service)).map((grant) => (
           <Paper key={grant.service} variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" alignItems="center" spacing={1}>
               <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
@@ -223,6 +242,22 @@ export default function ServiceAccessSection({
           </Paper>
         ))}
 
+        {servicesError && <Alert severity="error">{servicesError}</Alert>}
+        {grants &&
+          onOff.map((service) => (
+            <OnOffGrant
+              key={service.slug}
+              service={service}
+              grant={grants.grants.find((grant) => grant.service === service.slug) ?? null}
+              agentName={agent.name}
+              busy={busy}
+              onTurnOn={() =>
+                void act(() => setServiceGrant(agent.id, service.slug, { access: null, resources: {} }))
+              }
+              onTurnOff={() => void act(() => removeServiceGrant(agent.id, service.slug))}
+            />
+          ))}
+
         {grants && (editing || !githubGrant) && (
           <GitHubGrantForm
             github={github}
@@ -243,6 +278,77 @@ export default function ServiceAccessSection({
         <GitHubNotes />
       </Stack>
     </>
+  );
+}
+
+/**
+ * What turning on a service whose agents use the owner's own token means, and
+ * how long turning it off takes: Switch stops handing it out within an hour,
+ * and a token that lives longer stays valid at the vendor until it expires.
+ */
+export function onOffGrantNote(
+  agentName: string,
+  serviceName: string,
+  tokenLifetime: number | null,
+): string {
+  const note = `On, ${agentName} acts as you at ${serviceName}, with everything your ${serviceName} connection allows. Turning it off stops its sessions using ${serviceName} within an hour.`;
+  return tokenLifetime !== null && tokenLifetime > 3600
+    ? `${note} A token already handed out stays valid at ${serviceName} until it expires or you disconnect.`
+    : note;
+}
+
+/** A service whose agents use the owner's own token: on or off, at the connection's level. */
+function OnOffGrant({
+  service,
+  grant,
+  agentName,
+  busy,
+  onTurnOn,
+  onTurnOff,
+}: {
+  service: ServiceConnection;
+  grant: ServiceGrant | null;
+  agentName: string;
+  busy: boolean;
+  onTurnOn: () => void;
+  onTurnOff: () => void;
+}) {
+  const connected = service.status === "active";
+  // A grant can be turned off whatever the server's state; on needs a usable connection.
+  const blocked = grant === null && (!connected || service.unavailable_reason !== null);
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Stack direction="row" alignItems="center" spacing={1}>
+        <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
+          {service.name}
+        </Typography>
+        <Chip size="small" variant="outlined" label={grant ? "On" : "Off"} />
+        <Switch
+          checked={grant !== null}
+          disabled={busy || blocked}
+          onChange={(_, on) => (on ? onTurnOn() : onTurnOff())}
+          slotProps={{ input: { "aria-label": `${service.name} for ${agentName}` } }}
+        />
+      </Stack>
+      {grant && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+          {grant.summary}
+        </Typography>
+      )}
+      {service.unavailable_reason && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+          {service.unavailable_reason}
+        </Typography>
+      )}
+      {!grant && !connected && !service.unavailable_reason && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+          To turn {service.name} on, first connect it from Switch Console&apos;s connections.
+        </Typography>
+      )}
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+        {onOffGrantNote(agentName, service.name, service.token_lifetime)}
+      </Typography>
+    </Paper>
   );
 }
 

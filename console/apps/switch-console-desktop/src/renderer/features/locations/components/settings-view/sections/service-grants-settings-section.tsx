@@ -15,6 +15,8 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { Switch } from '@renderer/lib/ui/switch';
+import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
 import { OWNER_ONLY_POLICY, type ServiceGrant } from '@shared/core/switch-servers/service-grants';
 import {
@@ -23,6 +25,7 @@ import {
   REMOVED_GRANT_NOTE,
   grantedRepositoryIds,
   grantedRepositoryNames,
+  onOffGrantNote,
 } from './service-grants';
 
 type Access = 'read' | 'write';
@@ -33,10 +36,11 @@ const ACCESS_OPTIONS = [
 ] as const;
 
 /**
- * What the agent may use of its owner's service connections (GitHub, for
- * now): its grants, a grant it works without, who else can reach it and so
- * its grants, and what a GitHub grant does on the machine it runs on.
- * Hidden for an agent with no Switch registration.
+ * What the agent may use of its owner's service connections: its grants, a
+ * grant it works without, who else can reach it and so its grants, and what a
+ * GitHub grant does on the machine it runs on. GitHub's grant names
+ * repositories, from its picker; a service whose agents use the owner's own
+ * token is on or off. Hidden for an agent with no Switch registration.
  */
 export function ServiceGrantsSettingsSection({
   locationId,
@@ -95,6 +99,11 @@ export function ServiceGrantsRow({
     queryFn: () => rpc.workspaces.getGitHubConnection(workspaceId),
     retry: false,
   });
+  const services = useQuery({
+    queryKey: ['workspace-service-connections', workspaceId],
+    queryFn: () => rpc.workspaces.getServiceConnections(workspaceId),
+    retry: false,
+  });
 
   const change = useMutation({
     mutationFn: async (run: () => Promise<string | null | void>) => run(),
@@ -104,10 +113,15 @@ export function ServiceGrantsRow({
       await queryClient.invalidateQueries({ queryKey: grantsKey });
     },
   });
-  const set = (service: string, access: Access, resources: Record<string, unknown>) =>
+  const set = (service: string, access: Access | null, resources: Record<string, unknown>) =>
     change.mutate(() =>
       rpc.workspaces.setServiceGrant({ workspaceId, agentId, service, access, resources })
     );
+  const remove = (service: string) =>
+    change.mutate(async () => {
+      const warning = await rpc.workspaces.removeServiceGrant({ workspaceId, agentId, service });
+      return [warning, cloud ? null : REMOVED_GRANT_NOTE].filter(Boolean).join(' ') || null;
+    });
 
   if (grants.isPending)
     return (
@@ -123,8 +137,12 @@ export function ServiceGrantsRow({
     );
   // Only the agent's owner sees its grants; anyone else is shown nothing.
   if (grants.data === null) return null;
+  const current = grants.data;
 
   const githubGrant = grants.data.grants.find((grant) => grant.service === 'github') ?? null;
+  // Services whose agents use the owner's own token: on or off, nothing to choose.
+  const onOff = (services.data ?? []).filter((service) => service.enabled && service.pass_through);
+  const onOffSlugs = new Set(onOff.map((service) => service.slug));
   return (
     <div className="flex flex-col gap-3">
       <div>
@@ -188,24 +206,34 @@ export function ServiceGrantsRow({
         </Alert>
       ))}
 
-      {grants.data.grants.map((grant) => (
-        <GrantCard
-          key={grant.service}
-          grant={grant}
-          github={github.data}
+      {grants.data.grants
+        .filter((grant) => !onOffSlugs.has(grant.service))
+        .map((grant) => (
+          <GrantCard
+            key={grant.service}
+            grant={grant}
+            github={github.data}
+            busy={change.isPending}
+            onChange={grant.service === 'github' ? () => setEditing(true) : null}
+            removeNote={cloud ? null : REMOVED_GRANT_NOTE}
+            onRemove={() => remove(grant.service)}
+          />
+        ))}
+
+      {services.isError && (
+        <span className="text-xs text-destructive">
+          {failureText(services.error, 'Could not load your other connections.')}
+        </span>
+      )}
+      {onOff.map((service) => (
+        <OnOffGrant
+          key={service.slug}
+          service={service}
+          grant={current.grants.find((grant) => grant.service === service.slug) ?? null}
+          agentName={agentName}
           busy={change.isPending}
-          onChange={grant.service === 'github' ? () => setEditing(true) : null}
-          removeNote={cloud ? null : REMOVED_GRANT_NOTE}
-          onRemove={() =>
-            change.mutate(async () => {
-              const warning = await rpc.workspaces.removeServiceGrant({
-                workspaceId,
-                agentId,
-                service: grant.service,
-              });
-              return [warning, cloud ? null : REMOVED_GRANT_NOTE].filter(Boolean).join(' ') || null;
-            })
-          }
+          onTurnOn={() => set(service.slug, null, {})}
+          onTurnOff={() => remove(service.slug)}
         />
       ))}
 
@@ -224,6 +252,56 @@ export function ServiceGrantsRow({
           <li key={note}>{note}</li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * A service whose agents use the owner's own token: the grant is on or off,
+ * at the connection's level, and says what that means.
+ */
+function OnOffGrant({
+  service,
+  grant,
+  agentName,
+  busy,
+  onTurnOn,
+  onTurnOff,
+}: {
+  service: ConnectionCatalogEntry;
+  grant: ServiceGrant | null;
+  agentName: string;
+  busy: boolean;
+  onTurnOn: () => void;
+  onTurnOff: () => void;
+}) {
+  const connected = service.status === 'connected';
+  // A grant can be turned off whatever the server's state; on needs a usable connection.
+  const blocked = grant === null && (!connected || service.unavailable_reason !== null);
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-sm font-medium">{service.name}</span>
+        <Badge variant="outline">{grant ? 'On' : 'Off'}</Badge>
+        <Switch
+          aria-label={`${service.name} for ${agentName}`}
+          checked={grant !== null}
+          disabled={busy || blocked}
+          onCheckedChange={(on) => (on ? onTurnOn() : onTurnOff())}
+        />
+      </div>
+      {grant && <p className="mt-1 text-sm text-foreground-muted">{grant.summary}</p>}
+      {service.unavailable_reason && (
+        <p className="mt-1 text-sm text-foreground-muted">{service.unavailable_reason}</p>
+      )}
+      {!grant && !connected && !service.unavailable_reason && (
+        <p className="mt-1 text-sm text-foreground-muted">
+          To turn {service.name} on, first connect it from the server&apos;s Connections.
+        </p>
+      )}
+      <p className="mt-1 text-xs text-foreground-muted">
+        {onOffGrantNote(agentName, service.name, service.token_lifetime)}
+      </p>
     </div>
   );
 }

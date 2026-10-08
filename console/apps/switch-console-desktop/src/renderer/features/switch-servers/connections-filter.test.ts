@@ -13,6 +13,8 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     connectable: false,
     status: 'coming_soon',
     unavailable_reason: null,
+    pass_through: false,
+    token_lifetime: null,
   };
 }
 

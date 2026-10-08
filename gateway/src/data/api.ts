@@ -2040,9 +2040,34 @@ export async function fetchServiceGrants(agentId: string): Promise<ServiceGrants
 export async function setServiceGrant(
   agentId: string,
   service: string,
-  grant: { access: "read" | "write"; resources: Record<string, unknown> },
+  grant: { access: "read" | "write" | null; resources: Record<string, unknown> },
 ): Promise<{ grant: ServiceGrant; warning: string | null }> {
-  return jsonRequest(`/agents/${agentId}/service-grants/${service}`, "PUT", grant);
+  // An on/off grant names no level: Switch gives it the connection's.
+  const body = grant.access === null ? { resources: grant.resources } : grant;
+  return jsonRequest(`/agents/${agentId}/service-grants/${service}`, "PUT", body);
+}
+
+/** A catalog service, with the signed-in person's connection to it. */
+export interface ServiceConnection {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  enabled: boolean;
+  connectable: boolean;
+  /** Why the service cannot be granted to agents on this server; null when it can. */
+  unavailable_reason: string | null;
+  status: "not_connected" | "active" | "needs_reauthorization" | "error";
+  /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
+  pass_through: boolean;
+  /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
+  token_lifetime: number | null;
+}
+
+/** Every catalog service and the signed-in person's connection to it. */
+export async function fetchServiceConnections(): Promise<ServiceConnection[]> {
+  return (await jsonRequest<{ connections: ServiceConnection[] }>("/service-connections", "GET"))
+    .connections;
 }
 
 export async function removeServiceGrant(

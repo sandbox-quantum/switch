@@ -42,6 +42,7 @@ import {
   type TemplateVisibility,
   updateAddressingPolicy,
   fetchServiceGrants,
+  getConnectionCatalog,
   getGitHubConnection,
   setServiceGrant,
   removeServiceGrant,
@@ -654,12 +655,20 @@ export const workspacesController = createRPCController({
   getGitHubConnection: (workspaceId: string) =>
     withWorkspaceSession(workspaceId, getGitHubConnection),
 
-  /** Create or replace the agent's grant on a service; owner only. Resolves to a warning or null. */
+  /** Every catalog service with the signed-in person's connection to it, in this workspace. */
+  getServiceConnections: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, getConnectionCatalog),
+
+  /**
+   * Create or replace the agent's grant on a service; owner only. Resolves to
+   * a warning or null. `access` is left out of an on/off grant (a service
+   * whose agents use the owner's own token), which takes the connection's.
+   */
   setServiceGrant: (params: {
     workspaceId: string;
     agentId: string;
     service: string;
-    access: 'read' | 'write';
+    access: 'read' | 'write' | null;
     resources: Record<string, unknown>;
   }): Promise<string | null> =>
     withWorkspaceSession(params.workspaceId, (server) =>

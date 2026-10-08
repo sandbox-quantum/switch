@@ -2461,6 +2461,8 @@ export async function getConnectionCatalog(
     connectable: entry.connectable,
     status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
+    pass_through: entry.pass_through,
+    token_lifetime: entry.token_lifetime,
   }));
 }
 
@@ -2476,6 +2478,8 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         ...entry,
         connectable: entry.enabled && entry.slug === 'github',
         unavailable_reason: null,
+        pass_through: false,
+        token_lifetime: null,
       }))
   );
 }
@@ -2520,12 +2524,14 @@ export async function setServiceGrant(
   server: SwitchServer,
   agentId: string,
   service: string,
-  grant: { access: 'read' | 'write'; resources: Record<string, unknown> }
+  grant: { access: 'read' | 'write' | null; resources: Record<string, unknown> }
 ): Promise<string | null> {
+  // An on/off grant names no level: Switch gives it the connection's.
+  const body = grant.access === null ? { resources: grant.resources } : grant;
   const response = await gatewayFetch(
     server,
     `/agents/${encodeURIComponent(agentId)}/service-grants/${encodeURIComponent(service)}`,
-    { authenticated: true, method: 'PUT', body: grant }
+    { authenticated: true, method: 'PUT', body }
   );
   return serviceGrantWarningSchema.parse(await response.json()).warning;
 }

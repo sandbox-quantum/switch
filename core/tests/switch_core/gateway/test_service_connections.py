@@ -129,6 +129,11 @@ class TestConnections:
         }
         assert (github["enabled"], github["auth_type"]) == (True, "oauth")
         assert github["connectable"] is True
+        assert (github["pass_through"], github["token_lifetime"]) == (False, 3600)
+        assert (entries["jira"]["pass_through"], entries["jira"]["token_lifetime"]) == (
+            False,
+            None,
+        )
         assert entries["jira"]["configured"] is False
         assert entries["jira"]["enabled"] is False
         assert entries["jira"]["connectable"] is False

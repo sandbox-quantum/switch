@@ -39,6 +39,22 @@ export const CLOUD_GITHUB_GRANT_NOTES = [APP_NOTE] as const;
 export const REMOVED_GRANT_NOTE =
   'Removing a grant stops Switch giving this access. On your computer, the agent may still use your own sign-in, and the session says so when it does.';
 
+/**
+ * What turning on a service whose agents use the owner's own token means, and
+ * how long turning it off takes: Switch stops handing it out within an hour,
+ * and a token that lives longer stays valid at the vendor until it expires.
+ */
+export function onOffGrantNote(
+  agentName: string,
+  serviceName: string,
+  tokenLifetime: number | null
+): string {
+  const note = `On, ${agentName} acts as you at ${serviceName}, with everything your ${serviceName} connection allows. Turning it off stops its sessions using ${serviceName} within an hour.`;
+  return tokenLifetime !== null && tokenLifetime > 3600
+    ? `${note} A token already handed out stays valid at ${serviceName} until it expires or you disconnect.`
+    : note;
+}
+
 /** What a GitHub grant changes on the machine the agent runs on, and what it does not. */
 export const GITHUB_GRANT_NOTES = [
   APP_NOTE,

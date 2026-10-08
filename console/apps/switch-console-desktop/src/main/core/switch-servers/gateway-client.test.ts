@@ -1156,6 +1156,14 @@ describe('GitHub connection transport', () => {
           connections: [
             entry,
             { ...entry, slug: 'jira', name: 'Jira', enabled: false, status: 'not_connected' },
+            {
+              ...entry,
+              slug: 'example',
+              name: 'Example',
+              status: 'active',
+              pass_through: true,
+              token_lifetime: 7200,
+            },
           ],
         })
       )
@@ -1171,8 +1179,17 @@ describe('GitHub connection transport', () => {
         connectable: true,
         status: 'needs_reauthorization',
         unavailable_reason: entry.unavailable_reason,
+        // A server that predates them says neither.
+        pass_through: false,
+        token_lifetime: null,
       },
       expect.objectContaining({ slug: 'jira', status: 'coming_soon', unavailable_reason: null }),
+      expect.objectContaining({
+        slug: 'example',
+        status: 'connected',
+        pass_through: true,
+        token_lifetime: 7200,
+      }),
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/service-connections');
@@ -1191,7 +1208,13 @@ describe('GitHub connection transport', () => {
       .mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ connections: [github] })));
     expect(await getConnectionCatalog(SERVER)).toEqual([
-      { ...github, connectable: true, unavailable_reason: null },
+      {
+        ...github,
+        connectable: true,
+        unavailable_reason: null,
+        pass_through: false,
+        token_lifetime: null,
+      },
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/provider-connections/catalog');
