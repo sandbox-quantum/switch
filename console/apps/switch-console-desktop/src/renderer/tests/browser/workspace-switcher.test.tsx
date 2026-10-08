@@ -107,6 +107,10 @@ vi.mock('@renderer/features/switch-servers/server-presentation', () => ({
   serverSubtitleLabel: (server: SwitchServer) => `${server.name} status`,
 }));
 
+vi.mock('@renderer/features/chats/components/chats-offline-note', () => ({
+  ChatsOfflineNote: () => null,
+}));
+
 vi.mock('@renderer/features/switch-servers/server-icon', () => ({
   serverIcon: () => () => null,
 }));
