@@ -6,7 +6,7 @@ import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import {
   workspaceAgentsQueryKey,
@@ -28,7 +28,8 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const {
     params: { locationId, agentName },
   } = useParams('location');
-  const showCreateSessionModal = useShowModal('sessionModal');
+  const showNewChat = useShowModal('newChatModal');
+  const { navigate } = useNavigate();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
 
   const agent = agentsStore.agentAtLocation(locationId, agentName);
@@ -103,13 +104,22 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
       description={description}
       actions={
         <>
-          <Button
-            onClick={() =>
-              showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
-            }
-          >
-            New Session
-          </Button>
+          {agent?.serverId && agent.switchAgentId && (
+            <Button
+              onClick={() => {
+                const serverId = agent.serverId as string;
+                const switchAgentId = agent.switchAgentId as string;
+                showNewChat({
+                  serverId,
+                  agentId: switchAgentId,
+                  onSuccess: (chat) =>
+                    navigate('chat', { serverId, roomId: chat.roomId, agentId: switchAgentId }),
+                });
+              }}
+            >
+              New chat
+            </Button>
+          )}
           {roomable && (
             <Button
               variant="outline"

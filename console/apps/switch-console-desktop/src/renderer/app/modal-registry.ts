@@ -9,7 +9,6 @@ import { DeleteAgentModal } from '@renderer/features/locations/components/delete
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
 import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
 import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-agent-config-modal';
-import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
 import { DeleteSessionModal } from '@renderer/features/sessions/delete-session-modal';
 import { RenameSessionModal } from '@renderer/features/sessions/rename-session-modal';
 import { AddAgentsToRoomModal } from '@renderer/features/switch-rooms/AddAgentsToRoomModal';
@@ -58,7 +57,6 @@ export function createModal<TProps, TResult>(
 
 export const modalRegistry = {
   commandPaletteModal: createModal(CommandPaletteModal, { size: 'md' }),
-  sessionModal: createModal(CreateSessionModal, { dismissOnOutsideClick: false }),
   addAgentModal: createModal(AddAgentModal, { size: 'lg', dismissOnOutsideClick: false }),
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
